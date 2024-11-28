@@ -1,0 +1,198 @@
+{
+    "help": "https://opendata.eawag.ch/api/3/action/help_show?name=package_show",
+    "success": true,
+    "result": {
+      "author": [
+        "Manu, Tom",
+        "Sütterlin, Melanie",
+        "Bouffard, Damien",
+        "Rothermel, Mathias",
+        "Wunderle, Stefan",
+        "Baltsavias, Emmanuel"
+      ],
+      "author_email": null,
+      "citation": "Tom, M., Sütterlin, M., Bouffard, D., Rothermel, M., Wunderle, S., &amp; Baltsavias, E. (2019). \u003Ci\u003EData for: Integrated monitoring of ice in selected Swiss lakes: Final Report\u003C/i\u003E [Data set]. Eawag: Swiss Federal Institute of Aquatic Science and Technology. https://doi.org/10.25678/0001HC",
+      "citation_publication": "Tom, M., Rothermel, M., Baltsavias, E., Suetterlin, M., Wunderle, S., & Bouffard, D. (2019). Integrated monitoring of ice in selected Swiss lakes. Final project report. Zürich; Bern: ETH Zürich; University of Bern.",
+      "creator_user_id": "064a4293-f097-4005-98d5-65b49b35ccf3",
+      "doi": "10.25678/0001HC",
+      "geographic_name": [
+        "Sihlsee",
+        "Greifensee",
+        "Lej da Segl",
+        "Silsersee",
+        "Lej da Silvaplauna",
+        "Silvaplanersee",
+        "Ägerisee",
+        "Lej da San Murexxan",
+        "St. Moritzersee"
+      ],
+      "id": "3c2ff3ab-151c-44a4-8769-fba684663020",
+      "islongterm": "true",
+      "isopen": false,
+      "ispublication": "true",
+      "license_id": null,
+      "license_title": null,
+      "maintainer": "Pluess, Michael",
+      "maintainer_email": "michael.pluess@eawag.ch",
+      "metadata_created": "2019-12-06T21:52:35.599940",
+      "metadata_modified": "2019-12-22T12:18:39.572856",
+      "name": "integrated-monitoring-of-icing-up-of-selected-swiss-lakes-finalreport",
+      "notes": "pkg notes",
+      "notes-2": "",
+      "num_resources": 7,
+      "num_tags": 5,
+      "open_data": "true",
+      "organization": {
+        "id": "6870be85-b2a9-45dc-9de4-4a8c2e25dbaf",
+        "name": "aquatic-physics",
+        "title": "Aquatic Physics",
+        "type": "organization",
+        "description": "org_description",
+        "image_url": "https://www.eawag.ch/fileadmin/Domain1/Abteilungen/surf/projekte/lexplore/Main.gif",
+        "created": "2019-09-18T14:11:50.244436",
+        "is_organization": true,
+        "approval_status": "approved",
+        "state": "active"
+      },
+      "owner_org": "6870be85-b2a9-45dc-9de4-4a8c2e25dbaf",
+      "private": false,
+      "publicationlink": "",
+      "publicationlink_dora": "https://www.dora.lib4ri.ch/eawag/islandora/object/eawag:19834",
+      "publicationlink_url": "",
+      "review_level": "none",
+      "reviewed_by": "",
+      "spatial": "{\"type\": \"MultiPoint\", \"coordinates\": [ [8.66516, 47.36643], [9.73634, 46.42232], [9.79808, 46.45266], [8.60540, 47.13508], [9.85238, 46.49478], [8.78285, 47.14845]]}",
+      "state": "active",
+      "status": "complete",
+      "substances": [],
+      "substances_generic": [],
+      "systems": [
+        "Lake"
+      ],
+      "tags_string": "GCOS,ice phenology,in situ observation,webcam,satelitte",
+      "taxa": [],
+      "taxa_generic": [],
+      "timerange": [
+        "2015-11-11 TO 2016-04-13",
+        "2015-10-26 TO 2017-05-23",
+        "2015-01-07 TO 2016",
+        "2016-01-16 TO 2016-04-14",
+        "2016-01-19 TO 2016-04-20",
+        "2016-10-25 TO 2017-05-22",
+        "2016-10-26 TO 2017-06-17",
+        "2016-11-16 TO 2017-05-18",
+        "2016-11-08 TO 2017-05-04"
+      ],
+      "title": "Data for: Integrated monitoring of ice in selected Swiss lakes: Final Report",
+      "type": "dataset",
+      "url": "https://doi.org/10.25678/0001HC/",
+      "variables": [
+        "pressure",
+        "temperature"
+      ],
+      "version": null,
+      "groups": [
+        {
+          "description": "long",
+          "display_name": "Integrated monitoring of icing-up of selected swiss lakes",
+          "id": "8668c43f-db0f-4e25-b915-a910cde0ac4e",
+          "image_display_url": "https://opendata.eawag.ch/uploads/group/2016-12-05-092326.70809515-71StMoritzersee.jpg",
+          "name": "integrated-monitoring-of-icing-up-of-selected-swiss-lakes",
+          "title": "Integrated monitoring of icing-up of selected swiss lakes"
+        }
+      ],
+      "resources": [
+        {
+          "allowed_users": "",
+          "cache_last_updated": null,
+          "cache_url": null,
+          "citation": "",
+          "created": "2019-12-06T21:52:39.944562",
+          "datastore_active": false,
+          "description": "",
+          "format": "PDF",
+          "hash": "03ec808346535a4774ad43e0ee50c3df8f70c00153731d8d27660181c0c46f2a",
+          "hashtype": "sha256",
+          "id": "8bf5b5f2-75a0-4a6a-a484-8b4dacd324bc",
+          "last_modified": "2019-12-06T21:52:39.905475",
+          "metadata_modified": "2019-12-06T21:52:39.944562",
+          "mimetype": "application/pdf",
+          "mimetype_inner": null,
+          "name": "finalreportlakeice.pdf",
+          "package_id": "3c2ff3ab-151c-44a4-8769-fba684663020",
+          "position": 0,
+          "resource_type": "Text",
+          "restricted_level": "public",
+          "size": 8655745,
+          "state": "active",
+          "url": "https://opendata.eawag.ch/dataset/3c2ff3ab-151c-44a4-8769-fba684663020/resource/8bf5b5f2-75a0-4a6a-a484-8b4dacd324bc/download/finalreportlakeice.pdf",
+          "url_type": "upload"
+        },
+        {
+          "allowed_users": "",
+          "cache_last_updated": null,
+          "cache_url": null,
+          "citation": "",
+          "created": "2019-12-06T21:52:40.197569",
+          "datastore_active": false,
+          "description": "",
+          "format": "",
+          "hash": "",
+          "id": "3d235966-62a4-4d20-871b-1e2cbb90ee5c",
+          "last_modified": null,
+          "metadata_modified": "2019-12-06T21:52:40.197569",
+          "mimetype": null,
+          "mimetype_inner": null,
+          "name": "greifensee-mooring",
+          "package_id": "3c2ff3ab-151c-44a4-8769-fba684663020",
+          "position": 1,
+          "resource_type": "Dataset",
+          "restricted_level": "public",
+          "size": null,
+          "state": "active",
+          "url": "https://doi.org/10.25678/0000nn",
+          "url_type": null
+        }
+      ],
+      "tags": [
+        {
+          "display_name": "GCOS",
+          "id": "d780154f-e32c-4996-9f74-240e1c8ccd4f",
+          "name": "GCOS",
+          "state": "active",
+          "vocabulary_id": null
+        },
+        {
+          "display_name": "ice phenology",
+          "id": "294c6eac-ba92-4c60-b04f-4383b2fad909",
+          "name": "ice phenology",
+          "state": "active",
+          "vocabulary_id": null
+        },
+        {
+          "display_name": "in situ observation",
+          "id": "2371b1bb-7b9c-446c-9f74-aecd5d1e8587",
+          "name": "in situ observation",
+          "state": "active",
+          "vocabulary_id": null
+        },
+        {
+          "display_name": "satelitte",
+          "id": "32f9a998-5fe8-4295-b075-a47d09e6b78e",
+          "name": "satelitte",
+          "state": "active",
+          "vocabulary_id": null
+        },
+        {
+          "display_name": "webcam",
+          "id": "87eb4058-e2ff-4e4e-a103-e002b67e726f",
+          "name": "webcam",
+          "state": "active",
+          "vocabulary_id": null
+        }
+      ],
+      "relationships_as_subject": [],
+      "relationships_as_object": []
+    }
+  }
+  
