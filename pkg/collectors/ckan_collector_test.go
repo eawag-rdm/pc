@@ -7,7 +7,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/eawag-rdm/pc/pkg/utils"
+	"github.com/eawag-rdm/pc/pkg/structs"
 )
 
 func TestJSONToMap(t *testing.T) {
@@ -56,7 +56,7 @@ func TestJSONToMap(t *testing.T) {
 
 func TestGetCKANResources(t *testing.T) {
 	// Read the test data file
-	data, err := os.ReadFile(filepath.Join("..", "..", "..", "testdata", "ckan_metadata.json"))
+	data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "ckan_metadata.json"))
 	if err != nil {
 		t.Fatalf("failed to read test data: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestGetCKANResources(t *testing.T) {
 		t.Fatalf("expected 1 file, got %d", len(files))
 	}
 
-	expectedFile := utils.File{
+	expectedFile := structs.File{
 		Path:   "https://opendata.eawag.ch/dataset/3c2ff3ab-151c-44a4-8769-fba684663020/resource/8bf5b5f2-75a0-4a6a-a484-8b4dacd324bc/download/finalreportlakeice.pdf",
 		Name:   "finalreportlakeice.pdf",
 		Size:   8655745,

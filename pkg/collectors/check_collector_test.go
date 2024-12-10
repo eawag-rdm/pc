@@ -9,59 +9,6 @@ import (
 	"testing"
 )
 
-func TestCallFunctionByName(t *testing.T) {
-	tests := []struct {
-		name        string
-		funcName    string
-		funcs       map[string]reflect.Value
-		params      []interface{}
-		expectPanic bool
-	}{
-		{
-			name:     "Function exists with no params",
-			funcName: "TestFuncNoParams",
-			funcs: map[string]reflect.Value{
-				"TestFuncNoParams": reflect.ValueOf(func() {
-					fmt.Println("TestFuncNoParams called")
-				}),
-			},
-			params:      []interface{}{},
-			expectPanic: false,
-		},
-		{
-			name:     "Function exists with params",
-			funcName: "TestFuncWithParams",
-			funcs: map[string]reflect.Value{
-				"TestFuncWithParams": reflect.ValueOf(func(a int, b string) {
-					fmt.Printf("TestFuncWithParams called with %d and %s\n", a, b)
-				}),
-			},
-			params:      []interface{}{42, "hello"},
-			expectPanic: false,
-		},
-		{
-			name:        "Function does not exist",
-			funcName:    "NonExistentFunc",
-			funcs:       map[string]reflect.Value{},
-			params:      []interface{}{},
-			expectPanic: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if tt.expectPanic {
-				defer func() {
-					if r := recover(); r == nil {
-						t.Errorf("Expected panic but did not get one")
-					}
-				}()
-			}
-			CallFunctionByName(tt.funcName, tt.funcs, tt.params...)
-		})
-	}
-}
-
 func TestCollectFunctions(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -106,7 +53,7 @@ func TestCollectFunctions(t *testing.T) {
 		{
 			name: "File with nested functions",
 			fileContent: `
-				package utils
+				package main
 
 				func TestFuncComplicated(a int, b string, c []int, d map[string]int) {
 					InnerFunc := func() {

@@ -1,4 +1,4 @@
-package utils
+package config
 
 import (
 	"fmt"
@@ -15,7 +15,7 @@ type Config struct {
 type Test struct {
 	Blacklist []string            `toml:"blacklist"`
 	Whitelist []string            `toml:"whitelist"`
-	Keywords  []map[string]string `toml:"keywords"`
+	Keywords  []map[string]string `toml:"keywordArguments"`
 }
 
 // assesLists checks that there is no overlap between blacklist and whitelist
@@ -34,18 +34,40 @@ func LoadConfig(file string) (Config, error) {
 	var config Config
 	configTree, err := toml.LoadFile(file)
 	if err != nil {
-		return config, err
+		panic(err)
 	}
 
 	err = configTree.Unmarshal(&config)
 	if err != nil {
-		return config, err
+		panic(err)
 	}
 
 	for testName, test := range config.Tests {
 		if err := assesLists(test.Blacklist, test.Whitelist); err != nil {
 			return config, fmt.Errorf("error in test %s: %v", testName, err)
 		}
+	}
+
+	return config, nil
+}
+
+// CollectCKANFiles config struct
+type CKANConfig struct {
+	CKANURL   string
+	PackageID string
+}
+
+// LoadConfig loads the configuration from a TOML file and performs the necessary checks
+func LoadCKANConfig(file string) (CKANConfig, error) {
+	var config CKANConfig
+	configTree, err := toml.LoadFile(file)
+	if err != nil {
+		panic(err)
+	}
+
+	err = configTree.Unmarshal(&config)
+	if err != nil {
+		panic(err)
 	}
 
 	return config, nil

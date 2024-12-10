@@ -4,7 +4,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/eawag-rdm/pc/pkg/utils"
+	"github.com/eawag-rdm/pc/pkg/structs"
 )
 
 func check(e error) {
@@ -24,37 +24,37 @@ func tempFile(content []byte) string {
 func TestHasOnlyASCII(t *testing.T) {
 	tests := []struct {
 		name     string
-		file     utils.File
-		expected []utils.Message
+		file     structs.File
+		expected []structs.Message
 	}{
 		{
 			name:     "ASCII only",
-			file:     utils.File{Name: "testfile.txt"},
+			file:     structs.File{Name: "testfile.txt"},
 			expected: nil,
 		},
 		{
 			name:     "ASCII only but space",
-			file:     utils.File{Name: "test file.txt"},
+			file:     structs.File{Name: "test file.txt"},
 			expected: nil,
 		},
 		{
 			name: "Non-ASCII character",
-			file: utils.File{Name: "testfile_ñ_ñ.txt"},
-			expected: []utils.Message{
-				{Content: "File contains non-ASCII character: ññ", Source: utils.File{Name: "testfile_ñ_ñ.txt"}},
+			file: structs.File{Name: "testfile_ñ_ñ.txt"},
+			expected: []structs.Message{
+				{Content: "File contains non-ASCII character: ññ", Source: structs.File{Name: "testfile_ñ_ñ.txt"}},
 			},
 		},
 		{
 			name: "Mixed ASCII and non-ASCII characters",
-			file: utils.File{Name: "testfile_abc_ñ_123.txt"},
-			expected: []utils.Message{
+			file: structs.File{Name: "testfile_abc_ñ_123.txt"},
+			expected: []structs.Message{
 
-				{Content: "File contains non-ASCII character: ñ", Source: utils.File{Name: "testfile_abc_ñ_123.txt"}},
+				{Content: "File contains non-ASCII character: ñ", Source: structs.File{Name: "testfile_abc_ñ_123.txt"}},
 			},
 		},
 		{
 			name:     "Empty file name",
-			file:     utils.File{Name: ""},
+			file:     structs.File{Name: ""},
 			expected: nil,
 		},
 	}
@@ -76,24 +76,24 @@ func TestHasOnlyASCII(t *testing.T) {
 func TestHasNoWhiteSpace(t *testing.T) {
 	tests := []struct {
 		name     string
-		file     utils.File
-		expected []utils.Message
+		file     structs.File
+		expected []structs.Message
 	}{
 		{
 			name:     "No spaces",
-			file:     utils.File{Name: "testfile.txt"},
+			file:     structs.File{Name: "testfile.txt"},
 			expected: nil,
 		},
 		{
 			name: "Contains spaces",
-			file: utils.File{Name: "test file.txt"},
-			expected: []utils.Message{
-				{Content: "File contains spaces.", Source: utils.File{Name: "test file.txt"}},
+			file: structs.File{Name: "test file.txt"},
+			expected: []structs.Message{
+				{Content: "File contains spaces.", Source: structs.File{Name: "test file.txt"}},
 			},
 		},
 		{
 			name:     "Empty file name",
-			file:     utils.File{Name: ""},
+			file:     structs.File{Name: ""},
 			expected: nil,
 		},
 	}
@@ -134,15 +134,15 @@ func TestIsBinaryFile(t *testing.T) {
 func TestIsFreeOfKeywords(t *testing.T) {
 	tests := []struct {
 		name     string
-		file     utils.File
+		file     structs.File
 		keywords []string
 		info     string
 		content  []byte
-		expected []utils.Message
+		expected []structs.Message
 	}{
 		{
 			name:     "No keywords",
-			file:     utils.File{Path: tempFile([]byte("This is a test file without keywords."))},
+			file:     structs.File{Path: tempFile([]byte("This is a test file without keywords."))},
 			keywords: []string{"keyword1", "keyword2"},
 			info:     "Keywords found:",
 			content:  []byte("This is a test file without keywords."),
@@ -150,23 +150,23 @@ func TestIsFreeOfKeywords(t *testing.T) {
 		},
 		{
 			name:     "Single keyword",
-			file:     utils.File{Path: tempFile([]byte("This file contains keyword1."))},
+			file:     structs.File{Path: tempFile([]byte("This file contains keyword1."))},
 			keywords: []string{"keyword1", "keyword2"},
 			info:     "Keywords found:",
 			content:  []byte("This file contains keyword1."),
-			expected: []utils.Message{{Content: "Keywords found: keyword1", Source: utils.File{Path: tempFile([]byte("This file contains keyword1."))}}},
+			expected: []structs.Message{{Content: "Keywords found: keyword1", Source: structs.File{Path: tempFile([]byte("This file contains keyword1."))}}},
 		},
 		{
 			name:     "Multiple keywords",
-			file:     utils.File{Path: tempFile([]byte("This file contains keyword1 and keyword2."))},
+			file:     structs.File{Path: tempFile([]byte("This file contains keyword1 and keyword2."))},
 			keywords: []string{"keyword1", "keyword2"},
 			info:     "Keywords found:",
 			content:  []byte("This file contains keyword1 and keyword2."),
-			expected: []utils.Message{{Content: "Keywords found: keyword1, keyword2", Source: utils.File{Path: tempFile([]byte("This file contains keyword1 and keyword2."))}}},
+			expected: []structs.Message{{Content: "Keywords found: keyword1, keyword2", Source: structs.File{Path: tempFile([]byte("This file contains keyword1 and keyword2."))}}},
 		},
 		{
 			name:     "Binary file",
-			file:     utils.File{Path: tempFile([]byte{0x00, 0x01, 0x02})},
+			file:     structs.File{Path: tempFile([]byte{0x00, 0x01, 0x02})},
 			keywords: []string{"keyword1", "keyword2"},
 			info:     "Keywords found:",
 			content:  []byte{0x00, 0x01, 0x02},
@@ -192,41 +192,41 @@ func TestIsFreeOfKeywords(t *testing.T) {
 func TestIsValidName(t *testing.T) {
 	tests := []struct {
 		name             string
-		file             utils.File
+		file             structs.File
 		invalidFileNames []string
-		expected         []utils.Message
+		expected         []structs.Message
 	}{
 		{
 			name:             "Valid file name",
-			file:             utils.File{Name: "validfile.txt"},
+			file:             structs.File{Name: "validfile.txt"},
 			invalidFileNames: []string{"invalidfile.txt", "badfile.txt"},
 			expected:         nil,
 		},
 		{
 			name:             "Invalid file name",
-			file:             utils.File{Name: "invalidfile.txt"},
+			file:             structs.File{Name: "invalidfile.txt"},
 			invalidFileNames: []string{"invalidfile.txt", "badfile.txt"},
-			expected: []utils.Message{
-				{Content: "File has an invalid name. invalidfile.txt", Source: utils.File{Name: "invalidfile.txt"}},
+			expected: []structs.Message{
+				{Content: "File has an invalid name. invalidfile.txt", Source: structs.File{Name: "invalidfile.txt"}},
 			},
 		},
 		{
 			name:             "Another invalid file name",
-			file:             utils.File{Name: "badfile.txt"},
+			file:             structs.File{Name: "badfile.txt"},
 			invalidFileNames: []string{"invalidfile.txt", "badfile.txt"},
-			expected: []utils.Message{
-				{Content: "File has an invalid name. badfile.txt", Source: utils.File{Name: "badfile.txt"}},
+			expected: []structs.Message{
+				{Content: "File has an invalid name. badfile.txt", Source: structs.File{Name: "badfile.txt"}},
 			},
 		},
 		{
 			name:             "Empty file name",
-			file:             utils.File{Name: ""},
+			file:             structs.File{Name: ""},
 			invalidFileNames: []string{"invalidfile.txt", "badfile.txt"},
 			expected:         nil,
 		},
 		{
 			name:             "No invalid file names",
-			file:             utils.File{Name: "somefile.txt"},
+			file:             structs.File{Name: "somefile.txt"},
 			invalidFileNames: []string{},
 			expected:         nil,
 		},

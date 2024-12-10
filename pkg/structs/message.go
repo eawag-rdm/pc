@@ -1,4 +1,4 @@
-package utils
+package structs
 
 // a struct that defines the message structure, retuned by the failed checks
 type Message struct {

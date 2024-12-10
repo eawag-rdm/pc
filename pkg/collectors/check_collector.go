@@ -1,7 +1,6 @@
 package collectors
 
 import (
-	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -28,18 +27,6 @@ func CollectFunctions(filePath string) (map[string]reflect.Value, error) {
 	}
 
 	return CollectedFunctions, nil
-}
-
-func CallFunctionByName(name string, CollectedFunctions map[string]reflect.Value, params ...interface{}) {
-	if fn, exists := CollectedFunctions[name]; exists {
-		fnParams := make([]reflect.Value, len(params))
-		for i, param := range params {
-			fnParams[i] = reflect.ValueOf(param)
-		}
-		fn.Call(fnParams)
-	} else {
-		fmt.Printf("Function %s not found\n", name)
-	}
 }
 
 func CollectChecks() (map[string]reflect.Value, error) {

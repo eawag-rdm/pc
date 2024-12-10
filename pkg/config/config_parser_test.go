@@ -1,4 +1,4 @@
-package utils
+package config
 
 import (
 	"os"
@@ -18,12 +18,12 @@ func TestLoadConfig(t *testing.T) {
 	[tests.test1]
 	blacklist = ["item1", "item2"]
 	whitelist = []
-	keywords = [{ key1 = "value1", key2 = "value2" }]
+	keywordArguments = [{ key1 = "value1", key2 = "value2" }]
 
 	[tests.test2]
 	blacklist = []
 	whitelist = ["item3", "item4"]
-	keywords = [{ key3 = "value3", key4 = "value4" }]
+	keywordArguments = [{ key3 = "value3", key4 = "value4" }]
 	`
 	_, err = tempFile.WriteString(tomlContent)
 	assert.NoError(t, err)
@@ -58,7 +58,7 @@ func TestLoadConfigWithInvalidLists(t *testing.T) {
 	[tests.test1]
 	blacklist = ["item1"]
 	whitelist = ["item2"]
-	keywords = [{ key1 = "value1" }]
+	keywordArguments = [{ key1 = "value1" }]
 	`
 	_, err = tempFile.WriteString(tomlContent)
 	assert.NoError(t, err)
@@ -68,4 +68,27 @@ func TestLoadConfigWithInvalidLists(t *testing.T) {
 	_, err = LoadConfig(tempFile.Name())
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "only one is allowed to have entries")
+}
+func TestLoadCKANConfig(t *testing.T) {
+	// Create a temporary TOML file for testing
+	tempFile, err := os.CreateTemp("", "ckan_config_*.toml")
+	assert.NoError(t, err)
+	defer os.Remove(tempFile.Name())
+
+	// Write sample TOML content to the temporary file
+	tomlContent := `
+	CKANURL = "http://example.com"
+	PackageID = "12345"
+	`
+	_, err = tempFile.WriteString(tomlContent)
+	assert.NoError(t, err)
+	tempFile.Close()
+
+	// Load the configuration from the temporary file
+	config, err := LoadCKANConfig(tempFile.Name())
+	assert.NoError(t, err)
+
+	// Validate the loaded configuration
+	assert.Equal(t, "http://example.com", config.CKANURL)
+	assert.Equal(t, "12345", config.PackageID)
 }

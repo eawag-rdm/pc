@@ -6,14 +6,14 @@ import (
 	"regexp"
 	"unicode"
 
-	"github.com/eawag-rdm/pc/pkg/utils"
+	"github.com/eawag-rdm/pc/pkg/structs"
 )
 
 const (
 	SP = 0x20 //      Space
 )
 
-func HasOnlyASCII(file utils.File) []utils.Message {
+func HasOnlyASCII(file structs.File) []structs.Message {
 	var nonASCII string
 	for _, r := range file.Name {
 		if r > unicode.MaxASCII {
@@ -21,16 +21,16 @@ func HasOnlyASCII(file utils.File) []utils.Message {
 		}
 	}
 	if nonASCII != "" {
-		return []utils.Message{{Content: "File contains non-ASCII character: " + nonASCII, Source: file}}
+		return []structs.Message{{Content: "File contains non-ASCII character: " + nonASCII, Source: file}}
 	}
 	return nil
 }
 
 // Return true if c is a space character; otherwise, return false.
-func HasNoWhiteSpace(file utils.File) []utils.Message {
+func HasNoWhiteSpace(file structs.File) []structs.Message {
 	for i := 0; i < len(file.Name); i++ {
 		if file.Name[i] == SP {
-			return []utils.Message{{Content: "File contains spaces.", Source: file}}
+			return []structs.Message{{Content: "File contains spaces.", Source: file}}
 		}
 	}
 	return nil
@@ -65,7 +65,7 @@ func isBinaryFile(filePath string) (bool, error) {
 	return false, nil // All characters are printable, likely not binary
 }
 
-func IsFreeOfKeywords(file utils.File, keywords []string, info string) []utils.Message {
+func IsFreeOfKeywords(file structs.File, keywords []string, info string) []structs.Message {
 	isBinary, err := isBinaryFile(file.Path)
 	if err != nil {
 		return nil
@@ -105,16 +105,16 @@ func IsFreeOfKeywords(file utils.File, keywords []string, info string) []utils.M
 				foundKeywordsStr += keyword
 			}
 
-			return []utils.Message{{Content: info + " " + foundKeywordsStr, Source: file}}
+			return []structs.Message{{Content: info + " " + foundKeywordsStr, Source: file}}
 		}
 	}
 	return nil
 }
 
-func IsValidName(file utils.File, invalidFileNames []string) []utils.Message {
+func IsValidName(file structs.File, invalidFileNames []string) []structs.Message {
 	for _, invalidFileName := range invalidFileNames {
 		if file.Name == invalidFileName {
-			return []utils.Message{{Content: "File has an invalid name. " + invalidFileName, Source: file}}
+			return []structs.Message{{Content: "File has an invalid name. " + invalidFileName, Source: file}}
 		}
 	}
 	return nil

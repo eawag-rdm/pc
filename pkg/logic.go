@@ -1,18 +1,21 @@
 package main
 
-const generalConfigFilePath = "config.toml"
-const collectorConfigFilePath = "collectors.toml"
+const generalConfigFilePath = "../config.toml.example"
+const collectorConfigFilePath = "../ckanCollectors.toml.example"
 
 func main() {
-	//	configFilePath := generalConfigFilePath
-	//	collectorConfigFilePath := collectorConfigFilePath
 
-	//	config := utils.LoadConfig(configFilePath)
-	//	files := collectors.CollectCKANFiles(config, collectorConfigFilePath)
-	//	checks := collectors.CollectChecks()
-	//	messages := utils.ApplyChecksFiltered(config, checks, files)
+	/* config, _ := config.LoadConfig(generalConfigFilePath)
+	collectorConfig, _ := config.LoadCKANConfig(collectorConfigFilePath)
+	files, err := collectors.CollectCkanFiles(collectorConfig)
+	checks, err := collectors.CollectChecks()
+	if err != nil {
+		fmt.Println("Error collecting checks:", err)
+		return
+	}
+	messages := utils.ApplyChecksFiltered(config, checks, files)
 
-	//	for _, message := range messages {
-	//		fmt.Println(message)
-	//	}
+	for _, message := range messages {
+		fmt.Println(message)
+	} */
 }

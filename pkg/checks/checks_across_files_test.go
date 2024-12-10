@@ -3,21 +3,21 @@ package checks
 import (
 	"testing"
 
-	"github.com/eawag-rdm/pc/pkg/utils"
+	"github.com/eawag-rdm/pc/pkg/structs"
 )
 
 func TestIsReadme(t *testing.T) {
 	tests := []struct {
 		name     string
-		file     utils.File
+		file     structs.File
 		expected bool
 	}{
-		{"Test with readme.md", utils.File{Name: "readme.md"}, true},
-		{"Test with readme.txt", utils.File{Name: "readme.txt"}, true},
-		{"Test with README.MD", utils.File{Name: "README.MD"}, true},
-		{"Test with README.TXT", utils.File{Name: "README.TXT"}, true},
-		{"Test with other file", utils.File{Name: "otherfile.txt"}, false},
-		{"Test with empty file name", utils.File{Name: ""}, false},
+		{"Test with readme.md", structs.File{Name: "readme.md"}, true},
+		{"Test with readme.txt", structs.File{Name: "readme.txt"}, true},
+		{"Test with README.MD", structs.File{Name: "README.MD"}, true},
+		{"Test with README.TXT", structs.File{Name: "README.TXT"}, true},
+		{"Test with other file", structs.File{Name: "otherfile.txt"}, false},
+		{"Test with empty file name", structs.File{Name: ""}, false},
 	}
 
 	for _, tt := range tests {

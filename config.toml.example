@@ -1,0 +1,62 @@
+#####################################################################################
+# README
+# ------
+# Sections are function names
+#
+# Settings are contained in lists each list entry represents one function call.
+#
+# Within setting function arguments are defined.
+#
+# For each function (section) a whitelist and a blacklist can be defined.
+# Blacklist: filepaths that match any of the balcklist entries are skipped. Regex patterns are allowed. Ignored, if empty.
+# Whitelist: Only filepaths, that match entries will be checked. Regex patterns are allowed. Ignored, if empty.
+#####################################################################################
+
+
+[test.HasOnlyASCII]
+# Checking for white spaces in folder and file names.
+blacklist = []
+whitelist = []
+keywordArguments = []
+
+[test.HasNoWhiteSpace]
+# Checking for Non-ASCII characters in folder and file names.
+blacklist = []
+whitelist = []
+keywordArguments = []
+
+[test.FreeOfKeywords]
+# Checking file contents
+blacklist = []
+whitelist = []
+keywordArguments = [
+    { keywords = ["user", "passw", "key"], info = "Possible credentials in file" },
+    { keywords = ["Q:"], info = "Possible internal information in file" }
+]
+
+[test.ValidName]
+# Checking for invalid files and folders
+blacklist = []
+whitelist = []
+keywordArguments = [
+    { disallowed_names = [
+        ".Rhistory",
+        ".RData",
+        ".Rapp.history",
+        ".Ruserdata",
+        ".Rbuildignore",
+        "__pycache__",
+        ".vscode",
+        ".ipynb_checkpoints",
+        "venv",
+        ".idea",
+        ".egg-info",
+        ".pytest_cache",
+        ".pyc",
+        ".tox",
+        ".python_version",
+        ".coverage",
+        ".benchmark"
+    ] }
+]
+

@@ -6,7 +6,8 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/eawag-rdm/pc/pkg/utils"
+	"github.com/eawag-rdm/pc/pkg/config"
+	"github.com/eawag-rdm/pc/pkg/structs"
 )
 
 // send a get web request and return the json respo"github.com/eawag-rdm/pc/pkg/utils"nce; raise if return code is not 200
@@ -42,14 +43,14 @@ func resourceIsFile(resource map[string]interface{}) bool {
 }
 
 // Expects parsed JSON and returns all resources of the CKAN package
-func GetCKANResources(jsonMap map[string]interface{}) ([]utils.File, error) {
-	files := []utils.File{}
+func GetCKANResources(jsonMap map[string]interface{}) ([]structs.File, error) {
+	files := []structs.File{}
 	if result, ok := jsonMap["result"].(map[string]interface{}); ok {
 		if resources, ok := result["resources"].([]interface{}); ok {
 			for _, resource := range resources {
 				if res, ok := resource.(map[string]interface{}); ok {
 					if resourceIsFile(res) {
-						file := utils.ToFile(res["url"].(string), res["name"].(string), int64(res["size"].(float64)), "")
+						file := structs.ToFile(res["url"].(string), res["name"].(string), int64(res["size"].(float64)), "")
 						files = append(files, file)
 					}
 				}
@@ -59,7 +60,7 @@ func GetCKANResources(jsonMap map[string]interface{}) ([]utils.File, error) {
 	return files, nil
 }
 
-func CollectCKANFiles(config CKANConfig) ([]utils.File, error) {
+func CollectCkanFiles(config config.CKANConfig) ([]structs.File, error) {
 	url := fmt.Sprintf("%s/api/3/action/package_show?id=%s", config.CKANURL, config.PackageID)
 	jsonStr, err := Request(url)
 	if err != nil {
@@ -70,10 +71,4 @@ func CollectCKANFiles(config CKANConfig) ([]utils.File, error) {
 		return nil, err
 	}
 	return GetCKANResources(jsonMap)
-}
-
-// CollectCKANFiles config struct
-type CKANConfig struct {
-	CKANURL   string
-	PackageID string
 }
