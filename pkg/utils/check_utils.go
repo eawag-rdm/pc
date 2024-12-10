@@ -34,10 +34,6 @@ func skipCheck(config Config, checkName string, file File) bool {
 }
 
 func ApplyChecksFiltered(config Config, checks map[string]reflect.Value, files []File) []Message {
-	checks, err := collectors.CollectChecks()
-	if err != nil {
-		panic(err)
-	}
 
 	for _, file := range files {
 		// apply checks by file but only for file.Name
