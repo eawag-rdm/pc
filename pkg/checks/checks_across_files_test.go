@@ -22,7 +22,7 @@ func TestIsReadme(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := isReadme(tt.file)
+			result := HasReadme(tt.file)
 			if result != tt.expected {
 				t.Errorf("isReadme(%v) = %v; expected %v", tt.file, result, tt.expected)
 			}

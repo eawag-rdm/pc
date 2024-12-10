@@ -4,12 +4,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"regexp"
 )
-
-func matchPattern(r *regexp.Regexp, text string) bool {
-	return r.MatchString(text)
-}
 
 type File struct {
 	Path   string
@@ -18,7 +13,7 @@ type File struct {
 	Suffix string
 }
 
-func getFileSize(file string) int64 {
+func GetFileSize(file string) int64 {
 	fi, err := os.Stat(file)
 	if err != nil {
 		return 0
@@ -26,7 +21,7 @@ func getFileSize(file string) int64 {
 	return fi.Size()
 }
 
-func toFile(fpath string, name string, size int64, suffix string) File {
+func ToFile(fpath string, name string, size int64, suffix string) File {
 	if fpath == "" {
 		panic("file path cannot be empty")
 	}
@@ -34,7 +29,7 @@ func toFile(fpath string, name string, size int64, suffix string) File {
 		name = path.Base(fpath)
 	}
 	if size == 0 {
-		size = getFileSize(fpath)
+		size = GetFileSize(fpath)
 	}
 	if suffix == "" {
 		suffix = filepath.Ext(name)

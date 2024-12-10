@@ -3,8 +3,38 @@ package checks
 import (
 	"bufio"
 	"os"
+	"regexp"
 	"unicode"
+
+	"github.com/eawag-rdm/pc/pkg/utils"
 )
+
+const (
+	SP = 0x20 //      Space
+)
+
+func HasOnlyASCII(file utils.File) []utils.Message {
+	var nonASCII string
+	for _, r := range file.Name {
+		if r > unicode.MaxASCII {
+			nonASCII += string(r)
+		}
+	}
+	if nonASCII != "" {
+		return []utils.Message{{Content: "File contains non-ASCII character: " + nonASCII, Source: file}}
+	}
+	return nil
+}
+
+// Return true if c is a space character; otherwise, return false.
+func HasNoWhiteSpace(file utils.File) []utils.Message {
+	for i := 0; i < len(file.Name); i++ {
+		if file.Name[i] == SP {
+			return []utils.Message{{Content: "File contains spaces.", Source: file}}
+		}
+	}
+	return nil
+}
 
 // isBinaryFile checks if a file is likely a binary or unreadable file.
 func isBinaryFile(filePath string) (bool, error) {
@@ -35,4 +65,57 @@ func isBinaryFile(filePath string) (bool, error) {
 	return false, nil // All characters are printable, likely not binary
 }
 
-//
+func IsFreeOfKeywords(file utils.File, keywords []string, info string) []utils.Message {
+	isBinary, err := isBinaryFile(file.Path)
+	if err != nil {
+		return nil
+	}
+	if !isBinary {
+		// Open the file for reading
+		body, err := os.ReadFile(file.Path)
+		if err != nil {
+			panic(err)
+		}
+
+		// Compile all keywords into a single regex pattern
+		pattern := "(" + regexp.QuoteMeta(keywords[0])
+		for _, keyword := range keywords[1:] {
+			pattern += "|" + regexp.QuoteMeta(keyword)
+		}
+		pattern += ")"
+
+		regexp, err := regexp.Compile(pattern)
+		if err != nil {
+			panic(err)
+		}
+
+		// Check if any of the keywords are present in the file
+		foundKeywords := regexp.FindAll(body, -1)
+		if len(foundKeywords) > 0 {
+			uniqueKeywords := make(map[string]struct{})
+			for _, keyword := range foundKeywords {
+				uniqueKeywords[string(keyword)] = struct{}{}
+			}
+
+			var foundKeywordsStr string
+			for keyword := range uniqueKeywords {
+				if foundKeywordsStr != "" {
+					foundKeywordsStr += ", "
+				}
+				foundKeywordsStr += keyword
+			}
+
+			return []utils.Message{{Content: info + " " + foundKeywordsStr, Source: file}}
+		}
+	}
+	return nil
+}
+
+func IsValidName(file utils.File, invalidFileNames []string) []utils.Message {
+	for _, invalidFileName := range invalidFileNames {
+		if file.Name == invalidFileName {
+			return []utils.Message{{Content: "File has an invalid name. " + invalidFileName, Source: file}}
+		}
+	}
+	return nil
+}
