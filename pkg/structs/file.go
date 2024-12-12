@@ -6,6 +6,10 @@ import (
 	"path/filepath"
 )
 
+type Repository struct {
+	Files []File
+}
+
 type File struct {
 	Path   string
 	Name   string

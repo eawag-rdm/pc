@@ -1,63 +1,70 @@
 package utils
 
 import (
-	"fmt"
 	"reflect"
 	"regexp"
+	"runtime"
+	"strings"
 
+	"github.com/eawag-rdm/pc/pkg/checks"
 	"github.com/eawag-rdm/pc/pkg/config"
 	"github.com/eawag-rdm/pc/pkg/structs"
 )
 
-var BY_FILE = []string{"HasOnlyASCII", "HasNoWhiteSpace", "FreeOfKeywords", "ValidName"}
-var ACROSS_FILES = []string{"HasReadme"}
-var COMPLEX = []string{"ReadmeFileHasTableOfContents"}
+var BY_FILE = []func(file structs.File, config config.Config) []structs.Message{checks.HasOnlyASCII, checks.HasNoWhiteSpace, checks.IsFreeOfKeywords, checks.IsValidName}
+var ACROSS_FILES = []func(repository structs.Repository, config config.Config) []structs.Message{checks.HasReadme}
 
-// this function will decide if a check runs or s skipped depending on the
+func getFunctionName(i interface{}) string {
+	fullName := runtime.FuncForPC(reflect.ValueOf(i).Pointer()).Name()
+	parts := strings.Split(fullName, ".")
+	return parts[len(parts)-1]
+}
+
+func matchPatterns(list []string, str string) bool {
+	combinedPattern := strings.Join(list, "|")
+	combinedRegex := regexp.MustCompile(combinedPattern)
+	return combinedRegex.MatchString(str)
+
+}
+
+// this function will decide if a check runs or skipped depending on the
 // configuration file whitelist and blacklist and the file being passed
 // the functiion will return true or false
-func skipCheck(config config.Config, checkName string, file structs.File) bool {
-	if testConfig, exists := config.Tests[checkName]; !exists || (len(testConfig.Whitelist) == 0 && len(testConfig.Blacklist) == 0) {
+func skipFileCheck(config config.Config, fileCheck func(file structs.File, config config.Config) []structs.Message, file structs.File) bool {
+	checkName := getFunctionName(fileCheck)
+	if _, exists := config.Tests[checkName]; !exists {
 		return false
 	}
-	for _, regexString := range config.Tests[checkName].Whitelist {
-		regex := regexp.MustCompile(regexString)
-		if regex.MatchString(file.Name) {
-			return false
-		}
+	if len(config.Tests[checkName].Whitelist) > 0 {
+		return !matchPatterns(config.Tests[checkName].Whitelist, file.Name)
 	}
-	for _, regexString := range config.Tests[checkName].Blacklist {
-		regex := regexp.MustCompile(regexString)
-		if regex.MatchString(file.Name) {
-			return true
-		}
+
+	if len(config.Tests[checkName].Blacklist) > 0 {
+		return matchPatterns(config.Tests[checkName].Blacklist, file.Name)
 	}
 	return false
 }
 
-func CallFunctionByName(name string, CollectedFunctions map[string]reflect.Value, params ...interface{}) {
-	if fn, exists := CollectedFunctions[name]; exists {
-		fnParams := make([]reflect.Value, len(params))
-		for i, param := range params {
-			fnParams[i] = reflect.ValueOf(param)
-		}
-		fn.Call(fnParams)
-	} else {
-		fmt.Printf("Function %s not found\n", name)
-	}
-}
-
-func ApplyChecksFiltered(config config.Config, checks map[string]reflect.Value, files []structs.File) []structs.Message {
-
+func ApplyChecksFilteredByFile(config config.Config, checks []func(file structs.File, config config.Config) []structs.Message, files []structs.File) []structs.Message {
+	var messages = []structs.Message{}
 	for _, file := range files {
 		// apply checks by file but only for file.Name
-		for _, checkName := range BY_FILE {
-			if skipCheck(config, checkName, file) {
+		for _, check := range checks {
+			if skipFileCheck(config, check, file) {
 				continue
 			}
-			CallFunctionByName(checkName, checks, file)
+			ret := check(file, config)
+			if ret != nil {
+				messages = append(messages, ret...)
+			}
 		}
 	}
+	return messages
+}
 
-	return nil
+func ApplyAllChecks(config config.Config, files []structs.File) []structs.Message {
+	var messages []structs.Message
+	messages = append(messages, ApplyChecksFilteredByFile(config, BY_FILE, files)...)
+	return messages
+
 }

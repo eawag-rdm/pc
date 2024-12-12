@@ -4,6 +4,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/eawag-rdm/pc/pkg/config"
 	"github.com/eawag-rdm/pc/pkg/structs"
 )
 
@@ -22,6 +23,7 @@ func tempFile(content []byte) string {
 }
 
 func TestHasOnlyASCII(t *testing.T) {
+	var config = config.Config{}
 	tests := []struct {
 		name     string
 		file     structs.File
@@ -61,7 +63,7 @@ func TestHasOnlyASCII(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := HasOnlyASCII(tt.file)
+			result := HasOnlyASCII(tt.file, config)
 			if len(result) != len(tt.expected) {
 				t.Errorf("expected %v, got %v", tt.expected, result)
 			}
@@ -74,6 +76,7 @@ func TestHasOnlyASCII(t *testing.T) {
 	}
 }
 func TestHasNoWhiteSpace(t *testing.T) {
+	var config = config.Config{}
 	tests := []struct {
 		name     string
 		file     structs.File
@@ -100,7 +103,7 @@ func TestHasNoWhiteSpace(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := HasNoWhiteSpace(tt.file)
+			result := HasNoWhiteSpace(tt.file, config)
 			if len(result) != len(tt.expected) {
 				t.Errorf("expected %v, got %v", tt.expected, result)
 			}
@@ -176,7 +179,7 @@ func TestIsFreeOfKeywords(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := IsFreeOfKeywords(tt.file, tt.keywords, tt.info)
+			result := IsFreeOfKeywordsCore(tt.file, tt.keywords, tt.info)
 			if len(result) != len(tt.expected) {
 				t.Errorf("expected %v, got %v", tt.expected, result)
 			}
@@ -234,7 +237,7 @@ func TestIsValidName(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := IsValidName(tt.file, tt.invalidFileNames)
+			result := IsValidNameCore(tt.file, tt.invalidFileNames)
 			if len(result) != len(tt.expected) {
 				t.Errorf("expected %v, got %v", tt.expected, result)
 			}

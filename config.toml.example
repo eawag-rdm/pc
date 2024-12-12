@@ -25,7 +25,7 @@ blacklist = []
 whitelist = []
 keywordArguments = []
 
-[test.FreeOfKeywords]
+[test.IsFreeOfKeywords]
 # Checking file contents
 blacklist = []
 whitelist = []
@@ -34,7 +34,7 @@ keywordArguments = [
     { keywords = ["Q:"], info = "Possible internal information in file" }
 ]
 
-[test.ValidName]
+[test.IsValidName]
 # Checking for invalid files and folders
 blacklist = []
 whitelist = []
@@ -60,3 +60,5 @@ keywordArguments = [
     ] }
 ]
 
+[collector.CKAN]
+attrs = {"ckan_url" = "http://example.com", "package_id" = "12345"}

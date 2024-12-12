@@ -3,92 +3,219 @@ package config
 import (
 	"os"
 	"testing"
-
-	"github.com/stretchr/testify/assert"
 )
 
 func TestLoadConfig(t *testing.T) {
-	// Create a temporary TOML file for testing
-	tempFile, err := os.CreateTemp("", "config_*.toml")
-	assert.NoError(t, err)
-	defer os.Remove(tempFile.Name())
+	tests := []struct {
+		name               string
+		configContent      string
+		expectPanic        bool
+		expectedTests      int
+		expectedCollectors int
+	}{
+		{
+			name: "valid config with blacklist",
+			configContent: `
+				[tests.test1]
+				blacklist = ["item1", "item2"]
+				keywordArguments = [{ "arg1" = "value1" }]
 
-	// Write sample TOML content to the temporary file
-	tomlContent := `
-	[tests.test1]
-	blacklist = ["item1", "item2"]
-	whitelist = []
-	keywordArguments = [{ key1 = "value1", key2 = "value2" }]
+				[collector.collector1]
+				attrs = { "key1" = "value1" }
+			`,
+			expectPanic:        false,
+			expectedTests:      1,
+			expectedCollectors: 1,
+		},
+		{
+			name: "valid config with whitelist",
+			configContent: `
+				[tests.test1]
+				whitelist = ["item1", "item2"]
+				keywordArguments = [{ "arg1" = "value1" }]
 
-	[tests.test2]
-	blacklist = []
-	whitelist = ["item3", "item4"]
-	keywordArguments = [{ key3 = "value3", key4 = "value4" }]
-	`
-	_, err = tempFile.WriteString(tomlContent)
-	assert.NoError(t, err)
-	tempFile.Close()
+				[collector.collector1]
+				attrs = { "key1" = "value1" }
+			`,
+			expectPanic:        false,
+			expectedTests:      1,
+			expectedCollectors: 1,
+		},
+		{
+			name: "invalid config with both blacklist and whitelist",
+			configContent: `
+				[tests.test1]
+				blacklist = ["item1"]
+				whitelist = ["item2"]
+				keywordArguments = [{ "arg1" = "value1" }]
 
-	// Load the configuration from the temporary file
-	config, err := LoadConfig(tempFile.Name())
-	assert.NoError(t, err)
+				[collector.collector1]
+				attrs = { "key1" = "value1" }
+			`,
+			expectPanic:        true,
+			expectedTests:      0,
+			expectedCollectors: 0,
+		},
+		{
+			name: "invalid config with neither blacklist nor whitelist",
+			configContent: `
+				[tests.test1]
+				keywordArguments = [{ "arg1" = "value1" }]
 
-	// Validate the loaded configuration
-	assert.Len(t, config.Tests, 2)
+				[collector.collector1]
+				attrs = { "key1" = "value1" }
+			`,
+			expectPanic:        false,
+			expectedTests:      1,
+			expectedCollectors: 1,
+		},
+	}
 
-	test1 := config.Tests["test1"]
-	assert.ElementsMatch(t, test1.Blacklist, []string{"item1", "item2"})
-	assert.Empty(t, test1.Whitelist)
-	assert.Equal(t, []map[string]string{{"key1": "value1", "key2": "value2"}}, test1.Keywords)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			file, err := os.CreateTemp("", "config-*.toml")
+			if err != nil {
+				t.Fatalf("failed to create temp file: %v", err)
+			}
+			defer os.Remove(file.Name())
 
-	test2 := config.Tests["test2"]
-	assert.Empty(t, test2.Blacklist)
-	assert.ElementsMatch(t, test2.Whitelist, []string{"item3", "item4"})
-	assert.Equal(t, []map[string]string{{"key3": "value3", "key4": "value4"}}, test2.Keywords)
+			if _, err := file.WriteString(tt.configContent); err != nil {
+				t.Fatalf("failed to write to temp file: %v", err)
+			}
+			file.Close()
+
+			if tt.expectPanic {
+				defer func() {
+					if r := recover(); r == nil {
+						t.Errorf("expected panic but did not occur")
+					}
+				}()
+			}
+
+			config := LoadConfig(file.Name())
+
+			if !tt.expectPanic {
+				if len(config.Tests) != tt.expectedTests {
+					t.Errorf("expected %d tests to be loaded but got %d", tt.expectedTests, len(config.Tests))
+				}
+				if len(config.Collectors) != tt.expectedCollectors {
+					t.Errorf("expected %d collectors to be loaded but got %d", tt.expectedCollectors, len(config.Collectors))
+				}
+			}
+		})
+	}
 }
 
-func TestLoadConfigWithInvalidLists(t *testing.T) {
-	// Create a temporary TOML file for testing
-	tempFile, err := os.CreateTemp("", "config_invalid_*.toml")
-	assert.NoError(t, err)
-	defer os.Remove(tempFile.Name())
+func TestAccessLoadedConfig(t *testing.T) {
+	tests := []struct {
+		name                            string
+		configContent                   string
+		expectAttrValue                 string
+		expectedBlackListContent        []string
+		expectedWhiteListContent        []string
+		expectedKeywordArgumentsContent []map[string]string
+	}{
+		{
+			name: "valid config with blacklist",
+			configContent: `
+				[tests.test1]
+				blacklist = ["item1", "item2"]
+				keywordArguments = [{ "arg1" = "value1" }]
 
-	// Write sample TOML content with invalid lists to the temporary file
-	tomlContent := `
-	[tests.test1]
-	blacklist = ["item1"]
-	whitelist = ["item2"]
-	keywordArguments = [{ key1 = "value1" }]
-	`
-	_, err = tempFile.WriteString(tomlContent)
-	assert.NoError(t, err)
-	tempFile.Close()
+				[collector.collector1]
+				attrs = { "key1" = "value1" }
+			`,
+			expectAttrValue:                 "value1",
+			expectedBlackListContent:        []string{"item1", "item2"},
+			expectedWhiteListContent:        nil,
+			expectedKeywordArgumentsContent: []map[string]string{{"arg1": "value1"}},
+		},
+		{
+			name: "valid config with whitelist",
+			configContent: `
+				[tests.test1]
+				whitelist = ["item1", "item2"]
+				keywordArguments = [{ "arg1" = "value1" }]
 
-	// Load the configuration from the temporary file
-	_, err = LoadConfig(tempFile.Name())
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "only one is allowed to have entries")
-}
-func TestLoadCKANConfig(t *testing.T) {
-	// Create a temporary TOML file for testing
-	tempFile, err := os.CreateTemp("", "ckan_config_*.toml")
-	assert.NoError(t, err)
-	defer os.Remove(tempFile.Name())
+				[collector.collector1]
+				attrs = { "key1" = "value1" }
+			`,
+			expectAttrValue:                 "value1",
+			expectedBlackListContent:        nil,
+			expectedWhiteListContent:        []string{"item1", "item2"},
+			expectedKeywordArgumentsContent: []map[string]string{{"arg1": "value1"}},
+		},
+		{
+			name: "valid config with neither blacklist nor whitelist",
+			configContent: `
+				[tests.test1]
+				keywordArguments = [{ "arg1" = "value1" }]
 
-	// Write sample TOML content to the temporary file
-	tomlContent := `
-	CKANURL = "http://example.com"
-	PackageID = "12345"
-	`
-	_, err = tempFile.WriteString(tomlContent)
-	assert.NoError(t, err)
-	tempFile.Close()
+				[collector.collector1]
+				attrs = { "key1" = "value1" }
+			`,
+			expectAttrValue:                 "value1",
+			expectedBlackListContent:        nil,
+			expectedWhiteListContent:        nil,
+			expectedKeywordArgumentsContent: []map[string]string{{"arg1": "value1"}},
+		},
+	}
 
-	// Load the configuration from the temporary file
-	config, err := LoadCKANConfig(tempFile.Name())
-	assert.NoError(t, err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			file, err := os.CreateTemp("", "config-*.toml")
+			if err != nil {
+				t.Fatalf("failed to create temp file: %v", err)
+			}
+			defer os.Remove(file.Name())
 
-	// Validate the loaded configuration
-	assert.Equal(t, "http://example.com", config.CKANURL)
-	assert.Equal(t, "12345", config.PackageID)
+			if _, err := file.WriteString(tt.configContent); err != nil {
+				t.Fatalf("failed to write to temp file: %v", err)
+			}
+			file.Close()
+
+			config := LoadConfig(file.Name())
+
+			test, ok := config.Tests["test1"]
+			if !ok {
+				t.Fatalf("test1 not found in loaded config")
+			}
+
+			if tt.expectAttrValue != config.Collectors["collector1"].Attrs["key1"] {
+				t.Errorf("expected collector attribute value %s but got %s", tt.expectAttrValue, config.Collectors["collector1"].Attrs["key1"])
+			}
+
+			if len(test.Blacklist) != len(tt.expectedBlackListContent) {
+				t.Errorf("expected blacklist length %d but got %d", len(tt.expectedBlackListContent), len(test.Blacklist))
+			} else {
+				for i, v := range tt.expectedBlackListContent {
+					if test.Blacklist[i] != v {
+						t.Errorf("expected blacklist item %s but got %s", v, test.Blacklist[i])
+					}
+				}
+			}
+
+			if len(test.Whitelist) != len(tt.expectedWhiteListContent) {
+				t.Errorf("expected whitelist length %d but got %d", len(tt.expectedWhiteListContent), len(test.Whitelist))
+			} else {
+				for i, v := range tt.expectedWhiteListContent {
+					if test.Whitelist[i] != v {
+						t.Errorf("expected whitelist item %s but got %s", v, test.Whitelist[i])
+					}
+				}
+			}
+
+			if len(test.KeywordArguments) != len(tt.expectedKeywordArgumentsContent) {
+				t.Errorf("expected keyword arguments length %d but got %d", len(tt.expectedKeywordArgumentsContent), len(test.KeywordArguments))
+			} else {
+				for i, v := range tt.expectedKeywordArgumentsContent {
+					for key, value := range v {
+						if test.KeywordArguments[i][key] != value {
+							t.Errorf("expected keyword argument %s=%s but got %s=%s", key, value, key, test.KeywordArguments[i][key])
+						}
+					}
+				}
+			}
+		})
+	}
 }

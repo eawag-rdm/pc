@@ -1,165 +1,295 @@
 package utils
 
 import (
-	"fmt"
 	"reflect"
 	"testing"
 
-	"github.com/eawag-rdm/pc/pkg/config"
 	"github.com/eawag-rdm/pc/pkg/structs"
+
+	"github.com/eawag-rdm/pc/pkg/config"
 )
 
-func TestSkipCheck(t *testing.T) {
+func TestGetFunctionName(t *testing.T) {
 	tests := []struct {
-		name      string
-		config    config.Config
-		checkName string
-		file      structs.File
-		want      bool
+		input    interface{}
+		expected string
+	}{
+		{input: getFunctionName, expected: "getFunctionName"},
+		{input: reflect.ValueOf, expected: "ValueOf"},
+	}
+
+	for _, test := range tests {
+		result := getFunctionName(test.input)
+		if result != test.expected {
+			t.Errorf("getFunctionName(%v) = %v; want %v", test.input, result, test.expected)
+		}
+	}
+}
+
+func mockCheck(file structs.File, config config.Config) []structs.Message { return nil }
+func TestSkipFileCheck(t *testing.T) {
+
+	tests := []struct {
+		name         string
+		config       config.Config
+		file         structs.File
+		expectedSkip bool
 	}{
 		{
-			name:      "No config for check",
-			config:    config.Config{},
-			checkName: "IsASCII",
-			file:      structs.File{Name: "test.txt"},
-			want:      false,
+			name: "No whitelist or blacklist",
+			config: config.Config{
+				Tests: map[string]config.Test{
+					"mockCheck": {},
+				},
+			},
+			file:         structs.File{Name: "test.txt"},
+			expectedSkip: false,
 		},
 		{
 			name: "File in whitelist",
 			config: config.Config{
 				Tests: map[string]config.Test{
-					"IsASCII": {
-						Whitelist: []string{".+.txt"},
-						Blacklist: []string{},
-						Keywords:  []map[string]string{},
+					"mockCheck": {
+						Whitelist: []string{"test.txt"},
 					},
 				},
 			},
-			checkName: "IsASCII",
-			file:      structs.File{Name: "test.txt"},
-			want:      false,
+			file:         structs.File{Name: "test.txt"},
+			expectedSkip: false,
 		},
 		{
 			name: "File in blacklist",
 			config: config.Config{
 				Tests: map[string]config.Test{
-					"IsASCII": {
-						Whitelist: []string{},
-						Blacklist: []string{".+.txt"},
-						Keywords:  []map[string]string{},
+					"mockCheck": {
+						Blacklist: []string{"txt"},
 					},
 				},
 			},
-			checkName: "IsASCII",
-			file:      structs.File{Name: "test.txt"},
-			want:      true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := skipCheck(tt.config, tt.checkName, tt.file); got != tt.want {
-				t.Errorf("skipCheck() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestApplyChecksFiltered(t *testing.T) {
-	tests := []struct {
-		name   string
-		config config.Config
-		checks map[string]reflect.Value
-		files  []structs.File
-		want   []structs.Message
-	}{
-		{
-			name:   "No checks to apply",
-			config: config.Config{},
-			checks: map[string]reflect.Value{},
-			files:  []structs.File{{Name: "test.txt"}},
-			want:   nil,
+			file:         structs.File{Name: "test.txt"},
+			expectedSkip: true,
 		},
 		{
-			name: "Apply check to file",
+			name: "File not in whitelist",
 			config: config.Config{
 				Tests: map[string]config.Test{
-					"HasOnlyASCII": {
-						Whitelist: []string{".+.txt"},
-						Blacklist: []string{},
-						Keywords:  []map[string]string{},
+					"mockCheck": {
+						Whitelist: []string{"other.txt"},
 					},
 				},
 			},
-			checks: map[string]reflect.Value{
-				"HasOnlyASCII": reflect.ValueOf(func(file structs.File) structs.Message {
-					return structs.Message{Content: "Check passed"}
-				}),
+			file:         structs.File{Name: "test.txt"},
+			expectedSkip: true,
+		},
+		{
+			name: "File not in blacklist",
+			config: config.Config{
+				Tests: map[string]config.Test{
+					"mockCheck": {
+						Blacklist: []string{"other.txt"},
+					},
+				},
 			},
-			files: []structs.File{{Name: "test.txt"}},
-			want:  nil,
+			file:         structs.File{Name: "test.txt"},
+			expectedSkip: false,
+		},
+		{
+			name: "File matches whitelist regex",
+			config: config.Config{
+				Tests: map[string]config.Test{
+					"mockCheck": {
+						Whitelist: []string{`.+\.txt`},
+					},
+				},
+			},
+			file:         structs.File{Name: "test.txt"},
+			expectedSkip: false,
+		},
+		{
+			name: "File matches blacklist regex",
+			config: config.Config{
+				Tests: map[string]config.Test{
+					"mockCheck": {
+						Blacklist: []string{`.+\.txt`},
+					},
+				},
+			},
+			file:         structs.File{Name: "test.txt"},
+			expectedSkip: true,
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := ApplyChecksFiltered(tt.config, tt.checks, tt.files)
-			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("ApplyChecksFiltered() = %v, want %v", got, tt.want)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+
+			result := skipFileCheck(test.config, mockCheck, test.file)
+			if result != test.expectedSkip {
+				t.Errorf("%v: skipFileCheck() = %v; want %v", test.name, result, test.expectedSkip)
 			}
 		})
 	}
 }
-
-func TestCallFunctionByName(t *testing.T) {
+func TestMatchPatterns(t *testing.T) {
 	tests := []struct {
-		name        string
-		funcName    string
-		funcs       map[string]reflect.Value
-		params      []interface{}
-		expectPanic bool
+		name          string
+		list          []string
+		str           string
+		expectedMatch bool
 	}{
 		{
-			name:     "Function exists with no params",
-			funcName: "TestFuncNoParams",
-			funcs: map[string]reflect.Value{
-				"TestFuncNoParams": reflect.ValueOf(func() {
-					fmt.Println("TestFuncNoParams called")
-				}),
-			},
-			params:      []interface{}{},
-			expectPanic: false,
+			name:          "Single pattern match",
+			list:          []string{"test"},
+			str:           "this is a test",
+			expectedMatch: true,
 		},
 		{
-			name:     "Function exists with params",
-			funcName: "TestFuncWithParams",
-			funcs: map[string]reflect.Value{
-				"TestFuncWithParams": reflect.ValueOf(func(a int, b string) {
-					fmt.Printf("TestFuncWithParams called with %d and %s\n", a, b)
-				}),
-			},
-			params:      []interface{}{42, "hello"},
-			expectPanic: false,
+			name:          "Single pattern no match",
+			list:          []string{"test"},
+			str:           "this is a sample",
+			expectedMatch: false,
 		},
 		{
-			name:        "Function does not exist",
-			funcName:    "NonExistentFunc",
-			funcs:       map[string]reflect.Value{},
-			params:      []interface{}{},
-			expectPanic: false,
+			name:          "Multiple patterns match",
+			list:          []string{"test", "sample"},
+			str:           "this is a sample",
+			expectedMatch: true,
+		},
+		{
+			name:          "Multiple patterns no match",
+			list:          []string{"test", "example"},
+			str:           "this is a sample",
+			expectedMatch: false,
+		},
+		{
+			name:          "Regex pattern match",
+			list:          []string{`t.st`},
+			str:           "this is a test",
+			expectedMatch: true,
+		},
+		{
+			name:          "Regex pattern no match",
+			list:          []string{`t.st`},
+			str:           "this is a sample",
+			expectedMatch: false,
+		},
+		{
+			name:          "Regex pattern match",
+			list:          []string{".txt"},
+			str:           "testfile.txt",
+			expectedMatch: true,
+		},
+		{
+			name:          "Regex pattern match",
+			list:          []string{"t[a-z]t"},
+			str:           "testfile.txt",
+			expectedMatch: true,
+		},
+		{
+			name:          "Regex pattern no match",
+			list:          []string{"t[d-z]t"},
+			str:           "abc",
+			expectedMatch: false,
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if tt.expectPanic {
-				defer func() {
-					if r := recover(); r == nil {
-						t.Errorf("Expected panic but did not get one")
-					}
-				}()
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			result := matchPatterns(test.list, test.str)
+			if result != test.expectedMatch {
+				t.Errorf("%v: matchPatterns(%v, %v) = %v; want %v", test.name, test.list, test.str, result, test.expectedMatch)
 			}
-			CallFunctionByName(tt.funcName, tt.funcs, tt.params...)
+		})
+	}
+}
+func mockCheckPass(file structs.File, config config.Config) []structs.Message {
+	return []structs.Message{{Content: "Check passed"}}
+}
+
+func mockCheckFail(file structs.File, config config.Config) []structs.Message {
+	return []structs.Message{{Content: "Check failed"}}
+}
+
+func TestApplyChecksFilteredByFile(t *testing.T) {
+	tests := []struct {
+		name     string
+		config   config.Config
+		checks   []func(file structs.File, config config.Config) []structs.Message
+		files    []structs.File
+		expected []structs.Message
+	}{
+		{
+			name: "Single file, single check pass",
+			config: config.Config{
+				Tests: map[string]config.Test{
+					"mockCheckPass": {},
+				},
+			},
+			checks:   []func(file structs.File, config config.Config) []structs.Message{mockCheckPass},
+			files:    []structs.File{{Name: "test.txt"}},
+			expected: []structs.Message{{Content: "Check passed"}},
+		},
+		{
+			name: "Single file, single check fail",
+			config: config.Config{
+				Tests: map[string]config.Test{
+					"mockCheckFail": {},
+				},
+			},
+			checks:   []func(file structs.File, config config.Config) []structs.Message{mockCheckFail},
+			files:    []structs.File{{Name: "test.txt"}},
+			expected: []structs.Message{{Content: "Check failed"}},
+		},
+		{
+			name: "Multiple files, multiple checks",
+			config: config.Config{
+				Tests: map[string]config.Test{
+					"mockCheckPass": {},
+					"mockCheckFail": {},
+				},
+			},
+			checks: []func(file structs.File, config config.Config) []structs.Message{mockCheckPass, mockCheckFail},
+			files:  []structs.File{{Name: "test1.txt"}, {Name: "test2.txt"}},
+			expected: []structs.Message{
+				{Content: "Check passed"},
+				{Content: "Check failed"},
+				{Content: "Check passed"},
+				{Content: "Check failed"},
+			},
+		},
+		{
+			name: "Check skipped due to whitelist",
+			config: config.Config{
+				Tests: map[string]config.Test{
+					"mockCheckPass": {
+						Whitelist: []string{"other.txt"},
+					},
+				},
+			},
+			checks:   []func(file structs.File, config config.Config) []structs.Message{mockCheckPass},
+			files:    []structs.File{{Name: "test.txt"}},
+			expected: []structs.Message{},
+		},
+		{
+			name: "Check skipped due to blacklist",
+			config: config.Config{
+				Tests: map[string]config.Test{
+					"mockCheckPass": {
+						Blacklist: []string{"test.txt"},
+					},
+				},
+			},
+			checks:   []func(file structs.File, config config.Config) []structs.Message{mockCheckPass},
+			files:    []structs.File{{Name: "test.txt"}},
+			expected: []structs.Message{},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			result := ApplyChecksFilteredByFile(test.config, test.checks, test.files)
+			if !reflect.DeepEqual(result, test.expected) {
+				t.Errorf("%v: ApplyChecksFilteredByFile() = %v; want %v", test.name, result, test.expected)
+			}
 		})
 	}
 }

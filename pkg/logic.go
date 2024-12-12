@@ -1,21 +1,22 @@
-package main
+package logic
 
-const generalConfigFilePath = "../config.toml.example"
-const collectorConfigFilePath = "../ckanCollectors.toml.example"
+import (
+	"fmt"
 
-func main() {
+	"github.com/eawag-rdm/pc/pkg/config"
+	"github.com/eawag-rdm/pc/pkg/structs"
+	"github.com/eawag-rdm/pc/pkg/utils"
+)
 
-	/* config, _ := config.LoadConfig(generalConfigFilePath)
-	collectorConfig, _ := config.LoadCKANConfig(collectorConfigFilePath)
-	files, err := collectors.CollectCkanFiles(collectorConfig)
-	checks, err := collectors.CollectChecks()
+func MainLogic(generalConfigFilePath string, fileCollector func(config.Config) ([]structs.File, error)) []structs.Message {
+
+	generalConfig := config.LoadConfig(generalConfigFilePath)
+	files, err := fileCollector(generalConfig)
 	if err != nil {
-		fmt.Println("Error collecting checks:", err)
-		return
+		fmt.Println("Error collecting files:", err)
+		return nil
 	}
-	messages := utils.ApplyChecksFiltered(config, checks, files)
 
-	for _, message := range messages {
-		fmt.Println(message)
-	} */
+	return utils.ApplyAllChecks(generalConfig, files)
+
 }
