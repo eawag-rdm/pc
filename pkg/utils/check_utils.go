@@ -12,7 +12,9 @@ import (
 )
 
 var BY_FILE = []func(file structs.File, config config.Config) []structs.Message{checks.HasOnlyASCII, checks.HasNoWhiteSpace, checks.IsFreeOfKeywords, checks.IsValidName}
-var ACROSS_FILES = []func(repository structs.Repository, config config.Config) []structs.Message{checks.HasReadme}
+var BY_REPOSITORY = []func(repository structs.Repository, config config.Config) []structs.Message{checks.HasReadme}
+
+var BY_FILE_ON_ARCHIVE = []func(file structs.File, config config.Config) []structs.Message{checks.HasOnlyASCII, checks.HasNoWhiteSpace, checks.IsValidName}
 
 func getFunctionName(i interface{}) string {
 	fullName := runtime.FuncForPC(reflect.ValueOf(i).Pointer()).Name()
@@ -62,10 +64,37 @@ func ApplyChecksFilteredByFile(config config.Config, checks []func(file structs.
 	return messages
 }
 
+func ApplyChecksFilteredByFileOnArchive(config config.Config, checks []func(file structs.File, config config.Config) []structs.Message, files []structs.File) []structs.Message {
+
+	var messages = []structs.Message{}
+	for _, file := range files {
+		fileList, err := ReadArchiveFileList(file)
+		if err != nil {
+			// handle the error appropriately, e.g., log it or return it
+			continue
+		}
+		for _, archivedFile := range fileList {
+			for _, check := range checks {
+				if skipFileCheck(config, check, archivedFile) {
+					continue
+				}
+				ret := check(archivedFile, config)
+				if ret != nil {
+					messages = append(messages, ret...)
+				}
+			}
+		}
+	}
+	return messages
+
+}
+
 func ApplyAllChecks(config config.Config, files []structs.File) []structs.Message {
 	var messages []structs.Message
 
 	messages = append(messages, ApplyChecksFilteredByFile(config, BY_FILE, files)...)
+	messages = append(messages, ApplyChecksFilteredByFileOnArchive(config, BY_FILE_ON_ARCHIVE, files)...)
+
 	return messages
 
 }
