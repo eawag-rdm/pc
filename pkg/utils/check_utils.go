@@ -64,6 +64,7 @@ func ApplyChecksFilteredByFile(config config.Config, checks []func(file structs.
 
 func ApplyAllChecks(config config.Config, files []structs.File) []structs.Message {
 	var messages []structs.Message
+
 	messages = append(messages, ApplyChecksFilteredByFile(config, BY_FILE, files)...)
 	return messages
 

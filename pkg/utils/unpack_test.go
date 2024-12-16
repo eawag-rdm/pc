@@ -1,146 +1,127 @@
 package utils
 
 import (
-	"archive/tar"
-	"archive/zip"
-	"compress/gzip"
-	"os"
+	"reflect"
 	"testing"
+
+	"github.com/eawag-rdm/pc/pkg/structs"
 )
 
-func TestReadTarGzFileList(t *testing.T) {
-	// Create a temporary tar.gz file for testing
-	tempFile, err := os.CreateTemp("", "test*.tar.gz")
-	if err != nil {
-		t.Fatalf("Failed to create temp file: %v", err)
+func TestReadZipFileList(t *testing.T) {
+	tests := []struct {
+		filepath string
+		expected []structs.File
+	}{
+		{
+			filepath: "../../testdata/test.zip",
+			expected: []structs.File{
+				{Path: "../../testdata/test.zip", Name: "test/", Size: 0, Suffix: ""},
+				{Path: "../../testdata/test.zip", Name: "test/file2", Size: 0, Suffix: ""},
+				{Path: "../../testdata/test.zip", Name: "test/file1.txt", Size: 6, Suffix: ".txt"},
+			},
+		},
 	}
-	defer os.Remove(tempFile.Name())
-
-	// Create a new tar.gz writer
-	gzipWriter := gzip.NewWriter(tempFile)
-	tarWriter := tar.NewWriter(gzipWriter)
-
-	// Add a file to the tar.gz archive
-	header := &tar.Header{
-		Name: "testfile.txt",
-		Mode: 0600,
-		Size: int64(len("This is a test file")),
-	}
-	if err := tarWriter.WriteHeader(header); err != nil {
-		t.Fatalf("Failed to write header to tar: %v", err)
-	}
-	if _, err := tarWriter.Write([]byte("This is a test file")); err != nil {
-		t.Fatalf("Failed to write file to tar: %v", err)
-	}
-	tarWriter.Close()
-	gzipWriter.Close()
-
-	// Test ReadTarGzFileList function
-	fileList, err := ReadTarGzFileList(tempFile.Name())
-	if err != nil {
-		t.Fatalf("ReadTarGzFileList returned an error: %v", err)
-	}
-
-	// Check if the file list contains the expected file
-	expectedFile := "testfile.txt"
-	found := false
-	for _, file := range fileList {
-		if file == expectedFile {
-			found = true
-			break
+	for _, test := range tests {
+		actual, err := ReadZipFileList(test.filepath)
+		if err != nil {
+			t.Errorf("Error: %v", err)
 		}
-	}
-	if !found {
-		t.Errorf("Expected file %s not found in file list", expectedFile)
+		if !reflect.DeepEqual(actual, test.expected) {
+			t.Errorf("Expected: %v, Actual: %v", test.expected, actual)
+		}
 	}
 }
 
 func TestReadTarFileList(t *testing.T) {
-	// Create a temporary tar file for testing
-	tempFile, err := os.CreateTemp("", "test*.tar")
-	if err != nil {
-		t.Fatalf("Failed to create temp file: %v", err)
+	tests := []struct {
+		filepath string
+		expected []structs.File
+	}{
+		{
+			filepath: "../../testdata/test.tar",
+			expected: []structs.File{
+				{Path: "../../testdata/test.tar", Name: "test/", Size: 0, Suffix: ""},
+				{Path: "../../testdata/test.tar", Name: "test/file2", Size: 0, Suffix: ""},
+				{Path: "../../testdata/test.tar", Name: "test/file1.txt", Size: 6, Suffix: ".txt"},
+			},
+		},
 	}
-	defer os.Remove(tempFile.Name())
-
-	// Create a new tar writer
-	tarWriter := tar.NewWriter(tempFile)
-
-	// Add a file to the tar archive
-	header := &tar.Header{
-		Name: "testfile.txt",
-		Mode: 0600,
-		Size: int64(len("This is a test file")),
-	}
-	if err := tarWriter.WriteHeader(header); err != nil {
-		t.Fatalf("Failed to write header to tar: %v", err)
-	}
-	if _, err := tarWriter.Write([]byte("This is a test file")); err != nil {
-		t.Fatalf("Failed to write file to tar: %v", err)
-	}
-	tarWriter.Close()
-
-	// Test ReadTarFileList function
-	fileList, err := ReadTarFileList(tempFile.Name())
-	if err != nil {
-		t.Fatalf("ReadTarFileList returned an error: %v", err)
-	}
-
-	// Check if the file list contains the expected file
-	expectedFile := "testfile.txt"
-	found := false
-	for _, file := range fileList {
-		if file == expectedFile {
-			found = true
-			break
+	for _, test := range tests {
+		actual, err := ReadTarFileList(test.filepath)
+		if err != nil {
+			t.Errorf("Error: %v", err)
 		}
-	}
-	if !found {
-		t.Errorf("Expected file %s not found in file list", expectedFile)
+		if !reflect.DeepEqual(actual, test.expected) {
+			t.Errorf("Expected: %v, Actual: %v", test.expected, actual)
+		}
 	}
 }
 
-func TestReadZipFileList(t *testing.T) {
-	// Create a temporary zip file for testing
-	tempFile, err := os.CreateTemp("", "test*.zip")
-	if err != nil {
-		t.Fatalf("Failed to create temp file: %v", err)
+func TestReadTarGzFileList(t *testing.T) {
+	tests := []struct {
+		filepath string
+		expected []structs.File
+	}{
+		{
+			filepath: "../../testdata/test.tar.gz",
+			expected: []structs.File{
+				{Path: "../../testdata/test.tar.gz", Name: "test/", Size: 0, Suffix: ""},
+				{Path: "../../testdata/test.tar.gz", Name: "test/file2", Size: 0, Suffix: ""},
+				{Path: "../../testdata/test.tar.gz", Name: "test/file1.txt", Size: 6, Suffix: ".txt"},
+			},
+		},
 	}
-	defer os.Remove(tempFile.Name())
-
-	// Create a new zip writer
-	zipWriter := zip.NewWriter(tempFile)
-
-	// Add a file to the zip archive
-	header := &zip.FileHeader{
-		Name:   "testfile.txt",
-		Method: zip.Store,
-	}
-	writer, err := zipWriter.CreateHeader(header)
-	if err != nil {
-		t.Fatalf("Failed to create header in zip: %v", err)
-	}
-	if _, err := writer.Write([]byte("This is a test file")); err != nil {
-		t.Fatalf("Failed to write file to zip: %v", err)
-	}
-	zipWriter.Close()
-
-	// Test ReadZipFileList function
-	fileList, err := ReadZipFileList(tempFile.Name())
-	if err != nil {
-		t.Fatalf("ReadZipFileList returned an error: %v", err)
-	}
-
-	// Check if the file list contains the expected file
-	expectedFile := "testfile.txt"
-	found := false
-	for _, file := range fileList {
-		if file == expectedFile {
-			found = true
-			break
+	for _, test := range tests {
+		actual, err := ReadTarGzFileList(test.filepath)
+		if err != nil {
+			t.Errorf("Error: %v", err)
+		}
+		if !reflect.DeepEqual(actual, test.expected) {
+			t.Errorf("Expected: %v, Actual: %v", test.expected, actual)
 		}
 	}
-	if !found {
-		t.Errorf("Expected file %s not found in file list", expectedFile)
+}
+func TestReadArchiveFileList(t *testing.T) {
+	tests := []struct {
+		file     structs.File
+		expected []structs.File
+	}{
+		{
+			file: structs.File{Path: "../../testdata/test.zip", Suffix: ".zip"},
+			expected: []structs.File{
+				{Path: "../../testdata/test.zip", Name: "test/", Size: 0, Suffix: ""},
+				{Path: "../../testdata/test.zip", Name: "test/file2", Size: 0, Suffix: ""},
+				{Path: "../../testdata/test.zip", Name: "test/file1.txt", Size: 6, Suffix: ".txt"},
+			},
+		},
+		{
+			file: structs.File{Path: "../../testdata/test.tar", Suffix: ".tar"},
+			expected: []structs.File{
+				{Path: "../../testdata/test.tar", Name: "test/", Size: 0, Suffix: ""},
+				{Path: "../../testdata/test.tar", Name: "test/file2", Size: 0, Suffix: ""},
+				{Path: "../../testdata/test.tar", Name: "test/file1.txt", Size: 6, Suffix: ".txt"},
+			},
+		},
+		{
+			file: structs.File{Path: "../../testdata/test.tar.gz", Suffix: ".tar.gz"},
+			expected: []structs.File{
+				{Path: "../../testdata/test.tar.gz", Name: "test/", Size: 0, Suffix: ""},
+				{Path: "../../testdata/test.tar.gz", Name: "test/file2", Size: 0, Suffix: ""},
+				{Path: "../../testdata/test.tar.gz", Name: "test/file1.txt", Size: 6, Suffix: ".txt"},
+			},
+		},
+		{
+			file:     structs.File{Path: "../../testdata/config.toml.test"},
+			expected: []structs.File{},
+		},
+	}
+	for _, test := range tests {
+		actual, err := ReadArchiveFileList(test.file)
+		if err != nil {
+			t.Errorf("Error: %v", err)
+		}
+		if !reflect.DeepEqual(actual, test.expected) {
+			t.Errorf("Expected: %v, Actual: %v", test.expected, actual)
+		}
 	}
 }

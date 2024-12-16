@@ -147,3 +147,5 @@ func IsValidNameCore(file structs.File, invalidFileNames []string) []structs.Mes
 	}
 	return nil
 }
+
+ 

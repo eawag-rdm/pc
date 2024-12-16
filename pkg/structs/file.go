@@ -32,7 +32,7 @@ func ToFile(fpath string, name string, size int64, suffix string) File {
 	if name == "" {
 		name = path.Base(fpath)
 	}
-	if size == 0 {
+	if size == -1 {
 		size = GetFileSize(fpath)
 	}
 	if suffix == "" {
