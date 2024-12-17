@@ -1,8 +1,11 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestLoadConfig(t *testing.T) {
@@ -16,7 +19,7 @@ func TestLoadConfig(t *testing.T) {
 		{
 			name: "valid config with blacklist",
 			configContent: `
-				[tests.test1]
+				[test.test1]
 				blacklist = ["item1", "item2"]
 				keywordArguments = [{ "arg1" = "value1" }]
 
@@ -30,7 +33,7 @@ func TestLoadConfig(t *testing.T) {
 		{
 			name: "valid config with whitelist",
 			configContent: `
-				[tests.test1]
+				[test.test1]
 				whitelist = ["item1", "item2"]
 				keywordArguments = [{ "arg1" = "value1" }]
 
@@ -44,7 +47,7 @@ func TestLoadConfig(t *testing.T) {
 		{
 			name: "invalid config with both blacklist and whitelist",
 			configContent: `
-				[tests.test1]
+				[test.test1]
 				blacklist = ["item1"]
 				whitelist = ["item2"]
 				keywordArguments = [{ "arg1" = "value1" }]
@@ -59,7 +62,7 @@ func TestLoadConfig(t *testing.T) {
 		{
 			name: "invalid config with neither blacklist nor whitelist",
 			configContent: `
-				[tests.test1]
+				[test.test1]
 				keywordArguments = [{ "arg1" = "value1" }]
 
 				[collector.collector1]
@@ -92,14 +95,14 @@ func TestLoadConfig(t *testing.T) {
 				}()
 			}
 
-			config := LoadConfig(file.Name())
+			cfg := LoadConfig(file.Name())
 
 			if !tt.expectPanic {
-				if len(config.Tests) != tt.expectedTests {
-					t.Errorf("expected %d tests to be loaded but got %d", tt.expectedTests, len(config.Tests))
+				if len(cfg.Tests) != tt.expectedTests {
+					t.Errorf("expected %d tests to be loaded but got %d", tt.expectedTests, len(cfg.Tests))
 				}
-				if len(config.Collectors) != tt.expectedCollectors {
-					t.Errorf("expected %d collectors to be loaded but got %d", tt.expectedCollectors, len(config.Collectors))
+				if len(cfg.Collectors) != tt.expectedCollectors {
+					t.Errorf("expected %d collectors to be loaded but got %d", tt.expectedCollectors, len(cfg.Collectors))
 				}
 			}
 		})
@@ -118,7 +121,7 @@ func TestAccessLoadedConfig(t *testing.T) {
 		{
 			name: "valid config with blacklist",
 			configContent: `
-				[tests.test1]
+				[test.test1]
 				blacklist = ["item1", "item2"]
 				keywordArguments = [{ "arg1" = "value1" }]
 
@@ -133,7 +136,7 @@ func TestAccessLoadedConfig(t *testing.T) {
 		{
 			name: "valid config with whitelist",
 			configContent: `
-				[tests.test1]
+				[test.test1]
 				whitelist = ["item1", "item2"]
 				keywordArguments = [{ "arg1" = "value1" }]
 
@@ -148,7 +151,7 @@ func TestAccessLoadedConfig(t *testing.T) {
 		{
 			name: "valid config with neither blacklist nor whitelist",
 			configContent: `
-				[tests.test1]
+				[test.test1]
 				keywordArguments = [{ "arg1" = "value1" }]
 
 				[collector.collector1]
@@ -174,15 +177,15 @@ func TestAccessLoadedConfig(t *testing.T) {
 			}
 			file.Close()
 
-			config := LoadConfig(file.Name())
+			cfg := LoadConfig(file.Name())
 
-			test, ok := config.Tests["test1"]
+			test, ok := cfg.Tests["test1"]
 			if !ok {
 				t.Fatalf("test1 not found in loaded config")
 			}
 
-			if tt.expectAttrValue != config.Collectors["collector1"].Attrs["key1"] {
-				t.Errorf("expected collector attribute value %s but got %s", tt.expectAttrValue, config.Collectors["collector1"].Attrs["key1"])
+			if tt.expectAttrValue != cfg.Collectors["collector1"].Attrs["key1"] {
+				t.Errorf("expected collector attribute value %s but got %s", tt.expectAttrValue, cfg.Collectors["collector1"].Attrs["key1"])
 			}
 
 			if len(test.Blacklist) != len(tt.expectedBlackListContent) {
@@ -218,4 +221,14 @@ func TestAccessLoadedConfig(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestConfigFile(t *testing.T) {
+	// Read the config file in testdata
+	cfg := LoadConfig("../../testdata/config.toml.test")
+
+	fmt.Println(cfg)
+	// Check if the config file is loaded correctly
+	assert.Equal(t, 3, len(cfg.Tests))
+	assert.Equal(t, 1, len(cfg.Collectors))
 }

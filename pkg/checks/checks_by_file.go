@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"os"
 	"regexp"
+	"strings"
 	"unicode"
 
 	"github.com/eawag-rdm/pc/pkg/config"
@@ -71,7 +72,7 @@ func IsFreeOfKeywords(file structs.File, config config.Config) []structs.Message
 
 	for _, argumentSet := range config.Tests["IsFreeOfKeywords"].KeywordArguments {
 		// Process argumentSet here
-		var keywords = []string{argumentSet["keywords"]}
+		var keywords = argumentSet["keywords"]
 		var info = argumentSet["info"]
 
 		ret := IsFreeOfKeywordsCore(file, keywords, info)
@@ -82,7 +83,7 @@ func IsFreeOfKeywords(file structs.File, config config.Config) []structs.Message
 	return messages
 }
 
-func IsFreeOfKeywordsCore(file structs.File, keywords []string, info string) []structs.Message {
+func IsFreeOfKeywordsCore(file structs.File, keywords string, info string) []structs.Message {
 	isBinary, err := isBinaryFile(file.Path)
 	if err != nil {
 		return nil
@@ -94,14 +95,7 @@ func IsFreeOfKeywordsCore(file structs.File, keywords []string, info string) []s
 			panic(err)
 		}
 
-		// Compile all keywords into a single regex pattern
-		pattern := "(" + regexp.QuoteMeta(keywords[0])
-		for _, keyword := range keywords[1:] {
-			pattern += "|" + regexp.QuoteMeta(keyword)
-		}
-		pattern += ")"
-
-		regexp, err := regexp.Compile(pattern)
+		regexp, err := regexp.Compile(keywords)
 		if err != nil {
 			panic(err)
 		}
@@ -132,20 +126,18 @@ func IsValidName(file structs.File, config config.Config) []structs.Message {
 	var messages []structs.Message
 
 	for _, argumentSet := range config.Tests["IsValidName"].KeywordArguments {
-		invalidFileNames := []string{argumentSet["disallowed_names"]}
+		invalidFileNames := argumentSet["disallowed_names"]
 		messages = append(messages, IsValidNameCore(file, invalidFileNames)...)
 	}
 	return messages
 }
 
-func IsValidNameCore(file structs.File, invalidFileNames []string) []structs.Message {
-
-	for _, invalidFileName := range invalidFileNames {
+func IsValidNameCore(file structs.File, invalidFileNames string) []structs.Message {
+	splitInvalidFileNames := strings.Fields(invalidFileNames)
+	for _, invalidFileName := range splitInvalidFileNames {
 		if file.Name == invalidFileName {
 			return []structs.Message{{Content: "File has an invalid name. " + invalidFileName, Source: file}}
 		}
 	}
 	return nil
 }
-
- 

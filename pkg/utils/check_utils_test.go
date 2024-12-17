@@ -117,6 +117,18 @@ func TestSkipFileCheck(t *testing.T) {
 			file:         structs.File{Name: "test.txt"},
 			expectedSkip: true,
 		},
+		{
+			name: "File matches blacklist regex",
+			config: config.Config{
+				Tests: map[string]config.Test{
+					"mockCheck": {
+						Blacklist: []string{`.+\.txt`},
+					},
+				},
+			},
+			file:         structs.File{Name: "test .txt"},
+			expectedSkip: true,
+		},
 	}
 
 	for _, test := range tests {

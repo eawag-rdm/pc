@@ -2,6 +2,9 @@
 # compiled binary
 pc
 
+# config
+pc.toml
+
 # Binaries for programs and plugins
 *.exe
 *.exe~

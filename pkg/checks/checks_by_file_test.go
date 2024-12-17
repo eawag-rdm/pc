@@ -138,7 +138,7 @@ func TestIsFreeOfKeywords(t *testing.T) {
 	tests := []struct {
 		name     string
 		file     structs.File
-		keywords []string
+		keywords string
 		info     string
 		content  []byte
 		expected []structs.Message
@@ -146,7 +146,7 @@ func TestIsFreeOfKeywords(t *testing.T) {
 		{
 			name:     "No keywords",
 			file:     structs.File{Path: tempFile([]byte("This is a test file without keywords."))},
-			keywords: []string{"keyword1", "keyword2"},
+			keywords: "keyword1|keyword2",
 			info:     "Keywords found:",
 			content:  []byte("This is a test file without keywords."),
 			expected: nil,
@@ -154,7 +154,7 @@ func TestIsFreeOfKeywords(t *testing.T) {
 		{
 			name:     "Single keyword",
 			file:     structs.File{Path: tempFile([]byte("This file contains keyword1."))},
-			keywords: []string{"keyword1", "keyword2"},
+			keywords: "keyword1|keyword2",
 			info:     "Keywords found:",
 			content:  []byte("This file contains keyword1."),
 			expected: []structs.Message{{Content: "Keywords found: keyword1", Source: structs.File{Path: tempFile([]byte("This file contains keyword1."))}}},
@@ -162,7 +162,7 @@ func TestIsFreeOfKeywords(t *testing.T) {
 		{
 			name:     "Multiple keywords",
 			file:     structs.File{Path: tempFile([]byte("This file contains keyword1 and keyword2."))},
-			keywords: []string{"keyword1", "keyword2"},
+			keywords: "keyword1|keyword2",
 			info:     "Keywords found:",
 			content:  []byte("This file contains keyword1 and keyword2."),
 			expected: []structs.Message{{Content: "Keywords found: keyword1, keyword2", Source: structs.File{Path: tempFile([]byte("This file contains keyword1 and keyword2."))}}},
@@ -170,7 +170,7 @@ func TestIsFreeOfKeywords(t *testing.T) {
 		{
 			name:     "Binary file",
 			file:     structs.File{Path: tempFile([]byte{0x00, 0x01, 0x02})},
-			keywords: []string{"keyword1", "keyword2"},
+			keywords: "keyword1|keyword2",
 			info:     "Keywords found:",
 			content:  []byte{0x00, 0x01, 0x02},
 			expected: nil,
@@ -196,19 +196,19 @@ func TestIsValidName(t *testing.T) {
 	tests := []struct {
 		name             string
 		file             structs.File
-		invalidFileNames []string
+		invalidFileNames string
 		expected         []structs.Message
 	}{
 		{
 			name:             "Valid file name",
 			file:             structs.File{Name: "validfile.txt"},
-			invalidFileNames: []string{"invalidfile.txt", "badfile.txt"},
+			invalidFileNames: "invalidfile.txt badfile.txt",
 			expected:         nil,
 		},
 		{
 			name:             "Invalid file name",
 			file:             structs.File{Name: "invalidfile.txt"},
-			invalidFileNames: []string{"invalidfile.txt", "badfile.txt"},
+			invalidFileNames: "invalidfile.txt badfile.txt",
 			expected: []structs.Message{
 				{Content: "File has an invalid name. invalidfile.txt", Source: structs.File{Name: "invalidfile.txt"}},
 			},
@@ -216,7 +216,7 @@ func TestIsValidName(t *testing.T) {
 		{
 			name:             "Another invalid file name",
 			file:             structs.File{Name: "badfile.txt"},
-			invalidFileNames: []string{"invalidfile.txt", "badfile.txt"},
+			invalidFileNames: "invalidfile.txt badfile.txt",
 			expected: []structs.Message{
 				{Content: "File has an invalid name. badfile.txt", Source: structs.File{Name: "badfile.txt"}},
 			},
@@ -224,13 +224,13 @@ func TestIsValidName(t *testing.T) {
 		{
 			name:             "Empty file name",
 			file:             structs.File{Name: ""},
-			invalidFileNames: []string{"invalidfile.txt", "badfile.txt"},
+			invalidFileNames: "invalidfile.txt badfile.txt",
 			expected:         nil,
 		},
 		{
 			name:             "No invalid file names",
 			file:             structs.File{Name: "somefile.txt"},
-			invalidFileNames: []string{},
+			invalidFileNames: "",
 			expected:         nil,
 		},
 	}

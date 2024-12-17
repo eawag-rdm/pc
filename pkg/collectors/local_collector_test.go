@@ -32,7 +32,7 @@ func TestLocalCollector(t *testing.T) {
 	}
 
 	// Call the LocalCollector function
-	collectedFiles, err := LocalCollector(tempDir)
+	collectedFiles, err := LocalCollector(tempDir, false)
 	if err != nil {
 		t.Fatalf("LocalCollector returned an error: %v", err)
 	}

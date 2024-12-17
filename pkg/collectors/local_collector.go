@@ -7,7 +7,7 @@ import (
 )
 
 // read all files from a local directory
-func LocalCollector(path string) ([]structs.File, error) {
+func LocalCollector(path string, includeFolders bool) ([]structs.File, error) {
 	foundFiles := []structs.File{}
 	files, err := os.ReadDir(path)
 	if err != nil {
@@ -21,6 +21,10 @@ func LocalCollector(path string) ([]structs.File, error) {
 				return nil, err
 			}
 			foundFiles = append(foundFiles, structs.ToFile(path+"/"+file.Name(), file.Name(), info.Size(), ""))
+		} else {
+			if includeFolders {
+				foundFiles = append(foundFiles, structs.ToFile(path+"/"+file.Name(), file.Name(), -1, ""))
+			}
 		}
 	}
 

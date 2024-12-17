@@ -8,15 +8,15 @@ import (
 
 // Config represents the structure of the configuration file
 type Config struct {
-	Tests      map[string]Test            `toml:"tests"`
+	Tests      map[string]Test            `toml:"test"`
 	Collectors map[string]CollectorConfig `toml:"collector"`
 }
 
 // Test represents the structure of each test in the configuration
 type Test struct {
-	Blacklist []string            `toml:"blacklist"`
-	Whitelist []string            `toml:"whitelist"`
-	KeywordArguments  []map[string]string `toml:"keywordArguments"`
+	Blacklist        []string            `toml:"blacklist"`
+	Whitelist        []string            `toml:"whitelist"`
+	KeywordArguments []map[string]string `toml:"keywordArguments"`
 }
 
 // CollectCKANFiles config struct
