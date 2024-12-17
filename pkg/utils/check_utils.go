@@ -79,6 +79,7 @@ func ApplyChecksFilteredByFileOnArchive(config config.Config, checks []func(file
 					continue
 				}
 				ret := check(archivedFile, config)
+
 				if ret != nil {
 					messages = append(messages, ret...)
 				}

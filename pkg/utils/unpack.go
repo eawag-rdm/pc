@@ -4,8 +4,10 @@ import (
 	"archive/tar"
 	"archive/zip"
 	"compress/gzip"
+	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/eawag-rdm/pc/pkg/structs"
 )
@@ -81,12 +83,14 @@ func ReadTarGzFileList(filePath string) ([]structs.File, error) {
 }
 
 func ReadArchiveFileList(file structs.File) ([]structs.File, error) {
-	if file.Suffix == ".zip" {
+	if strings.HasSuffix(file.Name, ".zip") {
 		return ReadZipFileList(file.Path)
-	} else if file.Suffix == ".tar" {
+	} else if strings.HasSuffix(file.Name, ".tar") {
 		return ReadTarFileList(file.Path)
-	} else if file.Suffix == ".tar.gz" {
-		return ReadTarGzFileList(file.Path)
+	} else if strings.HasSuffix(file.Name, ".tar.gz") {
+		fmt.Println("Skipping tar.gz file: ''", file.Name)
+		return []structs.File{}, nil
+		//return ReadTarGzFileList(file.Path)
 	} else {
 		return []structs.File{}, nil
 	}

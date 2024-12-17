@@ -2,12 +2,14 @@ package checks
 
 import (
 	"bufio"
+	"fmt"
 	"os"
 	"regexp"
 	"strings"
 	"unicode"
 
 	"github.com/eawag-rdm/pc/pkg/config"
+	"github.com/eawag-rdm/pc/pkg/readers"
 	"github.com/eawag-rdm/pc/pkg/structs"
 )
 
@@ -48,7 +50,7 @@ func isBinaryFile(filePath string) (bool, error) {
 	defer file.Close()
 
 	// Read a small sample of the file
-	const sampleSize = 512
+	const sampleSize = 2048
 	reader := bufio.NewReader(file)
 	buffer := make([]byte, sampleSize)
 
@@ -95,31 +97,60 @@ func IsFreeOfKeywordsCore(file structs.File, keywords string, info string) []str
 			panic(err)
 		}
 
-		regexp, err := regexp.Compile(keywords)
+		foundKeywordsStr := matchPatterns(keywords, body)
+		if foundKeywordsStr != "" {
+			return []structs.Message{{Content: info + " '" + foundKeywordsStr + "'", Source: file}}
+		}
+	} else {
+		var messages []structs.Message
+		content := tryReadXSLX(file)
+		for idx, entry := range content {
+			foundKeywordsStr := matchPatterns(keywords, entry)
+			if foundKeywordsStr != "" {
+				messages = append(messages, structs.Message{Content: info + " '" + foundKeywordsStr + "' in sheet " + fmt.Sprintf("%d", idx), Source: file})
+			}
+		}
+		return messages
+	}
+	return nil
+}
+
+func matchPatterns(patterns string, body []byte) string {
+	regexp, err := regexp.Compile(patterns)
+	if err != nil {
+		panic(err)
+	}
+
+	// Check if any of the keywords are present in the file
+	foundKeywords := regexp.FindAll(body, -1)
+	if len(foundKeywords) > 0 {
+		keywordSet := make(map[string]struct{})
+		var foundKeywordsStr string
+		for _, keyword := range foundKeywords {
+			keywordStr := string(keyword)
+			if _, exists := keywordSet[keywordStr]; !exists {
+				if foundKeywordsStr != "" {
+					foundKeywordsStr += "', '"
+				}
+				foundKeywordsStr += keywordStr
+				keywordSet[keywordStr] = struct{}{}
+			}
+		}
+
+		return foundKeywordsStr
+	}
+	return ""
+}
+
+func tryReadXSLX(file structs.File) [][]byte {
+	if strings.HasSuffix(file.Path, ".xlsx") {
+		content, err := readers.ReadXLSXFile(file.Path)
 		if err != nil {
 			panic(err)
 		}
-
-		// Check if any of the keywords are present in the file
-		foundKeywords := regexp.FindAll(body, -1)
-		if len(foundKeywords) > 0 {
-			uniqueKeywords := make(map[string]struct{})
-			for _, keyword := range foundKeywords {
-				uniqueKeywords[string(keyword)] = struct{}{}
-			}
-
-			var foundKeywordsStr string
-			for keyword := range uniqueKeywords {
-				if foundKeywordsStr != "" {
-					foundKeywordsStr += ", "
-				}
-				foundKeywordsStr += keyword
-			}
-
-			return []structs.Message{{Content: info + " " + foundKeywordsStr, Source: file}}
-		}
+		return content
 	}
-	return nil
+	return [][]byte{}
 }
 
 func IsValidName(file structs.File, config config.Config) []structs.Message {

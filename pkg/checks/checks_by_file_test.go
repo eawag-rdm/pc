@@ -157,7 +157,7 @@ func TestIsFreeOfKeywords(t *testing.T) {
 			keywords: "keyword1|keyword2",
 			info:     "Keywords found:",
 			content:  []byte("This file contains keyword1."),
-			expected: []structs.Message{{Content: "Keywords found: keyword1", Source: structs.File{Path: tempFile([]byte("This file contains keyword1."))}}},
+			expected: []structs.Message{{Content: "Keywords found: 'keyword1'", Source: structs.File{Path: tempFile([]byte("This file contains keyword1."))}}},
 		},
 		{
 			name:     "Multiple keywords",
@@ -165,7 +165,7 @@ func TestIsFreeOfKeywords(t *testing.T) {
 			keywords: "keyword1|keyword2",
 			info:     "Keywords found:",
 			content:  []byte("This file contains keyword1 and keyword2."),
-			expected: []structs.Message{{Content: "Keywords found: keyword1, keyword2", Source: structs.File{Path: tempFile([]byte("This file contains keyword1 and keyword2."))}}},
+			expected: []structs.Message{{Content: "Keywords found: 'keyword1', 'keyword2'", Source: structs.File{Path: tempFile([]byte("This file contains keyword1 and keyword2."))}}},
 		},
 		{
 			name:     "Binary file",

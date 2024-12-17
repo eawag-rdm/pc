@@ -5,6 +5,7 @@ go 1.23.3
 require (
 	github.com/pelletier/go-toml v1.9.5
 	github.com/stretchr/testify v1.10.0
+	github.com/thedatashed/xlsxreader v1.2.8
 )
 
 require (
