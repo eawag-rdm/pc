@@ -1,7 +1,6 @@
 package config
 
 import (
-	"fmt"
 	"os"
 	"testing"
 
@@ -227,7 +226,6 @@ func TestConfigFile(t *testing.T) {
 	// Read the config file in testdata
 	cfg := LoadConfig("../../testdata/config.toml.test")
 
-	fmt.Println(cfg)
 	// Check if the config file is loaded correctly
 	assert.Equal(t, 3, len(cfg.Tests))
 	assert.Equal(t, 1, len(cfg.Collectors))

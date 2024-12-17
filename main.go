@@ -43,12 +43,10 @@ func main() {
 		fmt.Printf("Error collecting files: %v\n", err)
 		return
 	}
-	fmt.Printf("Collected %d files\n", len(files))
+
 	generalConfig := config.LoadConfig(*cfg)
 
-	fmt.Println(generalConfig)
 	messages := utils.ApplyAllChecks(generalConfig, files)
-	fmt.Println(messages)
 	for _, message := range messages {
 		fmt.Println(message)
 	}

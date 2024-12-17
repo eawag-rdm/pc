@@ -17,13 +17,11 @@
 # Checking for white spaces in folder and file names.
 blacklist = []
 whitelist = []
-keywordArguments = []
 
 [test.HasNoWhiteSpace]
 # Checking for Non-ASCII characters in folder and file names.
 blacklist = []
 whitelist = []
-keywordArguments = []
 
 [test.IsFreeOfKeywords]
 # Checking file contents
@@ -63,4 +61,4 @@ keywordArguments = [
 ]
 
 [collector.CKAN]
-attrs = {"ckan_url" = "http://example.com", "package_id" = "12345"}
+attrs = {ckan_url = "http://example.com", package_id = "12345"}
