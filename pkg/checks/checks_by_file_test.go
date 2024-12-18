@@ -196,19 +196,19 @@ func TestIsValidName(t *testing.T) {
 	tests := []struct {
 		name             string
 		file             structs.File
-		invalidFileNames string
+		invalidFileNames []string
 		expected         []structs.Message
 	}{
 		{
 			name:             "Valid file name",
 			file:             structs.File{Name: "validfile.txt"},
-			invalidFileNames: "invalidfile.txt badfile.txt",
+			invalidFileNames: []string{"invalidfile.txt", "badfile.txt"},
 			expected:         nil,
 		},
 		{
 			name:             "Invalid file name",
 			file:             structs.File{Name: "invalidfile.txt"},
-			invalidFileNames: "invalidfile.txt badfile.txt",
+			invalidFileNames: []string{"invalidfile.txt", "badfile.txt"},
 			expected: []structs.Message{
 				{Content: "File has an invalid name. invalidfile.txt", Source: structs.File{Name: "invalidfile.txt"}},
 			},
@@ -216,7 +216,7 @@ func TestIsValidName(t *testing.T) {
 		{
 			name:             "Another invalid file name",
 			file:             structs.File{Name: "badfile.txt"},
-			invalidFileNames: "invalidfile.txt badfile.txt",
+			invalidFileNames: []string{"invalidfile.txt", "badfile.txt"},
 			expected: []structs.Message{
 				{Content: "File has an invalid name. badfile.txt", Source: structs.File{Name: "badfile.txt"}},
 			},
@@ -224,13 +224,13 @@ func TestIsValidName(t *testing.T) {
 		{
 			name:             "Empty file name",
 			file:             structs.File{Name: ""},
-			invalidFileNames: "invalidfile.txt badfile.txt",
+			invalidFileNames: []string{"invalidfile.txt", "badfile.txt"},
 			expected:         nil,
 		},
 		{
 			name:             "No invalid file names",
 			file:             structs.File{Name: "somefile.txt"},
-			invalidFileNames: "",
+			invalidFileNames: []string{},
 			expected:         nil,
 		},
 	}

@@ -3,25 +3,104 @@ package config
 import (
 	"fmt"
 
-	"github.com/pelletier/go-toml"
+	"github.com/BurntSushi/toml"
 )
 
-// Config represents the structure of the configuration file
-type Config struct {
-	Tests      map[string]Test            `toml:"test"`
-	Collectors map[string]CollectorConfig `toml:"collector"`
+// Structures for final parsed configuration
+type TestConfig struct {
+	Blacklist        []string
+	Whitelist        []string
+	KeywordArguments []map[string]interface{}
 }
 
-// Test represents the structure of each test in the configuration
-type Test struct {
-	Blacklist        []string            `toml:"blacklist"`
-	Whitelist        []string            `toml:"whitelist"`
-	KeywordArguments []map[string]string `toml:"keywordArguments"`
-}
-
-// CollectCKANFiles config struct
 type CollectorConfig struct {
-	Attrs map[string]string `toml:"attrs"`
+	Attrs map[string]interface{}
+}
+
+type Config struct {
+	Tests      map[string]*TestConfig
+	Collectors map[string]*CollectorConfig
+}
+
+// ParseConfigNew parses the TOML file into a ConfigNew structure
+func ParseConfig(filename string) (*Config, error) {
+	var raw map[string]interface{}
+	if _, err := toml.DecodeFile(filename, &raw); err != nil {
+		return nil, err
+	}
+
+	c := &Config{
+		Tests:      map[string]*TestConfig{},
+		Collectors: map[string]*CollectorConfig{},
+	}
+
+	parseStringSlice := func(data []interface{}) []string {
+		var result []string
+		for _, item := range data {
+			if s, ok := item.(string); ok {
+				result = append(result, s)
+			}
+		}
+		return result
+	}
+
+	parseKeywordArguments := func(data []interface{}) []map[string]interface{} {
+		var result []map[string]interface{}
+		for _, kwItem := range data {
+			if kwMap, ok := kwItem.(map[string]interface{}); ok {
+				kwSet := make(map[string]interface{})
+				for k, v := range kwMap {
+					switch val := v.(type) {
+					case string:
+						kwSet[k] = val
+					case []interface{}:
+						kwSet[k] = parseStringSlice(val)
+					}
+				}
+				result = append(result, kwSet)
+			}
+		}
+		return result
+	}
+
+	if testData, ok := raw["test"].(map[string]interface{}); ok {
+		for name, section := range testData {
+			tc := &TestConfig{}
+			if sectionMap, ok := section.(map[string]interface{}); ok {
+				if bl, ok := sectionMap["blacklist"].([]interface{}); ok {
+					tc.Blacklist = parseStringSlice(bl)
+				}
+				if wl, ok := sectionMap["whitelist"].([]interface{}); ok {
+					tc.Whitelist = parseStringSlice(wl)
+				}
+				if kwArgs, ok := sectionMap["keywordArguments"].([]interface{}); ok {
+					tc.KeywordArguments = parseKeywordArguments(kwArgs)
+				}
+			}
+			c.Tests[name] = tc
+		}
+	}
+
+	if collectorData, ok := raw["collector"].(map[string]interface{}); ok {
+		for name, section := range collectorData {
+			cc := &CollectorConfig{Attrs: make(map[string]interface{})}
+			if sectionMap, ok := section.(map[string]interface{}); ok {
+				if attrs, ok := sectionMap["attrs"].(map[string]interface{}); ok {
+					for k, v := range attrs {
+						switch val := v.(type) {
+						case string:
+							cc.Attrs[k] = val
+						case []interface{}:
+							cc.Attrs[k] = parseStringSlice(val)
+						}
+					}
+				}
+			}
+			c.Collectors[name] = cc
+		}
+	}
+
+	return c, nil
 }
 
 // assesLists checks that there is no overlap between blacklist and whitelist
@@ -36,14 +115,9 @@ func assesLists(blacklist []string, whitelist []string) error {
 }
 
 // LoadConfig loads the configuration from a TOML file and performs the necessary checks
-func LoadConfig(file string) Config {
-	var config Config
-	configTree, err := toml.LoadFile(file)
-	if err != nil {
-		panic(err)
-	}
-
-	err = configTree.Unmarshal(&config)
+func LoadConfig(file string) *Config {
+	var config *Config
+	config, err := ParseConfig(file)
 	if err != nil {
 		panic(err)
 	}

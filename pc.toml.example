@@ -28,8 +28,8 @@ whitelist = []
 blacklist = []
 whitelist = []
 keywordArguments = [
-    { keywords = "user|passw|key", info = "Possible credentials in file" },
-    { keywords = "Q:", info = "Possible internal information in file" }
+    { keywords = ["user","passw","key"], info = "Possible credentials in file" },
+    { keywords = ["Q:"], info = "Possible internal information in file" }
 ]
 
 [test.IsValidName]
@@ -37,28 +37,16 @@ keywordArguments = [
 blacklist = []
 whitelist = []
 keywordArguments = [
-    { 
-        disallowed_names = """ \
-            .Rhistory \
-            .RData \
-            .Rapp.history \
-            .Ruserdata \
-            .Rbuildignore \
-            __pycache__ \
-            .vscode \
-            .ipynb_checkpoints \
-            venv \
-            .idea \
-            .egg-info \
-            .pytest_cache \
-            .pyc \
-            .tox \
-            .python_version \
-            .coverage \
-            .benchmark \
-        """ 
-    }
+    { disallowed_names = [ 
+        ".Rhistory", ".RData",
+        ".Rapp.history", ".Ruserdata", 
+        ".Rbuildignore", "__pycache__", ".vscode", 
+        ".ipynb_checkpoints", "venv", ".idea", ".egg-info", 
+        ".pytest_cache", ".pyc", ".tox", ".python_version", 
+        ".coverage", ".benchmark"
+    ]}
 ]
+
 
 [collector.CKAN]
 attrs = {ckan_url = "http://example.com", package_id = "12345"}

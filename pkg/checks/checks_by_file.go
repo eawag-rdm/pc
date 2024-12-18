@@ -74,8 +74,8 @@ func IsFreeOfKeywords(file structs.File, config config.Config) []structs.Message
 
 	for _, argumentSet := range config.Tests["IsFreeOfKeywords"].KeywordArguments {
 		// Process argumentSet here
-		var keywords = argumentSet["keywords"]
-		var info = argumentSet["info"]
+		var keywords = strings.Join(argumentSet["keywords"].([]string), ",")
+		var info = argumentSet["info"].(string)
 
 		ret := IsFreeOfKeywordsCore(file, keywords, info)
 		if ret != nil {
@@ -157,15 +157,14 @@ func IsValidName(file structs.File, config config.Config) []structs.Message {
 	var messages []structs.Message
 
 	for _, argumentSet := range config.Tests["IsValidName"].KeywordArguments {
-		invalidFileNames := argumentSet["disallowed_names"]
+		invalidFileNames := argumentSet["disallowed_names"].([]string)
 		messages = append(messages, IsValidNameCore(file, invalidFileNames)...)
 	}
 	return messages
 }
 
-func IsValidNameCore(file structs.File, invalidFileNames string) []structs.Message {
-	splitInvalidFileNames := strings.Fields(invalidFileNames)
-	for _, invalidFileName := range splitInvalidFileNames {
+func IsValidNameCore(file structs.File, invalidFileNames []string) []structs.Message {
+	for _, invalidFileName := range invalidFileNames {
 		if file.Name == invalidFileName {
 			return []structs.Message{{Content: "File has an invalid name. " + invalidFileName, Source: file}}
 		}

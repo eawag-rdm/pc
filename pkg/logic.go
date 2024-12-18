@@ -11,12 +11,12 @@ import (
 func MainLogic(generalConfigFilePath string, fileCollector func(config.Config) ([]structs.File, error)) []structs.Message {
 
 	generalConfig := config.LoadConfig(generalConfigFilePath)
-	files, err := fileCollector(generalConfig)
+	files, err := fileCollector(*generalConfig)
 	if err != nil {
 		fmt.Println("Error collecting files:", err)
 		return nil
 	}
 
-	return utils.ApplyAllChecks(generalConfig, files)
+	return utils.ApplyAllChecks(*generalConfig, files)
 
 }

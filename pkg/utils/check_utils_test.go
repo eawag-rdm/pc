@@ -38,7 +38,7 @@ func TestSkipFileCheck(t *testing.T) {
 		{
 			name: "No whitelist or blacklist",
 			config: config.Config{
-				Tests: map[string]config.Test{
+				Tests: map[string]*config.TestConfig{
 					"mockCheck": {},
 				},
 			},
@@ -48,7 +48,7 @@ func TestSkipFileCheck(t *testing.T) {
 		{
 			name: "File in whitelist",
 			config: config.Config{
-				Tests: map[string]config.Test{
+				Tests: map[string]*config.TestConfig{
 					"mockCheck": {
 						Whitelist: []string{"test.txt"},
 					},
@@ -60,7 +60,7 @@ func TestSkipFileCheck(t *testing.T) {
 		{
 			name: "File in blacklist",
 			config: config.Config{
-				Tests: map[string]config.Test{
+				Tests: map[string]*config.TestConfig{
 					"mockCheck": {
 						Blacklist: []string{"txt"},
 					},
@@ -72,7 +72,7 @@ func TestSkipFileCheck(t *testing.T) {
 		{
 			name: "File not in whitelist",
 			config: config.Config{
-				Tests: map[string]config.Test{
+				Tests: map[string]*config.TestConfig{
 					"mockCheck": {
 						Whitelist: []string{"other.txt"},
 					},
@@ -84,7 +84,7 @@ func TestSkipFileCheck(t *testing.T) {
 		{
 			name: "File not in blacklist",
 			config: config.Config{
-				Tests: map[string]config.Test{
+				Tests: map[string]*config.TestConfig{
 					"mockCheck": {
 						Blacklist: []string{"other.txt"},
 					},
@@ -96,7 +96,7 @@ func TestSkipFileCheck(t *testing.T) {
 		{
 			name: "File matches whitelist regex",
 			config: config.Config{
-				Tests: map[string]config.Test{
+				Tests: map[string]*config.TestConfig{
 					"mockCheck": {
 						Whitelist: []string{`.+\.txt`},
 					},
@@ -108,7 +108,7 @@ func TestSkipFileCheck(t *testing.T) {
 		{
 			name: "File matches blacklist regex",
 			config: config.Config{
-				Tests: map[string]config.Test{
+				Tests: map[string]*config.TestConfig{
 					"mockCheck": {
 						Blacklist: []string{`.+\.txt`},
 					},
@@ -120,7 +120,7 @@ func TestSkipFileCheck(t *testing.T) {
 		{
 			name: "File matches blacklist regex",
 			config: config.Config{
-				Tests: map[string]config.Test{
+				Tests: map[string]*config.TestConfig{
 					"mockCheck": {
 						Blacklist: []string{`.+\.txt`},
 					},
@@ -232,7 +232,7 @@ func TestApplyChecksFilteredByFile(t *testing.T) {
 		{
 			name: "Single file, single check pass",
 			config: config.Config{
-				Tests: map[string]config.Test{
+				Tests: map[string]*config.TestConfig{
 					"mockCheckPass": {},
 				},
 			},
@@ -243,7 +243,7 @@ func TestApplyChecksFilteredByFile(t *testing.T) {
 		{
 			name: "Single file, single check fail",
 			config: config.Config{
-				Tests: map[string]config.Test{
+				Tests: map[string]*config.TestConfig{
 					"mockCheckFail": {},
 				},
 			},
@@ -254,7 +254,7 @@ func TestApplyChecksFilteredByFile(t *testing.T) {
 		{
 			name: "Multiple files, multiple checks",
 			config: config.Config{
-				Tests: map[string]config.Test{
+				Tests: map[string]*config.TestConfig{
 					"mockCheckPass": {},
 					"mockCheckFail": {},
 				},
@@ -271,7 +271,7 @@ func TestApplyChecksFilteredByFile(t *testing.T) {
 		{
 			name: "Check skipped due to whitelist",
 			config: config.Config{
-				Tests: map[string]config.Test{
+				Tests: map[string]*config.TestConfig{
 					"mockCheckPass": {
 						Whitelist: []string{"other.txt"},
 					},
@@ -284,7 +284,7 @@ func TestApplyChecksFilteredByFile(t *testing.T) {
 		{
 			name: "Check skipped due to blacklist",
 			config: config.Config{
-				Tests: map[string]config.Test{
+				Tests: map[string]*config.TestConfig{
 					"mockCheckPass": {
 						Blacklist: []string{"test.txt"},
 					},
