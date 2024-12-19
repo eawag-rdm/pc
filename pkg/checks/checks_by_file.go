@@ -116,7 +116,8 @@ func IsFreeOfKeywordsCore(file structs.File, keywords string, info string) []str
 }
 
 func matchPatterns(patterns string, body []byte) string {
-	regexp, err := regexp.Compile(patterns)
+	// "(?i)" for case-insensitive matching
+	regexp, err := regexp.Compile("(?i)" + patterns)
 	if err != nil {
 		panic(err)
 	}
