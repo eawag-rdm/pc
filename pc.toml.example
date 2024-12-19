@@ -28,8 +28,8 @@ whitelist = []
 blacklist = []
 whitelist = []
 keywordArguments = [
-    { keywords = ["user","passw","key"], info = "Possible credentials in file" },
-    { keywords = ["Q:"], info = "Possible internal information in file" }
+    { keywords = ["pwd","password","token", "id_rsa", "id_ed25519"], info = "Sensitive data in File? Found suspicious keyword(s):" },
+    { keywords = ["Q:"], info = "Do you have Eawag internal information in your files?  Found suspicious keyword(s):" }
 ]
 
 [test.IsValidName]
@@ -46,7 +46,6 @@ keywordArguments = [
         ".coverage", ".benchmark"
     ]}
 ]
-
 
 [collector.CKAN]
 attrs = {ckan_url = "http://example.com", package_id = "12345"}
