@@ -72,12 +72,27 @@ func isBinaryFile(filePath string) (bool, error) {
 func IsFreeOfKeywords(file structs.File, config config.Config) []structs.Message {
 	var messages []structs.Message
 
+	isBinary, err := isBinaryFile(file.Path)
+	if err != nil {
+		return nil
+	}
+
+	var body [][]byte
+	if !isBinary {
+		content, err := os.ReadFile(file.Path)
+		if err != nil {
+			panic(err)
+		}
+		body = append(body, content)
+	} else {
+		body = tryReadBinary(file)
+	}
+
 	for _, argumentSet := range config.Tests["IsFreeOfKeywords"].KeywordArguments {
-		// Process argumentSet here
-		var keywords = strings.Join(argumentSet["keywords"].([]string), ",")
+		var keywords = strings.Join(argumentSet["keywords"].([]string), "|")
 		var info = argumentSet["info"].(string)
 
-		ret := IsFreeOfKeywordsCore(file, keywords, info)
+		ret := IsFreeOfKeywordsCore(file, keywords, info, body, isBinary)
 		if ret != nil {
 			messages = append(messages, ret...)
 		}
@@ -85,34 +100,20 @@ func IsFreeOfKeywords(file structs.File, config config.Config) []structs.Message
 	return messages
 }
 
-func IsFreeOfKeywordsCore(file structs.File, keywords string, info string) []structs.Message {
-	isBinary, err := isBinaryFile(file.Path)
-	if err != nil {
-		return nil
-	}
-	if !isBinary {
-		// Open the file for reading
-		body, err := os.ReadFile(file.Path)
-		if err != nil {
-			panic(err)
-		}
+func IsFreeOfKeywordsCore(file structs.File, keywords string, info string, body [][]byte, isBinary bool) []structs.Message {
+	var messages []structs.Message
 
-		foundKeywordsStr := matchPatterns(keywords, body)
+	for idx, entry := range body {
+		foundKeywordsStr := matchPatterns(keywords, entry)
 		if foundKeywordsStr != "" {
-			return []structs.Message{{Content: info + " '" + foundKeywordsStr + "'", Source: file}}
-		}
-	} else {
-		var messages []structs.Message
-		content := tryReadBinary(file)
-		for idx, entry := range content {
-			foundKeywordsStr := matchPatterns(keywords, entry)
-			if foundKeywordsStr != "" {
+			if isBinary {
 				messages = append(messages, structs.Message{Content: info + " '" + foundKeywordsStr + "' in sheet/paragraph/table " + fmt.Sprintf("%d", idx), Source: file})
+			} else {
+				messages = append(messages, structs.Message{Content: info + " '" + foundKeywordsStr + "'", Source: file})
 			}
 		}
-		return messages
 	}
-	return nil
+	return messages
 }
 
 func matchPatterns(patterns string, body []byte) string {

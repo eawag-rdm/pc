@@ -22,5 +22,12 @@ type Message struct {
 
 // define a method for displaying the message
 func (m Message) Format() string {
-	return m.Content
+	switch m.Source.(type) {
+	case File:
+		return "File issue in '" + m.Source.(File).Name + "': " + m.Content
+	case Repository:
+		return "Repository issue: " + m.Content
+	default:
+		return "Unknown source issue: " + m.Content
+	}
 }
