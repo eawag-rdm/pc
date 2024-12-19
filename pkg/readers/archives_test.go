@@ -1,10 +1,11 @@
-package utils
+package readers
 
 import (
 	"reflect"
 	"testing"
 
 	"github.com/eawag-rdm/pc/pkg/structs"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestReadZipFileList(t *testing.T) {
@@ -118,6 +119,30 @@ func TestReadArchiveFileList(t *testing.T) {
 		}
 		if !reflect.DeepEqual(actual, test.expected) {
 			t.Errorf("Expected: %v, Actual: %v", test.expected, actual)
+		}
+	}
+}
+func TestRead7ZipFileList(t *testing.T) {
+	tests := []struct {
+		filepath string
+		expected []structs.File
+	}{
+		{
+			filepath: "../../testdata/test.7z",
+			expected: []structs.File{
+				{Path: "../../testdata/test.7z", Name: "test/", Size: 0, Suffix: ""},
+				{Path: "../../testdata/test.7z", Name: "test/file2", Size: 0, Suffix: ""},
+				{Path: "../../testdata/test.7z", Name: "test/file1.txt", Size: 6, Suffix: ".txt"},
+			},
+		},
+	}
+	for _, test := range tests {
+		actual, err := Read7ZipFileList(test.filepath)
+		if err != nil {
+			t.Errorf("Error: %v", err)
+		}
+		if !reflect.DeepEqual(actual, test.expected) {
+			assert.ElementsMatch(t, actual, test.expected)
 		}
 	}
 }

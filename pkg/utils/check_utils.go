@@ -8,6 +8,7 @@ import (
 
 	"github.com/eawag-rdm/pc/pkg/checks"
 	"github.com/eawag-rdm/pc/pkg/config"
+	"github.com/eawag-rdm/pc/pkg/readers"
 	"github.com/eawag-rdm/pc/pkg/structs"
 )
 
@@ -68,7 +69,7 @@ func ApplyChecksFilteredByFileOnArchive(config config.Config, checks []func(file
 
 	var messages = []structs.Message{}
 	for _, file := range files {
-		fileList, err := ReadArchiveFileList(file)
+		fileList, err := readers.ReadArchiveFileList(file)
 		if err != nil {
 			// handle the error appropriately, e.g., log it or return it
 			continue

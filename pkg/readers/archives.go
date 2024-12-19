@@ -1,4 +1,4 @@
-package utils
+package readers
 
 import (
 	"archive/tar"
@@ -10,6 +10,8 @@ import (
 	"strings"
 
 	"github.com/eawag-rdm/pc/pkg/structs"
+
+	"github.com/bodgit/sevenzip"
 )
 
 // Read the filelist from a zip file
@@ -82,11 +84,29 @@ func ReadTarGzFileList(filePath string) ([]structs.File, error) {
 	return fileList, nil
 }
 
+func Read7ZipFileList(filePath string) ([]structs.File, error) {
+	var fileList []structs.File
+	r, err := sevenzip.OpenReader(filePath)
+	if err != nil {
+		return nil, err
+	}
+	defer r.Close()
+
+	for _, f := range r.File {
+		fmt.Println(f.Name)
+		fileList = append(fileList, structs.ToFile(filePath, f.Name, f.FileInfo().Size(), ""))
+	}
+
+	return fileList, nil
+}
+
 func ReadArchiveFileList(file structs.File) ([]structs.File, error) {
 	if strings.HasSuffix(file.Name, ".zip") {
 		return ReadZipFileList(file.Path)
 	} else if strings.HasSuffix(file.Name, ".tar") {
 		return ReadTarFileList(file.Path)
+	} else if strings.HasSuffix(file.Name, ".7z") {
+		return Read7ZipFileList(file.Path)
 	} else if strings.HasSuffix(file.Name, ".tar.gz") {
 		fmt.Println("Skipping tar.gz file: ''", file.Name)
 		return []structs.File{}, nil
