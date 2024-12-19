@@ -90,11 +90,26 @@ func ApplyChecksFilteredByFileOnArchive(config config.Config, checks []func(file
 
 }
 
-func ApplyAllChecks(config config.Config, files []structs.File) []structs.Message {
+func ApplyChecksFilteredByRepository(config config.Config, checks []func(repository structs.Repository, config config.Config) []structs.Message, files []structs.File) []structs.Message {
+	var messages = []structs.Message{}
+	repo := structs.Repository{Files: files}
+	for _, check := range checks {
+		ret := check(repo, config)
+		if ret != nil {
+			messages = append(messages, ret...)
+		}
+	}
+	return messages
+}
+
+func ApplyAllChecks(config config.Config, files []structs.File, checksAcrossFiles bool) []structs.Message {
 	var messages []structs.Message
 
 	messages = append(messages, ApplyChecksFilteredByFile(config, BY_FILE, files)...)
 	messages = append(messages, ApplyChecksFilteredByFileOnArchive(config, BY_FILE_ON_ARCHIVE, files)...)
+	if checksAcrossFiles {
+		messages = append(messages, ApplyChecksFilteredByRepository(config, BY_REPOSITORY, files)...)
+	}
 
 	return messages
 

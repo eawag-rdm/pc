@@ -19,17 +19,17 @@ func initFileCollector(mockFiles []structs.File) func(cfg config.Config) ([]stru
 func TestMainLogic_Success(t *testing.T) {
 
 	tests := []struct {
-		collctor func(cfg config.Config) ([]structs.File, error)
-		expected []structs.Message
+		collector func(cfg config.Config) ([]structs.File, error)
+		expected  []structs.Message
 	}{
 		{
-			collctor: initFileCollector(
+			collector: initFileCollector(
 				[]structs.File{{Name: "file1"}, {Name: "file2"}},
 			),
 			expected: nil,
 		},
 		{
-			collctor: initFileCollector(
+			collector: initFileCollector(
 				[]structs.File{{Name: "space in file name"}, {Name: "file2"}},
 			),
 			expected: []structs.Message{
@@ -37,7 +37,7 @@ func TestMainLogic_Success(t *testing.T) {
 			},
 		},
 		{
-			collctor: initFileCollector(
+			collector: initFileCollector(
 				[]structs.File{{Name: "space in file name"}, {Name: "file2"}},
 			),
 			expected: []structs.Message{
@@ -45,7 +45,7 @@ func TestMainLogic_Success(t *testing.T) {
 			},
 		},
 		{
-			collctor: initFileCollector(
+			collector: initFileCollector(
 				[]structs.File{{Name: "Non ascĩĩ and space"}, {Name: "file2"}},
 			),
 			expected: []structs.Message{
@@ -56,7 +56,7 @@ func TestMainLogic_Success(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		messagess := MainLogic("../testdata/config.toml.test", test.collctor)
+		messagess := MainLogic("../testdata/config.toml.test", test.collector, false)
 
 		if !assert.ElementsMatch(t, messagess, test.expected) {
 			t.Errorf("MainLogic(...) = %v; want %v", messagess, test.expected)

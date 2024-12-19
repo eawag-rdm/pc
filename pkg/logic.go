@@ -8,7 +8,7 @@ import (
 	"github.com/eawag-rdm/pc/pkg/utils"
 )
 
-func MainLogic(generalConfigFilePath string, fileCollector func(config.Config) ([]structs.File, error)) []structs.Message {
+func MainLogic(generalConfigFilePath string, fileCollector func(config.Config) ([]structs.File, error), checksAcrossFiles bool) []structs.Message {
 
 	generalConfig := config.LoadConfig(generalConfigFilePath)
 	files, err := fileCollector(*generalConfig)
@@ -17,6 +17,6 @@ func MainLogic(generalConfigFilePath string, fileCollector func(config.Config) (
 		return nil
 	}
 
-	return utils.ApplyAllChecks(*generalConfig, files)
+	return utils.ApplyAllChecks(*generalConfig, files, checksAcrossFiles)
 
 }

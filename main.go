@@ -46,7 +46,7 @@ func main() {
 
 	generalConfig := config.LoadConfig(*cfg)
 
-	messages := utils.ApplyAllChecks(*generalConfig, files)
+	messages := utils.ApplyAllChecks(*generalConfig, files, true)
 	for _, message := range messages {
 		fmt.Println(message)
 	}
