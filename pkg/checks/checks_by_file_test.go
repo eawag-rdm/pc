@@ -210,7 +210,7 @@ func TestIsValidName(t *testing.T) {
 			file:             structs.File{Name: "invalidfile.txt"},
 			invalidFileNames: []string{"invalidfile.txt", "badfile.txt"},
 			expected: []structs.Message{
-				{Content: "File has an invalid name. invalidfile.txt", Source: structs.File{Name: "invalidfile.txt"}},
+				{Content: "File or Folder has an invalid name. invalidfile.txt", Source: structs.File{Name: "invalidfile.txt"}},
 			},
 		},
 		{
@@ -218,7 +218,7 @@ func TestIsValidName(t *testing.T) {
 			file:             structs.File{Name: "badfile.txt"},
 			invalidFileNames: []string{"invalidfile.txt", "badfile.txt"},
 			expected: []structs.Message{
-				{Content: "File has an invalid name. badfile.txt", Source: structs.File{Name: "badfile.txt"}},
+				{Content: "File or Folder has an invalid name. badfile.txt", Source: structs.File{Name: "badfile.txt"}},
 			},
 		},
 		{
