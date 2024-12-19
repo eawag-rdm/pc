@@ -167,7 +167,7 @@ func IsValidName(file structs.File, config config.Config) []structs.Message {
 func IsValidNameCore(file structs.File, invalidFileNames []string) []structs.Message {
 	for _, invalidFileName := range invalidFileNames {
 		if file.Name == invalidFileName {
-			return []structs.Message{{Content: "File has an invalid name. " + invalidFileName, Source: file}}
+			return []structs.Message{{Content: "File or Folder has an invalid name. " + invalidFileName, Source: file}}
 		}
 	}
 	return nil

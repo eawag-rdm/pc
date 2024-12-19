@@ -19,3 +19,8 @@ type Message struct {
 	// The source of the message.
 	Source Source
 }
+
+// define a method for displaying the message
+func (m Message) Format() string {
+	return m.Content
+}

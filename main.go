@@ -34,9 +34,6 @@ func main() {
 		flag.Usage()
 		return
 	}
-	// Print the received arguments for debugging
-	fmt.Printf("Using config: %s\n", *cfg)
-	fmt.Printf("Using folder: %s\n", *folder)
 
 	files, err := collectors.LocalCollector(*folder, true)
 	if err != nil {
@@ -48,7 +45,7 @@ func main() {
 
 	messages := utils.ApplyAllChecks(*generalConfig, files, true)
 	for _, message := range messages {
-		fmt.Println(message)
+		fmt.Println(message.Format())
 	}
 
 }
