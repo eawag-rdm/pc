@@ -1,9 +1,7 @@
 package readers
 
 import (
-	"fmt"
-	"os"
-
+	"github.com/eawag-rdm/pc/pkg/helpers"
 	"github.com/thedatashed/xlsxreader"
 )
 
@@ -16,14 +14,7 @@ func ReadXLSXFile(filePath string) ([][]byte, error) {
 	// Ensure the file reader is closed once utilized
 	defer xl.Close()
 
-	// if the excel file is greater than 2MB warn the user, as it may cause performance issues
-	fileInfo, err := os.Stat(filePath)
-	if err != nil {
-		return nil, err
-	}
-	if fileInfo.Size() > 2*1024*1024 {
-		fmt.Printf("Warning: The 'XSLX' file '%s' is pretty big, this may take a little longer.\n", filePath)
-	}
+	helpers.WarnForLargeFile(filePath, 2*1024*1024, "pretty big file, this may take a little longer.")
 
 	XLSXContent := make([][]byte, 0, len(xl.Sheets))
 	for _, sheet := range xl.Sheets {

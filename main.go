@@ -44,8 +44,12 @@ func main() {
 	generalConfig := config.LoadConfig(*cfg)
 
 	messages := utils.ApplyAllChecks(*generalConfig, files, true)
-	for _, message := range messages {
-		fmt.Println(message.Format())
+	if len(messages) > 0 {
+		fmt.Println("=== Results ===")
+		for _, message := range messages {
+			fmt.Println(message.Format())
+		}
+		return
 	}
 
 }

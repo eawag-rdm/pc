@@ -9,6 +9,7 @@ import (
 	"unicode"
 
 	"github.com/eawag-rdm/pc/pkg/config"
+	"github.com/eawag-rdm/pc/pkg/helpers"
 	"github.com/eawag-rdm/pc/pkg/readers"
 	"github.com/eawag-rdm/pc/pkg/structs"
 )
@@ -71,6 +72,8 @@ func isBinaryFile(filePath string) (bool, error) {
 
 func IsFreeOfKeywords(file structs.File, config config.Config) []structs.Message {
 	var messages []structs.Message
+
+	helpers.WarnForLargeFile(file.Path, 10*1024*1024, "pretty big file, this may take a little longer.")
 
 	isBinary, err := isBinaryFile(file.Path)
 	if err != nil {
