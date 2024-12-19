@@ -103,11 +103,11 @@ func IsFreeOfKeywordsCore(file structs.File, keywords string, info string) []str
 		}
 	} else {
 		var messages []structs.Message
-		content := tryReadXSLX(file)
+		content := tryReadBinary(file)
 		for idx, entry := range content {
 			foundKeywordsStr := matchPatterns(keywords, entry)
 			if foundKeywordsStr != "" {
-				messages = append(messages, structs.Message{Content: info + " '" + foundKeywordsStr + "' in sheet " + fmt.Sprintf("%d", idx), Source: file})
+				messages = append(messages, structs.Message{Content: info + " '" + foundKeywordsStr + "' in sheet/paragraph/table " + fmt.Sprintf("%d", idx), Source: file})
 			}
 		}
 		return messages
@@ -120,6 +120,10 @@ func matchPatterns(patterns string, body []byte) string {
 	regexp, err := regexp.Compile("(?i)" + patterns)
 	if err != nil {
 		panic(err)
+	}
+
+	if len(body) == 0 {
+		return ""
 	}
 
 	// Check if any of the keywords are present in the file
@@ -143,9 +147,15 @@ func matchPatterns(patterns string, body []byte) string {
 	return ""
 }
 
-func tryReadXSLX(file structs.File) [][]byte {
+func tryReadBinary(file structs.File) [][]byte {
 	if strings.HasSuffix(file.Path, ".xlsx") {
 		content, err := readers.ReadXLSXFile(file.Path)
+		if err != nil {
+			panic(err)
+		}
+		return content
+	} else if strings.HasSuffix(file.Path, ".docx") {
+		content, err := readers.ReadDOCXFile(file.Path)
 		if err != nil {
 			panic(err)
 		}
