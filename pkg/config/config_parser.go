@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/BurntSushi/toml"
 )
@@ -129,4 +130,24 @@ func LoadConfig(file string) *Config {
 	}
 
 	return config
+}
+
+// check fore the default configurtion file 1. ~/.config/pc/config.toml 2. ./config.toml if exists return the path
+func FindConfigFile() string {
+	// check for the default configuration file
+	// 1. ~/.config/pc/config.toml
+	// 2. ./config.toml
+	paths := []string{
+		"~/pc.toml",
+		"./pc.toml",
+		"~/.config/pc.toml",
+	}
+
+	for _, path := range paths {
+		if _, err := os.Stat(path); err == nil {
+			return path
+		}
+	}
+	return ""
+
 }

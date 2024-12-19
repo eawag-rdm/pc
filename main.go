@@ -18,7 +18,7 @@ func main() {
 	// the cli should have a help command to show the usage
 
 	// Define default values for the config and folder arguments
-	defaultConfig := "pc.toml"
+	defaultConfig := config.FindConfigFile()
 	// current word directory
 	defaultFolder := "."
 
