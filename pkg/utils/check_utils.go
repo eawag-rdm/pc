@@ -12,10 +12,22 @@ import (
 	"github.com/eawag-rdm/pc/pkg/structs"
 )
 
-var BY_FILE = []func(file structs.File, config config.Config) []structs.Message{checks.HasOnlyASCII, checks.HasNoWhiteSpace, checks.IsFreeOfKeywords, checks.IsValidName}
-var BY_REPOSITORY = []func(repository structs.Repository, config config.Config) []structs.Message{checks.HasReadme, checks.ReadMeContainTOC}
+var BY_FILE = []func(file structs.File, config config.Config) []structs.Message{
+	checks.HasOnlyASCII,
+	checks.HasNoWhiteSpace,
+	checks.IsFreeOfKeywords,
+	checks.IsValidName,
+}
+var BY_REPOSITORY = []func(repository structs.Repository, config config.Config) []structs.Message{
+	checks.HasReadme,
+	checks.ReadMeContainsTOC,
+}
 
-var BY_FILE_ON_ARCHIVE = []func(file structs.File, config config.Config) []structs.Message{checks.HasOnlyASCII, checks.HasNoWhiteSpace, checks.IsValidName}
+var BY_FILE_ON_ARCHIVE = []func(file structs.File, config config.Config) []structs.Message{
+	checks.HasOnlyASCII,
+	checks.HasNoWhiteSpace,
+	checks.IsValidName,
+}
 
 func getFunctionName(i interface{}) string {
 	fullName := runtime.FuncForPC(reflect.ValueOf(i).Pointer()).Name()

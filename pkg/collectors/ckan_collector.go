@@ -73,5 +73,11 @@ func CollectCkanFiles(config config.Config) ([]structs.File, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	/* MISSING
+	At this point is either the download or translation to local resource files still needs to be handled, moving GetCKANResources up
+	Downloading could take quite long. So ideally this service should run on the same host as the CKAN instance, then the files could be accessed directly
+	*/
+
 	return GetCKANResources(jsonMap)
 }

@@ -14,6 +14,10 @@ import (
 	"github.com/eawag-rdm/pc/pkg/structs"
 )
 
+/*
+This file contains tests that run on single files and do not need any other information. They especially do not need other files.
+*/
+
 const (
 	SP = 0x20 //      Space
 )

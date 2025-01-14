@@ -32,7 +32,7 @@ func TestIsReadme(t *testing.T) {
 		})
 	}
 }
-func TestReadMeContainTOC(t *testing.T) {
+func TestReadMeContainsTOC(t *testing.T) {
 	tests := []struct {
 		name          string
 		repository    structs.Repository
@@ -95,7 +95,7 @@ func TestReadMeContainTOC(t *testing.T) {
 				tt.repository.Files[0].Path = tempFile.Name()
 			}
 
-			result := ReadMeContainTOC(tt.repository, config.Config{})
+			result := ReadMeContainsTOC(tt.repository, config.Config{})
 			assert.Len(t, result, len(tt.expected))
 		})
 	}

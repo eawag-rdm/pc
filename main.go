@@ -35,7 +35,7 @@ func main() {
 		return
 	}
 
-	files, err := collectors.LocalCollector(*folder, true)
+	files, err := collectors.LocalCollector(*folder, false) // true to include folders
 	if err != nil {
 		fmt.Printf("Error collecting files: %v\n", err)
 		return

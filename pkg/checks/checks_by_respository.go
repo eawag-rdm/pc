@@ -9,6 +9,10 @@ import (
 	"github.com/eawag-rdm/pc/pkg/structs"
 )
 
+/*
+This file contains tests that need a collection of files. Eg: Checking if a repository has a readme file.
+*/
+
 const Readme_1 = "readme.md"
 const Readme_2 = "readme.txt"
 
@@ -28,7 +32,7 @@ func HasReadme(repository structs.Repository, config config.Config) []structs.Me
 }
 
 // Readme File is part of the package
-func ReadMeContainTOC(repository structs.Repository, config config.Config) []structs.Message {
+func ReadMeContainsTOC(repository structs.Repository, config config.Config) []structs.Message {
 
 	// check if the readme file is part of the repository
 	var readmeFile = structs.File{}
