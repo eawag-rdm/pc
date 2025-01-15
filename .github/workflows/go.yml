@@ -26,7 +26,7 @@ jobs:
       run: go test ./...
 
     - name: Build
-      run: go build -ldflags="-s -w" -o pc
+      run: go build -ldflags="-s -w" -buildvcs=false -o pc
 
     - name: Upload build artifact
       uses: actions/upload-artifact@v3
