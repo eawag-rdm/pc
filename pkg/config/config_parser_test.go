@@ -77,7 +77,7 @@ func TestLoadConfig(t *testing.T) {
 
 func TestConfigFile(t *testing.T) {
 	// Read the config file in testdata
-	cfg, err := ParseConfig("../../testdata/config.toml.test")
+	cfg, err := ParseConfig("../../testdata/test_config.toml")
 	if err != nil {
 		t.Fatal(err)
 	}

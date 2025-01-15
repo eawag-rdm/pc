@@ -56,7 +56,7 @@ func TestMainLogic_Success(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		messagess := MainLogic("../testdata/config.toml.test", test.collector, false)
+		messagess := MainLogic("../testdata/test_config.toml", test.collector, false)
 
 		if !assert.ElementsMatch(t, messagess, test.expected) {
 			t.Errorf("MainLogic(...) = %v; want %v", messagess, test.expected)

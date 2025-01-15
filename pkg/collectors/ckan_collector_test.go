@@ -56,7 +56,7 @@ func TestJSONToMap(t *testing.T) {
 
 func TestGetCKANResources(t *testing.T) {
 	// Read the test data file
-	data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "ckan_metadata.json"))
+	data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "test_ckan_metadata.json"))
 	if err != nil {
 		t.Fatalf("failed to read test data: %v", err)
 	}
