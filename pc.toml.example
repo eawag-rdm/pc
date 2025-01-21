@@ -12,6 +12,8 @@
 # Whitelist: Only filepaths, that match entries will be checked. Regex patterns are allowed. Ignored, if empty.
 #####################################################################################
 
+[operation.main]
+collector = "LocalCollector"
 
 [test.HasOnlyASCII]
 # Checking for white spaces in folder and file names.
@@ -43,9 +45,12 @@ keywordArguments = [
         ".Rbuildignore", "__pycache__", ".vscode", 
         ".ipynb_checkpoints", "venv", ".idea", ".egg-info", 
         ".pytest_cache", ".pyc", ".tox", ".python_version", 
-        ".coverage", ".benchmark"
+        ".coverage", ".benchmark", ".doc", ".xls"
     ]}
 ]
 
 [collector.CKAN]
 attrs = {ckan_url = "http://example.com", package_id = "12345"}
+
+[collector.LocalCollector]
+attr = {includeFolders = true}

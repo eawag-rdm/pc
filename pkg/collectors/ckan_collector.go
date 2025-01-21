@@ -60,9 +60,9 @@ func GetCKANResources(jsonMap map[string]interface{}) ([]structs.File, error) {
 	return files, nil
 }
 
-func CollectCkanFiles(config config.Config) ([]structs.File, error) {
+func CkanCollector(config config.Config) ([]structs.File, error) {
 
-	collectorName := "CKAN"
+	collectorName := "CkanCollector"
 
 	url := fmt.Sprintf("%s/api/3/action/package_show?id=%s", config.Collectors[collectorName].Attrs["ckan_url"], config.Collectors[collectorName].Attrs["package_id"])
 	jsonStr, err := Request(url)

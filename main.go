@@ -6,6 +6,7 @@ import (
 
 	"github.com/eawag-rdm/pc/pkg/collectors"
 	"github.com/eawag-rdm/pc/pkg/config"
+	"github.com/eawag-rdm/pc/pkg/structs"
 	"github.com/eawag-rdm/pc/pkg/utils"
 )
 
@@ -35,13 +36,32 @@ func main() {
 		return
 	}
 
-	files, err := collectors.LocalCollector(*folder, false) // true to include folders
-	if err != nil {
-		fmt.Printf("Error collecting files: %v\n", err)
+	generalConfig := config.LoadConfig(*cfg)
+
+	var (
+		files []structs.File
+		err   error
+	)
+
+	// Decide which collector to use
+	if generalConfig.Operation["main"].Collector == "LocalCollector" {
+		files, err = collectors.LocalCollector(*folder, *generalConfig)
+		if err != nil {
+			fmt.Printf("Error collecting files: %v\n", err)
+			return
+		}
+
+	} else if generalConfig.Operation["main"].Collector == "CkanCollector" {
+		files, err = collectors.CkanCollector(*generalConfig)
+		if err != nil {
+			fmt.Printf("Error collecting files: %v\n", err)
+			return
+		}
+
+	} else {
+		fmt.Println("Unknown collector")
 		return
 	}
-
-	generalConfig := config.LoadConfig(*cfg)
 
 	messages := utils.ApplyAllChecks(*generalConfig, files, true)
 	if len(messages) > 0 {

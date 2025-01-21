@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/eawag-rdm/pc/pkg/config"
 )
 
 func TestLocalCollector(t *testing.T) {
@@ -32,7 +34,7 @@ func TestLocalCollector(t *testing.T) {
 	}
 
 	// Call the LocalCollector function
-	collectedFiles, err := LocalCollector(tempDir, false)
+	collectedFiles, err := LocalCollector(tempDir, config.Config{Collectors: map[string]*config.CollectorConfig{"LocalCollector": {Attrs: map[string]interface{}{"includeFolders": "false"}}}})
 	if err != nil {
 		t.Fatalf("LocalCollector returned an error: %v", err)
 	}

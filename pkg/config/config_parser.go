@@ -18,8 +18,13 @@ type CollectorConfig struct {
 	Attrs map[string]interface{}
 }
 
+type OperationConfig struct {
+	Collector string
+}
+
 type Config struct {
 	Tests      map[string]*TestConfig
+	Operation  map[string]*OperationConfig
 	Collectors map[string]*CollectorConfig
 }
 
@@ -32,6 +37,7 @@ func ParseConfig(filename string) (*Config, error) {
 
 	c := &Config{
 		Tests:      map[string]*TestConfig{},
+		Operation:  map[string]*OperationConfig{},
 		Collectors: map[string]*CollectorConfig{},
 	}
 
@@ -101,6 +107,17 @@ func ParseConfig(filename string) (*Config, error) {
 		}
 	}
 
+	if operationData, ok := raw["operation"].(map[string]interface{}); ok {
+		for name, section := range operationData {
+			oc := &OperationConfig{}
+			if sectionMap, ok := section.(map[string]interface{}); ok {
+				if collector, ok := sectionMap["collector"].(string); ok {
+					oc.Collector = collector
+				}
+			}
+			c.Operation[name] = oc
+		}
+	}
 	return c, nil
 }
 

@@ -33,6 +33,9 @@ func TestLoadConfig(t *testing.T) {
 		{
 			name: "ValidConfig",
 			configData: `
+				[operation]
+				collector = "collector1"
+
 				[test.test1]
 				blacklist = ["item1", "item2"]
 
@@ -90,6 +93,9 @@ func TestConfigFile(t *testing.T) {
 func TestParseConfig(t *testing.T) {
 	// Create a temporary TOML file for testing
 	tomlContent := `
+	[operation.main]
+	collector = "collector1"
+
 	[test.test1]
 	blacklist = ["item1", "item2"]
 	whitelist = ["item3"]
@@ -128,6 +134,10 @@ func TestParseConfig(t *testing.T) {
 	assert.True(t, ok)
 	assert.Equal(t, "value1", collectorConfig.Attrs["key1"])
 	assert.ElementsMatch(t, []string{"value2", "value3"}, collectorConfig.Attrs["key2"])
+
+	operationConfig, ok := config.Operation["main"]
+	assert.True(t, ok)
+	assert.Equal(t, "collector1", operationConfig.Collector)
 
 }
 
