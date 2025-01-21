@@ -77,7 +77,7 @@ func isBinaryFile(filePath string) (bool, error) {
 func IsFreeOfKeywords(file structs.File, config config.Config) []structs.Message {
 	var messages []structs.Message
 
-	helpers.WarnForLargeFile(file.Path, 10*1024*1024, "pretty big file, this may take a little longer.")
+	helpers.WarnForLargeFile(file, 10*1024*1024, "pretty big file, this may take a little longer.")
 
 	isBinary, err := isBinaryFile(file.Path)
 	if err != nil {
@@ -157,13 +157,13 @@ func matchPatterns(patterns string, body []byte) string {
 
 func tryReadBinary(file structs.File) [][]byte {
 	if strings.HasSuffix(file.Path, ".xlsx") {
-		content, err := readers.ReadXLSXFile(file.Path)
+		content, err := readers.ReadXLSXFile(file)
 		if err != nil {
 			panic(err)
 		}
 		return content
 	} else if strings.HasSuffix(file.Path, ".docx") {
-		content, err := readers.ReadDOCXFile(file.Path)
+		content, err := readers.ReadDOCXFile(file)
 		if err != nil {
 			panic(err)
 		}

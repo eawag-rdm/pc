@@ -2,19 +2,20 @@ package readers
 
 import (
 	"github.com/eawag-rdm/pc/pkg/helpers"
+	"github.com/eawag-rdm/pc/pkg/structs"
 	"github.com/thedatashed/xlsxreader"
 )
 
-func ReadXLSXFile(filePath string) ([][]byte, error) {
+func ReadXLSXFile(file structs.File) ([][]byte, error) {
 	// Create an instance of the reader by opening a target file
-	xl, err := xlsxreader.OpenFile(filePath)
+	xl, err := xlsxreader.OpenFile(file.Path)
 	if err != nil {
 		return nil, err
 	}
 	// Ensure the file reader is closed once utilized
 	defer xl.Close()
 
-	helpers.WarnForLargeFile(filePath, 2*1024*1024, "pretty big file, this may take a little longer.")
+	helpers.WarnForLargeFile(file, 2*1024*1024, "pretty big file, this may take a little longer.")
 
 	XLSXContent := make([][]byte, 0, len(xl.Sheets))
 	for _, sheet := range xl.Sheets {

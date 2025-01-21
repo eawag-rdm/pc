@@ -49,8 +49,8 @@ keywordArguments = [
     ]}
 ]
 
-[collector.CKAN]
-attrs = {ckan_url = "http://example.com", package_id = "12345"}
+[collector.CkanCollector]
+attrs = {url = "https://example.com", token = "", verify = true, ckan_storage_path = "/nfsmount/ckan/default"}
 
 [collector.LocalCollector]
 attr = {includeFolders = true}

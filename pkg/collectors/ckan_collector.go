@@ -1,29 +1,55 @@
 package collectors
 
 import (
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strings"
 
 	"github.com/eawag-rdm/pc/pkg/config"
 	"github.com/eawag-rdm/pc/pkg/structs"
 )
 
-// send a get web request and return the json respo"github.com/eawag-rdm/pc/pkg/utils"nce; raise if return code is not 200
-func Request(url string) (string, error) {
-	resp, err := http.Get(url)
+func Request(url, ckanToken string, verifyTLS bool) (string, error) {
+
+	transport := &http.Transport{
+		TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: !verifyTLS,
+			// If verifyTLS=false => InsecureSkipVerify=true
+		},
+	}
+
+	client := &http.Client{
+		Transport: transport,
+	}
+
+	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return "", err
 	}
-	if resp.StatusCode != 200 {
-		return "", fmt.Errorf("Request failed with status code %d", resp.StatusCode)
+
+	if ckanToken != "" {
+		req.Header.Set("Authorization", ckanToken)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("request failed with status code %d", resp.StatusCode)
+	}
+
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", err
 	}
+
 	return string(bodyBytes), nil
 }
 
@@ -60,12 +86,51 @@ func GetCKANResources(jsonMap map[string]interface{}) ([]structs.File, error) {
 	return files, nil
 }
 
-func CkanCollector(config config.Config) ([]structs.File, error) {
+// getLocalResourcePath translates your Python logic to Go.
+func getLocalResourcePath(resourceURL string, ckanStoragePath string) string {
+
+	parsedURL, err := url.Parse(resourceURL)
+	if err != nil {
+		return ""
+	}
+	resourceID := strings.Split(parsedURL.Path, "/")[4]
+
+	// Slice out parts: rsc_1, rsc_2, rsc_3
+	// Make sure resourceID has at least 6 characters or handle errors as needed
+	rsc1 := resourceID[:3]
+	rsc2 := resourceID[3:6]
+	rsc3 := resourceID[6:]
+
+	localResourcePath := fmt.Sprintf("%s/%s/%s", rsc1, rsc2, rsc3)
+
+	// If ckanStoragePath ends with "/", remove the slash
+	ckanStoragePath = strings.TrimSuffix(ckanStoragePath, "/")
+
+	// If ckanStoragePath is not empty, ensure it ends with "resources/"
+	if ckanStoragePath != "" {
+		if !strings.HasSuffix(ckanStoragePath, "resources") {
+			ckanStoragePath += "/resources"
+		}
+		ckanStoragePath += "/"
+	}
+
+	return ckanStoragePath + localResourcePath
+}
+
+func CkanCollector(package_id string, config config.Config) ([]structs.File, error) {
 
 	collectorName := "CkanCollector"
 
-	url := fmt.Sprintf("%s/api/3/action/package_show?id=%s", config.Collectors[collectorName].Attrs["ckan_url"], config.Collectors[collectorName].Attrs["package_id"])
-	jsonStr, err := Request(url)
+	urlAttr, ok := config.Collectors[collectorName].Attrs["url"].(string)
+	if !ok {
+		return nil, fmt.Errorf("url attribute not found or not a string")
+	}
+
+	url := fmt.Sprintf("%s/api/3/action/package_show?id=%s", urlAttr, package_id)
+	token := config.Collectors[collectorName].Attrs["token"].(string)
+	verify := config.Collectors[collectorName].Attrs["verify"].(bool)
+
+	jsonStr, err := Request(url, token, verify)
 	if err != nil {
 		return nil, err
 	}
@@ -74,10 +139,16 @@ func CkanCollector(config config.Config) ([]structs.File, error) {
 		return nil, err
 	}
 
-	/* MISSING
-	At this point is either the download or translation to local resource files still needs to be handled, moving GetCKANResources up
-	Downloading could take quite long. So ideally this service should run on the same host as the CKAN instance, then the files could be accessed directly
-	*/
+	files, err := GetCKANResources(jsonMap)
+	if err != nil {
+		return nil, err
+	}
 
-	return GetCKANResources(jsonMap)
+	localStoragePath := config.Collectors[collectorName].Attrs["ckan_storage_path"].(string)
+	// Iterate files and apply getLocalResourcePath to each file to change the path in place
+	for i, file := range files {
+		files[i].Path = getLocalResourcePath(file.Path, localStoragePath)
+	}
+
+	return files, nil
 }

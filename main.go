@@ -25,7 +25,7 @@ func main() {
 
 	// Parse CLI arguments
 	cfg := flag.String("config", defaultConfig, "Path to the config file")
-	folder := flag.String("folder", defaultFolder, "Path to the folder")
+	folder_or_url := flag.String("location", defaultFolder, "Path to local folder or CKAN package name. It depends on the set collector.")
 	flag.Parse()
 	// Check if help is requested
 	help := flag.Bool("help", false, "Show usage information")
@@ -45,16 +45,16 @@ func main() {
 
 	// Decide which collector to use
 	if generalConfig.Operation["main"].Collector == "LocalCollector" {
-		files, err = collectors.LocalCollector(*folder, *generalConfig)
+		files, err = collectors.LocalCollector(*folder_or_url, *generalConfig)
 		if err != nil {
-			fmt.Printf("Error collecting files: %v\n", err)
+			fmt.Printf("LocalCollector error collecting files: %v\n", err)
 			return
 		}
 
 	} else if generalConfig.Operation["main"].Collector == "CkanCollector" {
-		files, err = collectors.CkanCollector(*generalConfig)
+		files, err = collectors.CkanCollector(*folder_or_url, *generalConfig)
 		if err != nil {
-			fmt.Printf("Error collecting files: %v\n", err)
+			fmt.Printf("CkanCollector error collecting files: %v\n", err)
 			return
 		}
 

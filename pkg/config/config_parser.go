@@ -97,6 +97,8 @@ func ParseConfig(filename string) (*Config, error) {
 						switch val := v.(type) {
 						case string:
 							cc.Attrs[k] = val
+						case bool:
+							cc.Attrs[k] = val
 						case []interface{}:
 							cc.Attrs[k] = parseStringSlice(val)
 						}

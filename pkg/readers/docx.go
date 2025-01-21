@@ -3,12 +3,13 @@ package readers
 import (
 	"os"
 
+	"github.com/eawag-rdm/pc/pkg/structs"
 	"github.com/fumiama/go-docx"
 )
 
-func ReadDOCXFile(filePath string) ([][]byte, error) {
+func ReadDOCXFile(file structs.File) ([][]byte, error) {
 	// Create an instance of the reader by opening a target file
-	f, err := os.Open(filePath)
+	f, err := os.Open(file.Path)
 	if err != nil {
 		panic(err)
 	}

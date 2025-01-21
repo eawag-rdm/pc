@@ -90,3 +90,52 @@ func TestGetCKANResources(t *testing.T) {
 		t.Errorf("expected file %+v, got %+v", expectedFile, files[0])
 	}
 }
+func TestGetLocalResourcePath(t *testing.T) {
+	tests := []struct {
+		name            string
+		resourceURL     string
+		ckanStoragePath string
+		expectedPath    string
+		expectEmptyPath bool
+	}{
+		{
+			name:            "Valid URL and storage path",
+			resourceURL:     "https://opendata.eawag.ch/dataset/d4b2fee5-74f4-4513-8cd3-cfb957d84eb1/resource/f46e74be-1c61-4866-81da-9282c37c0c42/download/readme.md",
+			ckanStoragePath: "/var/lib/ckan",
+			expectedPath:    "/var/lib/ckan/resources/f46/e74/be-1c61-4866-81da-9282c37c0c42",
+		},
+		{
+			name:            "URL with no storage path",
+			resourceURL:     "https://opendata.eawag.ch/dataset/d4b2fee5-74f4-4513-8cd3-cfb957d84eb1/resource/f46e74be-1c61-4866-81da-9282c37c0c42/download/readme.md",
+			ckanStoragePath: "",
+			expectedPath:    "f46/e74/be-1c61-4866-81da-9282c37c0c42",
+		},
+		{
+			name:            "Storage path with trailing slash",
+			resourceURL:     "https://opendata.eawag.ch/dataset/d4b2fee5-74f4-4513-8cd3-cfb957d84eb1/resource/f46e74be-1c61-4866-81da-9282c37c0c42/download/readme.md",
+			ckanStoragePath: "/var/lib/ckan/",
+			expectedPath:    "/var/lib/ckan/resources/f46/e74/be-1c61-4866-81da-9282c37c0c42",
+		},
+		{
+			name:            "Invalid URL",
+			resourceURL:     "://invalid-url",
+			ckanStoragePath: "/var/lib/ckan",
+			expectEmptyPath: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := getLocalResourcePath(tt.resourceURL, tt.ckanStoragePath)
+			if tt.expectEmptyPath {
+				if got != "" {
+					t.Errorf("expected empty path, got %v", got)
+				}
+			} else {
+				if got != tt.expectedPath {
+					t.Errorf("expected %v, got %v", tt.expectedPath, got)
+				}
+			}
+		})
+	}
+}

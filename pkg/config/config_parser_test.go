@@ -1,7 +1,6 @@
 package config
 
 import (
-	"io/ioutil"
 	"os"
 	"testing"
 
@@ -9,7 +8,7 @@ import (
 )
 
 func createTempConfigFile(t *testing.T, content string) string {
-	tmpfile, err := ioutil.TempFile("", "config-*.toml")
+	tmpfile, err := os.CreateTemp("", "config-*.toml")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +85,7 @@ func TestConfigFile(t *testing.T) {
 	}
 	// Check if the config file is loaded correctly
 	assert.Equal(t, 3, len(cfg.Tests))
-	assert.Equal(t, 1, len(cfg.Collectors))
+	assert.Equal(t, 2, len(cfg.Collectors))
 
 }
 
