@@ -30,7 +30,7 @@ func HasOnlyASCII(file structs.File, config config.Config) []structs.Message {
 		}
 	}
 	if nonASCII != "" {
-		return []structs.Message{{Content: "File contains non-ASCII character: " + nonASCII, Source: file}}
+		return []structs.Message{{Content: "File name contains non-ASCII character: " + nonASCII, Source: file}}
 	}
 	return nil
 }
@@ -39,7 +39,7 @@ func HasOnlyASCII(file structs.File, config config.Config) []structs.Message {
 func HasNoWhiteSpace(file structs.File, config config.Config) []structs.Message {
 	for i := 0; i < len(file.Name); i++ {
 		if file.Name[i] == SP {
-			return []structs.Message{{Content: "File contains spaces.", Source: file}}
+			return []structs.Message{{Content: "File name contains spaces.", Source: file}}
 		}
 	}
 	return nil
@@ -168,6 +168,8 @@ func tryReadBinary(file structs.File) [][]byte {
 			panic(err)
 		}
 		return content
+	} else if !readers.IsSupportedArchive(file.Name) {
+		fmt.Println("Not checking contents of binary file: ", file.Name)
 	}
 	return [][]byte{}
 }

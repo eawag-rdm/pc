@@ -42,6 +42,7 @@ func Request(url, ckanToken string, verifyTLS bool) (string, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		fmt.Println("Request URL:", url, "token:", ckanToken)
 		return "", fmt.Errorf("request failed with status code %d", resp.StatusCode)
 	}
 

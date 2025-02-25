@@ -18,12 +18,24 @@ As *.tar.gz* files require complete unpacking of the archive to access the list 
 - HasReadme (a readme file exists in the repository)
 - ReadMeContainsTOC (readme mentions each file containted in the repository)
 
-How the files are passed to the tool is defined via collectors. Currently only the LocaleCollector can be used. Work on the a collector from CKAN via package_id is underway.
+How the files are passed to the tool is defined via collectors. Currently the `LocaleCollector` and the `CkanCollector` can be used. 
+- the `LocalCollector` reads files from your local file system. 
+- the `CkanCollector` parses CKAN packages via their name. It determines resources in that package via a webrequest to the CKAN API. The resources are then also read locally. This means that the package checker needs to be deployed on the production server of CKAN, so that the package resources are readable.
 
 ## Run
+Set up the package checker configuration:
 ```bash
 cp pc.toml.example pc.toml
+```
+
+Once you edited the necessary config you can run with:
+```bash
 go run main.go
+```
+
+or you compile first and run via:
+```bash
+pc -location your-ckan-package-name
 ```
 
 ## Building

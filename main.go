@@ -52,6 +52,10 @@ func main() {
 		}
 
 	} else if generalConfig.Operation["main"].Collector == "CkanCollector" {
+		if *folder_or_url == "." {
+			fmt.Println("Please provide a CKAN package name (use the location flag '-location')")
+			return
+		}
 		files, err = collectors.CkanCollector(*folder_or_url, *generalConfig)
 		if err != nil {
 			fmt.Printf("CkanCollector error collecting files: %v\n", err)

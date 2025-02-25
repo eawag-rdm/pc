@@ -100,6 +100,19 @@ func Read7ZipFileList(filePath string) ([]structs.File, error) {
 	return fileList, nil
 }
 
+func IsSupportedArchive(filePath string) bool {
+	if strings.HasSuffix(filePath, ".zip") {
+		return true
+	} else if strings.HasSuffix(filePath, ".tar") {
+		return true
+	} else if strings.HasSuffix(filePath, ".7z") {
+		return true
+	} else if strings.HasSuffix(filePath, ".tar.gz") {
+		return true
+	}
+	return false
+}
+
 func ReadArchiveFileList(file structs.File) ([]structs.File, error) {
 	if strings.HasSuffix(file.Name, ".zip") {
 		return ReadZipFileList(file.Path)
@@ -108,7 +121,7 @@ func ReadArchiveFileList(file structs.File) ([]structs.File, error) {
 	} else if strings.HasSuffix(file.Name, ".7z") {
 		return Read7ZipFileList(file.Path)
 	} else if strings.HasSuffix(file.Name, ".tar.gz") {
-		fmt.Println("Skipping tar.gz file: ''", file.Name)
+		fmt.Println("Not checking contents of tar.gz file: ''", file.Name)
 		return []structs.File{}, nil
 		//return ReadTarGzFileList(file.Path)
 	} else {
