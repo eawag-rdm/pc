@@ -45,8 +45,8 @@ func HasNoWhiteSpace(file structs.File, config config.Config) []structs.Message 
 	return nil
 }
 
-// isBinaryFile checks if a file is likely a binary or unreadable file.
-func isBinaryFile(filePath string) (bool, error) {
+// isBinaryFileOrContainsNonAscii checks if a file is likely a binary or unreadable file.
+func isBinaryFileOrContainsNonAscii(filePath string) (bool, error) {
 	// Open the file for reading
 	file, err := os.Open(filePath)
 	if err != nil {
@@ -66,8 +66,9 @@ func isBinaryFile(filePath string) (bool, error) {
 
 	// Analyze the sample for non-printable characters
 	for i := 0; i < n; i++ {
-		// Allow common printable characters (ASCII and some Unicode spaces)
-		if !unicode.IsPrint(rune(buffer[i])) && !unicode.IsSpace(rune(buffer[i])) {
+		// Allow only ascii characters
+		if buffer[i] > unicode.MaxASCII {
+			fmt.Printf("File '%s' contains non-ASCII characters like '%s'.", filePath, string(buffer[i]))
 			return true, nil // Non-printable character found, likely binary
 		}
 	}
@@ -79,7 +80,7 @@ func IsFreeOfKeywords(file structs.File, config config.Config) []structs.Message
 
 	helpers.WarnForLargeFile(file, 10*1024*1024, "pretty big file, this may take a little longer.")
 
-	isBinary, err := isBinaryFile(file.Path)
+	isBinary, err := isBinaryFileOrContainsNonAscii(file.Path)
 	if err != nil {
 		return nil
 	}
@@ -169,7 +170,7 @@ func tryReadBinary(file structs.File) [][]byte {
 		}
 		return content
 	} else if !readers.IsSupportedArchive(file.Name) {
-		fmt.Println("Not checking contents of binary file: ", file.Name)
+		fmt.Printf("Not checking contents of file: '%s'. The file is either binary or contains non-unicode characters.", file.Name)
 	}
 	return [][]byte{}
 }

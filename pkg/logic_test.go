@@ -33,7 +33,7 @@ func TestMainLogic_Success(t *testing.T) {
 				[]structs.File{{Name: "space in file name"}, {Name: "file2"}},
 			),
 			expected: []structs.Message{
-				{Content: "File contains spaces.", Source: structs.File{Name: "space in file name"}},
+				{Content: "File name contains spaces.", Source: structs.File{Name: "space in file name"}},
 			},
 		},
 		{
@@ -41,7 +41,7 @@ func TestMainLogic_Success(t *testing.T) {
 				[]structs.File{{Name: "space in file name"}, {Name: "file2"}},
 			),
 			expected: []structs.Message{
-				{Content: "File contains spaces.", Source: structs.File{Name: "space in file name"}},
+				{Content: "File name contains spaces.", Source: structs.File{Name: "space in file name"}},
 			},
 		},
 		{
@@ -49,8 +49,8 @@ func TestMainLogic_Success(t *testing.T) {
 				[]structs.File{{Name: "Non ascĩĩ and space"}, {Name: "file2"}},
 			),
 			expected: []structs.Message{
-				{Content: "File contains non-ASCII character: ĩĩ", Source: structs.File{Name: "Non ascĩĩ and space"}},
-				{Content: "File contains spaces.", Source: structs.File{Name: "Non ascĩĩ and space"}},
+				{Content: "File name contains non-ASCII character: ĩĩ", Source: structs.File{Name: "Non ascĩĩ and space"}},
+				{Content: "File name contains spaces.", Source: structs.File{Name: "Non ascĩĩ and space"}},
 			},
 		},
 	}

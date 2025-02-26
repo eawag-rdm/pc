@@ -43,7 +43,7 @@ func TestHasOnlyASCII(t *testing.T) {
 			name: "Non-ASCII character",
 			file: structs.File{Name: "testfile_ñ_ñ.txt"},
 			expected: []structs.Message{
-				{Content: "File contains non-ASCII character: ññ", Source: structs.File{Name: "testfile_ñ_ñ.txt"}},
+				{Content: "File name contains non-ASCII character: ññ", Source: structs.File{Name: "testfile_ñ_ñ.txt"}},
 			},
 		},
 		{
@@ -51,7 +51,7 @@ func TestHasOnlyASCII(t *testing.T) {
 			file: structs.File{Name: "testfile_abc_ñ_123.txt"},
 			expected: []structs.Message{
 
-				{Content: "File contains non-ASCII character: ñ", Source: structs.File{Name: "testfile_abc_ñ_123.txt"}},
+				{Content: "File name contains non-ASCII character: ñ", Source: structs.File{Name: "testfile_abc_ñ_123.txt"}},
 			},
 		},
 		{
@@ -91,7 +91,7 @@ func TestHasNoWhiteSpace(t *testing.T) {
 			name: "Contains spaces",
 			file: structs.File{Name: "test file.txt"},
 			expected: []structs.Message{
-				{Content: "File contains spaces.", Source: structs.File{Name: "test file.txt"}},
+				{Content: "File name contains spaces.", Source: structs.File{Name: "test file.txt"}},
 			},
 		},
 		{
@@ -116,7 +116,7 @@ func TestHasNoWhiteSpace(t *testing.T) {
 	}
 }
 
-func TestIsBinaryFile(t *testing.T) {
+func TestIsBinaryFileOrNonAscii(t *testing.T) {
 	// Test cases
 	var binTests = []struct {
 		file     string // input
@@ -128,12 +128,35 @@ func TestIsBinaryFile(t *testing.T) {
 
 	// Loop over test cases
 	for _, tt := range binTests {
-		isBin, _ := isBinaryFile(tt.file) // Call the function being tested
+		isBin, _ := isBinaryFileOrContainsNonAscii(tt.file) // Call the function being tested
 		if isBin != tt.expected {
 			t.Errorf("Error for '%v': got %v, want %v", tt.file, isBin, tt.expected)
 		}
 	}
 }
+
+func TestIsBinaryFileOrNonAsciiReadme(t *testing.T) {
+	tests := []struct {
+		filepath string
+		expected bool
+	}{
+		{
+			filepath: "../../testdata/readme.txt",
+			expected: true,
+		},
+	}
+	for _, test := range tests {
+		actual, err := isBinaryFileOrContainsNonAscii(test.filepath)
+		if err != nil {
+			t.Errorf("Error: %v", err)
+		}
+		if actual != test.expected {
+			t.Errorf("Expected: %v, Actual: %v", test.expected, actual)
+		}
+
+	}
+}
+
 func TestIsFreeOfKeywords(t *testing.T) {
 	tests := []struct {
 		name     string
