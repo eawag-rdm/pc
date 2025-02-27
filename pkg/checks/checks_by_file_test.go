@@ -116,47 +116,6 @@ func TestHasNoWhiteSpace(t *testing.T) {
 	}
 }
 
-func TestIsBinaryFileOrNonAscii(t *testing.T) {
-	// Test cases
-	var binTests = []struct {
-		file     string // input
-		expected bool   // expected result
-	}{
-		{tempFile([]byte{101, 111, 0, 222}), true},
-		{tempFile([]byte("Hello")), false},
-	}
-
-	// Loop over test cases
-	for _, tt := range binTests {
-		isBin, _ := isBinaryFileOrContainsNonAscii(tt.file) // Call the function being tested
-		if isBin != tt.expected {
-			t.Errorf("Error for '%v': got %v, want %v", tt.file, isBin, tt.expected)
-		}
-	}
-}
-
-func TestIsBinaryFileOrNonAsciiReadme(t *testing.T) {
-	tests := []struct {
-		filepath string
-		expected bool
-	}{
-		{
-			filepath: "../../testdata/readme.txt",
-			expected: true,
-		},
-	}
-	for _, test := range tests {
-		actual, err := isBinaryFileOrContainsNonAscii(test.filepath)
-		if err != nil {
-			t.Errorf("Error: %v", err)
-		}
-		if actual != test.expected {
-			t.Errorf("Expected: %v, Actual: %v", test.expected, actual)
-		}
-
-	}
-}
-
 func TestIsFreeOfKeywords(t *testing.T) {
 	tests := []struct {
 		name     string

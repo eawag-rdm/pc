@@ -6,6 +6,7 @@ require (
 	github.com/BurntSushi/toml v1.4.0
 	github.com/bodgit/sevenzip v1.6.0
 	github.com/fumiama/go-docx v0.0.0-20240924153044-f7d29bb5c371
+	github.com/saintfish/chardet v0.0.0-20230101081208-5e3ef4b5456d
 	github.com/stretchr/testify v1.10.0
 	github.com/thedatashed/xlsxreader v1.2.8
 )

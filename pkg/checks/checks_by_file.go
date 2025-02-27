@@ -1,7 +1,6 @@
 package checks
 
 import (
-	"bufio"
 	"fmt"
 	"net/http"
 	"os"
@@ -68,36 +67,6 @@ func isTextFile(filePath string) (bool, error) {
 		return true, nil
 	}
 	return false, nil
-}
-
-// isBinaryFileOrContainsNonAscii checks if a file is likely a binary or unreadable file.
-func isBinaryFileOrContainsNonAscii(filePath string) (bool, error) {
-	// Open the file for reading
-	file, err := os.Open(filePath)
-	if err != nil {
-		return false, err
-	}
-	defer file.Close()
-
-	// Read a small sample of the file
-	const sampleSize = 256
-	reader := bufio.NewReader(file)
-	buffer := make([]byte, sampleSize)
-
-	n, err := reader.Read(buffer)
-	if err != nil && err.Error() != "EOF" {
-		return false, err
-	}
-
-	// Analyze the sample for non-printable characters
-	for i := 0; i < n; i++ {
-		// Allow only ascii characters
-		if buffer[i] > unicode.MaxASCII {
-			// fmt.Printf("File '%s' contains non-ASCII characters like '%s'.", filePath, string(buffer[i]))
-			return true, nil // Non-printable character found, likely binary
-		}
-	}
-	return false, nil // All characters are printable, likely not binary
 }
 
 func IsFreeOfKeywords(file structs.File, config config.Config) []structs.Message {
