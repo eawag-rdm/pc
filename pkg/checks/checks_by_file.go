@@ -195,7 +195,7 @@ func tryReadBinary(file structs.File) [][]byte {
 		}
 		return content
 	} else if !readers.IsSupportedArchive(file.Name) {
-		fmt.Printf("Not checking contents of file: '%s'. The file seems to be binary.", file.Name)
+		fmt.Printf("Not checking contents of file: '%s'. The file seems to be binary.\n", file.Name)
 	}
 	return [][]byte{}
 }
