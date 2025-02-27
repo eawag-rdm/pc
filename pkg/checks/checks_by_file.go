@@ -68,7 +68,7 @@ func isBinaryFileOrContainsNonAscii(filePath string) (bool, error) {
 	for i := 0; i < n; i++ {
 		// Allow only ascii characters
 		if buffer[i] > unicode.MaxASCII {
-			fmt.Printf("File '%s' contains non-ASCII characters like '%s'.", filePath, string(buffer[i]))
+			// fmt.Printf("File '%s' contains non-ASCII characters like '%s'.", filePath, string(buffer[i]))
 			return true, nil // Non-printable character found, likely binary
 		}
 	}
@@ -170,7 +170,7 @@ func tryReadBinary(file structs.File) [][]byte {
 		}
 		return content
 	} else if !readers.IsSupportedArchive(file.Name) {
-		fmt.Printf("Not checking contents of file: '%s'. The file is either binary or contains non-unicode characters.", file.Name)
+		fmt.Printf("Not checking contents of file: '%s'. The file is either binary or contains non-ascii characters.", file.Name)
 	}
 	return [][]byte{}
 }
