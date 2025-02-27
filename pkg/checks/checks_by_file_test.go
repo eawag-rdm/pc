@@ -311,7 +311,6 @@ func TestIsTextFile(t *testing.T) {
 	}
 }
 
-
 func TestIsTextFileExampleFiles(t *testing.T) {
 	tests := []struct {
 		filepath string
@@ -337,6 +336,14 @@ func TestIsTextFileExampleFiles(t *testing.T) {
 			filepath: "../../testdata/test.docx",
 			expected: false,
 		},
+		{
+			filepath: "../../testdata/test.xml",
+			expected: true,
+		},
+		{
+			filepath: "../../testdata/test.html",
+			expected: true,
+		},
 	}
 	for _, test := range tests {
 		actual, err := isTextFile(test.filepath)
@@ -344,7 +351,7 @@ func TestIsTextFileExampleFiles(t *testing.T) {
 			t.Errorf("Error: %v", err)
 		}
 		if actual != test.expected {
-			t.Errorf("Expected: %v, Actual: %v", test.expected, actual)
+			t.Errorf("File: %s Expected: %v, Actual: %v", test.filepath, test.expected, actual)
 		}
 	}
 }
