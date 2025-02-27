@@ -3,6 +3,7 @@ package checks
 import (
 	"bufio"
 	"fmt"
+	"net/http"
 	"os"
 	"regexp"
 	"strings"
@@ -45,6 +46,30 @@ func HasNoWhiteSpace(file structs.File, config config.Config) []structs.Message 
 	return nil
 }
 
+// isTextFile checks if a file is a text file using DetectContentType from the http package.
+func isTextFile(filePath string) (bool, error) {
+	// Open the file for reading
+	file, err := os.Open(filePath)
+	if err != nil {
+		return false, err
+	}
+	defer file.Close()
+
+	// Read a small sample of the file
+	const sampleSize = 512
+	buffer := make([]byte, sampleSize)
+	n, err := file.Read(buffer)
+	if err != nil && err.Error() != "EOF" {
+		return false, err
+	}
+
+	filetype := http.DetectContentType(buffer[:n])
+	if strings.HasPrefix(filetype, "text/") {
+		return true, nil
+	}
+	return false, nil
+}
+
 // isBinaryFileOrContainsNonAscii checks if a file is likely a binary or unreadable file.
 func isBinaryFileOrContainsNonAscii(filePath string) (bool, error) {
 	// Open the file for reading
@@ -55,7 +80,7 @@ func isBinaryFileOrContainsNonAscii(filePath string) (bool, error) {
 	defer file.Close()
 
 	// Read a small sample of the file
-	const sampleSize = 2048
+	const sampleSize = 256
 	reader := bufio.NewReader(file)
 	buffer := make([]byte, sampleSize)
 
@@ -80,13 +105,13 @@ func IsFreeOfKeywords(file structs.File, config config.Config) []structs.Message
 
 	helpers.WarnForLargeFile(file, 10*1024*1024, "pretty big file, this may take a little longer.")
 
-	isBinary, err := isBinaryFileOrContainsNonAscii(file.Path)
+	isText, err := isTextFile(file.Path)
 	if err != nil {
 		return nil
 	}
 
 	var body [][]byte
-	if !isBinary {
+	if isText {
 		content, err := os.ReadFile(file.Path)
 		if err != nil {
 			panic(err)
@@ -100,7 +125,7 @@ func IsFreeOfKeywords(file structs.File, config config.Config) []structs.Message
 		var keywords = strings.Join(argumentSet["keywords"].([]string), "|")
 		var info = argumentSet["info"].(string)
 
-		ret := IsFreeOfKeywordsCore(file, keywords, info, body, isBinary)
+		ret := IsFreeOfKeywordsCore(file, keywords, info, body, !isText)
 		if ret != nil {
 			messages = append(messages, ret...)
 		}
@@ -170,7 +195,7 @@ func tryReadBinary(file structs.File) [][]byte {
 		}
 		return content
 	} else if !readers.IsSupportedArchive(file.Name) {
-		fmt.Printf("Not checking contents of file: '%s'. The file is either binary or contains non-ascii characters.", file.Name)
+		fmt.Printf("Not checking contents of file: '%s'. The file seems to be binary.", file.Name)
 	}
 	return [][]byte{}
 }

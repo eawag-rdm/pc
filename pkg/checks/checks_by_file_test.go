@@ -272,3 +272,79 @@ func TestIsValidName(t *testing.T) {
 		})
 	}
 }
+func TestIsTextFile(t *testing.T) {
+	tests := []struct {
+		name     string
+		content  []byte
+		expected bool
+	}{
+		{
+			name:     "Text file",
+			content:  []byte("This is a plain text file."),
+			expected: true,
+		},
+		{
+			name:     "Binary file",
+			content:  []byte{0x00, 0x01, 0x02, 0x03, 0x04},
+			expected: false,
+		},
+		{
+			name:     "Empty file",
+			content:  []byte{},
+			expected: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			filePath := tempFile(tt.content)
+			defer os.Remove(filePath)
+
+			result, err := isTextFile(filePath)
+			if err != nil {
+				t.Errorf("Error: %v", err)
+			}
+			if result != tt.expected {
+				t.Errorf("expected %v, got %v", tt.expected, result)
+			}
+		})
+	}
+}
+
+
+func TestIsTextFileExampleFiles(t *testing.T) {
+	tests := []struct {
+		filepath string
+		expected bool
+	}{
+		{
+			filepath: "../../testdata/readme.txt",
+			expected: true,
+		},
+		{
+			filepath: "../../testdata/test_ckan_metadata.json",
+			expected: true,
+		},
+		{
+			filepath: "../../testdata/test_config.toml",
+			expected: true,
+		},
+		{
+			filepath: "../../testdata/test.7z",
+			expected: false,
+		},
+		{
+			filepath: "../../testdata/test.docx",
+			expected: false,
+		},
+	}
+	for _, test := range tests {
+		actual, err := isTextFile(test.filepath)
+		if err != nil {
+			t.Errorf("Error: %v", err)
+		}
+		if actual != test.expected {
+			t.Errorf("Expected: %v, Actual: %v", test.expected, actual)
+		}
+	}
+}
