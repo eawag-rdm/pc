@@ -3,6 +3,7 @@ package checks
 import (
 	"bytes"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/eawag-rdm/pc/pkg/config"
@@ -57,7 +58,8 @@ func ReadMeContainsTOC(repository structs.Repository, config config.Config) []st
 	missing_files := []string{}
 	for _, file := range repository.Files {
 		if !isReadMe(file) {
-			if !bytes.Contains(content, []byte(file.Name)) {
+			nameWithoutSuffix := strings.TrimSuffix(file.Name, filepath.Ext(file.Name))
+			if !bytes.Contains(content, []byte(nameWithoutSuffix)) {
 				missing_files = append(missing_files, file.Name)
 			}
 		}

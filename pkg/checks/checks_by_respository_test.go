@@ -74,6 +74,18 @@ func TestReadMeContainsTOC(t *testing.T) {
 			nil,
 			"",
 		},
+		{
+			"Test TOC with files without suffix",
+			structs.Repository{
+				Files: []structs.File{
+					{Name: "readme.md", Path: "testdata/readme_without_toc.md"},
+					{Name: "file1.txt"},
+					{Name: "file2.txt"},
+				},
+			},
+			[]structs.Message{{Content: "ReadMe file is missing a complete table of contents for this repository. Missing files are: 'file2'", Source: structs.Repository{Files: []structs.File{{Name: "readme.md", Path: "testdata/readme_without_toc.md"}, {Name: "file1.txt"}, {Name: "file2.txt"}}}}},
+			"# Table of Contents\n\n- file1\n",
+		},
 	}
 
 	for _, tt := range tests {
