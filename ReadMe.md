@@ -44,6 +44,27 @@ To build (https://github.com/confluentinc/confluent-kafka-go/issues/1092#issueco
 go build -ldflags="-s -w" . && ./pc
 ```
 
+## Deployment with CKAN
+If you want to use the CKAN collector the binary needs to have access to the resources locally, so it can read them without downloading. Make sure the access rights for the binary are set correctly.
+
+Eg:
+```bash
+# copy to ckan server
+scp pc production-ckan:/home/rdm
+# change owner to owner of resources
+sudo chown ckan:ckan pc
+# set the sticky bit, so anyone can run the binary as the user ckan
+sudo chmod u+s pc
+```
+
+To run the tool from another computer one could:
+```bash
+#!/usr/bin/bash
+echo -e "\e[31m=>This script is running a binary on prod2!\e[0m"
+ssh -i .../.ssh/id_ed25519_ckool rdm@production-ckan /home/rdm/pc "$@"
+```
+
+
 ## Testing
 ```
 go test ./...
