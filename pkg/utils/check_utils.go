@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"fmt"
 	"reflect"
 	"regexp"
 	"runtime"
@@ -84,6 +85,7 @@ func ApplyChecksFilteredByFileOnArchive(config config.Config, checks []func(file
 		fileList, err := readers.ReadArchiveFileList(file)
 		if err != nil {
 			// handle the error appropriately, e.g., log it or return it
+			fmt.Println("Error reading archive file list:", err)
 			continue
 		}
 		for _, archivedFile := range fileList {
