@@ -43,7 +43,7 @@ func Request(url, ckanToken string, verifyTLS bool) (string, error) {
 
 	if resp.StatusCode != http.StatusOK {
 		fmt.Println("Request URL:", url, "token:", ckanToken)
-		return "", fmt.Errorf("request failed with status code %d", resp.StatusCode)
+		return "", fmt.Errorf("request failed with status code %d. This might indicate the package is private and needs to be set to public", resp.StatusCode)
 	}
 
 	bodyBytes, err := io.ReadAll(resp.Body)
