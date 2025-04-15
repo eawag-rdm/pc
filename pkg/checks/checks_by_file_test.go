@@ -237,6 +237,38 @@ func TestIsValidName(t *testing.T) {
 		})
 	}
 }
+
+func TestIsValidNameExtended(t *testing.T) {
+	tests := []struct {
+		name                 string
+		file                 structs.File
+		disallowedNames      []string
+		expectedMessageCount int
+	}{
+		{
+			name:                 "Checking file endings.",
+			file:                 structs.File{Name: "abc.doc"},
+			disallowedNames:      []string{".doc", ".xls"},
+			expectedMessageCount: 1,
+		},
+		{
+			name:                 "Folder in the file name",
+			file:                 structs.File{Name: "__pycache__/invalidfile.txt"},
+			disallowedNames:      []string{"__pycache__", "invalidfile.txt", ".txt"},
+			expectedMessageCount: 3,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := IsValidNameCore(tt.file, tt.disallowedNames)
+			if len(result) != tt.expectedMessageCount {
+				t.Errorf("expected %v messages, got %v", tt.expectedMessageCount, result)
+			}
+		})
+	}
+}
+
 func TestIsTextFile(t *testing.T) {
 	tests := []struct {
 		name     string

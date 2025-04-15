@@ -180,10 +180,34 @@ func IsValidName(file structs.File, config config.Config) []structs.Message {
 }
 
 func IsValidNameCore(file structs.File, invalidFileNames []string) []structs.Message {
+
+	var folders []string
+	var name string
+	var messages []structs.Message
+
+	name = file.Name
+	// Check if the file name is a path and if it is, split it
+	if strings.Contains(file.Name, "/") || strings.Contains(file.Name, "\\") {
+		folders = strings.Split(file.Name, "/")
+		name = folders[len(folders)-1]
+		// remove the file name from the path
+		folders = folders[:len(folders)-1]
+	}
+
 	for _, invalidFileName := range invalidFileNames {
-		if strings.EqualFold(file.Name, invalidFileName) {
-			return []structs.Message{{Content: "File or Folder has an invalid name: " + file.Name, Source: file}}
+		// Check 'exact' match
+		if strings.EqualFold(name, invalidFileName) {
+			messages = append(messages, structs.Message{Content: "File or Folder has an invalid name: " + file.Name, Source: file})
+		} else if strings.HasSuffix(name, invalidFileName) {
+			messages = append(messages, structs.Message{Content: "File has an invalid suffix: " + file.Name, Source: file})
+		}
+		if len(folders) > 0 {
+			for _, folder := range folders {
+				if strings.EqualFold(folder, invalidFileName) {
+					messages = append(messages, structs.Message{Content: "File or Folder has an invalid name: " + file.Name, Source: file})
+				}
+			}
 		}
 	}
-	return nil
+	return messages
 }
