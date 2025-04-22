@@ -1,7 +1,6 @@
 package checks
 
 import (
-	"fmt"
 	"os"
 	"testing"
 
@@ -183,8 +182,6 @@ func TestIsFreeOfKeywords(t *testing.T) {
 				t.Errorf("expected %v, got %v", tt.expected, result)
 			}
 			for i := range result {
-				fmt.Println(result[i].Content)
-				fmt.Println(tt.expected[i].Content)
 				if result[i].Content != tt.expected[i].Content {
 					t.Errorf("expected %v, got %v", tt.expected[i].Content, result[i].Content)
 				}
