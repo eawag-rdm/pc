@@ -27,7 +27,8 @@ blacklist = []
 whitelist = ["b"]
 keywordArguments = [
     { keywords = ["user", "id_rsa", "password"], info = "Possible credentials in file" },
-    { keywords = "Q:", info = "Possible internal information in file" }
+    { keywords = "Q:", info = "Possible internal information in file" },
+    { keywords = ["/Users/"], info = "Do you have hardcoded filepaths in your files?  Found suspicious keyword(s):" }
 ]
 
 [test.IsValidName]

@@ -31,7 +31,8 @@ blacklist = []
 whitelist = []
 keywordArguments = [
     { keywords = ["pwd","password","token", "id_rsa", "id_ed25519"], info = "Sensitive data in File? Found suspicious keyword(s):" },
-    { keywords = ["Q:"], info = "Do you have Eawag internal information in your files?  Found suspicious keyword(s):" }
+    { keywords = ["Q:"], info = "Do you have Eawag internal information in your files?  Found suspicious keyword(s):" },
+    { keywords = ["/Users/"], info = "Do you have hardcoded filepaths in your files?  Found suspicious keyword(s):" }
 ]
 
 [test.IsValidName]

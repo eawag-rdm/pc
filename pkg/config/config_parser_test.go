@@ -87,6 +87,11 @@ func TestConfigFile(t *testing.T) {
 	assert.Equal(t, 3, len(cfg.Tests))
 	assert.Equal(t, 2, len(cfg.Collectors))
 
+	keywords, ok := (*cfg.Tests["IsFreeOfKeywords"]).KeywordArguments[2]["keywords"].([]string)
+	assert.True(t, ok)
+	assert.Equal(t, 1, len(keywords))
+	assert.Contains(t, keywords, "/Users/")
+
 }
 
 func TestParseConfig(t *testing.T) {
@@ -99,6 +104,9 @@ func TestParseConfig(t *testing.T) {
 	blacklist = ["item1", "item2"]
 	whitelist = ["item3"]
 	keywordArguments = [{ "arg1" = "value1" }, {"arg1" = "value1", "arg2" = ["value2", "value3"] }]
+
+	[test.test2]
+	keywordArguments = [{"arg1" = "value1", "arg2" = ["/path/", "C:/path/"] }]
 
 	[collector.collector1]
 	attrs = { "key1" = "value1", "key2" = ["value2", "value3"] }
@@ -128,6 +136,13 @@ func TestParseConfig(t *testing.T) {
 	assert.ElementsMatch(t, []string{"value2", "value3"}, testConfig.KeywordArguments[1]["arg2"])
 	assert.Equal(t, "item1", testConfig.Blacklist[0])
 	assert.Equal(t, "value1", testConfig.KeywordArguments[0]["arg1"])
+
+	testConfig2, ok := config.Tests["test2"]
+	assert.True(t, ok)
+	assert.Len(t, testConfig2.KeywordArguments, 1)
+	assert.Equal(t, "value1", testConfig2.KeywordArguments[0]["arg1"])
+	assert.ElementsMatch(t, []string{"/path/", "C:/path/"}, testConfig2.KeywordArguments[0]["arg2"])
+	assert.Equal(t, 2, len(testConfig2.KeywordArguments[0]["arg2"].([]string)))
 
 	collectorConfig, ok := config.Collectors["collector1"]
 	assert.True(t, ok)
