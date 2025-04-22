@@ -29,8 +29,13 @@ func (ft *FileTracker) AddFileIfPDF(note string, file structs.File) {
 func (ft *FileTracker) FormatFiles() string {
 	var sb strings.Builder
 	sb.WriteString(ft.Header + "\n")
+	noFilesFound := true
 	for _, fileInfo := range ft.Files {
+		noFilesFound = false
 		sb.WriteString(fileInfo + "\n")
+	}
+	if noFilesFound {
+		sb.WriteString("No files found.\n")
 	}
 	return sb.String()
 }
