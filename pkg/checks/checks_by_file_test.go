@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"fmt"
 	"os"
 	"testing"
 
@@ -157,6 +158,22 @@ func TestIsFreeOfKeywords(t *testing.T) {
 			content:  []byte{0x00, 0x01, 0x02},
 			expected: nil,
 		},
+		{
+			name:     "Path",
+			file:     structs.File{Path: tempFile([]byte("This is some text."))},
+			keywords: "/Users/",
+			info:     "Keywords found:",
+			content:  []byte("This is some text."),
+			expected: nil,
+		},
+		{
+			name:     "Path2",
+			file:     structs.File{Path: tempFile([]byte("ADHABDAID /Users/"))},
+			keywords: "/Users/",
+			info:     "Keywords found:",
+			content:  []byte("ADHABDAID /Users/"),
+			expected: []structs.Message{{Content: "Keywords found: '/Users/'", Source: structs.File{Path: tempFile([]byte("ADHABDAID /Users/"))}}},
+		},
 	}
 
 	for _, tt := range tests {
@@ -166,6 +183,8 @@ func TestIsFreeOfKeywords(t *testing.T) {
 				t.Errorf("expected %v, got %v", tt.expected, result)
 			}
 			for i := range result {
+				fmt.Println(result[i].Content)
+				fmt.Println(tt.expected[i].Content)
 				if result[i].Content != tt.expected[i].Content {
 					t.Errorf("expected %v, got %v", tt.expected[i].Content, result[i].Content)
 				}
