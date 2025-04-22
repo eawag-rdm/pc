@@ -9,6 +9,7 @@ import (
 
 	"github.com/eawag-rdm/pc/pkg/checks"
 	"github.com/eawag-rdm/pc/pkg/config"
+	"github.com/eawag-rdm/pc/pkg/helpers"
 	"github.com/eawag-rdm/pc/pkg/readers"
 	"github.com/eawag-rdm/pc/pkg/structs"
 )
@@ -64,6 +65,7 @@ func skipFileCheck(config config.Config, fileCheck func(file structs.File, confi
 func ApplyChecksFilteredByFile(config config.Config, checks []func(file structs.File, config config.Config) []structs.Message, files []structs.File) []structs.Message {
 	var messages = []structs.Message{}
 	for _, file := range files {
+		helpers.PDFTracker.AddFileIfPDF("", file)
 		// apply checks by file but only for file.Name
 		for _, check := range checks {
 			if skipFileCheck(config, check, file) {
@@ -89,6 +91,8 @@ func ApplyChecksFilteredByFileOnArchive(config config.Config, checks []func(file
 			continue
 		}
 		for _, archivedFile := range fileList {
+			helpers.PDFTracker.AddFileIfPDF(file.Name+" -> ", archivedFile)
+
 			for _, check := range checks {
 				if skipFileCheck(config, check, archivedFile) {
 					continue

@@ -6,6 +6,7 @@ import (
 
 	"github.com/eawag-rdm/pc/pkg/collectors"
 	"github.com/eawag-rdm/pc/pkg/config"
+	"github.com/eawag-rdm/pc/pkg/helpers"
 	"github.com/eawag-rdm/pc/pkg/structs"
 	"github.com/eawag-rdm/pc/pkg/utils"
 )
@@ -73,7 +74,7 @@ func main() {
 		for _, message := range messages {
 			fmt.Println(message.Format())
 		}
-		return
 	}
 
+	fmt.Println(helpers.PDFTracker.FormatFiles())
 }
