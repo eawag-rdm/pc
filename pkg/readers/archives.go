@@ -93,7 +93,6 @@ func Read7ZipFileList(filePath string) ([]structs.File, error) {
 	defer r.Close()
 
 	for _, f := range r.File {
-		fmt.Println(f.Name)
 		fileList = append(fileList, structs.ToFile(filePath, f.Name, f.FileInfo().Size(), ""))
 	}
 

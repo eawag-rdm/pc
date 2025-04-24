@@ -54,6 +54,26 @@ func NewUnpackedFileIterator(archiveName string, maxSize int) *UnpackedFileItera
 	}
 }
 
+func (u *UnpackedFileIterator) findFirstZip() bool {
+	if u.zipReader == nil {
+		reader, err := zip.OpenReader(u.Archive)
+		if err != nil {
+			u.iterationEnded = true
+			return false
+		}
+		u.zipReader = reader
+	}
+	files := u.zipReader.File
+	for i, f := range files {
+		if !f.FileInfo().IsDir() && f.UncompressedSize64 <= uint64(u.MaxSize) {
+			u.fileIndex = i
+			return true
+		}
+	}
+	u.iterationEnded = true
+	return false
+}
+
 func (u *UnpackedFileIterator) unpackZipFile(fileIndex int) (string, []byte, int, error) {
 	file := u.zipReader.File[fileIndex]
 
@@ -114,6 +134,42 @@ func unpackZip(u *UnpackedFileIterator) (bool, error) {
 	return true, nil
 }
 
+func (u *UnpackedFileIterator) findFirstTar() bool {
+	if u.tarReader == nil {
+		file, err := os.Open(u.Archive)
+		if err != nil {
+			u.iterationEnded = true
+			return false
+		}
+		u.tarFile = file
+		u.tarReader = tar.NewReader(file)
+	}
+
+	// Buffer the first valid file
+	for {
+		header, err := u.tarReader.Next()
+		if err != nil {
+			u.iterationEnded = true
+			return false
+		}
+		u.fileIndex++
+
+		if header.Typeflag == tar.TypeDir || header.Size > int64(u.MaxSize) {
+			continue
+		}
+
+		name, content, size, err := u.unpackTarFile(header, u.tarReader)
+		if err != nil {
+			u.iterationEnded = true
+			return false
+		}
+		u.bufferedFilename = name
+		u.bufferedFileContent = content
+		u.bufferedFileSize = size
+		return true
+	}
+}
+
 func (u *UnpackedFileIterator) unpackTarFile(header *tar.Header, reader io.Reader) (string, []byte, int, error) {
 	content := make([]byte, header.Size)
 	if _, err := io.ReadFull(reader, content); err != nil {
@@ -127,8 +183,8 @@ func unpackTar(u *UnpackedFileIterator) (bool, error) {
 		return false, nil
 	}
 
-	// Use buffered file from HasFilesToUnpack
-	if u.CurrentFilename == "" && u.bufferedFilename != "" {
+	// Consume the buffered file
+	if u.bufferedFilename != "" {
 		u.CurrentFilename = u.bufferedFilename
 		u.CurrentFileContent = u.bufferedFileContent
 		u.CurrentFileSize = u.bufferedFileSize
@@ -137,33 +193,7 @@ func unpackTar(u *UnpackedFileIterator) (bool, error) {
 		u.bufferedFileContent = nil
 		u.bufferedFileSize = 0
 	} else {
-		// Read the next valid file
-		for {
-			header, err := u.tarReader.Next()
-			if err == io.EOF {
-				u.iterationEnded = true
-				return false, nil
-			}
-			if err != nil {
-				u.iterationEnded = true
-				return false, fmt.Errorf("error reading tar header: %w", err)
-			}
-			u.fileIndex++
-
-			if header.Typeflag == tar.TypeDir || header.Size > int64(u.MaxSize) {
-				continue
-			}
-
-			name, content, size, err := u.unpackTarFile(header, u.tarReader)
-			if err != nil {
-				u.iterationEnded = true
-				return false, err
-			}
-			u.CurrentFilename = name
-			u.CurrentFileContent = content
-			u.CurrentFileSize = size
-			break
-		}
+		return false, nil
 	}
 
 	// Buffer next valid file
@@ -195,6 +225,26 @@ func unpackTar(u *UnpackedFileIterator) (bool, error) {
 	}
 
 	return true, nil
+}
+
+func (u *UnpackedFileIterator) findFirst7z() bool {
+	if u.sevenZipReader == nil {
+		reader, err := sevenzip.OpenReader(u.Archive)
+		if err != nil {
+			u.iterationEnded = true
+			return false
+		}
+		u.sevenZipReader = reader
+	}
+	files := u.sevenZipReader.File
+	for i, f := range files {
+		if !f.FileInfo().IsDir() && f.UncompressedSize <= uint64(u.MaxSize) {
+			u.fileIndex = i
+			return true
+		}
+	}
+	u.iterationEnded = true
+	return false
 }
 
 func (u *UnpackedFileIterator) unpack7zFile(index int) (string, []byte, int, error) {
@@ -280,81 +330,6 @@ func (u *UnpackedFileIterator) HasNext() bool {
 	return !u.iterationEnded
 }
 
-func (u *UnpackedFileIterator) findFirstZip() bool {
-	if u.zipReader == nil {
-		reader, err := zip.OpenReader(u.Archive)
-		if err != nil {
-			u.iterationEnded = true
-			return false
-		}
-		u.zipReader = reader
-	}
-	files := u.zipReader.File
-	for i, f := range files {
-		if !f.FileInfo().IsDir() && f.UncompressedSize64 <= uint64(u.MaxSize) {
-			u.fileIndex = i
-			return true
-		}
-	}
-	u.iterationEnded = true
-	return false
-}
-
-func (u *UnpackedFileIterator) findFirstTar() bool {
-	if u.tarReader == nil {
-		file, err := os.Open(u.Archive)
-		if err != nil {
-			u.iterationEnded = true
-			return false
-		}
-		u.tarFile = file
-		u.tarReader = tar.NewReader(file)
-	}
-
-	for {
-		header, err := u.tarReader.Next()
-		if err != nil {
-			u.iterationEnded = true
-			return false
-		}
-		u.fileIndex++
-
-		if header.Typeflag == tar.TypeDir || header.Size > int64(u.MaxSize) {
-			continue
-		}
-
-		name, content, size, err := u.unpackTarFile(header, u.tarReader)
-		if err != nil {
-			u.iterationEnded = true
-			return false
-		}
-		u.bufferedFilename = name
-		u.bufferedFileContent = content
-		u.bufferedFileSize = size
-		return true
-	}
-}
-
-func (u *UnpackedFileIterator) findFirst7z() bool {
-	if u.sevenZipReader == nil {
-		reader, err := sevenzip.OpenReader(u.Archive)
-		if err != nil {
-			u.iterationEnded = true
-			return false
-		}
-		u.sevenZipReader = reader
-	}
-	files := u.sevenZipReader.File
-	for i, f := range files {
-		if !f.FileInfo().IsDir() && f.UncompressedSize <= uint64(u.MaxSize) {
-			u.fileIndex = i
-			return true
-		}
-	}
-	u.iterationEnded = true
-	return false
-}
-
 func (u *UnpackedFileIterator) HasFilesToUnpack() bool {
 
 	if u.hasCheckedFirstFile {
@@ -404,4 +379,3 @@ func (u *UnpackedFileIterator) Next() bool {
 
 	return ok // true only if valid file was found
 }
-
