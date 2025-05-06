@@ -3,6 +3,7 @@ package readers
 import (
 	"testing"
 
+	"github.com/eawag-rdm/pc/pkg/structs"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -18,7 +19,7 @@ func TestIterareUnpackedFiles(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			nfi := NewUnpackedFileIterator(test.filepath, 1024*1024)
+			nfi := newUnpackedFileIterator(test.filepath, 1024*1024)
 			assert.True(t, nfi.HasFilesToUnpack(), "Expected archive to have valid files")
 
 			assert.True(t, nfi.Next())
@@ -42,7 +43,7 @@ func TestIterareEmpty(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			nfi := NewUnpackedFileIterator(test.filepath, 1024*1024)
+			nfi := newUnpackedFileIterator(test.filepath, 1024*1024)
 			assert.False(t, nfi.HasFilesToUnpack(), "Expected no valid files in archive")
 			assert.False(t, nfi.HasNext())
 		})
@@ -66,7 +67,7 @@ func TestIterareUnpackedFilesMaxSize(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			nfi := NewUnpackedFileIterator(test.filepath, test.maxLen)
+			nfi := newUnpackedFileIterator(test.filepath, test.maxLen)
 
 			if !nfi.HasFilesToUnpack() {
 				assert.Equal(t, 0, test.expectedLen, "No files to unpack, but expected some")
@@ -107,7 +108,7 @@ func TestIteratorEdgeCases(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			nfi := NewUnpackedFileIterator(test.filepath, test.maxSize)
+			nfi := newUnpackedFileIterator(test.filepath, test.maxSize)
 
 			if test.expectedLen == 0 {
 				assert.False(t, nfi.HasFilesToUnpack(), "Expected no files in archive")
@@ -130,4 +131,52 @@ func TestIteratorEdgeCases(t *testing.T) {
 		})
 	}
 }
+func TestInitArchiveIterator(t *testing.T) {
+	tests := []struct {
+		name         string
+		archive      structs.File
+		maxSize      int
+		expectedPath string
+	}{
+		{
+			name: "Archive path with name included",
+			archive: structs.File{
+				Path: "../../testdata/test.zip",
+				Name: "test.zip",
+			},
+			maxSize:      1024,
+			expectedPath: "../../testdata/test.zip",
+		},
+		{
+			name: "Archive path without name included",
+			archive: structs.File{
+				Path: "../../testdata",
+				Name: "test.zip",
+			},
+			maxSize:      1024,
+			expectedPath: "../../testdata/test.zip",
+		},
+	}
 
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			iterator := InitArchiveIterator(test.archive, test.maxSize)
+
+			assert.Equal(t, test.expectedPath, iterator.Archive, "Archive path mismatch")
+			assert.Equal(t, test.maxSize, iterator.MaxSize, "MaxSize mismatch")
+			assert.Empty(t, iterator.CurrentFilename, "CurrentFilename should be empty")
+			assert.Empty(t, iterator.CurrentFileContent, "CurrentFileContent should be empty")
+			assert.Zero(t, iterator.CurrentFileSize, "CurrentFileSize should be zero")
+			assert.Empty(t, iterator.bufferedFilename, "bufferedFilename should be empty")
+			assert.Empty(t, iterator.bufferedFileContent, "bufferedFileContent should be empty")
+			assert.Zero(t, iterator.bufferedFileSize, "bufferedFileSize should be zero")
+			assert.False(t, iterator.iterationEnded, "iterationEnded should be false")
+			assert.False(t, iterator.hasCheckedFirstFile, "hasCheckedFirstFile should be false")
+			assert.Equal(t, -1, iterator.fileIndex, "fileIndex should be -1")
+			assert.Nil(t, iterator.tarFile, "tarFile should be nil")
+			assert.Nil(t, iterator.tarReader, "tarReader should be nil")
+			assert.Nil(t, iterator.zipReader, "zipReader should be nil")
+			assert.Nil(t, iterator.sevenZipReader, "sevenZipReader should be nil")
+		})
+	}
+}

@@ -69,6 +69,32 @@ func isTextFile(filePath string) (bool, error) {
 	return false, nil
 }
 
+func IsArchiveFreeOfKeywords(file structs.File, config config.Config) []structs.Message {
+	var messages []structs.Message
+	var maxFileSize = 2 * 1024 * 1024 // 2 MB
+
+	archiveIterator := readers.InitArchiveIterator(file, maxFileSize)
+	if !archiveIterator.HasFilesToUnpack() {
+		fmt.Printf("No files to unpack in archive: '%s'.\n", file.Name)
+		return messages
+	}
+	for archiveIterator.HasNext() {
+		fileName, fileContent, _ := archiveIterator.UnpackedFile()
+
+		for _, argumentSet := range config.Tests["IsFreeOfKeywords"].KeywordArguments {
+			var keywords = strings.Join(argumentSet["keywords"].([]string), "|")
+			var info = argumentSet["info"].(string)
+			foundKeywordsStr := matchPatterns(keywords, fileContent)
+
+			if foundKeywordsStr != "" {
+				messages = append(messages, structs.Message{Content: info + " '" + foundKeywordsStr + "'. In archived file: '" + fileName + "'", Source: file})
+			}
+		}
+		archiveIterator.Next()
+	}
+	return messages
+}
+
 func IsFreeOfKeywords(file structs.File, config config.Config) []structs.Message {
 	var messages []structs.Message
 

@@ -7,8 +7,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/bodgit/sevenzip"
+	"github.com/eawag-rdm/pc/pkg/structs"
 )
 
 type UnpackedFileIterator struct {
@@ -31,7 +33,8 @@ type UnpackedFileIterator struct {
 	sevenZipReader *sevenzip.ReadCloser
 }
 
-func NewUnpackedFileIterator(archiveName string, maxSize int) *UnpackedFileIterator {
+// newUnpackedFileIterator is for testing purposes only, paths can be passes as strings
+func newUnpackedFileIterator(archiveName string, maxSize int) *UnpackedFileIterator {
 	return &UnpackedFileIterator{
 		Archive:            archiveName,
 		MaxSize:            maxSize,
@@ -52,6 +55,39 @@ func NewUnpackedFileIterator(archiveName string, maxSize int) *UnpackedFileItera
 		zipReader:      nil,
 		sevenZipReader: nil,
 	}
+}
+
+func InitArchiveIterator(archive structs.File, maxSize int) *UnpackedFileIterator {
+	var arvicePath string
+	if strings.HasSuffix(archive.Path, archive.Name) {
+		arvicePath = archive.Path
+	} else {
+		arvicePath = filepath.Join(archive.Path, archive.Name)
+	}
+	return &UnpackedFileIterator{
+		Archive:            arvicePath,
+		MaxSize:            maxSize,
+		CurrentFilename:    "",
+		CurrentFileContent: []byte{},
+		CurrentFileSize:    0,
+
+		bufferedFilename:    "",
+		bufferedFileContent: []byte{},
+		bufferedFileSize:    0,
+
+		iterationEnded:      false,
+		hasCheckedFirstFile: false,
+		fileIndex:           -1,
+
+		tarFile:        nil,
+		tarReader:      nil,
+		zipReader:      nil,
+		sevenZipReader: nil,
+	}
+}
+
+func (u *UnpackedFileIterator) UnpackedFile() (string, []byte, int) {
+	return u.CurrentFilename, u.CurrentFileContent, u.CurrentFileSize
 }
 
 func (u *UnpackedFileIterator) findFirstZip() bool {

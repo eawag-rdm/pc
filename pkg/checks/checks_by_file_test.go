@@ -368,3 +368,40 @@ func TestIsTextFileExampleFiles(t *testing.T) {
 		}
 	}
 }
+func TestIsArchiveFreeOfKeywordsWithRealArchives(t *testing.T) {
+	configPath := "../../testdata/test_config.toml"
+	cfg := config.LoadConfig(configPath)
+
+	tests := []struct {
+		name     string
+		file     structs.File
+		expected []structs.Message
+	}{
+		{
+			name: "Complex zip archive",
+			file: structs.File{Name: "../../testdata/complex_archive.zip"},
+			expected: []structs.Message{
+				{Content: "Possible credentials in file 'User'. In archived file: 'complex_archive/alsoHasKeywords.py'", Source: structs.File{Name: "../../testdata/complex_archive.zip"}},
+				{Content: "Possible internal information in file 'Q:'. In archived file: 'complex_archive/alsoHasKeywords.py'", Source: structs.File{Name: "../../testdata/complex_archive.zip"}},
+				{Content: "Do you have hardcoded filepaths in your files?  Found suspicious keyword(s): '/Users/'. In archived file: 'complex_archive/alsoHasKeywords.py'", Source: structs.File{Name: "../../testdata/complex_archive.zip"}},
+				{Content: "Possible credentials in file 'PASSWORD', 'USER'. In archived file: 'complex_archive/hasKeywords'", Source: structs.File{Name: "../../testdata/complex_archive.zip"}},
+				{Content: "Possible credentials in file 'Password'. In archived file: 'complex_archive/nested/hasKeywords.md'", Source: structs.File{Name: "../../testdata/complex_archive.zip"}},
+				{Content: "Possible internal information in file 'Q:'. In archived file: 'complex_archive/nested/hasKeywords.md'", Source: structs.File{Name: "../../testdata/complex_archive.zip"}},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := IsArchiveFreeOfKeywords(tt.file, *cfg)
+			if len(result) != len(tt.expected) {
+				t.Errorf("expected %v, got %v", tt.expected, result)
+			}
+			for i := range result {
+				if result[i].Content != tt.expected[i].Content {
+					t.Errorf("expected %v, got %v", tt.expected[i].Content, result[i].Content)
+				}
+			}
+		})
+	}
+}
