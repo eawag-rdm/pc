@@ -29,6 +29,7 @@ var BY_FILE_ON_ARCHIVE = []func(file structs.File, config config.Config) []struc
 	checks.HasOnlyASCII,
 	checks.HasNoWhiteSpace,
 	checks.IsValidName,
+	checks.IsArchiveFreeOfKeywords,
 }
 
 func getFunctionName(i interface{}) string {

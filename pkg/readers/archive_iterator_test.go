@@ -12,21 +12,49 @@ func TestIterareUnpackedFiles(t *testing.T) {
 		name     string
 		filepath string
 	}{
-		{"Test with zip file", "../../testdata/test.zip"},
-		{"Test with tar file", "../../testdata/test.tar"},
-		{"Test with 7z file", "../../testdata/test.7z"},
+		{"Test with zip file", "../../testdata/archives/test.zip"},
+		{"Test with tar file", "../../testdata/archives/test.tar"},
+		{"Test with 7z file", "../../testdata/archives/test.7z"},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			nfi := newUnpackedFileIterator(test.filepath, 1024*1024)
+			nfi := newUnpackedFileIterator(test.filepath, 1024*1024, []string{}, []string{})
 			assert.True(t, nfi.HasFilesToUnpack(), "Expected archive to have valid files")
+			count := 0
+			for nfi.HasNext() {
+				nfi.Next()
+				name, _, _ := nfi.UnpackedFile()
+				assert.NotEmpty(t, name, "File name should not be empty")
+				count++
+			}
+			assert.Equal(t, 1, count, "1 File expected in archive, as the second one is empty.")
+		})
+	}
+}
 
-			assert.True(t, nfi.Next())
-			assert.True(t, nfi.HasNext())
+func TestValidFileCount(t *testing.T) {
+	tests := []struct {
+		name     string
+		filepath string
+	}{
+		{"Test with zip file", "../../testdata/archives/ten_valid_files.zip"},
+		{"Test with tar file", "../../testdata/archives/ten_valid_files.tar"},
+		{"Test with 7z file", "../../testdata/archives/ten_valid_files.7z"},
+	}
 
-			assert.True(t, nfi.Next())
-			assert.False(t, nfi.HasNext())
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			nfi := newUnpackedFileIterator(test.filepath, 1024*1024, []string{}, []string{})
+			assert.True(t, nfi.HasFilesToUnpack(), "Expected archive to have valid files")
+			count := 0
+			for nfi.HasNext() {
+				nfi.Next()
+				name, _, _ := nfi.UnpackedFile()
+				assert.NotEmpty(t, name, "File name should not be empty")
+				count++
+			}
+			assert.Equal(t, 10, count, "10 files expected in archive.")
 		})
 	}
 }
@@ -36,14 +64,14 @@ func TestIterareEmpty(t *testing.T) {
 		name     string
 		filepath string
 	}{
-		{"Empty zip", "../../testdata/more_archives/only_folders.zip"},
-		{"Empty tar", "../../testdata/more_archives/only_folders.tar"},
-		{"Empty 7z", "../../testdata/more_archives/only_folders.7z"},
+		{"Empty zip", "../../testdata/archives/only_folders.zip"},
+		{"Empty tar", "../../testdata/archives/only_folders.tar"},
+		{"Empty 7z", "../../testdata/archives/only_folders.7z"},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			nfi := newUnpackedFileIterator(test.filepath, 1024*1024)
+			nfi := newUnpackedFileIterator(test.filepath, 1024*1024, []string{}, []string{})
 			assert.False(t, nfi.HasFilesToUnpack(), "Expected no valid files in archive")
 			assert.False(t, nfi.HasNext())
 		})
@@ -57,17 +85,17 @@ func TestIterareUnpackedFilesMaxSize(t *testing.T) {
 		maxLen      int
 		expectedLen int
 	}{
-		{"Zip with one file excluded", "../../testdata/test.zip", 5, 1},
-		{"Zip with all files accepted", "../../testdata/test.zip", 10, 2},
-		{"Tar with one file excluded", "../../testdata/test.tar", 5, 1},
-		{"Tar with all files accepted", "../../testdata/test.tar", 10, 2},
-		{"7z with one file excluded", "../../testdata/test.7z", 5, 1},
-		{"7z with all files accepted", "../../testdata/test.7z", 10, 2},
+		{"Zip with 2 files excluded (one empty, one too large)", "../../testdata/archives/test.zip", 5, 0},
+		{"Zip with one file accepted (one empty)", "../../testdata/archives/test.zip", 10, 1},
+		{"Tar with 2 files excluded (one empty, one too large)", "../../testdata/archives/test.tar", 5, 0},
+		{"Tar with one file accepted (one empty)", "../../testdata/archives/test.tar", 10, 1},
+		{"7z with 2 files excluded (one empty, one too large)", "../../testdata/archives/test.7z", 5, 0},
+		{"7z wwith one file accepted (one empty)", "../../testdata/archives/test.7z", 10, 1},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			nfi := newUnpackedFileIterator(test.filepath, test.maxLen)
+			nfi := newUnpackedFileIterator(test.filepath, test.maxLen, []string{}, []string{})
 
 			if !nfi.HasFilesToUnpack() {
 				assert.Equal(t, 0, test.expectedLen, "No files to unpack, but expected some")
@@ -92,23 +120,23 @@ func TestIteratorEdgeCases(t *testing.T) {
 		maxSize     int
 		expectedLen int
 	}{
-		{"Empty ZIP", "../../testdata/more_archives/empty.zip", 1024, 0},
-		{"Empty TAR", "../../testdata/more_archives/empty.tar", 1024, 0},
-		{"Empty 7Z", "../../testdata/more_archives/empty.7z", 1024, 0},
-		{"Huge ZIP", "../../testdata/more_archives/huge_file.zip", 1024, 0},
-		{"Huge TAR", "../../testdata/more_archives/huge_file.tar", 1024, 0},
-		{"Huge 7Z", "../../testdata/more_archives/huge_file.7z", 1024, 0},
-		{"Mixed ZIP", "../../testdata/more_archives/mixed.zip", 1024, 1},
-		{"Mixed TAR", "../../testdata/more_archives/mixed.tar", 1024, 1},
-		{"Mixed 7Z", "../../testdata/more_archives/mixed.7z", 1024, 1},
-		{"Mixed ZIP All", "../../testdata/more_archives/mixed.zip", 20000, 2},
-		{"Mixed TAR All", "../../testdata/more_archives/mixed.tar", 20000, 2},
-		{"Mixed 7Z All", "../../testdata/more_archives/mixed.7z", 20000, 2},
+		{"Empty ZIP", "../../testdata/archives/empty.zip", 1024, 0},
+		{"Empty TAR", "../../testdata/archives/empty.tar", 1024, 0},
+		{"Empty 7Z", "../../testdata/archives/empty.7z", 1024, 0},
+		{"Huge ZIP", "../../testdata/archives/huge_file.zip", 1024, 0},
+		{"Huge TAR", "../../testdata/archives/huge_file.tar", 1024, 0},
+		{"Huge 7Z", "../../testdata/archives/huge_file.7z", 1024, 0},
+		{"Mixed ZIP", "../../testdata/archives/mixed.zip", 1024, 1},
+		{"Mixed TAR", "../../testdata/archives/mixed.tar", 1024, 1},
+		{"Mixed 7Z", "../../testdata/archives/mixed.7z", 1024, 1},
+		{"Mixed ZIP All", "../../testdata/archives/mixed.zip", 20000, 2},
+		{"Mixed TAR All", "../../testdata/archives/mixed.tar", 20000, 2},
+		{"Mixed 7Z All", "../../testdata/archives/mixed.7z", 20000, 2},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			nfi := newUnpackedFileIterator(test.filepath, test.maxSize)
+			nfi := newUnpackedFileIterator(test.filepath, test.maxSize, []string{}, []string{})
 
 			if test.expectedLen == 0 {
 				assert.False(t, nfi.HasFilesToUnpack(), "Expected no files in archive")
@@ -141,26 +169,26 @@ func TestInitArchiveIterator(t *testing.T) {
 		{
 			name: "Archive path with name included",
 			archive: structs.File{
-				Path: "../../testdata/test.zip",
+				Path: "../../testdata/archives/test.zip",
 				Name: "test.zip",
 			},
 			maxSize:      1024,
-			expectedPath: "../../testdata/test.zip",
+			expectedPath: "../../testdata/archives/test.zip",
 		},
 		{
 			name: "Archive path without name included",
 			archive: structs.File{
-				Path: "../../testdata",
+				Path: "../../testdata/archives",
 				Name: "test.zip",
 			},
 			maxSize:      1024,
-			expectedPath: "../../testdata/test.zip",
+			expectedPath: "../../testdata/archives/test.zip",
 		},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			iterator := InitArchiveIterator(test.archive, test.maxSize)
+			iterator := InitArchiveIterator(test.archive, test.maxSize, []string{}, []string{})
 
 			assert.Equal(t, test.expectedPath, iterator.Archive, "Archive path mismatch")
 			assert.Equal(t, test.maxSize, iterator.MaxSize, "MaxSize mismatch")

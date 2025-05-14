@@ -342,7 +342,7 @@ func TestIsTextFileExampleFiles(t *testing.T) {
 			expected: true,
 		},
 		{
-			filepath: "../../testdata/test.7z",
+			filepath: "../../testdata/archives/test.7z",
 			expected: false,
 		},
 		{
@@ -371,7 +371,8 @@ func TestIsTextFileExampleFiles(t *testing.T) {
 func TestIsArchiveFreeOfKeywordsWithRealArchives(t *testing.T) {
 	configPath := "../../testdata/test_config.toml"
 	cfg := config.LoadConfig(configPath)
-
+	cfg.Tests["IsFreeOfKeywords"].Whitelist = []string{}
+	cfg.Tests["IsFreeOfKeywords"].Blacklist = []string{}
 	tests := []struct {
 		name     string
 		file     structs.File
@@ -379,14 +380,38 @@ func TestIsArchiveFreeOfKeywordsWithRealArchives(t *testing.T) {
 	}{
 		{
 			name: "Complex zip archive",
-			file: structs.File{Name: "../../testdata/complex_archive.zip"},
+			file: structs.File{Name: "../../testdata/archives/complex_archive.zip"},
 			expected: []structs.Message{
-				{Content: "Possible credentials in file 'User'. In archived file: 'complex_archive/alsoHasKeywords.py'", Source: structs.File{Name: "../../testdata/complex_archive.zip"}},
-				{Content: "Possible internal information in file 'Q:'. In archived file: 'complex_archive/alsoHasKeywords.py'", Source: structs.File{Name: "../../testdata/complex_archive.zip"}},
-				{Content: "Do you have hardcoded filepaths in your files?  Found suspicious keyword(s): '/Users/'. In archived file: 'complex_archive/alsoHasKeywords.py'", Source: structs.File{Name: "../../testdata/complex_archive.zip"}},
-				{Content: "Possible credentials in file 'PASSWORD', 'USER'. In archived file: 'complex_archive/hasKeywords'", Source: structs.File{Name: "../../testdata/complex_archive.zip"}},
-				{Content: "Possible credentials in file 'Password'. In archived file: 'complex_archive/nested/hasKeywords.md'", Source: structs.File{Name: "../../testdata/complex_archive.zip"}},
-				{Content: "Possible internal information in file 'Q:'. In archived file: 'complex_archive/nested/hasKeywords.md'", Source: structs.File{Name: "../../testdata/complex_archive.zip"}},
+				{Content: "Possible credentials in file 'User'. In archived file: 'complex_archive/alsoHasKeywords.py'", Source: structs.File{Name: "../../testdata/archives/complex_archive.zip"}},
+				{Content: "Possible internal information in file 'Q:'. In archived file: 'complex_archive/alsoHasKeywords.py'", Source: structs.File{Name: "../../testdata/archives/complex_archive.zip"}},
+				{Content: "Do you have hardcoded filepaths in your files?  Found suspicious keyword(s): '/Users/'. In archived file: 'complex_archive/alsoHasKeywords.py'", Source: structs.File{Name: "../../testdata/archives/complex_archive.zip"}},
+				{Content: "Possible credentials in file 'PASSWORD', 'USER'. In archived file: 'complex_archive/hasKeywords'", Source: structs.File{Name: "../../testdata/archives/complex_archive.zip"}},
+				{Content: "Possible credentials in file 'Password'. In archived file: 'complex_archive/nested/hasKeywords.md'", Source: structs.File{Name: "../../testdata/archives/complex_archive.zip"}},
+				{Content: "Possible internal information in file 'Q:'. In archived file: 'complex_archive/nested/hasKeywords.md'", Source: structs.File{Name: "../../testdata/archives/complex_archive.zip"}},
+			},
+		},
+		{
+			name: "Complex 7z archive",
+			file: structs.File{Name: "../../testdata/archives/complex_archive.7z"},
+			expected: []structs.Message{
+				{Content: "Possible credentials in file 'User'. In archived file: 'complex_archive/alsoHasKeywords.py'", Source: structs.File{Name: "../../testdata/archives/complex_archive.7z"}},
+				{Content: "Possible internal information in file 'Q:'. In archived file: 'complex_archive/alsoHasKeywords.py'", Source: structs.File{Name: "../../testdata/archives/complex_archive.7z"}},
+				{Content: "Do you have hardcoded filepaths in your files?  Found suspicious keyword(s): '/Users/'. In archived file: 'complex_archive/alsoHasKeywords.py'", Source: structs.File{Name: "../../testdata/archives/complex_archive.7z"}},
+				{Content: "Possible credentials in file 'PASSWORD', 'USER'. In archived file: 'complex_archive/hasKeywords'", Source: structs.File{Name: "../../testdata/archives/complex_archive.7z"}},
+				{Content: "Possible credentials in file 'Password'. In archived file: 'complex_archive/nested/hasKeywords.md'", Source: structs.File{Name: "../../testdata/archives/complex_archive.7z"}},
+				{Content: "Possible internal information in file 'Q:'. In archived file: 'complex_archive/nested/hasKeywords.md'", Source: structs.File{Name: "../../testdata/archives/complex_archive.7z"}},
+			},
+		},
+		{
+			name: "Complex tar archive",
+			file: structs.File{Name: "../../testdata/archives/complex_archive.tar"},
+			expected: []structs.Message{
+				{Content: "Possible credentials in file 'User'. In archived file: 'complex_archive/alsoHasKeywords.py'", Source: structs.File{Name: "../../testdata/archives/complex_archive.tar"}},
+				{Content: "Possible internal information in file 'Q:'. In archived file: 'complex_archive/alsoHasKeywords.py'", Source: structs.File{Name: "../../testdata/archives/complex_archive.tar"}},
+				{Content: "Do you have hardcoded filepaths in your files?  Found suspicious keyword(s): '/Users/'. In archived file: 'complex_archive/alsoHasKeywords.py'", Source: structs.File{Name: "../../testdata/archives/complex_archive.tar"}},
+				{Content: "Possible credentials in file 'PASSWORD', 'USER'. In archived file: 'complex_archive/hasKeywords'", Source: structs.File{Name: "../../testdata/archives/complex_archive.tar"}},
+				{Content: "Possible credentials in file 'Password'. In archived file: 'complex_archive/nested/hasKeywords.md'", Source: structs.File{Name: "../../testdata/archives/complex_archive.tar"}},
+				{Content: "Possible internal information in file 'Q:'. In archived file: 'complex_archive/nested/hasKeywords.md'", Source: structs.File{Name: "../../testdata/archives/complex_archive.tar"}},
 			},
 		},
 	}
@@ -398,8 +423,18 @@ func TestIsArchiveFreeOfKeywordsWithRealArchives(t *testing.T) {
 				t.Errorf("expected %v, got %v", tt.expected, result)
 			}
 			for i := range result {
-				if result[i].Content != tt.expected[i].Content {
-					t.Errorf("expected %v, got %v", tt.expected[i].Content, result[i].Content)
+				inExpected := false
+				for j := range tt.expected {
+					if result[i].Content == tt.expected[j].Content {
+						inExpected = true
+						break
+					}
+				}
+				if !inExpected {
+					t.Errorf("unexpected message: %v", result[i].Content)
+				}
+				if result[i].Source != tt.expected[i].Source {
+					t.Errorf("expected %v, got %v", tt.expected[i].Source, result[i].Source)
 				}
 			}
 		})

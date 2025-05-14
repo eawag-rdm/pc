@@ -14,11 +14,11 @@ func TestReadZipFileList(t *testing.T) {
 		expected []structs.File
 	}{
 		{
-			filepath: "../../testdata/test.zip",
+			filepath: "../../testdata/archives/test.zip",
 			expected: []structs.File{
-				{Path: "../../testdata/test.zip", Name: "test/", Size: 0, Suffix: ""},
-				{Path: "../../testdata/test.zip", Name: "test/file2", Size: 0, Suffix: ""},
-				{Path: "../../testdata/test.zip", Name: "test/file1.txt", Size: 6, Suffix: ".txt"},
+				{Path: "../../testdata/archives/test.zip", Name: "test/", Size: 0, Suffix: ""},
+				{Path: "../../testdata/archives/test.zip", Name: "test/file2", Size: 0, Suffix: ""},
+				{Path: "../../testdata/archives/test.zip", Name: "test/file1.txt", Size: 6, Suffix: ".txt"},
 			},
 		},
 	}
@@ -39,11 +39,11 @@ func TestReadTarFileList(t *testing.T) {
 		expected []structs.File
 	}{
 		{
-			filepath: "../../testdata/test.tar",
+			filepath: "../../testdata/archives/test.tar",
 			expected: []structs.File{
-				{Path: "../../testdata/test.tar", Name: "test/", Size: 0, Suffix: ""},
-				{Path: "../../testdata/test.tar", Name: "test/file2", Size: 0, Suffix: ""},
-				{Path: "../../testdata/test.tar", Name: "test/file1.txt", Size: 6, Suffix: ".txt"},
+				{Path: "../../testdata/archives/test.tar", Name: "test/", Size: 0, Suffix: ""},
+				{Path: "../../testdata/archives/test.tar", Name: "test/file2", Size: 0, Suffix: ""},
+				{Path: "../../testdata/archives/test.tar", Name: "test/file1.txt", Size: 6, Suffix: ".txt"},
 			},
 		},
 	}
@@ -64,11 +64,11 @@ func TestReadTarGzFileList(t *testing.T) {
 		expected []structs.File
 	}{
 		{
-			filepath: "../../testdata/test.tar.gz",
+			filepath: "../../testdata/archives/test.tar.gz",
 			expected: []structs.File{
-				{Path: "../../testdata/test.tar.gz", Name: "test/", Size: 0, Suffix: ""},
-				{Path: "../../testdata/test.tar.gz", Name: "test/file2", Size: 0, Suffix: ""},
-				{Path: "../../testdata/test.tar.gz", Name: "test/file1.txt", Size: 6, Suffix: ".txt"},
+				{Path: "../../testdata/archives/test.tar.gz", Name: "test/", Size: 0, Suffix: ""},
+				{Path: "../../testdata/archives/test.tar.gz", Name: "test/file2", Size: 0, Suffix: ""},
+				{Path: "../../testdata/archives/test.tar.gz", Name: "test/file1.txt", Size: 6, Suffix: ".txt"},
 			},
 		},
 	}
@@ -88,19 +88,19 @@ func TestReadArchiveFileList(t *testing.T) {
 		expected []structs.File
 	}{
 		{
-			file: structs.File{Path: "../../testdata/test.zip", Name: "test.zip", Suffix: ".zip"},
+			file: structs.File{Path: "../../testdata/archives/test.zip", Name: "test.zip", Suffix: ".zip"},
 			expected: []structs.File{
-				{Path: "../../testdata/test.zip", Name: "test/", Size: 0, Suffix: ""},
-				{Path: "../../testdata/test.zip", Name: "test/file2", Size: 0, Suffix: ""},
-				{Path: "../../testdata/test.zip", Name: "test/file1.txt", Size: 6, Suffix: ".txt"},
+				{Path: "../../testdata/archives/test.zip", Name: "test/", Size: 0, Suffix: ""},
+				{Path: "../../testdata/archives/test.zip", Name: "test/file2", Size: 0, Suffix: ""},
+				{Path: "../../testdata/archives/test.zip", Name: "test/file1.txt", Size: 6, Suffix: ".txt"},
 			},
 		},
 		{
-			file: structs.File{Path: "../../testdata/test.tar", Name: "test.tar", Suffix: ".tar"},
+			file: structs.File{Path: "../../testdata/archives/test.tar", Name: "test.tar", Suffix: ".tar"},
 			expected: []structs.File{
-				{Path: "../../testdata/test.tar", Name: "test/", Size: 0, Suffix: ""},
-				{Path: "../../testdata/test.tar", Name: "test/file2", Size: 0, Suffix: ""},
-				{Path: "../../testdata/test.tar", Name: "test/file1.txt", Size: 6, Suffix: ".txt"},
+				{Path: "../../testdata/archives/test.tar", Name: "test/", Size: 0, Suffix: ""},
+				{Path: "../../testdata/archives/test.tar", Name: "test/file2", Size: 0, Suffix: ""},
+				{Path: "../../testdata/archives/test.tar", Name: "test/file1.txt", Size: 6, Suffix: ".txt"},
 			},
 		},
 		{
@@ -128,11 +128,11 @@ func TestRead7ZipFileList(t *testing.T) {
 		expected []structs.File
 	}{
 		{
-			filepath: "../../testdata/test.7z",
+			filepath: "../../testdata/archives/test.7z",
 			expected: []structs.File{
-				{Path: "../../testdata/test.7z", Name: "test/", Size: 0, Suffix: ""},
-				{Path: "../../testdata/test.7z", Name: "test/file2", Size: 0, Suffix: ""},
-				{Path: "../../testdata/test.7z", Name: "test/file1.txt", Size: 6, Suffix: ".txt"},
+				{Path: "../../testdata/archives/test.7z", Name: "test/", Size: 0, Suffix: ""},
+				{Path: "../../testdata/archives/test.7z", Name: "test/file2", Size: 0, Suffix: ""},
+				{Path: "../../testdata/archives/test.7z", Name: "test/file1.txt", Size: 6, Suffix: ".txt"},
 			},
 		},
 	}

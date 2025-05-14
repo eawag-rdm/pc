@@ -73,12 +73,17 @@ func IsArchiveFreeOfKeywords(file structs.File, config config.Config) []structs.
 	var messages []structs.Message
 	var maxFileSize = 2 * 1024 * 1024 // 2 MB
 
-	archiveIterator := readers.InitArchiveIterator(file, maxFileSize)
+	whitelist := config.Tests["IsFreeOfKeywords"].Whitelist
+	blacklist := config.Tests["IsFreeOfKeywords"].Blacklist
+
+	archiveIterator := readers.InitArchiveIterator(file, maxFileSize, whitelist, blacklist)
 	if !archiveIterator.HasFilesToUnpack() {
 		fmt.Printf("No files to unpack in archive: '%s'.\n", file.Name)
 		return messages
 	}
 	for archiveIterator.HasNext() {
+
+		archiveIterator.Next()
 		fileName, fileContent, _ := archiveIterator.UnpackedFile()
 
 		for _, argumentSet := range config.Tests["IsFreeOfKeywords"].KeywordArguments {
@@ -90,7 +95,7 @@ func IsArchiveFreeOfKeywords(file structs.File, config config.Config) []structs.
 				messages = append(messages, structs.Message{Content: info + " '" + foundKeywordsStr + "'. In archived file: '" + fileName + "'", Source: file})
 			}
 		}
-		archiveIterator.Next()
+
 	}
 	return messages
 }
