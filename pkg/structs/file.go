@@ -11,10 +11,11 @@ type Repository struct {
 }
 
 type File struct {
-	Path   string
-	Name   string
-	Size   int64
-	Suffix string
+	Path      string
+	Name      string
+	Size      int64
+	Suffix    string
+	IsArchive bool
 }
 
 func GetFileSize(file string) int64 {
@@ -38,5 +39,10 @@ func ToFile(fpath string, name string, size int64, suffix string) File {
 	if suffix == "" {
 		suffix = filepath.Ext(name)
 	}
-	return File{Path: fpath, Name: name, Size: size, Suffix: suffix}
+	isArchive := false
+	ext := path.Ext(name)
+	if ext == ".zip" || ext == ".tar" || ext == ".gz" || ext == ".7z" {
+		isArchive = true
+	}
+	return File{Path: fpath, Name: name, Size: size, Suffix: suffix, IsArchive: isArchive}
 }

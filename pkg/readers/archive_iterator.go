@@ -12,14 +12,14 @@ import (
 	"strings"
 
 	"github.com/bodgit/sevenzip"
-	"github.com/eawag-rdm/pc/pkg/structs"
 )
 
 type UnpackedFileIterator struct {
-	Archive   string
-	MaxSize   int
-	Whitelist []string
-	Blacklist []string
+	ArchivePath string
+	ArchiveName string
+	MaxSize     int
+	Whitelist   []string
+	Blacklist   []string
 
 	CurrentFilename    string
 	CurrentFileContent []byte
@@ -38,45 +38,13 @@ type UnpackedFileIterator struct {
 	sevenZipReader *sevenzip.ReadCloser
 }
 
-// newUnpackedFileIterator is for testing purposes only, paths can be passes as strings
-func newUnpackedFileIterator(archiveName string, maxSize int, whitelist []string, blacklist []string) *UnpackedFileIterator {
+func InitArchiveIterator(archivePath string, archiveName string, maxSize int, whitelist []string, blacklist []string) *UnpackedFileIterator {
 	return &UnpackedFileIterator{
-		Archive:            archiveName,
+		ArchivePath:        archivePath,
+		ArchiveName:        archiveName,
 		MaxSize:            maxSize,
 		Whitelist:          whitelist,
 		Blacklist:          blacklist,
-		CurrentFilename:    "",
-		CurrentFileContent: []byte{},
-		CurrentFileSize:    0,
-
-		bufferedFilename:    "",
-		bufferedFileContent: []byte{},
-		bufferedFileSize:    0,
-
-		iterationEnded:      false,
-		hasCheckedFirstFile: false,
-		fileIndex:           -1,
-
-		tarFile:        nil,
-		tarReader:      nil,
-		zipReader:      nil,
-		sevenZipReader: nil,
-	}
-}
-
-func InitArchiveIterator(archive structs.File, maxSize int, whitelist []string, blacklist []string) *UnpackedFileIterator {
-	var arvicePath string
-	if strings.HasSuffix(archive.Path, archive.Name) {
-		arvicePath = archive.Path
-	} else {
-		arvicePath = filepath.Join(archive.Path, archive.Name)
-	}
-	return &UnpackedFileIterator{
-		Archive:   arvicePath,
-		MaxSize:   maxSize,
-		Whitelist: whitelist,
-		Blacklist: blacklist,
-
 		CurrentFilename:    "",
 		CurrentFileContent: []byte{},
 		CurrentFileSize:    0,
@@ -119,9 +87,9 @@ func fileGoodToUnpack(whitelist []string, blacklist []string, filename string) b
 
 func (u *UnpackedFileIterator) findFirstZip() bool {
 	if u.zipReader == nil {
-		reader, err := zip.OpenReader(u.Archive)
+		reader, err := zip.OpenReader(u.ArchivePath)
 		if err != nil {
-			fmt.Printf("Archive Iterator: Error opening zip file '%s': %v\n", u.Archive, err)
+			fmt.Printf("Error (archive content checks) opening zip file '%s' -> %v\n", u.ArchiveName, err)
 			u.iterationEnded = true
 			return false
 		}
@@ -268,9 +236,9 @@ func unpackZip(u *UnpackedFileIterator) (bool, error) {
 
 func (u *UnpackedFileIterator) findFirstTar() bool {
 	if u.tarReader == nil {
-		file, err := os.Open(u.Archive)
+		file, err := os.Open(u.ArchivePath)
 		if err != nil {
-			fmt.Printf("Archive Iterator: Error opening tar file '%s': %v\n", u.Archive, err)
+			fmt.Printf("Error (archive content checks) opening tar file '%s' -> %v\n", u.ArchiveName, err)
 			u.iterationEnded = true
 			return false
 		}
@@ -410,9 +378,9 @@ func unpackTar(u *UnpackedFileIterator) (bool, error) {
 
 func (u *UnpackedFileIterator) findFirst7z() bool {
 	if u.sevenZipReader == nil {
-		reader, err := sevenzip.OpenReader(u.Archive)
+		reader, err := sevenzip.OpenReader(u.ArchivePath)
 		if err != nil {
-			fmt.Printf("Archive Iterator: Error opening 7z file '%s': %v\n", u.Archive, err)
+			fmt.Printf("Error (archive content checks) opening 7z file '%s' -> %v\n", u.ArchiveName, err)
 			u.iterationEnded = true
 			return false
 		}
@@ -562,8 +530,7 @@ func (u *UnpackedFileIterator) HasFilesToUnpack() bool {
 		return !u.iterationEnded
 	}
 	u.hasCheckedFirstFile = true
-
-	switch filepath.Ext(u.Archive) {
+	switch filepath.Ext(u.ArchiveName) {
 	case ".zip":
 		return u.findFirstZip()
 	case ".tar":
@@ -571,6 +538,7 @@ func (u *UnpackedFileIterator) HasFilesToUnpack() bool {
 	case ".7z":
 		return u.findFirst7z()
 	default:
+		fmt.Printf("Unsupported archive type '%s'\n", u.ArchiveName)
 		u.iterationEnded = true
 		u.close()
 		return false
@@ -585,7 +553,7 @@ func (u *UnpackedFileIterator) Next() bool {
 	var ok bool
 	var err error
 
-	switch filepath.Ext(u.Archive) {
+	switch filepath.Ext(u.ArchiveName) {
 	case ".zip":
 		ok, err = unpackZip(u)
 	case ".tar":

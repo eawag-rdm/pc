@@ -75,6 +75,7 @@ func ApplyChecksFilteredByFile(config config.Config, checks []func(file structs.
 			if skipFileCheck(config, check, file) {
 				continue
 			}
+			// if the file is an archive, we need to check the archiv
 			ret := check(file, config)
 			if ret != nil {
 				messages = append(messages, ret...)
@@ -91,7 +92,7 @@ func ApplyChecksFilteredByFileOnArchiveFileList(config config.Config, checks []f
 		fileList, err := readers.ReadArchiveFileList(file)
 		if err != nil {
 			// handle the error appropriately, e.g., log it or return it
-			fmt.Printf("Archive Filelist Checks: Error reading archive file list of '%s'. Error -> %v\n", file.Name, err)
+			fmt.Printf("Error (archive filelist checks) reading archive file list of '%s' -> %v\n", file.Name, err)
 			continue
 		}
 		for _, archivedFile := range fileList {
@@ -120,6 +121,9 @@ func ApplyChecksFilteredByFileOnArchive(config config.Config, checks []func(file
 
 		for _, check := range checks {
 			if skipFileCheck(config, check, file) {
+				continue
+			}
+			if !file.IsArchive {
 				continue
 			}
 			ret := check(file, config)

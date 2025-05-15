@@ -32,7 +32,7 @@ func HasOnlyASCII(file structs.File, config config.Config) []structs.Message {
 	if nonASCII != "" {
 		return []structs.Message{{Content: "File name contains non-ASCII character: " + nonASCII, Source: file}}
 	}
-	return nil
+	return []structs.Message{}
 }
 
 // Return true if c is a space character; otherwise, return false.
@@ -42,7 +42,7 @@ func HasNoWhiteSpace(file structs.File, config config.Config) []structs.Message 
 			return []structs.Message{{Content: "File name contains spaces.", Source: file}}
 		}
 	}
-	return nil
+	return []structs.Message{}
 }
 
 // isTextFile checks if a file is a text file using DetectContentType from the http package.
@@ -76,7 +76,7 @@ func IsArchiveFreeOfKeywords(file structs.File, config config.Config) []structs.
 	whitelist := config.Tests["IsFreeOfKeywords"].Whitelist
 	blacklist := config.Tests["IsFreeOfKeywords"].Blacklist
 
-	archiveIterator := readers.InitArchiveIterator(file, maxFileSize, whitelist, blacklist)
+	archiveIterator := readers.InitArchiveIterator(file.Path, file.Name, maxFileSize, whitelist, blacklist)
 	if !archiveIterator.HasFilesToUnpack() {
 		return messages
 	}
@@ -106,7 +106,7 @@ func IsFreeOfKeywords(file structs.File, config config.Config) []structs.Message
 
 	isText, err := isTextFile(file.Path)
 	if err != nil {
-		return nil
+		return messages
 	}
 
 	var body [][]byte

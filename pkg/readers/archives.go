@@ -16,10 +16,11 @@ import (
 
 // Read the filelist from a zip file
 func ReadZipFileList(filePath string) ([]structs.File, error) {
+	// Check if the file exists
 	// Open the zip file for reading
 	reader, err := zip.OpenReader(filePath)
 	if err != nil {
-		
+
 		return nil, err
 	}
 	defer reader.Close()
