@@ -26,10 +26,13 @@ var BY_REPOSITORY = []func(repository structs.Repository, config config.Config) 
 }
 
 var BY_FILE_ON_ARCHIVE = []func(file structs.File, config config.Config) []structs.Message{
+	checks.IsArchiveFreeOfKeywords,
+}
+
+var BY_FILE_ON_ARCHIVE_FILE_LIST = []func(file structs.File, config config.Config) []structs.Message{
 	checks.HasOnlyASCII,
 	checks.HasNoWhiteSpace,
 	checks.IsValidName,
-	checks.IsArchiveFreeOfKeywords,
 }
 
 func getFunctionName(i interface{}) string {
@@ -81,14 +84,14 @@ func ApplyChecksFilteredByFile(config config.Config, checks []func(file structs.
 	return messages
 }
 
-func ApplyChecksFilteredByFileOnArchive(config config.Config, checks []func(file structs.File, config config.Config) []structs.Message, files []structs.File) []structs.Message {
+func ApplyChecksFilteredByFileOnArchiveFileList(config config.Config, checks []func(file structs.File, config config.Config) []structs.Message, files []structs.File) []structs.Message {
 
 	var messages = []structs.Message{}
 	for _, file := range files {
 		fileList, err := readers.ReadArchiveFileList(file)
 		if err != nil {
 			// handle the error appropriately, e.g., log it or return it
-			fmt.Println("Error reading archive file list:", err)
+			fmt.Printf("Archive Filelist Checks: Error reading archive file list of '%s'. Error -> %v\n", file.Name, err)
 			continue
 		}
 		for _, archivedFile := range fileList {
@@ -103,6 +106,26 @@ func ApplyChecksFilteredByFileOnArchive(config config.Config, checks []func(file
 				if ret != nil {
 					messages = append(messages, ret...)
 				}
+			}
+		}
+	}
+	return messages
+
+}
+
+func ApplyChecksFilteredByFileOnArchive(config config.Config, checks []func(file structs.File, config config.Config) []structs.Message, files []structs.File) []structs.Message {
+
+	var messages = []structs.Message{}
+	for _, file := range files {
+
+		for _, check := range checks {
+			if skipFileCheck(config, check, file) {
+				continue
+			}
+			ret := check(file, config)
+
+			if ret != nil {
+				messages = append(messages, ret...)
 			}
 		}
 	}
@@ -126,6 +149,7 @@ func ApplyAllChecks(config config.Config, files []structs.File, checksAcrossFile
 	var messages []structs.Message
 
 	messages = append(messages, ApplyChecksFilteredByFile(config, BY_FILE, files)...)
+	messages = append(messages, ApplyChecksFilteredByFileOnArchiveFileList(config, BY_FILE_ON_ARCHIVE_FILE_LIST, files)...)
 	messages = append(messages, ApplyChecksFilteredByFileOnArchive(config, BY_FILE_ON_ARCHIVE, files)...)
 	if checksAcrossFiles {
 		messages = append(messages, ApplyChecksFilteredByRepository(config, BY_REPOSITORY, files)...)

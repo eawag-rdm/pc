@@ -78,7 +78,6 @@ func IsArchiveFreeOfKeywords(file structs.File, config config.Config) []structs.
 
 	archiveIterator := readers.InitArchiveIterator(file, maxFileSize, whitelist, blacklist)
 	if !archiveIterator.HasFilesToUnpack() {
-		fmt.Printf("No files to unpack in archive: '%s'.\n", file.Name)
 		return messages
 	}
 	for archiveIterator.HasNext() {

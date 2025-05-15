@@ -19,6 +19,7 @@ func ReadZipFileList(filePath string) ([]structs.File, error) {
 	// Open the zip file for reading
 	reader, err := zip.OpenReader(filePath)
 	if err != nil {
+		
 		return nil, err
 	}
 	defer reader.Close()
