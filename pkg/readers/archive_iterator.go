@@ -121,7 +121,7 @@ func (u *UnpackedFileIterator) findFirstZip() bool {
 	if u.zipReader == nil {
 		reader, err := zip.OpenReader(u.Archive)
 		if err != nil {
-			fmt.Printf("Archive Iterator: Error opening zip. Error -> %v\n", err)
+			fmt.Printf("Archive Iterator: Error opening zip file '%s': %v\n", u.Archive, err)
 			u.iterationEnded = true
 			return false
 		}
@@ -270,7 +270,7 @@ func (u *UnpackedFileIterator) findFirstTar() bool {
 	if u.tarReader == nil {
 		file, err := os.Open(u.Archive)
 		if err != nil {
-			fmt.Printf("Archive Iterator: Error opening tar. Error -> %v\n", err)
+			fmt.Printf("Archive Iterator: Error opening tar file '%s': %v\n", u.Archive, err)
 			u.iterationEnded = true
 			return false
 		}
@@ -412,7 +412,7 @@ func (u *UnpackedFileIterator) findFirst7z() bool {
 	if u.sevenZipReader == nil {
 		reader, err := sevenzip.OpenReader(u.Archive)
 		if err != nil {
-			fmt.Printf("Archive Iterator: Error opening 7z. Error -> %v\n", err)
+			fmt.Printf("Archive Iterator: Error opening 7z file '%s': %v\n", u.Archive, err)
 			u.iterationEnded = true
 			return false
 		}
