@@ -321,6 +321,8 @@ func TestALotOfBinaryFiles(t *testing.T) {
 		name     string
 		filepath string
 	}{
+		{"A lot of empty files in ZIP", "../../testdata/archives/a_lot_of_binary_files.zip"},
+		{"A lot of empty files in 7z", "../../testdata/archives/a_lot_of_binary_files.7z"},
 		{"A lot of empty files in TAR", "../../testdata/archives/a_lot_of_binary_files.tar"},
 	}
 
