@@ -373,6 +373,10 @@ func TestIsArchiveFreeOfKeywordsWithRealArchives(t *testing.T) {
 	cfg := config.LoadConfig(configPath)
 	cfg.Tests["IsFreeOfKeywords"].Whitelist = []string{}
 	cfg.Tests["IsFreeOfKeywords"].Blacklist = []string{}
+
+	zipFile := structs.File{Path: "../../testdata/archives/complex_archive.zip", Name: "complex_archive.zip", IsArchive: true}
+	sevenZipFile := structs.File{Path: "../../testdata/archives/complex_archive.7z", Name: "complex_archive.7z", IsArchive: true}
+	tarFile := structs.File{Path: "../../testdata/archives/complex_archive.tar", Name: "complex_archive.tar", IsArchive: true}
 	tests := []struct {
 		name     string
 		file     structs.File
@@ -380,38 +384,38 @@ func TestIsArchiveFreeOfKeywordsWithRealArchives(t *testing.T) {
 	}{
 		{
 			name: "Complex zip archive",
-			file: structs.File{Path: "../../testdata/archives/complex_archive.zip"},
+			file: zipFile,
 			expected: []structs.Message{
-				{Content: "Possible credentials in file 'User'. In archived file: 'complex_archive/alsoHasKeywords.py'", Source: structs.File{Path: "../../testdata/archives/complex_archive.zip"}},
-				{Content: "Possible internal information in file 'Q:'. In archived file: 'complex_archive/alsoHasKeywords.py'", Source: structs.File{Path: "../../testdata/archives/complex_archive.zip"}},
-				{Content: "Do you have hardcoded filepaths in your files?  Found suspicious keyword(s): '/Users/'. In archived file: 'complex_archive/alsoHasKeywords.py'", Source: structs.File{Path: "../../testdata/archives/complex_archive.zip"}},
-				{Content: "Possible credentials in file 'PASSWORD', 'USER'. In archived file: 'complex_archive/hasKeywords'", Source: structs.File{Path: "../../testdata/archives/complex_archive.zip"}},
-				{Content: "Possible credentials in file 'Password'. In archived file: 'complex_archive/nested/hasKeywords.md'", Source: structs.File{Path: "../../testdata/archives/complex_archive.zip"}},
-				{Content: "Possible internal information in file 'Q:'. In archived file: 'complex_archive/nested/hasKeywords.md'", Source: structs.File{Path: "../../testdata/archives/complex_archive.zip"}},
+				{Content: "Possible credentials in file 'User'. In archived file: 'complex_archive/alsoHasKeywords.py'", Source: zipFile},
+				{Content: "Possible internal information in file 'Q:'. In archived file: 'complex_archive/alsoHasKeywords.py'", Source: zipFile},
+				{Content: "Do you have hardcoded filepaths in your files?  Found suspicious keyword(s): '/Users/'. In archived file: 'complex_archive/alsoHasKeywords.py'", Source: zipFile},
+				{Content: "Possible credentials in file 'PASSWORD', 'USER'. In archived file: 'complex_archive/hasKeywords'", Source: zipFile},
+				{Content: "Possible credentials in file 'Password'. In archived file: 'complex_archive/nested/hasKeywords.md'", Source: zipFile},
+				{Content: "Possible internal information in file 'Q:'. In archived file: 'complex_archive/nested/hasKeywords.md'", Source: zipFile},
 			},
 		},
 		{
 			name: "Complex 7z archive",
-			file: structs.File{Path: "../../testdata/archives/complex_archive.7z"},
+			file: sevenZipFile,
 			expected: []structs.Message{
-				{Content: "Possible credentials in file 'User'. In archived file: 'complex_archive/alsoHasKeywords.py'", Source: structs.File{Path: "../../testdata/archives/complex_archive.7z"}},
-				{Content: "Possible internal information in file 'Q:'. In archived file: 'complex_archive/alsoHasKeywords.py'", Source: structs.File{Path: "../../testdata/archives/complex_archive.7z"}},
-				{Content: "Do you have hardcoded filepaths in your files?  Found suspicious keyword(s): '/Users/'. In archived file: 'complex_archive/alsoHasKeywords.py'", Source: structs.File{Path: "../../testdata/archives/complex_archive.7z"}},
-				{Content: "Possible credentials in file 'PASSWORD', 'USER'. In archived file: 'complex_archive/hasKeywords'", Source: structs.File{Path: "../../testdata/archives/complex_archive.7z"}},
-				{Content: "Possible credentials in file 'Password'. In archived file: 'complex_archive/nested/hasKeywords.md'", Source: structs.File{Path: "../../testdata/archives/complex_archive.7z"}},
-				{Content: "Possible internal information in file 'Q:'. In archived file: 'complex_archive/nested/hasKeywords.md'", Source: structs.File{Path: "../../testdata/archives/complex_archive.7z"}},
+				{Content: "Possible credentials in file 'User'. In archived file: 'complex_archive/alsoHasKeywords.py'", Source: sevenZipFile},
+				{Content: "Possible internal information in file 'Q:'. In archived file: 'complex_archive/alsoHasKeywords.py'", Source: sevenZipFile},
+				{Content: "Do you have hardcoded filepaths in your files?  Found suspicious keyword(s): '/Users/'. In archived file: 'complex_archive/alsoHasKeywords.py'", Source: sevenZipFile},
+				{Content: "Possible credentials in file 'PASSWORD', 'USER'. In archived file: 'complex_archive/hasKeywords'", Source: sevenZipFile},
+				{Content: "Possible credentials in file 'Password'. In archived file: 'complex_archive/nested/hasKeywords.md'", Source: sevenZipFile},
+				{Content: "Possible internal information in file 'Q:'. In archived file: 'complex_archive/nested/hasKeywords.md'", Source: sevenZipFile},
 			},
 		},
 		{
 			name: "Complex tar archive",
-			file: structs.File{Path: "../../testdata/archives/complex_archive.tar"},
+			file: tarFile,
 			expected: []structs.Message{
-				{Content: "Possible credentials in file 'User'. In archived file: 'complex_archive/alsoHasKeywords.py'", Source: structs.File{Path: "../../testdata/archives/complex_archive.tar"}},
-				{Content: "Possible internal information in file 'Q:'. In archived file: 'complex_archive/alsoHasKeywords.py'", Source: structs.File{Path: "../../testdata/archives/complex_archive.tar"}},
-				{Content: "Do you have hardcoded filepaths in your files?  Found suspicious keyword(s): '/Users/'. In archived file: 'complex_archive/alsoHasKeywords.py'", Source: structs.File{Path: "../../testdata/archives/complex_archive.tar"}},
-				{Content: "Possible credentials in file 'PASSWORD', 'USER'. In archived file: 'complex_archive/hasKeywords'", Source: structs.File{Path: "../../testdata/archives/complex_archive.tar"}},
-				{Content: "Possible credentials in file 'Password'. In archived file: 'complex_archive/nested/hasKeywords.md'", Source: structs.File{Path: "../../testdata/archives/complex_archive.tar"}},
-				{Content: "Possible internal information in file 'Q:'. In archived file: 'complex_archive/nested/hasKeywords.md'", Source: structs.File{Path: "../../testdata/archives/complex_archive.tar"}},
+				{Content: "Possible credentials in file 'User'. In archived file: 'complex_archive/alsoHasKeywords.py'", Source: tarFile},
+				{Content: "Possible internal information in file 'Q:'. In archived file: 'complex_archive/alsoHasKeywords.py'", Source: tarFile},
+				{Content: "Do you have hardcoded filepaths in your files?  Found suspicious keyword(s): '/Users/'. In archived file: 'complex_archive/alsoHasKeywords.py'", Source: tarFile},
+				{Content: "Possible credentials in file 'PASSWORD', 'USER'. In archived file: 'complex_archive/hasKeywords'", Source: tarFile},
+				{Content: "Possible credentials in file 'Password'. In archived file: 'complex_archive/nested/hasKeywords.md'", Source: tarFile},
+				{Content: "Possible internal information in file 'Q:'. In archived file: 'complex_archive/nested/hasKeywords.md'", Source: tarFile},
 			},
 		},
 	}
