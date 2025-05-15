@@ -315,3 +315,20 @@ func TestSkippingALotOfFiles(t *testing.T) {
 		})
 	}
 }
+
+func TestALotOfBinaryFiles(t *testing.T) {
+	tests := []struct {
+		name     string
+		filepath string
+	}{
+		{"A lot of empty files in TAR", "../../testdata/archives/a_lot_of_binary_files.tar"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			nfi := newUnpackedFileIterator(test.filepath, 1024, []string{}, []string{})
+			assert.False(t, nfi.HasFilesToUnpack(), "Expected only binary files in archive, so nothing to read")
+			assert.False(t, nfi.HasNext())
+		})
+	}
+}
