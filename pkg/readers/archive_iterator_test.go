@@ -208,3 +208,38 @@ func TestInitArchiveIterator(t *testing.T) {
 		})
 	}
 }
+
+func TestFiltersDuringArchiveIteration(t *testing.T) {
+	// The one_of_each archives contain:
+	// - an empty file
+	// - a valid file with a size of 175 kB
+	// - a valid file with a size of 1.2 MB
+	// - a valid file with a size of 2.3 MB
+	// - a binary file with a size of 1 MB
+	// - a valid file to whitelist
+	// - a valid file to blacklist
+	tests := []struct {
+		name                    string
+		filepath                string
+		maxLen                  int
+		whitelist               []string
+		blacklist               []string
+		expected_unpacked_files int
+	}{
+		{"Zip with maxSize filter", "../../testdata/archives/one_of_each.zip", 2 * 1024 * 1024, []string{}, []string{}, 4},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			nfi := newUnpackedFileIterator(test.filepath, test.maxLen, test.whitelist, test.blacklist)
+
+			count := 0
+			for nfi.HasNext() {
+				assert.True(t, nfi.Next())
+				count++
+			}
+
+			assert.Equal(t, test.expected_unpacked_files, count)
+		})
+	}
+}
