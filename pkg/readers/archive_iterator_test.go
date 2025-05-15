@@ -1,6 +1,7 @@
 package readers
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/eawag-rdm/pc/pkg/structs"
@@ -218,28 +219,80 @@ func TestFiltersDuringArchiveIteration(t *testing.T) {
 	// - a binary file with a size of 1 MB
 	// - a valid file to whitelist
 	// - a valid file to blacklist
-	tests := []struct {
-		name                    string
-		filepath                string
-		maxLen                  int
-		whitelist               []string
-		blacklist               []string
-		expected_unpacked_files int
+	baseTests := []struct {
+		name          string
+		baseFile      string
+		maxLen        int
+		whitelist     []string
+		blacklist     []string
+		unpackedFiles []string
 	}{
-		{"Zip with maxSize filter", "../../testdata/archives/one_of_each.zip", 2 * 1024 * 1024, []string{}, []string{}, 4},
+		{"Archive with maxSize filter", "one_of_each", 2 * 1024 * 1024, []string{}, []string{}, []string{"large_valid.txt", "very_large_but_valid.txt", "black/to_be_blacklisted.blst", "white/to_be_whitelisted.wlst"}},
+		{"Archive with smaller maxSize filter", "one_of_each", 0.5 * 1024 * 1024, []string{}, []string{}, []string{"large_valid.txt", "black/to_be_blacklisted.blst", "white/to_be_whitelisted.wlst"}},
+		{"Archive with whitelist filter", "one_of_each", 2 * 1024 * 1024, []string{".wlst"}, []string{}, []string{"white/to_be_whitelisted.wlst"}},
+		{"Archive with whitelist filter 2", "one_of_each", 2 * 1024 * 1024, []string{"to_be_whitelisted"}, []string{}, []string{"white/to_be_whitelisted.wlst"}},
+		{"Archive with blacklist filter", "one_of_each", 2 * 1024 * 1024, []string{}, []string{".blst"}, []string{"large_valid.txt", "very_large_but_valid.txt", "white/to_be_whitelisted.wlst"}},
+		{"Archive with overlapping filters", "one_of_each", 0.5 * 1024 * 1024, []string{}, []string{".blst"}, []string{"large_valid.txt", "white/to_be_whitelisted.wlst"}},
+		{"Archive with overlapping filters 2", "one_of_each", 10, []string{"wlst"}, []string{}, []string{}},
+	}
+
+	var tests []struct {
+		name          string
+		filepath      string
+		maxLen        int
+		whitelist     []string
+		blacklist     []string
+		unpackedFiles []string
+	}
+
+	formats := []string{".zip", ".7z", ".tar"}
+
+	for _, base := range baseTests {
+		for _, ext := range formats {
+			tests = append(tests, struct {
+				name          string
+				filepath      string
+				maxLen        int
+				whitelist     []string
+				blacklist     []string
+				unpackedFiles []string
+			}{
+				name:          fmt.Sprintf("%s (%s)", base.name, ext),
+				filepath:      fmt.Sprintf("../../testdata/archives/%s%s", base.baseFile, ext),
+				maxLen:        base.maxLen,
+				whitelist:     base.whitelist,
+				blacklist:     base.blacklist,
+				unpackedFiles: base.unpackedFiles,
+			})
+		}
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			nfi := newUnpackedFileIterator(test.filepath, test.maxLen, test.whitelist, test.blacklist)
+			if len(test.unpackedFiles) == 0 {
+				assert.False(t, nfi.HasFilesToUnpack(), "Expected archive to have valid files")
+			} else {
+				assert.True(t, nfi.HasFilesToUnpack(), "Expected archive to have valid files")
+				count := 0
+				for nfi.HasNext() {
+					assert.True(t, nfi.Next())
+					name, _, _ := nfi.UnpackedFile()
 
-			count := 0
-			for nfi.HasNext() {
-				assert.True(t, nfi.Next())
-				count++
+					// Check if the file name is in the unpacked_files list
+					found := false
+					for _, unpackedFile := range test.unpackedFiles {
+						if name == unpackedFile {
+							found = true
+							break
+						}
+					}
+					assert.True(t, found, fmt.Sprintf("File '%s' should be in the unpacked_files list", name))
+					count++
+				}
+
+				assert.Equal(t, len(test.unpackedFiles), count, "Number of unpacked files should match the expected count")
 			}
-
-			assert.Equal(t, test.expected_unpacked_files, count)
 		})
 	}
 }

@@ -107,7 +107,7 @@ func matchPatterns(list []string, str string) bool {
 
 }
 
-func fileGoodToUnpack(blacklist []string, whitelist []string, filename string) bool {
+func fileGoodToUnpack(whitelist []string, blacklist []string, filename string) bool {
 	if len(blacklist) > 0 {
 		return !matchPatterns(blacklist, filename)
 	}
@@ -115,10 +115,6 @@ func fileGoodToUnpack(blacklist []string, whitelist []string, filename string) b
 		return matchPatterns(whitelist, filename)
 	}
 	return true
-}
-
-func fileContentsShouldBeUnpacked(isFile bool, isBelowMaxSize bool, fileGoodToUnpack bool) bool {
-	return isFile && isBelowMaxSize && fileGoodToUnpack
 }
 
 func (u *UnpackedFileIterator) findFirstZip() bool {
@@ -132,10 +128,15 @@ func (u *UnpackedFileIterator) findFirstZip() bool {
 	}
 	files := u.zipReader.File
 	for i, f := range files {
-		fileGoodToUnpack := fileGoodToUnpack(u.Blacklist, u.Whitelist, f.Name)
 		isFile := !f.FileInfo().IsDir()
+		isGreaterZero := f.UncompressedSize64 > 0
 		isBelowMaxSize := f.UncompressedSize64 <= uint64(u.MaxSize)
-		if fileContentsShouldBeUnpacked(isFile, isBelowMaxSize, fileGoodToUnpack) {
+
+		isGoodToUnpack := false
+		if isFile && isGreaterZero && isBelowMaxSize {
+			isGoodToUnpack = fileGoodToUnpack(u.Whitelist, u.Blacklist, files[i].Name)
+		}
+		if isGoodToUnpack {
 			if u.isZippedTextWithContent(i) {
 				u.fileIndex = i
 
@@ -232,11 +233,15 @@ func unpackZip(u *UnpackedFileIterator) (bool, error) {
 	found := false
 	for i := u.fileIndex + 1; i < length; i++ {
 
-		fileGoodToUnpack := fileGoodToUnpack(u.Blacklist, u.Whitelist, files[i].Name)
 		isFile := !files[i].FileInfo().IsDir()
+		isGreaterZero := files[i].UncompressedSize64 > 0
 		isBelowMaxSize := files[i].UncompressedSize64 <= maxSize
 
-		if fileContentsShouldBeUnpacked(isFile, isBelowMaxSize, fileGoodToUnpack) {
+		isGoodToUnpack := false
+		if isFile && isGreaterZero && isBelowMaxSize {
+			isGoodToUnpack = fileGoodToUnpack(u.Whitelist, u.Blacklist, files[i].Name)
+		}
+		if isGoodToUnpack {
 			if u.isZippedTextWithContent(i) {
 
 				u.fileIndex = i
@@ -280,7 +285,17 @@ func (u *UnpackedFileIterator) findFirstTar() bool {
 		}
 		u.fileIndex++
 
-		if header.Typeflag == tar.TypeDir || header.Size > int64(u.MaxSize) {
+		isFile := !(header.Typeflag == tar.TypeDir)
+		isGreaterZero := header.Size > 0
+		isBelowMaxSize := header.Size < int64(u.MaxSize)
+
+		isGoodToUnpack := false
+		if isFile && isGreaterZero && isBelowMaxSize {
+			isGoodToUnpack = fileGoodToUnpack(u.Whitelist, u.Blacklist, header.Name)
+		} else {
+			continue
+		}
+		if !isGoodToUnpack {
 			continue
 		}
 
@@ -329,14 +344,6 @@ func (u *UnpackedFileIterator) isTarTextFileWithContent(header *tar.Header, read
 	return true, fullContent, nil
 }
 
-func (u *UnpackedFileIterator) unpackTarFile(header *tar.Header, reader io.Reader) (string, []byte, int, error) {
-	content := make([]byte, header.Size)
-	if _, err := io.ReadFull(reader, content); err != nil {
-		return "", nil, 0, fmt.Errorf("error reading tar file content: %w", err)
-	}
-	return header.Name, content, int(header.Size), nil
-}
-
 func unpackTar(u *UnpackedFileIterator) (bool, error) {
 	if u.iterationEnded {
 		return false, nil
@@ -367,7 +374,17 @@ func unpackTar(u *UnpackedFileIterator) (bool, error) {
 		}
 		u.fileIndex++
 
-		if header.Typeflag == tar.TypeDir || header.Size > int64(u.MaxSize) {
+		isFile := !(header.Typeflag == tar.TypeDir)
+		isGreaterZero := header.Size > 0
+		isBelowMaxSize := header.Size < int64(u.MaxSize)
+
+		isGoodToUnpack := false
+		if isFile && isGreaterZero && isBelowMaxSize {
+			isGoodToUnpack = fileGoodToUnpack(u.Whitelist, u.Blacklist, header.Name)
+		} else {
+			continue
+		}
+		if !isGoodToUnpack {
 			continue
 		}
 
@@ -400,10 +417,15 @@ func (u *UnpackedFileIterator) findFirst7z() bool {
 	}
 	files := u.sevenZipReader.File
 	for i, f := range files {
-		fileGoodToUnpack := fileGoodToUnpack(u.Blacklist, u.Whitelist, f.Name)
 		isFile := !f.FileInfo().IsDir()
+		isGreaterZero := f.UncompressedSize > 0
 		isBelowMaxSize := f.UncompressedSize <= uint64(u.MaxSize)
-		if fileContentsShouldBeUnpacked(isFile, isBelowMaxSize, fileGoodToUnpack) {
+
+		isGoodToUnpack := false
+		if isFile && isGreaterZero && isBelowMaxSize {
+			isGoodToUnpack = fileGoodToUnpack(u.Whitelist, u.Blacklist, files[i].Name)
+		}
+		if isGoodToUnpack {
 			if u.is7zTextFileWithContent(i) {
 				u.fileIndex = i
 				return true
@@ -478,10 +500,15 @@ func unpack7z(u *UnpackedFileIterator) (bool, error) {
 	found := false
 	for i := u.fileIndex + 1; i < length; i++ {
 		f := files[i]
-		fileGoodToUnpack := fileGoodToUnpack(u.Blacklist, u.Whitelist, f.Name)
 		isFile := !f.FileInfo().IsDir()
+		isGreaterZero := f.UncompressedSize > 0
 		isBelowMaxSize := f.UncompressedSize <= maxSize
-		if fileContentsShouldBeUnpacked(isFile, isBelowMaxSize, fileGoodToUnpack) {
+
+		isGoodToUnpack := false
+		if isFile && isGreaterZero && isBelowMaxSize {
+			isGoodToUnpack = fileGoodToUnpack(u.Whitelist, u.Blacklist, files[i].Name)
+		}
+		if isGoodToUnpack {
 			if u.is7zTextFileWithContent(i) {
 				u.fileIndex = i
 				name, content, size, err := u.unpack7zFile(i)
