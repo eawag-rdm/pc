@@ -296,3 +296,22 @@ func TestFiltersDuringArchiveIteration(t *testing.T) {
 		})
 	}
 }
+
+func TestSkippingALotOfFiles(t *testing.T) {
+	tests := []struct {
+		name     string
+		filepath string
+	}{
+		{"A lot of empty files in ZIP", "../../testdata/archives/a_lot_of_empty_files.zip"},
+		{"A lot of empty files in TAR", "../../testdata/archives/a_lot_of_empty_files.tar"},
+		{"A lot of empty files in 7Z", "../../testdata/archives/a_lot_of_empty_files.7z"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			nfi := newUnpackedFileIterator(test.filepath, 1024, []string{}, []string{})
+			assert.False(t, nfi.HasFilesToUnpack(), "Expected no files in archive")
+			assert.False(t, nfi.HasNext())
+		})
+	}
+}
