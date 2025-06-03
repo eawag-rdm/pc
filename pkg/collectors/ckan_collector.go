@@ -94,7 +94,11 @@ func getLocalResourcePath(resourceURL string, ckanStoragePath string) string {
 	if err != nil {
 		return ""
 	}
-	resourceID := strings.Split(parsedURL.Path, "/")[4]
+	parts := strings.Split(parsedURL.Path, "/")
+	if len(parts) <= 4 {
+		panic(fmt.Sprintf("The resource url is strange: '%s'. Are the resources restricted?", resourceURL))
+	}
+	resourceID := parts[4]
 
 	// Slice out parts: rsc_1, rsc_2, rsc_3
 	// Make sure resourceID has at least 6 characters or handle errors as needed
