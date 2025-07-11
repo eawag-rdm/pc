@@ -2,10 +2,12 @@ package checks
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 	"unicode"
 
 	"github.com/eawag-rdm/pc/pkg/config"
@@ -21,6 +23,123 @@ This file contains tests that run on single files and do not need any other info
 const (
 	SP = 0x20 //      Space
 )
+
+// RegexCache provides thread-safe caching of compiled regex patterns
+type regexCache struct {
+	cache map[string]*regexp.Regexp
+	mutex sync.RWMutex
+}
+
+var globalRegexCache = &regexCache{
+	cache: make(map[string]*regexp.Regexp),
+}
+
+// getOrCompile returns a cached compiled regex or compiles and caches a new one
+func (rc *regexCache) getOrCompile(pattern string) (*regexp.Regexp, error) {
+	// First try to read from cache
+	rc.mutex.RLock()
+	if compiled, exists := rc.cache[pattern]; exists {
+		rc.mutex.RUnlock()
+		return compiled, nil
+	}
+	rc.mutex.RUnlock()
+
+	// Compile the pattern
+	compiled, err := regexp.Compile(pattern)
+	if err != nil {
+		return nil, err
+	}
+
+	// Store in cache
+	rc.mutex.Lock()
+	rc.cache[pattern] = compiled
+	rc.mutex.Unlock()
+
+	return compiled, nil
+}
+
+// streamingReadFile reads a file in chunks and applies pattern matching
+// This is more memory-efficient for large files
+func streamingReadFile(filePath string, patterns string) ([]string, error) {
+	const maxFileSize = 100 * 1024 * 1024 // 100MB limit for streaming
+	const chunkSize = 64 * 1024            // 64KB chunks
+	
+	file, err := os.Open(filePath)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	// Check file size
+	fileInfo, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+
+	// For small files, read normally
+	if fileInfo.Size() < chunkSize {
+		content, err := io.ReadAll(file)
+		if err != nil {
+			return nil, err
+		}
+		match := matchPatterns(patterns, content)
+		if match != "" {
+			return []string{match}, nil
+		}
+		return []string{}, nil
+	}
+
+	// For larger files, use streaming
+	if fileInfo.Size() > maxFileSize {
+		return nil, fmt.Errorf("file too large: %d bytes (max %d)", fileInfo.Size(), maxFileSize)
+	}
+
+	var foundMatches []string
+	buffer := make([]byte, chunkSize)
+	overlap := make([]byte, 0, 1024) // Keep some overlap for patterns spanning chunks
+	
+	for {
+		n, err := file.Read(buffer)
+		if n == 0 {
+			break
+		}
+		
+		// Combine overlap with new data
+		combined := append(overlap, buffer[:n]...)
+		
+		// Check for patterns in combined data
+		match := matchPatterns(patterns, combined)
+		if match != "" {
+			// Deduplicate matches
+			found := false
+			for _, existing := range foundMatches {
+				if existing == match {
+					found = true
+					break
+				}
+			}
+			if !found {
+				foundMatches = append(foundMatches, match)
+			}
+		}
+		
+		// Keep last 512 bytes as overlap for next chunk
+		if n >= 512 {
+			overlap = buffer[n-512 : n]
+		} else {
+			overlap = buffer[:n]
+		}
+		
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+	
+	return foundMatches, nil
+}
 
 func HasOnlyASCII(file structs.File, config config.Config) []structs.Message {
 	var nonASCII string
@@ -71,12 +190,23 @@ func isTextFile(filePath string) (bool, error) {
 
 func IsArchiveFreeOfKeywords(file structs.File, config config.Config) []structs.Message {
 	var messages []structs.Message
-	var maxFileSize = 2 * 1024 * 1024 // 2 MB
+	
+	// Use configurable memory limits
+	maxFileSize := int(config.General.MaxArchiveFileSize)
+	if maxFileSize <= 0 {
+		maxFileSize = 10 * 1024 * 1024 // Default to 10MB if not configured
+	}
 
 	whitelist := config.Tests["IsFreeOfKeywords"].Whitelist
 	blacklist := config.Tests["IsFreeOfKeywords"].Blacklist
 
-	archiveIterator := readers.InitArchiveIterator(file.Path, file.Name, maxFileSize, whitelist, blacklist)
+	// Use configurable total memory limit
+	maxTotalMemory := config.General.MaxTotalArchiveMemory
+	if maxTotalMemory <= 0 {
+		maxTotalMemory = 100 * 1024 * 1024 // Default to 100MB if not configured
+	}
+
+	archiveIterator := readers.InitArchiveIteratorWithMemoryLimit(file.Path, file.Name, maxFileSize, whitelist, blacklist, maxTotalMemory)
 	if !archiveIterator.HasFilesToUnpack() {
 		return messages
 	}
@@ -109,24 +239,63 @@ func IsFreeOfKeywords(file structs.File, config config.Config) []structs.Message
 		return messages
 	}
 
-	var body [][]byte
 	if isText {
-		content, err := os.ReadFile(file.Path)
+		// Use streaming for large text files
+		fileInfo, err := os.Stat(file.Path)
 		if err != nil {
-			panic(err)
+			fmt.Printf("Error getting file info '%s': %v\n", file.Path, err)
+			return messages
 		}
-		body = append(body, content)
+
+		// Use streaming for files larger than 10MB
+		if fileInfo.Size() > 10*1024*1024 {
+			for _, argumentSet := range config.Tests["IsFreeOfKeywords"].KeywordArguments {
+				var keywords = strings.Join(argumentSet["keywords"].([]string), "|")
+				var info = argumentSet["info"].(string)
+
+				foundMatches, err := streamingReadFile(file.Path, keywords)
+				if err != nil {
+					fmt.Printf("Error streaming file '%s': %v\n", file.Path, err)
+					continue
+				}
+
+				for _, match := range foundMatches {
+					messages = append(messages, structs.Message{
+						Content: info + " '" + match + "'",
+						Source:  file,
+					})
+				}
+			}
+		} else {
+			// Use regular reading for smaller files
+			content, err := os.ReadFile(file.Path)
+			if err != nil {
+				fmt.Printf("Error reading file '%s': %v\n", file.Path, err)
+				return messages
+			}
+			body := [][]byte{content}
+
+			for _, argumentSet := range config.Tests["IsFreeOfKeywords"].KeywordArguments {
+				var keywords = strings.Join(argumentSet["keywords"].([]string), "|")
+				var info = argumentSet["info"].(string)
+
+				ret := IsFreeOfKeywordsCore(file, keywords, info, body, false)
+				if ret != nil {
+					messages = append(messages, ret...)
+				}
+			}
+		}
 	} else {
-		body = tryReadBinary(file)
-	}
+		// Handle binary files
+		body := tryReadBinary(file)
+		for _, argumentSet := range config.Tests["IsFreeOfKeywords"].KeywordArguments {
+			var keywords = strings.Join(argumentSet["keywords"].([]string), "|")
+			var info = argumentSet["info"].(string)
 
-	for _, argumentSet := range config.Tests["IsFreeOfKeywords"].KeywordArguments {
-		var keywords = strings.Join(argumentSet["keywords"].([]string), "|")
-		var info = argumentSet["info"].(string)
-
-		ret := IsFreeOfKeywordsCore(file, keywords, info, body, !isText)
-		if ret != nil {
-			messages = append(messages, ret...)
+			ret := IsFreeOfKeywordsCore(file, keywords, info, body, true)
+			if ret != nil {
+				messages = append(messages, ret...)
+			}
 		}
 	}
 	return messages
@@ -150,9 +319,11 @@ func IsFreeOfKeywordsCore(file structs.File, keywords string, info string, body 
 
 func matchPatterns(patterns string, body []byte) string {
 	// "(?i)" for case-insensitive matching
-	regexp, err := regexp.Compile("(?i)" + patterns)
+	fullPattern := "(?i)" + patterns
+	regexp, err := globalRegexCache.getOrCompile(fullPattern)
 	if err != nil {
-		panic(err)
+		fmt.Printf("Error compiling regex pattern '%s': %v\n", patterns, err)
+		return "" // Return empty string instead of panicking
 	}
 
 	if len(body) == 0 {
@@ -184,13 +355,15 @@ func tryReadBinary(file structs.File) [][]byte {
 	if strings.HasSuffix(file.Path, ".xlsx") {
 		content, err := readers.ReadXLSXFile(file)
 		if err != nil {
-			panic(err)
+			fmt.Printf("Error reading XLSX file '%s': %v\n", file.Path, err)
+			return [][]byte{} // Return empty instead of panicking
 		}
 		return content
 	} else if strings.HasSuffix(file.Path, ".docx") {
 		content, err := readers.ReadDOCXFile(file)
 		if err != nil {
-			panic(err)
+			fmt.Printf("Error reading DOCX file '%s': %v\n", file.Path, err)
+			return [][]byte{} // Return empty instead of panicking
 		}
 		return content
 	} else if !readers.IsSupportedArchive(file.Name) {

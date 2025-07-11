@@ -27,8 +27,6 @@ func main() {
 	// Parse CLI arguments
 	cfg := flag.String("config", defaultConfig, "Path to the config file")
 	folder_or_url := flag.String("location", defaultFolder, "Path to local folder or CKAN package name. It depends on the set collector.")
-	flag.Parse()
-	// Check if help is requested
 	help := flag.Bool("help", false, "Show usage information")
 	flag.Parse()
 
@@ -37,18 +35,22 @@ func main() {
 		return
 	}
 
-	generalConfig := config.LoadConfig(*cfg)
+	generalConfig, err := config.LoadConfig(*cfg)
+	if err != nil {
+		fmt.Printf("Error loading config: %v\n", err)
+		return
+	}
 
 	var (
-		files []structs.File
-		err   error
+		files    []structs.File
+		filesErr error
 	)
 
 	// Decide which collector to use
 	if generalConfig.Operation["main"].Collector == "LocalCollector" {
-		files, err = collectors.LocalCollector(*folder_or_url, *generalConfig)
-		if err != nil {
-			fmt.Printf("LocalCollector error collecting files: %v\n", err)
+		files, filesErr = collectors.LocalCollector(*folder_or_url, *generalConfig)
+		if filesErr != nil {
+			fmt.Printf("LocalCollector error collecting files: %v\n", filesErr)
 			return
 		}
 
@@ -57,9 +59,9 @@ func main() {
 			fmt.Println("Please provide a CKAN package name (use the location flag '-location')")
 			return
 		}
-		files, err = collectors.CkanCollector(*folder_or_url, *generalConfig)
-		if err != nil {
-			fmt.Printf("CkanCollector error collecting files: %v\n", err)
+		files, filesErr = collectors.CkanCollector(*folder_or_url, *generalConfig)
+		if filesErr != nil {
+			fmt.Printf("CkanCollector error collecting files: %v\n", filesErr)
 			return
 		}
 

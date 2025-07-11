@@ -370,7 +370,10 @@ func TestIsTextFileExampleFiles(t *testing.T) {
 }
 func TestIsArchiveFreeOfKeywordsWithRealArchives(t *testing.T) {
 	configPath := "../../testdata/test_config.toml"
-	cfg := config.LoadConfig(configPath)
+	cfg, err := config.LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("Failed to load config: %v", err)
+	}
 	cfg.Tests["IsFreeOfKeywords"].Whitelist = []string{}
 	cfg.Tests["IsFreeOfKeywords"].Blacklist = []string{}
 

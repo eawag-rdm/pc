@@ -10,7 +10,11 @@ import (
 
 func MainLogic(generalConfigFilePath string, fileCollector func(config.Config) ([]structs.File, error), checksAcrossFiles bool) []structs.Message {
 
-	generalConfig := config.LoadConfig(generalConfigFilePath)
+	generalConfig, err := config.LoadConfig(generalConfigFilePath)
+	if err != nil {
+		fmt.Println("Error loading config:", err)
+		return nil
+	}
 	files, err := fileCollector(*generalConfig)
 	if err != nil {
 		fmt.Println("Error collecting files:", err)

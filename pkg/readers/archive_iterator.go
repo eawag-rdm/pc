@@ -32,6 +32,11 @@ type UnpackedFileIterator struct {
 	hasCheckedFirstFile bool
 	fileIndex           int
 
+	// Memory tracking
+	totalMemoryUsed    int64
+	maxTotalMemory     int64
+	processedFileCount int
+
 	tarFile        *os.File
 	tarReader      *tar.Reader
 	zipReader      *zip.ReadCloser
@@ -39,6 +44,10 @@ type UnpackedFileIterator struct {
 }
 
 func InitArchiveIterator(archivePath string, archiveName string, maxSize int, whitelist []string, blacklist []string) *UnpackedFileIterator {
+	return InitArchiveIteratorWithMemoryLimit(archivePath, archiveName, maxSize, whitelist, blacklist, 100*1024*1024) // Default 100MB
+}
+
+func InitArchiveIteratorWithMemoryLimit(archivePath string, archiveName string, maxSize int, whitelist []string, blacklist []string, maxTotalMemory int64) *UnpackedFileIterator {
 	return &UnpackedFileIterator{
 		ArchivePath:        archivePath,
 		ArchiveName:        archiveName,
@@ -57,6 +66,10 @@ func InitArchiveIterator(archivePath string, archiveName string, maxSize int, wh
 		hasCheckedFirstFile: false,
 		fileIndex:           -1,
 
+		totalMemoryUsed:    0,
+		maxTotalMemory:     maxTotalMemory,
+		processedFileCount: 0,
+
 		tarFile:        nil,
 		tarReader:      nil,
 		zipReader:      nil,
@@ -68,9 +81,30 @@ func (u *UnpackedFileIterator) UnpackedFile() (string, []byte, int) {
 	return u.CurrentFilename, u.CurrentFileContent, u.CurrentFileSize
 }
 
+// checkMemoryLimit verifies if processing another file would exceed memory limits
+func (u *UnpackedFileIterator) checkMemoryLimit(additionalBytes int64) bool {
+	return u.totalMemoryUsed+additionalBytes <= u.maxTotalMemory
+}
+
+// updateMemoryUsage tracks memory usage and enforces limits
+func (u *UnpackedFileIterator) updateMemoryUsage(fileSize int) {
+	u.totalMemoryUsed += int64(fileSize)
+	u.processedFileCount++
+	
+	// Log memory usage every 10 files
+	if u.processedFileCount%10 == 0 {
+		fmt.Printf("Archive memory usage: %d/%d bytes (%d files processed)\n", 
+			u.totalMemoryUsed, u.maxTotalMemory, u.processedFileCount)
+	}
+}
+
 func matchPatterns(list []string, str string) bool {
 	combinedPattern := strings.Join(list, "|")
-	combinedRegex := regexp.MustCompile(combinedPattern)
+	combinedRegex, err := regexp.Compile(combinedPattern)
+	if err != nil {
+		fmt.Printf("Error compiling regex pattern '%s': %v\n", combinedPattern, err)
+		return false
+	}
 	return combinedRegex.MatchString(str)
 
 }
@@ -106,6 +140,13 @@ func (u *UnpackedFileIterator) findFirstZip() bool {
 			isGoodToUnpack = fileGoodToUnpack(u.Whitelist, u.Blacklist, files[i].Name)
 		}
 		if isGoodToUnpack {
+			// Check memory limit before processing
+			if !u.checkMemoryLimit(int64(files[i].UncompressedSize64)) {
+				fmt.Printf("Memory limit reached processing archive %s (file: %s)\n", u.ArchiveName, files[i].Name)
+				u.iterationEnded = true
+				return false
+			}
+			
 			if u.isZippedTextWithContent(i) {
 				u.fileIndex = i
 
@@ -117,6 +158,9 @@ func (u *UnpackedFileIterator) findFirstZip() bool {
 				u.bufferedFilename = name
 				u.bufferedFileContent = content
 				u.bufferedFileSize = size
+				
+				// Update memory usage tracking
+				u.updateMemoryUsage(size)
 
 				return true
 			}

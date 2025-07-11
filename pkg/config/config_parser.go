@@ -22,7 +22,14 @@ type OperationConfig struct {
 	Collector string
 }
 
+type GeneralConfig struct {
+	MaxMessagesPerType     int
+	MaxArchiveFileSize     int64 // Maximum size for individual files in archives (bytes)
+	MaxTotalArchiveMemory  int64 // Maximum total memory for archive processing (bytes)
+}
+
 type Config struct {
+	General    *GeneralConfig
 	Tests      map[string]*TestConfig
 	Operation  map[string]*OperationConfig
 	Collectors map[string]*CollectorConfig
@@ -36,6 +43,11 @@ func ParseConfig(filename string) (*Config, error) {
 	}
 
 	c := &Config{
+		General: &GeneralConfig{
+			MaxMessagesPerType:    10,                    // Default value
+			MaxArchiveFileSize:    10 * 1024 * 1024,     // 10MB default
+			MaxTotalArchiveMemory: 100 * 1024 * 1024,    // 100MB default
+		},
 		Tests:      map[string]*TestConfig{},
 		Operation:  map[string]*OperationConfig{},
 		Collectors: map[string]*CollectorConfig{},
@@ -68,6 +80,19 @@ func ParseConfig(filename string) (*Config, error) {
 			}
 		}
 		return result
+	}
+
+	// Parse general section
+	if generalData, ok := raw["general"].(map[string]interface{}); ok {
+		if maxMsgs, ok := generalData["maxMessagesPerType"].(int64); ok {
+			c.General.MaxMessagesPerType = int(maxMsgs)
+		}
+		if maxArchiveFileSize, ok := generalData["maxArchiveFileSize"].(int64); ok {
+			c.General.MaxArchiveFileSize = maxArchiveFileSize
+		}
+		if maxTotalArchiveMemory, ok := generalData["maxTotalArchiveMemory"].(int64); ok {
+			c.General.MaxTotalArchiveMemory = maxTotalArchiveMemory
+		}
 	}
 
 	if testData, ok := raw["test"].(map[string]interface{}); ok {
@@ -135,20 +160,20 @@ func assesLists(blacklist []string, whitelist []string) error {
 }
 
 // LoadConfig loads the configuration from a TOML file and performs the necessary checks
-func LoadConfig(file string) *Config {
+func LoadConfig(file string) (*Config, error) {
 	var config *Config
 	config, err := ParseConfig(file)
 	if err != nil {
-		panic(err)
+		return nil, fmt.Errorf("failed to parse config file '%s': %w", file, err)
 	}
 
 	for testName, test := range config.Tests {
 		if err := assesLists(test.Blacklist, test.Whitelist); err != nil {
-			panic(fmt.Sprintf("error in test %s: %v", testName, err))
+			return nil, fmt.Errorf("error in test %s: %v", testName, err)
 		}
 	}
 
-	return config
+	return config, nil
 }
 
 // check fore the default configurtion file 1. ~/.config/pc/config.toml 2. ./config.toml if exists return the path

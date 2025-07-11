@@ -96,12 +96,18 @@ func getLocalResourcePath(resourceURL string, ckanStoragePath string) string {
 	}
 	parts := strings.Split(parsedURL.Path, "/")
 	if len(parts) <= 4 {
-		panic(fmt.Sprintf("The resource url is strange: '%s'. Are the resources restricted?", resourceURL))
+		fmt.Printf("Error: resource URL has invalid format '%s' - are the resources restricted?\n", resourceURL)
+		return "" // Return empty string instead of panicking
 	}
 	resourceID := parts[4]
 
+	// Validate resourceID has at least 6 characters
+	if len(resourceID) < 6 {
+		fmt.Printf("Error: resource ID '%s' is too short (needs at least 6 characters)\n", resourceID)
+		return "" // Return empty string instead of panicking
+	}
+
 	// Slice out parts: rsc_1, rsc_2, rsc_3
-	// Make sure resourceID has at least 6 characters or handle errors as needed
 	rsc1 := resourceID[:3]
 	rsc2 := resourceID[3:6]
 	rsc3 := resourceID[6:]

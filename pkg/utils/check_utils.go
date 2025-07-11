@@ -35,6 +35,7 @@ var BY_FILE_ON_ARCHIVE_FILE_LIST = []func(file structs.File, config config.Confi
 	checks.IsValidName,
 }
 
+
 func getFunctionName(i interface{}) string {
 	fullName := runtime.FuncForPC(reflect.ValueOf(i).Pointer()).Name()
 	parts := strings.Split(fullName, ".")
@@ -43,7 +44,11 @@ func getFunctionName(i interface{}) string {
 
 func matchPatterns(list []string, str string) bool {
 	combinedPattern := strings.Join(list, "|")
-	combinedRegex := regexp.MustCompile(combinedPattern)
+	combinedRegex, err := regexp.Compile(combinedPattern)
+	if err != nil {
+		fmt.Printf("Error compiling regex pattern '%s': %v\n", combinedPattern, err)
+		return false
+	}
 	return combinedRegex.MatchString(str)
 
 }
@@ -159,6 +164,78 @@ func ApplyAllChecks(config config.Config, files []structs.File, checksAcrossFile
 		messages = append(messages, ApplyChecksFilteredByRepository(config, BY_REPOSITORY, files)...)
 	}
 
+	// Apply message truncation
+	messages = TruncateMessages(messages, config.General.MaxMessagesPerType)
+
 	return messages
 
+}
+
+// getMessageType extracts a type identifier from a message content
+// Groups similar messages together for truncation
+func getMessageType(content string) string {
+	// Extract the main part of the message before specific details
+	if strings.Contains(content, "File name contains non-ASCII character:") {
+		return "non-ascii-filename"
+	}
+	if strings.Contains(content, "File name contains spaces") {
+		return "filename-spaces"
+	}
+	if strings.Contains(content, "Sensitive data in File? Found suspicious keyword(s):") {
+		return "sensitive-data"
+	}
+	if strings.Contains(content, "Do you have Eawag internal information") {
+		return "eawag-internal"
+	}
+	if strings.Contains(content, "Do you have hardcoded filepaths") {
+		return "hardcoded-paths"
+	}
+	if strings.Contains(content, "File or Folder has an invalid name:") {
+		return "invalid-name"
+	}
+	if strings.Contains(content, "File has an invalid suffix:") {
+		return "invalid-suffix"
+	}
+	if strings.Contains(content, "In archived file:") {
+		return "archived-file-issue"
+	}
+	// Default: use first 50 characters as type
+	if len(content) > 50 {
+		return content[:50]
+	}
+	return content
+}
+
+// TruncateMessages groups messages by type and truncates them if they exceed the limit
+func TruncateMessages(messages []structs.Message, maxPerType int) []structs.Message {
+	if maxPerType <= 0 {
+		return messages
+	}
+
+	// Group messages by type
+	messageGroups := make(map[string][]structs.Message)
+	for _, msg := range messages {
+		msgType := getMessageType(msg.Content)
+		messageGroups[msgType] = append(messageGroups[msgType], msg)
+	}
+
+	var result []structs.Message
+	for _, msgs := range messageGroups {
+		if len(msgs) <= maxPerType {
+			// Add all messages if under the limit
+			result = append(result, msgs...)
+		} else {
+			// Add first (maxPerType-1) messages and a truncation notice
+			result = append(result, msgs[:maxPerType-1]...)
+			
+			// Create truncation message
+			truncationMsg := structs.Message{
+				Content: fmt.Sprintf("... and %d more similar messages (truncated)", len(msgs)-(maxPerType-1)),
+				Source:  msgs[0].Source, // Use the same source as the first message
+			}
+			result = append(result, truncationMsg)
+		}
+	}
+
+	return result
 }

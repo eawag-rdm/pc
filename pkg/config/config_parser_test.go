@@ -66,11 +66,12 @@ func TestLoadConfig(t *testing.T) {
 			configFile := createTempConfigFile(t, tt.configData)
 			defer os.Remove(configFile)
 
+			config, err := LoadConfig(configFile)
 			if tt.expectPanic {
-				assert.Panics(t, func() { LoadConfig(configFile) })
+				assert.Error(t, err)
+				assert.Nil(t, config)
 			} else {
-				assert.NotPanics(t, func() { LoadConfig(configFile) })
-				config := LoadConfig(configFile)
+				assert.NoError(t, err)
 				assert.NotNil(t, config)
 			}
 		})

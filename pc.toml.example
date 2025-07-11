@@ -12,6 +12,14 @@
 # Whitelist: Only filepaths, that match entries will be checked. Regex patterns are allowed. Ignored, if empty.
 #####################################################################################
 
+[general]
+# Maximum number of messages of the same type before truncating
+maxMessagesPerType = 10
+# Maximum size for individual files in archives (bytes) - 10MB default
+maxArchiveFileSize = 10485760
+# Maximum total memory for archive processing (bytes) - 100MB default
+maxTotalArchiveMemory = 104857600
+
 [operation.main]
 collector = "LocalCollector"
 
@@ -54,4 +62,4 @@ keywordArguments = [
 attrs = {url = "https://example.com", token = "", verify = true, ckan_storage_path = "/nfsmount/ckan/default"}
 
 [collector.LocalCollector]
-attr = {includeFolders = true}
+attrs = {includeFolders = true}
