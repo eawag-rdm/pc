@@ -12,6 +12,7 @@ import (
 
 	"github.com/eawag-rdm/pc/pkg/config"
 	"github.com/eawag-rdm/pc/pkg/helpers"
+	"github.com/eawag-rdm/pc/pkg/performance"
 	"github.com/eawag-rdm/pc/pkg/readers"
 	"github.com/eawag-rdm/pc/pkg/structs"
 )
@@ -61,8 +62,8 @@ func (rc *regexCache) getOrCompile(pattern string) (*regexp.Regexp, error) {
 // streamingReadFile reads a file in chunks and applies pattern matching
 // This is more memory-efficient for large files
 func streamingReadFile(filePath string, patterns string) ([]string, error) {
-	const maxFileSize = 100 * 1024 * 1024 // 100MB limit for streaming
-	const chunkSize = 64 * 1024            // 64KB chunks
+	const maxFileSize = 1024 * 1024 * 1024 // 1GB limit for streaming (increased)
+	const chunkSize = 256 * 1024            // 256KB chunks (increased for better performance)
 	
 	file, err := os.Open(filePath)
 	if err != nil {
@@ -76,17 +77,22 @@ func streamingReadFile(filePath string, patterns string) ([]string, error) {
 		return nil, err
 	}
 
+	// Split patterns for fast matcher
+	patternList := strings.Split(patterns, "|")
+	if len(patternList) == 0 {
+		return []string{}, nil
+	}
+	
+	matcher := performance.GetMatcher(patternList)
+
 	// For small files, read normally
 	if fileInfo.Size() < chunkSize {
 		content, err := io.ReadAll(file)
 		if err != nil {
 			return nil, err
 		}
-		match := matchPatterns(patterns, content)
-		if match != "" {
-			return []string{match}, nil
-		}
-		return []string{}, nil
+		matches := matcher.FindMatches(content)
+		return matches, nil
 	}
 
 	// For larger files, use streaming
@@ -94,9 +100,9 @@ func streamingReadFile(filePath string, patterns string) ([]string, error) {
 		return nil, fmt.Errorf("file too large: %d bytes (max %d)", fileInfo.Size(), maxFileSize)
 	}
 
-	var foundMatches []string
+	foundMatches := make(map[string]struct{})
 	buffer := make([]byte, chunkSize)
-	overlap := make([]byte, 0, 1024) // Keep some overlap for patterns spanning chunks
+	overlap := make([]byte, 0, 2048) // Increased overlap for better pattern detection
 	
 	for {
 		n, err := file.Read(buffer)
@@ -107,27 +113,21 @@ func streamingReadFile(filePath string, patterns string) ([]string, error) {
 		// Combine overlap with new data
 		combined := append(overlap, buffer[:n]...)
 		
-		// Check for patterns in combined data
-		match := matchPatterns(patterns, combined)
-		if match != "" {
-			// Deduplicate matches
-			found := false
-			for _, existing := range foundMatches {
-				if existing == match {
-					found = true
-					break
-				}
-			}
-			if !found {
-				foundMatches = append(foundMatches, match)
-			}
+		// Check for patterns in combined data using fast matcher
+		matches := matcher.FindMatches(combined)
+		for _, match := range matches {
+			foundMatches[match] = struct{}{}
 		}
 		
-		// Keep last 512 bytes as overlap for next chunk
-		if n >= 512 {
-			overlap = buffer[n-512 : n]
+		// Keep last 1KB as overlap for next chunk to ensure patterns spanning chunks are caught
+		overlapSize := 1024
+		if n < overlapSize {
+			overlapSize = n
+		}
+		if len(combined) >= overlapSize {
+			overlap = combined[len(combined)-overlapSize:]
 		} else {
-			overlap = buffer[:n]
+			overlap = combined
 		}
 		
 		if err == io.EOF {
@@ -138,7 +138,13 @@ func streamingReadFile(filePath string, patterns string) ([]string, error) {
 		}
 	}
 	
-	return foundMatches, nil
+	// Convert map to slice
+	result := make([]string, 0, len(foundMatches))
+	for match := range foundMatches {
+		result = append(result, match)
+	}
+	
+	return result, nil
 }
 
 func HasOnlyASCII(file structs.File, config config.Config) []structs.Message {
@@ -318,36 +324,38 @@ func IsFreeOfKeywordsCore(file structs.File, keywords string, info string, body 
 }
 
 func matchPatterns(patterns string, body []byte) string {
-	// "(?i)" for case-insensitive matching
-	fullPattern := "(?i)" + patterns
-	regexp, err := globalRegexCache.getOrCompile(fullPattern)
-	if err != nil {
-		fmt.Printf("Error compiling regex pattern '%s': %v\n", patterns, err)
-		return "" // Return empty string instead of panicking
-	}
-
 	if len(body) == 0 {
 		return ""
 	}
 
-	// Check if any of the keywords are present in the file
-	foundKeywords := regexp.FindAll(body, -1)
-	if len(foundKeywords) > 0 {
+	// Split patterns and use fast matcher
+	patternList := strings.Split(patterns, "|")
+	if len(patternList) == 0 {
+		return ""
+	}
+
+	// Use fast matcher for pattern detection with original case preservation
+	matcher := performance.GetMatcher(patternList)
+	foundMatches := matcher.FindMatchesWithOriginalCase(body)
+	
+	if len(foundMatches) > 0 {
+		// Deduplicate and format results
 		keywordSet := make(map[string]struct{})
 		var foundKeywordsStr string
-		for _, keyword := range foundKeywords {
-			keywordStr := string(keyword)
-			if _, exists := keywordSet[keywordStr]; !exists {
+		
+		for _, match := range foundMatches {
+			if _, exists := keywordSet[match]; !exists {
 				if foundKeywordsStr != "" {
 					foundKeywordsStr += "', '"
 				}
-				foundKeywordsStr += keywordStr
-				keywordSet[keywordStr] = struct{}{}
+				foundKeywordsStr += match
+				keywordSet[match] = struct{}{}
 			}
 		}
-
+		
 		return foundKeywordsStr
 	}
+	
 	return ""
 }
 

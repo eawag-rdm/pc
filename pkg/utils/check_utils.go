@@ -10,6 +10,7 @@ import (
 	"github.com/eawag-rdm/pc/pkg/checks"
 	"github.com/eawag-rdm/pc/pkg/config"
 	"github.com/eawag-rdm/pc/pkg/helpers"
+	"github.com/eawag-rdm/pc/pkg/performance"
 	"github.com/eawag-rdm/pc/pkg/readers"
 	"github.com/eawag-rdm/pc/pkg/structs"
 )
@@ -50,7 +51,6 @@ func matchPatterns(list []string, str string) bool {
 		return false
 	}
 	return combinedRegex.MatchString(str)
-
 }
 
 // this function will decide if a check runs or skipped depending on the
@@ -72,6 +72,12 @@ func skipFileCheck(config config.Config, fileCheck func(file structs.File, confi
 }
 
 func ApplyChecksFilteredByFile(config config.Config, checks []func(file structs.File, config config.Config) []structs.Message, files []structs.File) []structs.Message {
+	// Use parallel processing for multiple files, sequential for small workloads
+	if len(files) >= 4 && runtime.NumCPU() > 1 {
+		return applyChecksParallel(config, checks, files)
+	}
+	
+	// Sequential processing for small workloads
 	var messages = []structs.Message{}
 	for _, file := range files {
 		helpers.PDFTracker.AddFileIfPDF("", file)
@@ -80,7 +86,6 @@ func ApplyChecksFilteredByFile(config config.Config, checks []func(file structs.
 			if skipFileCheck(config, check, file) {
 				continue
 			}
-			// if the file is an archive, we need to check the archiv
 			ret := check(file, config)
 			if ret != nil {
 				messages = append(messages, ret...)
@@ -89,6 +94,83 @@ func ApplyChecksFilteredByFile(config config.Config, checks []func(file structs.
 	}
 	return messages
 }
+
+// applyChecksParallel processes files concurrently using worker pools
+// Each file is processed by a single worker with all its checks to avoid IO conflicts
+func applyChecksParallel(cfg config.Config, checks []func(file structs.File, config config.Config) []structs.Message, files []structs.File) []structs.Message {
+	// Create work items where each item contains one file with all its applicable checks
+	// This ensures all checks for a single file run in the same worker thread,
+	// avoiding concurrent file access that could cause IO conflicts
+	
+	numWorkers := runtime.NumCPU()
+	if len(files) < numWorkers {
+		numWorkers = len(files)
+	}
+
+	pool := performance.NewWorkerPool(numWorkers)
+	pool.Start()
+	defer pool.Stop()
+
+	// Submit work items - one per file with all applicable checks
+	go func() {
+		for _, file := range files {
+			helpers.PDFTracker.AddFileIfPDF("", file)
+			
+			// Filter checks for this specific file
+			var validChecks []func(structs.File, config.Config) []structs.Message
+			for _, check := range checks {
+				if !skipFileCheck(cfg, check, file) {
+					validChecks = append(validChecks, check)
+				}
+			}
+			
+			if len(validChecks) > 0 {
+				work := performance.WorkItem{
+					File:   file,
+					Checks: validChecks,
+					Config: cfg,
+				}
+				
+				// If we can't submit (queue full), this will block
+				// ensuring we don't lose work items
+				for !pool.Submit(work) {
+					// Small delay to prevent busy waiting
+					runtime.Gosched()
+				}
+			}
+		}
+	}()
+
+	// Collect results
+	var allMessages []structs.Message
+	resultsCollected := 0
+	expectedResults := 0
+	
+	// Count expected results
+	for _, file := range files {
+		hasValidChecks := false
+		for _, check := range checks {
+			if !skipFileCheck(cfg, check, file) {
+				hasValidChecks = true
+				break
+			}
+		}
+		if hasValidChecks {
+			expectedResults++
+		}
+	}
+
+	for resultsCollected < expectedResults {
+		result := <-pool.Results()
+		if len(result.Messages) > 0 {
+			allMessages = append(allMessages, result.Messages...)
+		}
+		resultsCollected++
+	}
+
+	return allMessages
+}
+
 
 func ApplyChecksFilteredByFileOnArchiveFileList(config config.Config, checks []func(file structs.File, config config.Config) []structs.Message, files []structs.File) []structs.Message {
 

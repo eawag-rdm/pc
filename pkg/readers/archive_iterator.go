@@ -8,10 +8,10 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 
 	"github.com/bodgit/sevenzip"
+	"github.com/eawag-rdm/pc/pkg/performance"
 )
 
 type UnpackedFileIterator struct {
@@ -99,14 +99,13 @@ func (u *UnpackedFileIterator) updateMemoryUsage(fileSize int) {
 }
 
 func matchPatterns(list []string, str string) bool {
-	combinedPattern := strings.Join(list, "|")
-	combinedRegex, err := regexp.Compile(combinedPattern)
-	if err != nil {
-		fmt.Printf("Error compiling regex pattern '%s': %v\n", combinedPattern, err)
-		return false
+	if len(list) == 0 || str == "" {
+		return true // Empty patterns match everything
 	}
-	return combinedRegex.MatchString(str)
-
+	
+	// Use fast matcher for pattern detection
+	matcher := performance.GetMatcher(list)
+	return matcher.HasAnyMatch([]byte(str))
 }
 
 func fileGoodToUnpack(whitelist []string, blacklist []string, filename string) bool {

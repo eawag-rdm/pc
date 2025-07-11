@@ -8,8 +8,34 @@
 # Within setting function arguments are defined.
 #
 # For each function (section) a whitelist and a blacklist can be defined.
-# Blacklist: filepaths that match any of the balcklist entries are skipped. Regex patterns are allowed. Ignored, if empty.
-# Whitelist: Only filepaths, that match entries will be checked. Regex patterns are allowed. Ignored, if empty.
+#
+# REGEX USAGE RULES:
+# ==================
+# 
+# REGEX PATTERNS ARE ALLOWED IN:
+# - blacklist: File paths that match these patterns are skipped
+# - whitelist: Only file paths that match these patterns are checked
+#
+# Examples of valid regex patterns for blacklist/whitelist:
+# - "test\.txt"           (matches test.txt exactly)
+# - ".*\.log$"            (matches any .log file)
+# - "temp.*"              (matches files starting with "temp")
+# - "test[0-9]+\.txt"     (matches test1.txt, test2.txt, etc.)
+#
+# REGEX PATTERNS ARE NOT ALLOWED IN:
+# - keywords: These are literal strings only, matched case-insensitively
+# - disallowed_names: These are literal strings only
+#
+# Examples of valid literal strings for keywords:
+# - "password"            (matches "password", "Password", "PASSWORD")
+# - "api_key"             (matches "api_key", "API_KEY", etc.)
+# - "/Users/"             (matches the literal string "/Users/")
+# - "Q:"                  (matches the literal string "Q:")
+#
+# DO NOT USE regex patterns in keywords like:
+# - "pass.*"              (will look for literal "pass.*" not regex)
+# - "[Pp]assword"         (will look for literal "[Pp]assword")
+#
 #####################################################################################
 
 [general]
@@ -34,9 +60,11 @@ blacklist = []
 whitelist = []
 
 [test.IsFreeOfKeywords]
-# Checking file contents
+# Checking file contents for sensitive information
+# blacklist/whitelist: Use regex patterns to include/exclude files by path
 blacklist = []
 whitelist = []
+# keywords: Use literal strings only (case-insensitive matching)
 keywordArguments = [
     { keywords = ["pwd","password","token", "id_rsa", "id_ed25519"], info = "Sensitive data in File? Found suspicious keyword(s):" },
     { keywords = ["Q:"], info = "Do you have Eawag internal information in your files?  Found suspicious keyword(s):" },
@@ -45,8 +73,10 @@ keywordArguments = [
 
 [test.IsValidName]
 # Checking for invalid files and folders
+# blacklist/whitelist: Use regex patterns to include/exclude files by path
 blacklist = []
 whitelist = []
+# disallowed_names: Use literal strings only (exact filename matching)
 keywordArguments = [
     { disallowed_names = [ 
         ".Rhistory", ".RData",
