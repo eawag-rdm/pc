@@ -118,164 +118,9 @@ func fileGoodToUnpack(whitelist []string, blacklist []string, filename string) b
 	return true
 }
 
-func (u *UnpackedFileIterator) findFirstZip() bool {
-	if u.zipReader == nil {
-		reader, err := zip.OpenReader(u.ArchivePath)
-		if err != nil {
-			fmt.Printf("Error (archive content checks) opening zip file '%s' -> %v\n", u.ArchiveName, err)
-			u.iterationEnded = true
-			return false
-		}
-		u.zipReader = reader
-	}
-	files := u.zipReader.File
-	for i, f := range files {
-		isFile := !f.FileInfo().IsDir()
-		isGreaterZero := f.UncompressedSize64 > 0
-		isBelowMaxSize := f.UncompressedSize64 <= uint64(u.MaxSize)
 
-		isGoodToUnpack := false
-		if isFile && isGreaterZero && isBelowMaxSize {
-			isGoodToUnpack = fileGoodToUnpack(u.Whitelist, u.Blacklist, files[i].Name)
-		}
-		if isGoodToUnpack {
-			// Check memory limit before processing
-			if !u.checkMemoryLimit(int64(files[i].UncompressedSize64)) {
-				fmt.Printf("Memory limit reached processing archive %s (file: %s)\n", u.ArchiveName, files[i].Name)
-				u.iterationEnded = true
-				return false
-			}
-			
-			if u.isZippedTextWithContent(i) {
-				u.fileIndex = i
 
-				name, content, size, err := u.unpackZipFile(i)
-				if err != nil {
-					continue
-				}
 
-				u.bufferedFilename = name
-				u.bufferedFileContent = content
-				u.bufferedFileSize = size
-				
-				// Update memory usage tracking
-				u.updateMemoryUsage(size)
-
-				return true
-			}
-		}
-	}
-	u.iterationEnded = true
-	return false
-}
-
-// isTextFile checks if a file is a text file using DetectContentType from the http package.
-func (u *UnpackedFileIterator) isZippedTextWithContent(fileIndex int) bool {
-	file := u.zipReader.File[fileIndex]
-
-	rc, err := file.Open()
-	if err != nil {
-		return false
-	}
-	defer rc.Close()
-
-	// Read a small sample of the file
-	const sampleSize = 512
-	buffer := make([]byte, sampleSize)
-	n, err := rc.Read(buffer)
-	if err != nil && err.Error() != "EOF" {
-		return false
-	}
-
-	if n == 0 {
-		// Empty file or nothing to analyze
-		return false
-	}
-
-	filetype := http.DetectContentType(buffer[:n])
-	return strings.HasPrefix(filetype, "text/")
-}
-
-func (u *UnpackedFileIterator) unpackZipFile(fileIndex int) (string, []byte, int, error) {
-	file := u.zipReader.File[fileIndex]
-
-	rc, err := file.Open()
-	if err != nil {
-		return "", nil, 0, fmt.Errorf("error opening file:  %w", err)
-	}
-	defer rc.Close()
-	content, err := io.ReadAll(rc)
-	if err != nil {
-		return "", nil, 0, fmt.Errorf("error reading file: %w", err)
-	}
-
-	return file.Name, content, int(file.UncompressedSize64), nil
-}
-
-func unpackZip(u *UnpackedFileIterator) (bool, error) {
-	files := u.zipReader.File
-	length := len(files)
-	maxSize := uint64(u.MaxSize)
-
-	if length == 0 || u.iterationEnded || u.fileIndex >= length {
-		u.iterationEnded = true
-		return false, nil
-	}
-
-	if u.bufferedFilename != "" {
-		u.CurrentFilename = u.bufferedFilename
-		u.CurrentFileContent = u.bufferedFileContent
-		u.CurrentFileSize = u.bufferedFileSize
-		u.bufferedFilename = ""
-		u.bufferedFileContent = nil
-		u.bufferedFileSize = 0
-	} else {
-
-		// Load current file
-		name, content, size, err := u.unpackZipFile(u.fileIndex)
-		if err != nil {
-			u.iterationEnded = true
-			return false, fmt.Errorf("error unpacking zip file: %w", err)
-		}
-		u.CurrentFilename = name
-		u.CurrentFileContent = content
-		u.CurrentFileSize = size
-	}
-	// Buffer next valid file
-	found := false
-	for i := u.fileIndex + 1; i < length; i++ {
-
-		isFile := !files[i].FileInfo().IsDir()
-		isGreaterZero := files[i].UncompressedSize64 > 0
-		isBelowMaxSize := files[i].UncompressedSize64 <= maxSize
-
-		isGoodToUnpack := false
-		if isFile && isGreaterZero && isBelowMaxSize {
-			isGoodToUnpack = fileGoodToUnpack(u.Whitelist, u.Blacklist, files[i].Name)
-		}
-		if isGoodToUnpack {
-			if u.isZippedTextWithContent(i) {
-
-				u.fileIndex = i
-				name, content, size, err := u.unpackZipFile(i)
-				if err != nil {
-					u.iterationEnded = true
-					continue
-				}
-				u.bufferedFilename = name
-				u.bufferedFileContent = content
-				u.bufferedFileSize = size
-				found = true
-				break
-			}
-		}
-	}
-	if !found {
-		u.iterationEnded = true
-	}
-
-	return true, nil
-}
 
 func (u *UnpackedFileIterator) findFirstTar() bool {
 	if u.tarReader == nil {
@@ -419,6 +264,181 @@ func unpackTar(u *UnpackedFileIterator) (bool, error) {
 	return true, nil
 }
 
+
+
+
+
+// Optimized 7z file processing that eliminates double reading
+func (u *UnpackedFileIterator) is7zTextFileWithContent(index int) (bool, []byte, error) {
+	f := u.sevenZipReader.File[index]
+
+	rc, err := f.Open()
+	if err != nil {
+		return false, nil, err
+	}
+	defer rc.Close()
+
+	// Read the entire file content once
+	content, err := io.ReadAll(rc)
+	if err != nil {
+		return false, nil, err
+	}
+
+	if len(content) == 0 {
+		return false, nil, nil
+	}
+
+	// Use the first 512 bytes for content type detection
+	sampleSize := 512
+	if len(content) < sampleSize {
+		sampleSize = len(content)
+	}
+
+	filetype := http.DetectContentType(content[:sampleSize])
+	isText := strings.HasPrefix(filetype, "text/") // Same logic as TAR and ZIP
+
+	return isText, content, nil
+}
+
+// Optimized ZIP file processing that eliminates double reading (same pattern as TAR)
+func (u *UnpackedFileIterator) isZippedTextWithContent(fileIndex int) (bool, []byte, error) {
+	file := u.zipReader.File[fileIndex]
+
+	rc, err := file.Open()
+	if err != nil {
+		return false, nil, err
+	}
+	defer rc.Close()
+
+	// Read the entire file content once
+	content, err := io.ReadAll(rc)
+	if err != nil {
+		return false, nil, err
+	}
+
+	if len(content) == 0 {
+		return false, nil, nil
+	}
+
+	// Use the first 512 bytes for content type detection (same as original)
+	sampleSize := 512
+	if len(content) < sampleSize {
+		sampleSize = len(content)
+	}
+
+	filetype := http.DetectContentType(content[:sampleSize])
+	isText := strings.HasPrefix(filetype, "text/") // Same logic as TAR and 7Z
+
+	return isText, content, nil
+}
+
+// Optimized ZIP unpacking that uses single-read approach
+func unpackZip(u *UnpackedFileIterator) (bool, error) {
+	files := u.zipReader.File
+	length := len(files)
+	maxSize := uint64(u.MaxSize)
+
+	if length == 0 || u.iterationEnded || u.fileIndex >= length {
+		u.iterationEnded = true
+		return false, nil
+	}
+
+	// Use the optimized single-read approach
+	isText, content, err := u.isZippedTextWithContent(u.fileIndex)
+	if err != nil {
+		u.iterationEnded = true
+		return false, fmt.Errorf("error unpacking zip file: %w", err)
+	}
+
+	if !isText {
+		// File is not text, try to find next valid file
+		found := false
+		for i := u.fileIndex + 1; i < length; i++ {
+			f := files[i]
+			isFile := !f.FileInfo().IsDir()
+			isGreaterZero := f.UncompressedSize64 > 0
+			isBelowMaxSize := f.UncompressedSize64 <= maxSize
+
+			if !u.checkMemoryLimit(int64(f.UncompressedSize64)) {
+				continue
+			}
+
+			var isGoodToUnpack bool
+			if isFile && isGreaterZero && isBelowMaxSize {
+				isGoodToUnpack = fileGoodToUnpack(u.Whitelist, u.Blacklist, f.Name)
+			}
+			
+			if isGoodToUnpack {
+				isText, content, err := u.isZippedTextWithContent(i)
+				if err != nil {
+					continue
+				}
+				if isText {
+					u.fileIndex = i
+					u.CurrentFilename = f.Name
+					u.CurrentFileContent = content
+					u.CurrentFileSize = int(f.UncompressedSize64)
+					u.updateMemoryUsage(len(content))
+					found = true
+					break
+				}
+			}
+		}
+		
+		if !found {
+			u.iterationEnded = true
+			return false, nil
+		}
+	} else {
+		// Current file is valid, set it as current
+		f := files[u.fileIndex]
+		u.CurrentFilename = f.Name
+		u.CurrentFileContent = content
+		u.CurrentFileSize = int(f.UncompressedSize64)
+		u.updateMemoryUsage(len(content))
+	}
+
+	// Look ahead for next file and buffer it (similar to original logic)
+	found := false
+	for i := u.fileIndex + 1; i < length; i++ {
+		f := files[i]
+		isFile := !f.FileInfo().IsDir()
+		isGreaterZero := f.UncompressedSize64 > 0
+		isBelowMaxSize := f.UncompressedSize64 <= maxSize
+
+		if !u.checkMemoryLimit(int64(f.UncompressedSize64)) {
+			continue
+		}
+
+		var isGoodToUnpack bool
+		if isFile && isGreaterZero && isBelowMaxSize {
+			isGoodToUnpack = fileGoodToUnpack(u.Whitelist, u.Blacklist, f.Name)
+		}
+		
+		if isGoodToUnpack {
+			isText, content, err := u.isZippedTextWithContent(i)
+			if err != nil {
+				continue
+			}
+			if isText {
+				u.fileIndex = i
+				u.bufferedFilename = f.Name
+				u.bufferedFileContent = content
+				u.bufferedFileSize = int(f.UncompressedSize64)
+				u.updateMemoryUsage(len(content))
+				found = true
+				break
+			}
+		}
+	}
+	
+	if !found {
+		u.iterationEnded = true
+	}
+
+	return true, nil
+}
+
 func (u *UnpackedFileIterator) findFirst7z() bool {
 	if u.sevenZipReader == nil {
 		reader, err := sevenzip.OpenReader(u.ArchivePath)
@@ -429,65 +449,51 @@ func (u *UnpackedFileIterator) findFirst7z() bool {
 		}
 		u.sevenZipReader = reader
 	}
+	
 	files := u.sevenZipReader.File
-	for i, f := range files {
+	maxSize := uint64(u.MaxSize)
+	
+	startIndex := u.fileIndex
+	if startIndex < 0 {
+		startIndex = 0
+	}
+	
+	for i := startIndex; i < len(files); i++ {
+		f := files[i]
 		isFile := !f.FileInfo().IsDir()
 		isGreaterZero := f.UncompressedSize > 0
-		isBelowMaxSize := f.UncompressedSize <= uint64(u.MaxSize)
+		isBelowMaxSize := f.UncompressedSize <= maxSize
 
-		isGoodToUnpack := false
+		// Check memory limits
+		if !u.checkMemoryLimit(int64(f.UncompressedSize)) {
+			fmt.Printf("Skipping file %s: would exceed memory limit\n", f.Name)
+			continue
+		}
+
+		var isGoodToUnpack bool
 		if isFile && isGreaterZero && isBelowMaxSize {
 			isGoodToUnpack = fileGoodToUnpack(u.Whitelist, u.Blacklist, files[i].Name)
 		}
+		
 		if isGoodToUnpack {
-			if u.is7zTextFileWithContent(i) {
+			// Use optimized function that reads content only once
+			isText, content, err := u.is7zTextFileWithContent(i)
+			if err != nil {
+				continue // Skip files that can't be read
+			}
+			if isText {
 				u.fileIndex = i
+				u.CurrentFilename = f.Name
+				u.CurrentFileContent = content
+				u.CurrentFileSize = int(f.UncompressedSize)
+				u.updateMemoryUsage(len(content))
 				return true
 			}
 		}
 	}
+	
 	u.iterationEnded = true
 	return false
-}
-
-func (u *UnpackedFileIterator) is7zTextFileWithContent(index int) bool {
-	f := u.sevenZipReader.File[index]
-
-	rc, err := f.Open()
-	if err != nil {
-		return false
-	}
-	defer rc.Close()
-
-	const sampleSize = 512
-	buffer := make([]byte, sampleSize)
-	n, err := rc.Read(buffer)
-	if err != nil && err != io.EOF {
-		return false
-	}
-	if n == 0 {
-		// Empty file or nothing to analyze
-		return false
-	}
-
-	filetype := http.DetectContentType(buffer[:n])
-	return strings.HasPrefix(filetype, "text/")
-}
-
-func (u *UnpackedFileIterator) unpack7zFile(index int) (string, []byte, int, error) {
-	f := u.sevenZipReader.File[index]
-	rc, err := f.Open()
-	if err != nil {
-		return "", nil, 0, fmt.Errorf("error opening 7z file entry: %w", err)
-	}
-	defer rc.Close()
-
-	content, err := io.ReadAll(rc)
-	if err != nil {
-		return "", nil, 0, fmt.Errorf("error reading 7z file entry: %w", err)
-	}
-
-	return f.Name, content, int(f.UncompressedSize), nil
 }
 
 func unpack7z(u *UnpackedFileIterator) (bool, error) {
@@ -500,17 +506,62 @@ func unpack7z(u *UnpackedFileIterator) (bool, error) {
 		return false, nil
 	}
 
-	// Load current file
-	name, content, size, err := u.unpack7zFile(u.fileIndex)
+	// Use the optimized single-read approach
+	isText, content, err := u.is7zTextFileWithContent(u.fileIndex)
 	if err != nil {
 		u.iterationEnded = true
 		return false, fmt.Errorf("error unpacking 7z file: %w", err)
 	}
-	u.CurrentFilename = name
-	u.CurrentFileContent = content
-	u.CurrentFileSize = size
 
-	// Buffer next
+	if !isText {
+		// File is not text, try to find next valid file
+		found := false
+		for i := u.fileIndex + 1; i < length; i++ {
+			f := files[i]
+			isFile := !f.FileInfo().IsDir()
+			isGreaterZero := f.UncompressedSize > 0
+			isBelowMaxSize := f.UncompressedSize <= maxSize
+
+			if !u.checkMemoryLimit(int64(f.UncompressedSize)) {
+				continue
+			}
+
+			var isGoodToUnpack bool
+			if isFile && isGreaterZero && isBelowMaxSize {
+				isGoodToUnpack = fileGoodToUnpack(u.Whitelist, u.Blacklist, f.Name)
+			}
+			
+			if isGoodToUnpack {
+				isText, content, err := u.is7zTextFileWithContent(i)
+				if err != nil {
+					continue
+				}
+				if isText {
+					u.fileIndex = i
+					u.CurrentFilename = f.Name
+					u.CurrentFileContent = content
+					u.CurrentFileSize = int(f.UncompressedSize)
+					u.updateMemoryUsage(len(content))
+					found = true
+					break
+				}
+			}
+		}
+		
+		if !found {
+			u.iterationEnded = true
+			return false, nil
+		}
+	} else {
+		// Current file is valid, set it as current
+		f := files[u.fileIndex]
+		u.CurrentFilename = f.Name
+		u.CurrentFileContent = content
+		u.CurrentFileSize = int(f.UncompressedSize)
+		u.updateMemoryUsage(len(content))
+	}
+
+	// Look ahead for next file and buffer it (similar to original logic)
 	found := false
 	for i := u.fileIndex + 1; i < length; i++ {
 		f := files[i]
@@ -518,31 +569,95 @@ func unpack7z(u *UnpackedFileIterator) (bool, error) {
 		isGreaterZero := f.UncompressedSize > 0
 		isBelowMaxSize := f.UncompressedSize <= maxSize
 
-		isGoodToUnpack := false
-		if isFile && isGreaterZero && isBelowMaxSize {
-			isGoodToUnpack = fileGoodToUnpack(u.Whitelist, u.Blacklist, files[i].Name)
+		if !u.checkMemoryLimit(int64(f.UncompressedSize)) {
+			continue
 		}
+
+		var isGoodToUnpack bool
+		if isFile && isGreaterZero && isBelowMaxSize {
+			isGoodToUnpack = fileGoodToUnpack(u.Whitelist, u.Blacklist, f.Name)
+		}
+		
 		if isGoodToUnpack {
-			if u.is7zTextFileWithContent(i) {
+			isText, content, err := u.is7zTextFileWithContent(i)
+			if err != nil {
+				continue
+			}
+			if isText {
 				u.fileIndex = i
-				name, content, size, err := u.unpack7zFile(i)
-				if err != nil {
-					u.iterationEnded = true
-					return true, fmt.Errorf("error unpacking buffered 7z file: %w", err)
-				}
-				u.bufferedFilename = name
+				u.bufferedFilename = f.Name
 				u.bufferedFileContent = content
-				u.bufferedFileSize = size
+				u.bufferedFileSize = int(f.UncompressedSize)
+				u.updateMemoryUsage(len(content))
 				found = true
 				break
 			}
 		}
 	}
+	
 	if !found {
 		u.iterationEnded = true
 	}
 
 	return true, nil
+}
+
+// Optimized ZIP findFirst method
+func (u *UnpackedFileIterator) findFirstZip() bool {
+	if u.zipReader == nil {
+		reader, err := zip.OpenReader(u.ArchivePath)
+		if err != nil {
+			fmt.Printf("Error (archive content checks) opening zip file '%s' -> %v\n", u.ArchiveName, err)
+			u.iterationEnded = true
+			return false
+		}
+		u.zipReader = reader
+	}
+	
+	files := u.zipReader.File
+	maxSize := uint64(u.MaxSize)
+	
+	startIndex := u.fileIndex
+	if startIndex < 0 {
+		startIndex = 0
+	}
+	
+	for i := startIndex; i < len(files); i++ {
+		f := files[i]
+		isFile := !f.FileInfo().IsDir()
+		isGreaterZero := f.UncompressedSize64 > 0
+		isBelowMaxSize := f.UncompressedSize64 <= maxSize
+
+		// Check memory limits
+		if !u.checkMemoryLimit(int64(f.UncompressedSize64)) {
+			fmt.Printf("Skipping file %s: would exceed memory limit\n", f.Name)
+			continue
+		}
+
+		var isGoodToUnpack bool
+		if isFile && isGreaterZero && isBelowMaxSize {
+			isGoodToUnpack = fileGoodToUnpack(u.Whitelist, u.Blacklist, f.Name)
+		}
+		
+		if isGoodToUnpack {
+			// Use optimized function that reads content only once
+			isText, content, err := u.isZippedTextWithContent(i)
+			if err != nil {
+				continue // Skip files that can't be read
+			}
+			if isText {
+				u.fileIndex = i
+				u.CurrentFilename = f.Name
+				u.CurrentFileContent = content
+				u.CurrentFileSize = int(f.UncompressedSize64)
+				u.updateMemoryUsage(len(content))
+				return true
+			}
+		}
+	}
+	
+	u.iterationEnded = true
+	return false
 }
 
 func (u *UnpackedFileIterator) close() {
