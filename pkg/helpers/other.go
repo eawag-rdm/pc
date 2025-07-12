@@ -1,9 +1,9 @@
 package helpers
 
 import (
-	"fmt"
 	"os"
 
+	"github.com/eawag-rdm/pc/pkg/output"
 	"github.com/eawag-rdm/pc/pkg/structs"
 )
 
@@ -15,6 +15,6 @@ func WarnForLargeFile(file structs.File, limitSize int64, message string) {
 		panic(err)
 	}
 	if fileInfo.Size() > limitSize {
-		fmt.Println("Warning for file '" + file.Name + "': " + message)
+		output.GlobalLogger.Warning("Warning for file '%s': %s", file.Name, message)
 	}
 }

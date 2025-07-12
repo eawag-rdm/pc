@@ -238,7 +238,7 @@ func TestApplyChecksFilteredByFile(t *testing.T) {
 			},
 			checks:   []func(file structs.File, config config.Config) []structs.Message{mockCheckPass},
 			files:    []structs.File{{Name: "test.txt"}},
-			expected: []structs.Message{{Content: "Check passed"}},
+			expected: []structs.Message{{Content: "Check passed", TestName: "mockCheckPass"}},
 		},
 		{
 			name: "Single file, single check fail",
@@ -249,7 +249,7 @@ func TestApplyChecksFilteredByFile(t *testing.T) {
 			},
 			checks:   []func(file structs.File, config config.Config) []structs.Message{mockCheckFail},
 			files:    []structs.File{{Name: "test.txt"}},
-			expected: []structs.Message{{Content: "Check failed"}},
+			expected: []structs.Message{{Content: "Check failed", TestName: "mockCheckFail"}},
 		},
 		{
 			name: "Multiple files, multiple checks",
@@ -262,10 +262,10 @@ func TestApplyChecksFilteredByFile(t *testing.T) {
 			checks: []func(file structs.File, config config.Config) []structs.Message{mockCheckPass, mockCheckFail},
 			files:  []structs.File{{Name: "test1.txt"}, {Name: "test2.txt"}},
 			expected: []structs.Message{
-				{Content: "Check passed"},
-				{Content: "Check failed"},
-				{Content: "Check passed"},
-				{Content: "Check failed"},
+				{Content: "Check passed", TestName: "mockCheckPass"},
+				{Content: "Check failed", TestName: "mockCheckFail"},
+				{Content: "Check passed", TestName: "mockCheckPass"},
+				{Content: "Check failed", TestName: "mockCheckFail"},
 			},
 		},
 		{

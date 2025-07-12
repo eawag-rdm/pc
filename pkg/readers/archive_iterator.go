@@ -13,6 +13,7 @@ import (
 
 	"github.com/bodgit/sevenzip"
 	"github.com/eawag-rdm/pc/pkg/optimization"
+	"github.com/eawag-rdm/pc/pkg/output"
 )
 
 type UnpackedFileIterator struct {
@@ -96,7 +97,7 @@ func (u *UnpackedFileIterator) updateMemoryUsage(fileSize int) {
 	
 	// Log memory usage every 10 files
 	if u.processedFileCount%10 == 0 {
-		fmt.Printf("Archive memory usage: %d/%d bytes (%d files processed)\n", 
+		output.GlobalLogger.Info("Archive memory usage: %d/%d bytes (%d files processed)", 
 			u.totalMemoryUsed, u.maxTotalMemory, u.processedFileCount)
 	}
 }
@@ -129,7 +130,7 @@ func (u *UnpackedFileIterator) findFirstTar() bool {
 	if u.tarReader == nil {
 		file, err := os.Open(u.ArchivePath)
 		if err != nil {
-			fmt.Printf("Error (archive content checks) opening tar file '%s' -> %v\n", u.ArchiveName, err)
+			output.GlobalLogger.Warning("Error (archive content checks) opening tar file '%s' -> %v", u.ArchiveName, err)
 			u.iterationEnded = true
 			return false
 		}
@@ -180,7 +181,7 @@ func (u *UnpackedFileIterator) findFirstTarGz() bool {
 	if u.tarReader == nil {
 		file, err := os.Open(u.ArchivePath)
 		if err != nil {
-			fmt.Printf("Error (archive content checks) opening tar.gz file '%s' -> %v\n", u.ArchiveName, err)
+			output.GlobalLogger.Warning("Error (archive content checks) opening tar.gz file '%s' -> %v", u.ArchiveName, err)
 			u.iterationEnded = true
 			return false
 		}
@@ -188,7 +189,7 @@ func (u *UnpackedFileIterator) findFirstTarGz() bool {
 		
 		gzipReader, err := gzip.NewReader(file)
 		if err != nil {
-			fmt.Printf("Error (archive content checks) creating gzip reader for '%s' -> %v\n", u.ArchiveName, err)
+			output.GlobalLogger.Warning("Error (archive content checks) creating gzip reader for '%s' -> %v", u.ArchiveName, err)
 			u.iterationEnded = true
 			return false
 		}
@@ -513,7 +514,7 @@ func (u *UnpackedFileIterator) findFirst7z() bool {
 	if u.sevenZipReader == nil {
 		reader, err := sevenzip.OpenReader(u.ArchivePath)
 		if err != nil {
-			fmt.Printf("Error (archive content checks) opening 7z file '%s' -> %v\n", u.ArchiveName, err)
+			output.GlobalLogger.Warning("Error (archive content checks) opening 7z file '%s' -> %v", u.ArchiveName, err)
 			u.iterationEnded = true
 			return false
 		}
@@ -536,7 +537,7 @@ func (u *UnpackedFileIterator) findFirst7z() bool {
 
 		// Check memory limits
 		if !u.checkMemoryLimit(int64(f.UncompressedSize)) {
-			fmt.Printf("Skipping file %s: would exceed memory limit\n", f.Name)
+			output.GlobalLogger.Warning("Skipping file %s: would exceed memory limit", f.Name)
 			continue
 		}
 
@@ -677,7 +678,7 @@ func (u *UnpackedFileIterator) findFirstZip() bool {
 	if u.zipReader == nil {
 		reader, err := zip.OpenReader(u.ArchivePath)
 		if err != nil {
-			fmt.Printf("Error (archive content checks) opening zip file '%s' -> %v\n", u.ArchiveName, err)
+			output.GlobalLogger.Warning("Error (archive content checks) opening zip file '%s' -> %v", u.ArchiveName, err)
 			u.iterationEnded = true
 			return false
 		}
@@ -700,7 +701,7 @@ func (u *UnpackedFileIterator) findFirstZip() bool {
 
 		// Check memory limits
 		if !u.checkMemoryLimit(int64(f.UncompressedSize64)) {
-			fmt.Printf("Skipping file %s: would exceed memory limit\n", f.Name)
+			output.GlobalLogger.Warning("Skipping file %s: would exceed memory limit", f.Name)
 			continue
 		}
 
@@ -774,7 +775,7 @@ func (u *UnpackedFileIterator) HasFilesToUnpack() bool {
 	case ".7z":
 		return u.findFirst7z()
 	default:
-		fmt.Printf("Unsupported archive type '%s'\n", u.ArchiveName)
+		output.GlobalLogger.Warning("Unsupported archive type '%s'", u.ArchiveName)
 		u.iterationEnded = true
 		u.close()
 		return false

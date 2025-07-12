@@ -18,6 +18,8 @@ type Message struct {
 	Content string
 	// The source of the message.
 	Source Source
+	// The test name that generated this message.
+	TestName string
 }
 
 // define a method for displaying the message

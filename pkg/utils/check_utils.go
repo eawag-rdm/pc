@@ -11,6 +11,7 @@ import (
 	"github.com/eawag-rdm/pc/pkg/config"
 	"github.com/eawag-rdm/pc/pkg/helpers"
 	"github.com/eawag-rdm/pc/pkg/optimization"
+	"github.com/eawag-rdm/pc/pkg/output"
 	"github.com/eawag-rdm/pc/pkg/readers"
 	"github.com/eawag-rdm/pc/pkg/structs"
 )
@@ -48,7 +49,7 @@ func matchPatterns(list []string, str string) bool {
 	combinedPattern := strings.Join(list, "|")
 	combinedRegex, err := regexp.Compile(combinedPattern)
 	if err != nil {
-		fmt.Printf("Error compiling regex pattern '%s': %v\n", combinedPattern, err)
+		output.GlobalLogger.Warning("Error compiling regex pattern '%s': %v", combinedPattern, err)
 		return false
 	}
 	return combinedRegex.MatchString(str)
@@ -88,8 +89,13 @@ func ApplyChecksFilteredByFile(config config.Config, checks []func(file structs.
 			if skipFileCheck(config, check, file) {
 				continue
 			}
+			testName := getFunctionName(check)
 			ret := check(file, config)
 			if ret != nil {
+				// Add test name to each message
+				for i := range ret {
+					ret[i].TestName = testName
+				}
 				messages = append(messages, ret...)
 			}
 		}
@@ -181,7 +187,7 @@ func ApplyChecksFilteredByFileOnArchiveFileList(config config.Config, checks []f
 		fileList, err := readers.ReadArchiveFileList(file)
 		if err != nil {
 			// handle the error appropriately, e.g., log it or return it
-			fmt.Printf("Error (archive filelist checks) reading archive file list of '%s' -> %v\n", file.Name, err)
+			output.GlobalLogger.Warning("Error (archive filelist checks) reading archive file list of '%s' -> %v", file.Name, err)
 			continue
 		}
 		for _, archivedFile := range fileList {
@@ -191,9 +197,14 @@ func ApplyChecksFilteredByFileOnArchiveFileList(config config.Config, checks []f
 				if skipFileCheck(config, check, archivedFile) {
 					continue
 				}
+				testName := getFunctionName(check)
 				ret := check(archivedFile, config)
 
 				if ret != nil {
+					// Add test name to each message
+					for i := range ret {
+						ret[i].TestName = testName
+					}
 					messages = append(messages, ret...)
 				}
 			}
@@ -228,8 +239,13 @@ func ApplyChecksFilteredByFileOnArchive(config config.Config, checks []func(file
 			if skipFileCheck(config, check, file) {
 				continue
 			}
+			testName := getFunctionName(check)
 			ret := check(file, config)
 			if ret != nil {
+				// Add test name to each message
+				for i := range ret {
+					ret[i].TestName = testName
+				}
 				messages = append(messages, ret...)
 			}
 		}
@@ -311,8 +327,13 @@ func ApplyChecksFilteredByRepository(config config.Config, checks []func(reposit
 	var messages = []structs.Message{}
 	repo := structs.Repository{Files: files}
 	for _, check := range checks {
+		testName := getFunctionName(check)
 		ret := check(repo, config)
 		if ret != nil {
+			// Add test name to each message
+			for i := range ret {
+				ret[i].TestName = testName
+			}
 			messages = append(messages, ret...)
 		}
 	}

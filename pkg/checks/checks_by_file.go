@@ -12,6 +12,7 @@ import (
 	"github.com/eawag-rdm/pc/pkg/config"
 	"github.com/eawag-rdm/pc/pkg/helpers"
 	"github.com/eawag-rdm/pc/pkg/optimization"
+	"github.com/eawag-rdm/pc/pkg/output"
 	"github.com/eawag-rdm/pc/pkg/readers"
 	"github.com/eawag-rdm/pc/pkg/structs"
 )
@@ -254,7 +255,7 @@ func IsFreeOfKeywords(file structs.File, config config.Config) []structs.Message
 		// Use streaming for large text files
 		fileInfo, err := os.Stat(file.Path)
 		if err != nil {
-			fmt.Printf("Error getting file info '%s': %v\n", file.Path, err)
+			output.GlobalLogger.Warning("Error getting file info '%s': %v", file.Path, err)
 			return messages
 		}
 
@@ -266,7 +267,7 @@ func IsFreeOfKeywords(file structs.File, config config.Config) []structs.Message
 
 				foundMatches, err := streamingReadFileList(file.Path, keywordList)
 				if err != nil {
-					fmt.Printf("Error streaming file '%s': %v\n", file.Path, err)
+					output.GlobalLogger.Warning("Error streaming file '%s': %v", file.Path, err)
 					continue
 				}
 
@@ -281,7 +282,7 @@ func IsFreeOfKeywords(file structs.File, config config.Config) []structs.Message
 			// Use regular reading for smaller files
 			content, err := os.ReadFile(file.Path)
 			if err != nil {
-				fmt.Printf("Error reading file '%s': %v\n", file.Path, err)
+				output.GlobalLogger.Warning("Error reading file '%s': %v", file.Path, err)
 				return messages
 			}
 			body := [][]byte{content}
@@ -383,19 +384,19 @@ func tryReadBinary(file structs.File) [][]byte {
 	if strings.HasSuffix(file.Path, ".xlsx") {
 		content, err := readers.ReadXLSXFile(file)
 		if err != nil {
-			fmt.Printf("Error reading XLSX file '%s': %v\n", file.Path, err)
+			output.GlobalLogger.Warning("Error reading XLSX file '%s': %v", file.Path, err)
 			return [][]byte{} // Return empty instead of panicking
 		}
 		return content
 	} else if strings.HasSuffix(file.Path, ".docx") {
 		content, err := readers.ReadDOCXFile(file)
 		if err != nil {
-			fmt.Printf("Error reading DOCX file '%s': %v\n", file.Path, err)
+			output.GlobalLogger.Warning("Error reading DOCX file '%s': %v", file.Path, err)
 			return [][]byte{} // Return empty instead of panicking
 		}
 		return content
 	} else if !readers.IsSupportedArchive(file.Name) {
-		fmt.Printf("Not checking contents of file: '%s'. The file seems to be binary.\n", file.Name)
+		output.GlobalLogger.Info("Not checking contents of file: '%s'. The file seems to be binary.", file.Name)
 	}
 	return [][]byte{}
 }

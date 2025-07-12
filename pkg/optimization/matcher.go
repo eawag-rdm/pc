@@ -129,7 +129,16 @@ func (fm *FastMatcher) findOriginalCase(text []byte, lowerPattern string) string
 	}
 	
 	// Extract the original case from the text
-	return string(text[idx : idx+len(pattern)])
+	// Ensure we don't go out of bounds
+	endIdx := idx + len(pattern)
+	if endIdx > len(text) {
+		// Fallback to original pattern if bounds would be exceeded
+		if original, exists := fm.caseMap[lowerPattern]; exists {
+			return original
+		}
+		return lowerPattern
+	}
+	return string(text[idx:endIdx])
 }
 
 // findInSmallText uses simple string contains for small texts

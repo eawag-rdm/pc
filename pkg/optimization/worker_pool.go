@@ -2,7 +2,9 @@ package optimization
 
 import (
 	"context"
+	"reflect"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -90,6 +92,13 @@ func (wp *WorkerPool) worker(id int) {
 	}
 }
 
+// getFunctionName returns the name of a function
+func getFunctionName(i interface{}) string {
+	fullName := runtime.FuncForPC(reflect.ValueOf(i).Pointer()).Name()
+	parts := strings.Split(fullName, ".")
+	return parts[len(parts)-1]
+}
+
 // processWorkItem applies all checks to a single file
 // This ensures all checks for a single file run in the same worker to avoid IO conflicts
 func (wp *WorkerPool) processWorkItem(work WorkItem) []structs.Message {
@@ -98,8 +107,13 @@ func (wp *WorkerPool) processWorkItem(work WorkItem) []structs.Message {
 	// Run all checks for this file sequentially in the same worker
 	// This avoids IO conflicts from multiple goroutines reading the same file
 	for _, check := range work.Checks {
+		testName := getFunctionName(check)
 		messages := check(work.File, work.Config)
 		if len(messages) > 0 {
+			// Add test name to each message
+			for i := range messages {
+				messages[i].TestName = testName
+			}
 			allMessages = append(allMessages, messages...)
 		}
 	}

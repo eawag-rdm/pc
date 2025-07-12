@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/eawag-rdm/pc/pkg/config"
+	"github.com/eawag-rdm/pc/pkg/output"
 	"github.com/eawag-rdm/pc/pkg/structs"
 )
 
@@ -24,7 +25,7 @@ func validatePath(path string) error {
 	if filepath.IsAbs(cleanPath) {
 		// Allow absolute paths but warn about potential risks
 		// In a production environment, you might want to restrict this further
-		fmt.Printf("Warning: Using absolute path: %s\n", cleanPath)
+		output.GlobalLogger.Warning("Warning: Using absolute path: %s", cleanPath)
 	}
 	
 	return nil
@@ -64,6 +65,14 @@ func LocalCollector(path string, config config.Config) ([]structs.File, error) {
 	// Clean the path
 	cleanPath := filepath.Clean(path)
 	
+	// Check if the path exists before attempting to walk it
+	if _, err := os.Stat(cleanPath); err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("path does not exist: %s", cleanPath)
+		}
+		return nil, fmt.Errorf("cannot access path %s: %w", cleanPath, err)
+	}
+	
 	foundFiles := []structs.File{}
 	
 	// Check if folders should be included recursively
@@ -80,7 +89,7 @@ func LocalCollector(path string, config config.Config) ([]structs.File, error) {
 	// Use filepath.WalkDir for recursive traversal
 	err := filepath.WalkDir(cleanPath, func(currentPath string, d os.DirEntry, err error) error {
 		if err != nil {
-			fmt.Printf("Warning: error accessing %s: %v\n", currentPath, err)
+			output.GlobalLogger.Warning("Warning: error accessing %s: %v", currentPath, err)
 			return nil // Continue walking despite errors
 		}
 		
@@ -98,7 +107,7 @@ func LocalCollector(path string, config config.Config) ([]structs.File, error) {
 			// Add regular files
 			info, err := d.Info()
 			if err != nil {
-				fmt.Printf("Warning: could not get info for file %s: %v\n", currentPath, err)
+				output.GlobalLogger.Warning("Warning: could not get info for file %s: %v", currentPath, err)
 				return nil
 			}
 			foundFiles = append(foundFiles, structs.ToFile(currentPath, d.Name(), info.Size(), ""))

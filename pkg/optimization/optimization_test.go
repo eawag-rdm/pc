@@ -35,7 +35,7 @@ func TestMatcherCaching(t *testing.T) {
 	}
 }
 
-func TestHasAnyMatch(t *testing.T) {
+func TestHasAnyMatchCaching(t *testing.T) {
 	patterns := []string{"needle"}
 	matcher := NewFastMatcher(patterns)
 	

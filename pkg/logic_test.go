@@ -34,7 +34,7 @@ func TestMainLogic_Success(t *testing.T) {
 				[]structs.File{{Name: "space in file name"}, {Name: "file2"}},
 			),
 			expected: []structs.Message{
-				{Content: "File name contains spaces.", Source: structs.File{Name: "space in file name", IsArchive: false}},
+				{Content: "File name contains spaces.", Source: structs.File{Name: "space in file name", IsArchive: false}, TestName: "HasNoWhiteSpace"},
 			},
 		},
 		{
@@ -42,7 +42,7 @@ func TestMainLogic_Success(t *testing.T) {
 				[]structs.File{{Name: "space in file name"}, {Name: "file2"}},
 			),
 			expected: []structs.Message{
-				{Content: "File name contains spaces.", Source: structs.File{Name: "space in file name", IsArchive: false}},
+				{Content: "File name contains spaces.", Source: structs.File{Name: "space in file name", IsArchive: false}, TestName: "HasNoWhiteSpace"},
 			},
 		},
 		{
@@ -50,8 +50,8 @@ func TestMainLogic_Success(t *testing.T) {
 				[]structs.File{{Name: "Non ascĩĩ and space"}, {Name: "file2"}},
 			),
 			expected: []structs.Message{
-				{Content: "File name contains non-ASCII character: ĩĩ", Source: structs.File{Name: "Non ascĩĩ and space", IsArchive: false}},
-				{Content: "File name contains spaces.", Source: structs.File{Name: "Non ascĩĩ and space", IsArchive: false}},
+				{Content: "File name contains non-ASCII character: ĩĩ", Source: structs.File{Name: "Non ascĩĩ and space", IsArchive: false}, TestName: "HasOnlyASCII"},
+				{Content: "File name contains spaces.", Source: structs.File{Name: "Non ascĩĩ and space", IsArchive: false}, TestName: "HasNoWhiteSpace"},
 			},
 		},
 	}

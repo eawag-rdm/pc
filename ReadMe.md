@@ -118,3 +118,22 @@ ssh -i .../.ssh/id_ed25519_ckool rdm@production-ckan /home/rdm/pc "$@"
 ```
 go test ./...
 ```
+
+## Example output
+
+This is the general structure I want. the keywords are up for debate... Scanned and skipped is only relevant for files.
+```json
+{
+    "timestamp": "TIMESTAMP-OF-SCAN",
+    "scanned": [ {filename:"", issues: [{"checkname": ..., "issue_count": ...}, ...]}, ... ],
+    "skipped": [ {filename: ..., "reason": ...}, ... ],
+    "details_subject_focsued": [
+        {subject:..., path: ..., issues: [{checkname: ..., message:...,},...]}, ...
+],
+    "details_check-focused": [
+        {checkname: ..., issues: [{"subject":..., "path": ..., "message": ... },...]}, ...
+]
+  "errors": [],
+  "warnings": [],      
+  }
+```

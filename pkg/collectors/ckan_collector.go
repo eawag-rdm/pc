@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/eawag-rdm/pc/pkg/config"
+	"github.com/eawag-rdm/pc/pkg/output"
 	"github.com/eawag-rdm/pc/pkg/structs"
 )
 
@@ -96,14 +97,14 @@ func getLocalResourcePath(resourceURL string, ckanStoragePath string) string {
 	}
 	parts := strings.Split(parsedURL.Path, "/")
 	if len(parts) <= 4 {
-		fmt.Printf("Error: resource URL has invalid format '%s' - are the resources restricted?\n", resourceURL)
+		output.GlobalLogger.Warning("Error: resource URL has invalid format '%s' - are the resources restricted?", resourceURL)
 		return "" // Return empty string instead of panicking
 	}
 	resourceID := parts[4]
 
 	// Validate resourceID has at least 6 characters
 	if len(resourceID) < 6 {
-		fmt.Printf("Error: resource ID '%s' is too short (needs at least 6 characters)\n", resourceID)
+		output.GlobalLogger.Warning("Error: resource ID '%s' is too short (needs at least 6 characters)", resourceID)
 		return "" // Return empty string instead of panicking
 	}
 
