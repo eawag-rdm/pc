@@ -104,8 +104,12 @@ func TestReadArchiveFileList(t *testing.T) {
 			},
 		},
 		{
-			file:     structs.File{Path: "../../testdata/test.tar.gz", Name: "test.tar.gz", Suffix: ".gz"},
-			expected: []structs.File{},
+			file:     structs.File{Path: "../../testdata/archives/test.tar.gz", Name: "test.tar.gz", Suffix: ".gz"},
+			expected: []structs.File{
+				{Path: "../../testdata/archives/test.tar.gz", Name: "test/", Size: 0, Suffix: ""},
+				{Path: "../../testdata/archives/test.tar.gz", Name: "test/file2", Size: 0, Suffix: ""},
+				{Path: "../../testdata/archives/test.tar.gz", Name: "test/file1.txt", Size: 6, Suffix: ".txt"},
+			},
 		},
 		{
 			file:     structs.File{Path: "../../testdata/config.toml.test", Name: "config.toml.test", Suffix: ".test"},

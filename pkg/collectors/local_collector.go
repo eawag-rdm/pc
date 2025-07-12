@@ -65,32 +65,50 @@ func LocalCollector(path string, config config.Config) ([]structs.File, error) {
 	cleanPath := filepath.Clean(path)
 	
 	foundFiles := []structs.File{}
-	files, err := os.ReadDir(cleanPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read directory %s: %w", cleanPath, err)
+	
+	// Check if folders should be included recursively
+	includeFolders := false
+	if attrs, ok := config.Collectors[collectorName].Attrs["includeFolders"]; ok {
+		switch v := attrs.(type) {
+		case bool:
+			includeFolders = v
+		case string:
+			includeFolders = v == "true"
+		}
 	}
-
-	for _, file := range files {
-		// Securely construct the full path
-		fullPath, err := securePath(cleanPath, file.Name())
+	
+	// Use filepath.WalkDir for recursive traversal
+	err := filepath.WalkDir(cleanPath, func(currentPath string, d os.DirEntry, err error) error {
 		if err != nil {
-			fmt.Printf("Skipping unsafe file: %s (%v)\n", file.Name(), err)
-			continue
+			fmt.Printf("Warning: error accessing %s: %v\n", currentPath, err)
+			return nil // Continue walking despite errors
 		}
-
-		if !file.IsDir() {
-			info, err := file.Info()
-			if err != nil {
-				fmt.Printf("Warning: could not get info for file %s: %v\n", file.Name(), err)
-				continue
+		
+		// Skip the root directory itself
+		if currentPath == cleanPath {
+			return nil
+		}
+		
+		if d.IsDir() {
+			// Include directory only if includeFolders is true
+			if includeFolders {
+				foundFiles = append(foundFiles, structs.ToFile(currentPath, d.Name(), -1, ""))
 			}
-			foundFiles = append(foundFiles, structs.ToFile(fullPath, file.Name(), info.Size(), ""))
 		} else {
-			// Check if folders should be included
-			if attrs, ok := config.Collectors[collectorName].Attrs["includeFolders"]; ok && attrs == "true" {
-				foundFiles = append(foundFiles, structs.ToFile(fullPath, file.Name(), -1, ""))
+			// Add regular files
+			info, err := d.Info()
+			if err != nil {
+				fmt.Printf("Warning: could not get info for file %s: %v\n", currentPath, err)
+				return nil
 			}
+			foundFiles = append(foundFiles, structs.ToFile(currentPath, d.Name(), info.Size(), ""))
 		}
+		
+		return nil
+	})
+	
+	if err != nil {
+		return nil, fmt.Errorf("failed to walk directory %s: %w", cleanPath, err)
 	}
 
 	return foundFiles, nil

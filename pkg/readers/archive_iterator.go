@@ -3,6 +3,7 @@ package readers
 import (
 	"archive/tar"
 	"archive/zip"
+	"compress/gzip"
 	"fmt"
 	"io"
 	"net/http"
@@ -39,6 +40,7 @@ type UnpackedFileIterator struct {
 
 	tarFile        *os.File
 	tarReader      *tar.Reader
+	gzipReader     *gzip.Reader
 	zipReader      *zip.ReadCloser
 	sevenZipReader *sevenzip.ReadCloser
 }
@@ -72,6 +74,7 @@ func InitArchiveIteratorWithMemoryLimit(archivePath string, archiveName string, 
 
 		tarFile:        nil,
 		tarReader:      nil,
+		gzipReader:     nil,
 		zipReader:      nil,
 		sevenZipReader: nil,
 	}
@@ -170,6 +173,73 @@ func (u *UnpackedFileIterator) findFirstTar() bool {
 		u.bufferedFileContent = content
 		u.bufferedFileSize = len(content)
 		return true
+	}
+}
+
+func (u *UnpackedFileIterator) findFirstTarGz() bool {
+	if u.tarReader == nil {
+		file, err := os.Open(u.ArchivePath)
+		if err != nil {
+			fmt.Printf("Error (archive content checks) opening tar.gz file '%s' -> %v\n", u.ArchiveName, err)
+			u.iterationEnded = true
+			return false
+		}
+		u.tarFile = file
+		
+		gzipReader, err := gzip.NewReader(file)
+		if err != nil {
+			fmt.Printf("Error (archive content checks) creating gzip reader for '%s' -> %v\n", u.ArchiveName, err)
+			u.iterationEnded = true
+			return false
+		}
+		u.gzipReader = gzipReader
+		u.tarReader = tar.NewReader(gzipReader)
+	}
+
+	// Buffer the first valid file
+	for {
+		header, err := u.tarReader.Next()
+		if err != nil {
+			u.iterationEnded = true
+			return false
+		}
+		u.fileIndex++
+
+		isFile := !(header.Typeflag == tar.TypeDir)
+		isGreaterZero := header.Size > 0
+		isBelowMaxSize := header.Size <= int64(u.MaxSize)
+
+		// Check memory limits
+		if !u.checkMemoryLimit(header.Size) {
+			// Skip remaining bytes
+			_, _ = io.CopyN(io.Discard, u.tarReader, header.Size)
+			continue
+		}
+
+		var isGoodToUnpack bool
+		if isFile && isGreaterZero && isBelowMaxSize {
+			isGoodToUnpack = fileGoodToUnpack(u.Whitelist, u.Blacklist, header.Name)
+		}
+
+		if isGoodToUnpack {
+			isText, content, err := u.isTarTextFileWithContent(header, u.tarReader)
+			if err != nil {
+				continue
+			}
+			if !isText {
+				continue
+			}
+
+			u.bufferedFilename = header.Name
+			u.bufferedFileContent = content
+			u.bufferedFileSize = len(content)
+			u.updateMemoryUsage(len(content))
+			return true
+		} else {
+			// Skip non-matching files
+			_, _ = io.CopyN(io.Discard, u.tarReader, header.Size)
+			continue
+		}
 	}
 }
 
@@ -664,6 +734,9 @@ func (u *UnpackedFileIterator) close() {
 	if u.tarFile != nil {
 		u.tarFile.Close()
 	}
+	if u.gzipReader != nil {
+		u.gzipReader.Close()
+	}
 	if u.zipReader != nil {
 		u.zipReader.Close()
 	}
@@ -688,6 +761,11 @@ func (u *UnpackedFileIterator) HasFilesToUnpack() bool {
 		return !u.iterationEnded
 	}
 	u.hasCheckedFirstFile = true
+	// Handle .tar.gz separately since filepath.Ext only returns .gz
+	if strings.HasSuffix(u.ArchiveName, ".tar.gz") {
+		return u.findFirstTarGz()
+	}
+	
 	switch filepath.Ext(u.ArchiveName) {
 	case ".zip":
 		return u.findFirstZip()
@@ -711,16 +789,21 @@ func (u *UnpackedFileIterator) Next() bool {
 	var ok bool
 	var err error
 
-	switch filepath.Ext(u.ArchiveName) {
-	case ".zip":
-		ok, err = unpackZip(u)
-	case ".tar":
-		ok, err = unpackTar(u)
-	case ".7z":
-		ok, err = unpack7z(u)
-	default:
-		u.iterationEnded = true
-		return false
+	// Handle .tar.gz separately since filepath.Ext only returns .gz
+	if strings.HasSuffix(u.ArchiveName, ".tar.gz") {
+		ok, err = unpackTar(u) // Reuse TAR unpacking logic for TAR.GZ
+	} else {
+		switch filepath.Ext(u.ArchiveName) {
+		case ".zip":
+			ok, err = unpackZip(u)
+		case ".tar":
+			ok, err = unpackTar(u)
+		case ".7z":
+			ok, err = unpack7z(u)
+		default:
+			u.iterationEnded = true
+			return false
+		}
 	}
 
 	if err != nil {

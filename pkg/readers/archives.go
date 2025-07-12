@@ -4,7 +4,6 @@ import (
 	"archive/tar"
 	"archive/zip"
 	"compress/gzip"
-	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -122,9 +121,7 @@ func ReadArchiveFileList(file structs.File) ([]structs.File, error) {
 	} else if strings.HasSuffix(file.Name, ".7z") {
 		return Read7ZipFileList(file.Path)
 	} else if strings.HasSuffix(file.Name, ".tar.gz") {
-		fmt.Printf("Not checking contents of tar.gz file: '%s'", file.Name)
-		return []structs.File{}, nil
-		//return ReadTarGzFileList(file.Path)
+		return ReadTarGzFileList(file.Path)
 	} else {
 		return []structs.File{}, nil
 	}

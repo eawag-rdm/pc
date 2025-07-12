@@ -46,3 +46,4 @@ func ToFile(fpath string, name string, size int64, suffix string) File {
 	}
 	return File{Path: fpath, Name: name, Size: size, Suffix: suffix, IsArchive: isArchive}
 }
+

@@ -37,6 +37,7 @@ var BY_FILE_ON_ARCHIVE_FILE_LIST = []func(file structs.File, config config.Confi
 }
 
 
+
 func getFunctionName(i interface{}) string {
 	fullName := runtime.FuncForPC(reflect.ValueOf(i).Pointer()).Name()
 	parts := strings.Split(fullName, ".")
@@ -73,7 +74,8 @@ func skipFileCheck(config config.Config, fileCheck func(file structs.File, confi
 
 func ApplyChecksFilteredByFile(config config.Config, checks []func(file structs.File, config config.Config) []structs.Message, files []structs.File) []structs.Message {
 	// Use parallel processing for multiple files, sequential for small workloads
-	if len(files) >= 4 && runtime.NumCPU() > 1 {
+	// Lowered threshold from 4 to 2 files to enable parallel processing sooner
+	if len(files) >= 2 && runtime.NumCPU() > 1 {
 		return applyChecksParallel(config, checks, files)
 	}
 	
@@ -202,26 +204,107 @@ func ApplyChecksFilteredByFileOnArchiveFileList(config config.Config, checks []f
 }
 
 func ApplyChecksFilteredByFileOnArchive(config config.Config, checks []func(file structs.File, config config.Config) []structs.Message, files []structs.File) []structs.Message {
-
-	var messages = []structs.Message{}
+	// Filter to only archive files
+	var archiveFiles []structs.File
 	for _, file := range files {
+		if file.IsArchive {
+			archiveFiles = append(archiveFiles, file)
+		}
+	}
+	
+	if len(archiveFiles) == 0 {
+		return []structs.Message{}
+	}
+	
+	// Use parallel processing for archives as they are CPU-intensive
+	if len(archiveFiles) >= 2 && runtime.NumCPU() > 1 {
+		return applyArchiveChecksParallel(config, checks, archiveFiles)
+	}
 
+	// Sequential processing for single archives
+	var messages = []structs.Message{}
+	for _, file := range archiveFiles {
 		for _, check := range checks {
 			if skipFileCheck(config, check, file) {
 				continue
 			}
-			if !file.IsArchive {
-				continue
-			}
 			ret := check(file, config)
-
 			if ret != nil {
 				messages = append(messages, ret...)
 			}
 		}
 	}
 	return messages
+}
 
+// applyArchiveChecksParallel processes archive files in parallel
+func applyArchiveChecksParallel(cfg config.Config, checks []func(file structs.File, config config.Config) []structs.Message, files []structs.File) []structs.Message {
+	numWorkers := runtime.NumCPU()
+	if len(files) < numWorkers {
+		numWorkers = len(files)
+	}
+
+	// Use fewer workers for archives due to memory constraints
+	numWorkers = numWorkers / 2
+	if numWorkers < 1 {
+		numWorkers = 1
+	}
+
+	pool := performance.NewWorkerPool(numWorkers)
+	pool.Start()
+	defer pool.Stop()
+
+	// Submit work items
+	go func() {
+		for _, file := range files {
+			var validChecks []func(structs.File, config.Config) []structs.Message
+			for _, check := range checks {
+				if !skipFileCheck(cfg, check, file) {
+					validChecks = append(validChecks, check)
+				}
+			}
+			
+			if len(validChecks) > 0 {
+				work := performance.WorkItem{
+					File:   file,
+					Checks: validChecks,
+					Config: cfg,
+				}
+				
+				for !pool.Submit(work) {
+					runtime.Gosched()
+				}
+			}
+		}
+	}()
+
+	// Collect results
+	var allMessages []structs.Message
+	resultsCollected := 0
+	expectedResults := 0
+	
+	for _, file := range files {
+		hasValidChecks := false
+		for _, check := range checks {
+			if !skipFileCheck(cfg, check, file) {
+				hasValidChecks = true
+				break
+			}
+		}
+		if hasValidChecks {
+			expectedResults++
+		}
+	}
+
+	for resultsCollected < expectedResults {
+		result := <-pool.Results()
+		if len(result.Messages) > 0 {
+			allMessages = append(allMessages, result.Messages...)
+		}
+		resultsCollected++
+	}
+
+	return allMessages
 }
 
 func ApplyChecksFilteredByRepository(config config.Config, checks []func(repository structs.Repository, config config.Config) []structs.Message, files []structs.File) []structs.Message {
@@ -250,7 +333,6 @@ func ApplyAllChecks(config config.Config, files []structs.File, checksAcrossFile
 	messages = TruncateMessages(messages, config.General.MaxMessagesPerType)
 
 	return messages
-
 }
 
 // getMessageType extracts a type identifier from a message content

@@ -5,9 +5,8 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"regexp"
+	"path/filepath"
 	"strings"
-	"sync"
 	"unicode"
 
 	"github.com/eawag-rdm/pc/pkg/config"
@@ -21,49 +20,13 @@ import (
 This file contains tests that run on single files and do not need any other information. They especially do not need other files.
 */
 
-const (
-	SP = 0x20 //      Space
-)
-
-// RegexCache provides thread-safe caching of compiled regex patterns
-type regexCache struct {
-	cache map[string]*regexp.Regexp
-	mutex sync.RWMutex
-}
-
-var globalRegexCache = &regexCache{
-	cache: make(map[string]*regexp.Regexp),
-}
-
-// getOrCompile returns a cached compiled regex or compiles and caches a new one
-func (rc *regexCache) getOrCompile(pattern string) (*regexp.Regexp, error) {
-	// First try to read from cache
-	rc.mutex.RLock()
-	if compiled, exists := rc.cache[pattern]; exists {
-		rc.mutex.RUnlock()
-		return compiled, nil
-	}
-	rc.mutex.RUnlock()
-
-	// Compile the pattern
-	compiled, err := regexp.Compile(pattern)
-	if err != nil {
-		return nil, err
-	}
-
-	// Store in cache
-	rc.mutex.Lock()
-	rc.cache[pattern] = compiled
-	rc.mutex.Unlock()
-
-	return compiled, nil
-}
 
 // streamingReadFile reads a file in chunks and applies pattern matching
 // This is more memory-efficient for large files
-func streamingReadFile(filePath string, patterns string) ([]string, error) {
-	const maxFileSize = 1024 * 1024 * 1024 // 1GB limit for streaming (increased)
-	const chunkSize = 256 * 1024            // 256KB chunks (increased for better performance)
+// streamingReadFileList is an optimized version that takes a pattern slice directly
+func streamingReadFileList(filePath string, patternList []string) ([]string, error) {
+	const maxFileSize = 2 * 1024 * 1024 * 1024 // 2GB limit for streaming (increased)
+	const chunkSize = 1024 * 1024               // 1MB chunks (increased for better performance)
 	
 	file, err := os.Open(filePath)
 	if err != nil {
@@ -77,15 +40,14 @@ func streamingReadFile(filePath string, patterns string) ([]string, error) {
 		return nil, err
 	}
 
-	// Split patterns for fast matcher
-	patternList := strings.Split(patterns, "|")
+	// Use fast matcher directly with pattern list
 	if len(patternList) == 0 {
 		return []string{}, nil
 	}
 	
 	matcher := performance.GetMatcher(patternList)
 
-	// For small files, read normally
+	// For small files (under 1MB), read normally
 	if fileInfo.Size() < chunkSize {
 		content, err := io.ReadAll(file)
 		if err != nil {
@@ -102,7 +64,7 @@ func streamingReadFile(filePath string, patterns string) ([]string, error) {
 
 	foundMatches := make(map[string]struct{})
 	buffer := make([]byte, chunkSize)
-	overlap := make([]byte, 0, 2048) // Increased overlap for better pattern detection
+	overlap := make([]byte, 0, 4096) // Increased overlap for better pattern detection
 	
 	for {
 		n, err := file.Read(buffer)
@@ -119,8 +81,8 @@ func streamingReadFile(filePath string, patterns string) ([]string, error) {
 			foundMatches[match] = struct{}{}
 		}
 		
-		// Keep last 1KB as overlap for next chunk to ensure patterns spanning chunks are caught
-		overlapSize := 1024
+		// Keep last 2KB as overlap for next chunk to ensure patterns spanning chunks are caught
+		overlapSize := 2048
 		if n < overlapSize {
 			overlapSize = n
 		}
@@ -147,6 +109,7 @@ func streamingReadFile(filePath string, patterns string) ([]string, error) {
 	return result, nil
 }
 
+
 func HasOnlyASCII(file structs.File, config config.Config) []structs.Message {
 	var nonASCII string
 	for _, r := range file.Name {
@@ -163,15 +126,32 @@ func HasOnlyASCII(file structs.File, config config.Config) []structs.Message {
 // Return true if c is a space character; otherwise, return false.
 func HasNoWhiteSpace(file structs.File, config config.Config) []structs.Message {
 	for i := 0; i < len(file.Name); i++ {
-		if file.Name[i] == SP {
+		if file.Name[i] == ' ' {
 			return []structs.Message{{Content: "File name contains spaces.", Source: file}}
 		}
 	}
 	return []structs.Message{}
 }
 
+// Common text file extensions
+var textExtensions = map[string]bool{
+	".txt": true, ".log": true, ".md": true, ".csv": true, ".json": true,
+	".xml": true, ".html": true, ".css": true, ".js": true, ".py": true,
+	".go": true, ".java": true, ".cpp": true, ".c": true, ".h": true,
+	".sql": true, ".yml": true, ".yaml": true, ".toml": true, ".ini": true,
+	".conf": true, ".config": true, ".properties": true, ".sh": true,
+	".bat": true, ".ps1": true, ".rb": true, ".php": true, ".pl": true,
+}
+
 // isTextFile checks if a file is a text file using DetectContentType from the http package.
+// Enhanced to handle large files and improve detection accuracy.
 func isTextFile(filePath string) (bool, error) {
+	// Check file extension first for common text types
+	ext := strings.ToLower(filepath.Ext(filePath))
+	if textExtensions[ext] {
+		return true, nil
+	}
+
 	// Open the file for reading
 	file, err := os.Open(filePath)
 	if err != nil {
@@ -179,19 +159,43 @@ func isTextFile(filePath string) (bool, error) {
 	}
 	defer file.Close()
 
-	// Read a small sample of the file
-	const sampleSize = 512
+	// Read a larger sample for better detection
+	const sampleSize = 8192 // Increased from 512 to 8KB
 	buffer := make([]byte, sampleSize)
 	n, err := file.Read(buffer)
-	if err != nil && err.Error() != "EOF" {
+	if err != nil && err != io.EOF {
 		return false, err
 	}
 
+	if n == 0 {
+		return true, nil // Empty files are considered text
+	}
+
+	// Check for null bytes (common in binary files)
+	for i := 0; i < n; i++ {
+		if buffer[i] == 0 {
+			return false, nil // Binary file likely
+		}
+	}
+
+	// Use HTTP detection as secondary check
 	filetype := http.DetectContentType(buffer[:n])
 	if strings.HasPrefix(filetype, "text/") {
 		return true, nil
 	}
-	return false, nil
+
+	// Additional heuristic: check if most bytes are printable ASCII or common UTF-8
+	printableCount := 0
+	for i := 0; i < n; i++ {
+		b := buffer[i]
+		if (b >= 32 && b <= 126) || b == '\t' || b == '\n' || b == '\r' || b >= 128 {
+			printableCount++
+		}
+	}
+
+	// If more than 95% of sampled bytes are printable, consider it text
+	textRatio := float64(printableCount) / float64(n)
+	return textRatio >= 0.95, nil
 }
 
 func IsArchiveFreeOfKeywords(file structs.File, config config.Config) []structs.Message {
@@ -222,9 +226,9 @@ func IsArchiveFreeOfKeywords(file structs.File, config config.Config) []structs.
 		fileName, fileContent, _ := archiveIterator.UnpackedFile()
 
 		for _, argumentSet := range config.Tests["IsFreeOfKeywords"].KeywordArguments {
-			var keywords = strings.Join(argumentSet["keywords"].([]string), "|")
+			var keywordList = argumentSet["keywords"].([]string)
 			var info = argumentSet["info"].(string)
-			foundKeywordsStr := matchPatterns(keywords, fileContent)
+			foundKeywordsStr := matchPatternsList(keywordList, fileContent)
 
 			if foundKeywordsStr != "" {
 				messages = append(messages, structs.Message{Content: info + " '" + foundKeywordsStr + "'. In archived file: '" + fileName + "'", Source: file})
@@ -234,6 +238,7 @@ func IsArchiveFreeOfKeywords(file structs.File, config config.Config) []structs.
 	}
 	return messages
 }
+
 
 func IsFreeOfKeywords(file structs.File, config config.Config) []structs.Message {
 	var messages []structs.Message
@@ -253,13 +258,13 @@ func IsFreeOfKeywords(file structs.File, config config.Config) []structs.Message
 			return messages
 		}
 
-		// Use streaming for files larger than 10MB
-		if fileInfo.Size() > 10*1024*1024 {
+		// Use streaming for files larger than 1MB (reduced threshold for better performance)
+		if fileInfo.Size() > 1024*1024 {
 			for _, argumentSet := range config.Tests["IsFreeOfKeywords"].KeywordArguments {
-				var keywords = strings.Join(argumentSet["keywords"].([]string), "|")
+				var keywordList = argumentSet["keywords"].([]string)
 				var info = argumentSet["info"].(string)
 
-				foundMatches, err := streamingReadFile(file.Path, keywords)
+				foundMatches, err := streamingReadFileList(file.Path, keywordList)
 				if err != nil {
 					fmt.Printf("Error streaming file '%s': %v\n", file.Path, err)
 					continue
@@ -282,10 +287,10 @@ func IsFreeOfKeywords(file structs.File, config config.Config) []structs.Message
 			body := [][]byte{content}
 
 			for _, argumentSet := range config.Tests["IsFreeOfKeywords"].KeywordArguments {
-				var keywords = strings.Join(argumentSet["keywords"].([]string), "|")
+				var keywordList = argumentSet["keywords"].([]string)
 				var info = argumentSet["info"].(string)
 
-				ret := IsFreeOfKeywordsCore(file, keywords, info, body, false)
+				ret := IsFreeOfKeywordsCoreList(file, keywordList, info, body, false)
 				if ret != nil {
 					messages = append(messages, ret...)
 				}
@@ -295,10 +300,10 @@ func IsFreeOfKeywords(file structs.File, config config.Config) []structs.Message
 		// Handle binary files
 		body := tryReadBinary(file)
 		for _, argumentSet := range config.Tests["IsFreeOfKeywords"].KeywordArguments {
-			var keywords = strings.Join(argumentSet["keywords"].([]string), "|")
+			var keywordList = argumentSet["keywords"].([]string)
 			var info = argumentSet["info"].(string)
 
-			ret := IsFreeOfKeywordsCore(file, keywords, info, body, true)
+			ret := IsFreeOfKeywordsCoreList(file, keywordList, info, body, true)
 			if ret != nil {
 				messages = append(messages, ret...)
 			}
@@ -308,10 +313,16 @@ func IsFreeOfKeywords(file structs.File, config config.Config) []structs.Message
 }
 
 func IsFreeOfKeywordsCore(file structs.File, keywords string, info string, body [][]byte, isBinary bool) []structs.Message {
+	// Split patterns and delegate to optimized version
+	patternList := strings.Split(keywords, "|")
+	return IsFreeOfKeywordsCoreList(file, patternList, info, body, isBinary)
+}
+
+func IsFreeOfKeywordsCoreList(file structs.File, keywordList []string, info string, body [][]byte, isBinary bool) []structs.Message {
 	var messages []structs.Message
 
 	for idx, entry := range body {
-		foundKeywordsStr := matchPatterns(keywords, entry)
+		foundKeywordsStr := matchPatternsList(keywordList, entry)
 		if foundKeywordsStr != "" {
 			if isBinary {
 				messages = append(messages, structs.Message{Content: info + " '" + foundKeywordsStr + "' in sheet/paragraph/table " + fmt.Sprintf("%d", idx), Source: file})
@@ -331,6 +342,15 @@ func matchPatterns(patterns string, body []byte) string {
 	// Split patterns and use fast matcher
 	patternList := strings.Split(patterns, "|")
 	if len(patternList) == 0 {
+		return ""
+	}
+
+	return matchPatternsList(patternList, body)
+}
+
+// matchPatternsList is an optimized version that takes a pattern slice directly
+func matchPatternsList(patternList []string, body []byte) string {
+	if len(body) == 0 || len(patternList) == 0 {
 		return ""
 	}
 
