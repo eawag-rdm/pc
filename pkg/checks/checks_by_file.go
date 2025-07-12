@@ -11,7 +11,7 @@ import (
 
 	"github.com/eawag-rdm/pc/pkg/config"
 	"github.com/eawag-rdm/pc/pkg/helpers"
-	"github.com/eawag-rdm/pc/pkg/performance"
+	"github.com/eawag-rdm/pc/pkg/optimization"
 	"github.com/eawag-rdm/pc/pkg/readers"
 	"github.com/eawag-rdm/pc/pkg/structs"
 )
@@ -45,7 +45,7 @@ func streamingReadFileList(filePath string, patternList []string) ([]string, err
 		return []string{}, nil
 	}
 	
-	matcher := performance.GetMatcher(patternList)
+	matcher := optimization.GetMatcher(patternList)
 
 	// For small files (under 1MB), read normally
 	if fileInfo.Size() < chunkSize {
@@ -355,7 +355,7 @@ func matchPatternsList(patternList []string, body []byte) string {
 	}
 
 	// Use fast matcher for pattern detection with original case preservation
-	matcher := performance.GetMatcher(patternList)
+	matcher := optimization.GetMatcher(patternList)
 	foundMatches := matcher.FindMatchesWithOriginalCase(body)
 	
 	if len(foundMatches) > 0 {

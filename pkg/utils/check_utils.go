@@ -10,7 +10,7 @@ import (
 	"github.com/eawag-rdm/pc/pkg/checks"
 	"github.com/eawag-rdm/pc/pkg/config"
 	"github.com/eawag-rdm/pc/pkg/helpers"
-	"github.com/eawag-rdm/pc/pkg/performance"
+	"github.com/eawag-rdm/pc/pkg/optimization"
 	"github.com/eawag-rdm/pc/pkg/readers"
 	"github.com/eawag-rdm/pc/pkg/structs"
 )
@@ -109,7 +109,7 @@ func applyChecksParallel(cfg config.Config, checks []func(file structs.File, con
 		numWorkers = len(files)
 	}
 
-	pool := performance.NewWorkerPool(numWorkers)
+	pool := optimization.NewWorkerPool(numWorkers)
 	pool.Start()
 	defer pool.Stop()
 
@@ -127,7 +127,7 @@ func applyChecksParallel(cfg config.Config, checks []func(file structs.File, con
 			}
 			
 			if len(validChecks) > 0 {
-				work := performance.WorkItem{
+				work := optimization.WorkItem{
 					File:   file,
 					Checks: validChecks,
 					Config: cfg,
@@ -250,7 +250,7 @@ func applyArchiveChecksParallel(cfg config.Config, checks []func(file structs.Fi
 		numWorkers = 1
 	}
 
-	pool := performance.NewWorkerPool(numWorkers)
+	pool := optimization.NewWorkerPool(numWorkers)
 	pool.Start()
 	defer pool.Stop()
 
@@ -265,7 +265,7 @@ func applyArchiveChecksParallel(cfg config.Config, checks []func(file structs.Fi
 			}
 			
 			if len(validChecks) > 0 {
-				work := performance.WorkItem{
+				work := optimization.WorkItem{
 					File:   file,
 					Checks: validChecks,
 					Config: cfg,

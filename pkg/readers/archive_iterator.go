@@ -12,7 +12,7 @@ import (
 	"strings"
 
 	"github.com/bodgit/sevenzip"
-	"github.com/eawag-rdm/pc/pkg/performance"
+	"github.com/eawag-rdm/pc/pkg/optimization"
 )
 
 type UnpackedFileIterator struct {
@@ -107,7 +107,7 @@ func matchPatterns(list []string, str string) bool {
 	}
 	
 	// Use fast matcher for pattern detection
-	matcher := performance.GetMatcher(list)
+	matcher := optimization.GetMatcher(list)
 	return matcher.HasAnyMatch([]byte(str))
 }
 
