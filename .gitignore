@@ -43,3 +43,5 @@ go.work.sum
 *.vsix
 
 .DS_Store
+
+*.html

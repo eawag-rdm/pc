@@ -16,7 +16,6 @@ type App struct {
 	checksList        *tview.List
 	leftSections      *tview.TextView // Header bar for Subjects/Checks switching
 	leftContent       *tview.Flex     // Content area for subjects or checks list
-	detailsSections   *tview.TextView // New: collapsible sections display
 	detailsContent    *tview.TextView // Content for selected section
 	info              *tview.TextView
 	controls          *tview.TextView
@@ -83,7 +82,6 @@ func (a *App) setupUI() {
 	a.checksList = tview.NewList().ShowSecondaryText(false)
 	a.leftSections = tview.NewTextView().SetDynamicColors(true).SetWrap(true)
 	a.leftContent = tview.NewFlex().SetDirection(tview.FlexRow)
-	a.detailsSections = tview.NewTextView().SetDynamicColors(true).SetWrap(true)
 	a.detailsContent = tview.NewTextView().SetDynamicColors(true).SetScrollable(true).SetWrap(true)
 	
 	// Set up faster scrolling for details content
@@ -110,25 +108,23 @@ func (a *App) setupUI() {
 	a.subjectsList.SetBorder(true).SetTitle(" Issues ")
 	a.checksList.SetBorder(true).SetTitle(" Issues ")
 	a.leftSections.SetBorder(true).SetTitle(" Focused on ")
-	a.detailsSections.SetBorder(true).SetTitle(" Sections ")
-	a.detailsContent.SetBorder(true).SetTitle(" Content ")
+	a.detailsContent.SetBorder(true).SetTitle(" Details ")
 	a.info.SetBorder(true).SetTitle(" Summary ")
 	a.controls.SetBorder(true).SetTitle(" Controls ")
 	a.progressBar.SetBorder(true).SetTitle(" Scan Progress ")
 
-	// Create left panel with sections header and content
+	// Create left panel with all categories (subjects, checks, skipped, warnings, errors)
 	a.leftPanel = tview.NewFlex().SetDirection(tview.FlexRow).
-		AddItem(a.leftSections, 3, 0, false).
+		AddItem(a.leftSections, 6, 0, false).  // Increased height to accommodate all categories
 		AddItem(a.leftContent, 0, 1, true)
 
 	a.rightPanel = tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(a.info, 6, 0, false).
-		AddItem(a.detailsSections, 4, 0, false).
 		AddItem(a.detailsContent, 0, 1, false)
 
 	mainContent := tview.NewFlex().
 		AddItem(a.leftPanel, 0, 1, true).
-		AddItem(a.rightPanel, 0, 2, false)
+		AddItem(a.rightPanel, 0, 1, false)  // Changed ratio to give more space to left panel
 
 	// Main layout - always include progress bar (hidden when not scanning)
 	a.flex = tview.NewFlex().SetDirection(tview.FlexRow).
@@ -146,7 +142,6 @@ func (a *App) setupUI() {
 	a.populateChecksList()
 	a.populateLeftSections()
 	a.showSubjectsPanel() // Start with subjects visible
-	a.populateSections()
 	a.updateInfo()
 	a.updateControls()
 
@@ -195,9 +190,11 @@ func (a *App) populateSubjectsList() {
 	// Set up selection change handler for automatic details update
 	a.subjectsList.SetChangedFunc(func(index int, mainText, secondaryText string, shortcut rune) {
 		if index >= 0 && index < len(subjectNames) {
-			// Update current subject and refresh sections without changing focus
+			// Update current subject and refresh details
 			a.currentSubject = subjectNames[index]
-			a.populateSections()
+			if a.currentView == "subjects" {
+				a.showSubjectDetails()
+			}
 		}
 	})
 }
@@ -220,9 +217,11 @@ func (a *App) populateChecksList() {
 	// Set up selection change handler for automatic details update
 	a.checksList.SetChangedFunc(func(index int, mainText, secondaryText string, shortcut rune) {
 		if index >= 0 && index < len(checkNames) {
-			// Update current subject and refresh sections without changing focus
+			// Update current check and refresh details
 			a.currentSubject = checkNames[index]
-			a.populateSections()
+			if a.currentView == "checks" {
+				a.showCheckDetails()
+			}
 		}
 	})
 }
@@ -276,72 +275,11 @@ func (a *App) updateControls() {
 	a.controls.SetText(controls)
 }
 
-func (a *App) showSubjectDetails(subject string) {
-	// Find the subject details
-	for _, subjectDetail := range a.data.DetailsSubjectFocused {
-		if subjectDetail.Subject == subject {
-			content := fmt.Sprintf("[yellow]Subject: %s[white]\n", subject)
-			if subjectDetail.Path != "" {
-				content += fmt.Sprintf("Path: %s\n", subjectDetail.Path)
-			}
-			content += fmt.Sprintf("\n[green]Issues (%d):[white]\n", len(subjectDetail.Issues))
-			
-			for i, issue := range subjectDetail.Issues {
-				content += fmt.Sprintf("\n[cyan]%d. %s[white]\n", i+1, issue.Checkname)
-				content += fmt.Sprintf("   %s\n", issue.Message)
-			}
-			
-			a.currentSubject = subject
-			a.currentView = "details"
-			a.populateSections()
-			a.focusDetails()
-			return
-		}
-	}
-}
-
-func (a *App) showCheckDetails(checkname string) {
-	// Find the check details
-	for _, check := range a.data.DetailsCheckFocused {
-		if check.Checkname == checkname {
-			content := fmt.Sprintf("[yellow]Check: %s[white]\n", checkname)
-			content += fmt.Sprintf("\n[green]Issues (%d):[white]\n", len(check.Issues))
-			
-			for i, issue := range check.Issues {
-				content += fmt.Sprintf("\n[cyan]%d. %s[white]\n", i+1, issue.Subject)
-				if issue.Path != "" {
-					content += fmt.Sprintf("   Path: %s\n", issue.Path)
-				}
-				content += fmt.Sprintf("   %s\n", issue.Message)
-			}
-			
-			a.currentSubject = checkname
-			a.currentView = "details"
-			a.populateSections()
-			a.focusDetails()
-			return
-		}
-	}
-}
 
 func (a *App) setupResizeHandler() {
 	// Set up a periodic refresh to check for size changes
 	// This will handle terminal resize events
-	go func() {
-		lastWidth := 0
-		for {
-			time.Sleep(100 * time.Millisecond)
-			
-			// Check if the width has changed
-			_, _, currentWidth, _ := a.detailsSections.GetRect()
-			if currentWidth > 0 && currentWidth != lastWidth {
-				lastWidth = currentWidth
-				a.app.QueueUpdateDraw(func() {
-					a.populateSections()
-				})
-			}
-		}
-	}()
+	// Width monitoring is no longer needed since detailsSections is removed
 }
 
 func (a *App) setupKeyBindings() {
@@ -378,18 +316,12 @@ func (a *App) setupKeyBindings() {
 		// Handle arrow keys for navigation
 		switch event.Key() {
 		case tcell.KeyLeft:
-			if a.currentView == "details" {
-				a.navigateSectionsLeft()
-			} else if a.currentView == "subjects" || a.currentView == "checks" {
-				a.navigateLeftPanelLeft()
-			}
+			// Navigate between categories in left panel
+			a.navigateLeftPanelLeft()
 			return nil
 		case tcell.KeyRight:
-			if a.currentView == "details" {
-				a.navigateSectionsRight()
-			} else if a.currentView == "subjects" || a.currentView == "checks" {
-				a.navigateLeftPanelRight()
-			}
+			// Navigate between categories in left panel
+			a.navigateLeftPanelRight()
 			return nil
 		}
 		
@@ -431,7 +363,6 @@ func (a *App) focusSubjects() {
 	a.leftSections.SetBorderColor(tcell.ColorYellow)
 	a.subjectsList.SetBorderColor(tcell.ColorGreen)
 	a.checksList.SetBorderColor(tcell.ColorWhite)
-	a.detailsSections.SetBorderColor(tcell.ColorWhite)
 	a.detailsContent.SetBorderColor(tcell.ColorWhite)
 	a.updateControls()
 }
@@ -446,7 +377,6 @@ func (a *App) focusChecks() {
 	a.leftSections.SetBorderColor(tcell.ColorYellow)
 	a.subjectsList.SetBorderColor(tcell.ColorWhite)
 	a.checksList.SetBorderColor(tcell.ColorGreen)
-	a.detailsSections.SetBorderColor(tcell.ColorWhite)
 	a.detailsContent.SetBorderColor(tcell.ColorWhite)
 	a.updateControls()
 }
@@ -458,20 +388,14 @@ func (a *App) focusDetails() {
 	a.leftSections.SetBorderColor(tcell.ColorWhite)
 	a.subjectsList.SetBorderColor(tcell.ColorWhite)
 	a.checksList.SetBorderColor(tcell.ColorWhite)
-	a.detailsSections.SetBorderColor(tcell.ColorYellow)
 	a.detailsContent.SetBorderColor(tcell.ColorGreen)
 	a.updateControls()
 }
 
 func (a *App) formatSectionsResponsive(sectionTexts []string) (string, int) {
 	// Get the terminal width for the sections area
-	// Use multiple methods to get the most accurate width
-	_, _, width, _ := a.detailsSections.GetRect()
-	
-	// If the component doesn't have a width yet, use a reasonable default
-	if width <= 0 {
-		width = 80 // Default terminal width estimate
-	}
+	// Use a reasonable default width since detailsSections is removed
+	width := 80
 	
 	availableWidth := width - 4 // Account for borders and padding
 	
@@ -534,68 +458,10 @@ func (a *App) formatSectionsResponsive(sectionTexts []string) (string, int) {
 	return strings.Join(lines, "\n"), len(lines)
 }
 
-func (a *App) populateSections() {
-	// Section names
-	sections := []string{"Details", "PDF Files", "Warnings", "Errors", "Skipped"}
-	var sectionTexts []string
-	
-	for i, section := range sections {
-		var count int
-		switch i {
-		case 0: // Details - count issues for current subject
-			count = a.getDetailsCount()
-		case 1: // PDF Files
-			count = len(a.data.PDFFiles)
-		case 2: // Warnings
-			count = len(a.data.Warnings)
-		case 3: // Errors
-			count = len(a.data.Errors)
-		case 4: // Skipped
-			count = len(a.data.Skipped)
-		}
-		
-		// Format with selection highlighting (no toggle indicators)
-		var sectionText string
-		if i == a.selectedSection {
-			sectionText = fmt.Sprintf("[black:white]%s (%d)[-:-]", section, count)
-		} else {
-			sectionText = fmt.Sprintf("[white]%s (%d)", section, count)
-		}
-		sectionTexts = append(sectionTexts, sectionText)
-	}
-	
-	// Check if sections fit on one line, otherwise wrap them
-	sectionsDisplay, lineCount := a.formatSectionsResponsive(sectionTexts)
-	a.detailsSections.SetText(sectionsDisplay)
-	
-	// Dynamically adjust the height of the sections area
-	a.adjustSectionsHeight(lineCount)
-	
-	a.updateSectionContent()
-}
 
-func (a *App) adjustSectionsHeight(lineCount int) {
-	// Calculate the required height (content lines + border)
-	requiredHeight := lineCount + 2 // +2 for top and bottom borders
-	
-	// Ensure minimum height of 3 and maximum of 6 to prevent layout issues
-	if requiredHeight < 3 {
-		requiredHeight = 3
-	}
-	if requiredHeight > 6 {
-		requiredHeight = 6
-	}
-	
-	// Rebuild the right panel with the new height
-	a.rightPanel.Clear()
-	a.rightPanel.SetDirection(tview.FlexRow).
-		AddItem(a.info, 6, 0, false).
-		AddItem(a.detailsSections, requiredHeight, 0, false).
-		AddItem(a.detailsContent, 0, 1, false)
-}
 
 func (a *App) populateLeftSections() {
-	sections := []string{"Subjects", "Checks"}
+	sections := []string{"Subjects", "Checks", "PDFs", "Skipped", "Warnings", "Errors"}
 	var sectionTexts []string
 	
 	for i, section := range sections {
@@ -612,6 +478,14 @@ func (a *App) populateLeftSections() {
 			}
 		case 1: // Checks
 			count = len(a.data.DetailsCheckFocused)
+		case 2: // PDFs
+			count = len(a.data.PDFFiles)
+		case 3: // Skipped
+			count = len(a.data.Skipped)
+		case 4: // Warnings
+			count = len(a.data.Warnings)
+		case 5: // Errors
+			count = len(a.data.Errors)
 		}
 		
 		var sectionText string
@@ -640,159 +514,49 @@ func (a *App) showChecksPanel() {
 		AddItem(a.checksList, 0, 1, true)
 }
 
-func (a *App) navigateLeftPanelLeft() {
-	if a.selectedLeftPanel > 0 {
-		a.selectedLeftPanel--
-		a.populateLeftSections()
-		if a.selectedLeftPanel == 0 {
-			a.currentView = "subjects"
-			a.showSubjectsPanel()
-			a.app.SetFocus(a.subjectsList)
-			// Set colors: left navigation header = yellow, subjects list = green, others = white
-			a.leftSections.SetBorderColor(tcell.ColorYellow)
-			a.subjectsList.SetBorderColor(tcell.ColorGreen)
-			a.checksList.SetBorderColor(tcell.ColorWhite)
-			a.detailsSections.SetBorderColor(tcell.ColorWhite)
-			a.detailsContent.SetBorderColor(tcell.ColorWhite)
-			// Update details for first subject
-			a.updateDetailsForCurrentSelection()
-		} else {
-			a.currentView = "checks"
-			a.showChecksPanel()
-			a.app.SetFocus(a.checksList)
-			// Set colors: left navigation header = yellow, checks list = green, others = white
-			a.leftSections.SetBorderColor(tcell.ColorYellow)
-			a.subjectsList.SetBorderColor(tcell.ColorWhite)
-			a.checksList.SetBorderColor(tcell.ColorGreen)
-			a.detailsSections.SetBorderColor(tcell.ColorWhite)
-			a.detailsContent.SetBorderColor(tcell.ColorWhite)
-			// Update details for first check
-			a.updateDetailsForCurrentSelection()
-		}
-		a.updateControls()
-	}
+func (a *App) showSkippedPanel() {
+	a.leftContent.Clear()
+	content := a.getSkippedContent()
+	skippedView := tview.NewTextView().SetDynamicColors(true).SetScrollable(true).SetWrap(true)
+	skippedView.SetText(content)
+	skippedView.SetBorder(true).SetTitle(" Skipped Files ")
+	a.leftContent.SetDirection(tview.FlexRow).
+		AddItem(skippedView, 0, 1, true)
 }
 
-func (a *App) navigateLeftPanelRight() {
-	if a.selectedLeftPanel < 1 {
-		a.selectedLeftPanel++
-		a.populateLeftSections()
-		if a.selectedLeftPanel == 0 {
-			a.currentView = "subjects"
-			a.showSubjectsPanel()
-			a.app.SetFocus(a.subjectsList)
-			// Set colors: left navigation header = yellow, subjects list = green, others = white
-			a.leftSections.SetBorderColor(tcell.ColorYellow)
-			a.subjectsList.SetBorderColor(tcell.ColorGreen)
-			a.checksList.SetBorderColor(tcell.ColorWhite)
-			a.detailsSections.SetBorderColor(tcell.ColorWhite)
-			a.detailsContent.SetBorderColor(tcell.ColorWhite)
-			// Update details for first subject
-			a.updateDetailsForCurrentSelection()
-		} else {
-			a.currentView = "checks"
-			a.showChecksPanel()
-			a.app.SetFocus(a.checksList)
-			// Set colors: left navigation header = yellow, checks list = green, others = white
-			a.leftSections.SetBorderColor(tcell.ColorYellow)
-			a.subjectsList.SetBorderColor(tcell.ColorWhite)
-			a.checksList.SetBorderColor(tcell.ColorGreen)
-			a.detailsSections.SetBorderColor(tcell.ColorWhite)
-			a.detailsContent.SetBorderColor(tcell.ColorWhite)
-			// Update details for first check
-			a.updateDetailsForCurrentSelection()
-		}
-		a.updateControls()
-	}
+func (a *App) showWarningsPanel() {
+	a.leftContent.Clear()
+	content := a.getWarningsContent()
+	warningsView := tview.NewTextView().SetDynamicColors(true).SetScrollable(true).SetWrap(true)
+	warningsView.SetText(content)
+	warningsView.SetBorder(true).SetTitle(" Warnings ")
+	a.leftContent.SetDirection(tview.FlexRow).
+		AddItem(warningsView, 0, 1, true)
 }
 
-func (a *App) updateDetailsForCurrentSelection() {
-	// Get the currently selected item from the active list
-	if a.currentView == "subjects" {
-		currentIndex := a.subjectsList.GetCurrentItem()
-		if currentIndex >= 0 {
-			// Get subject name based on index
-			if currentIndex < len(a.data.Scanned) {
-				a.currentSubject = a.data.Scanned[currentIndex].Filename
-			} else {
-				// Must be repository
-				a.currentSubject = "repository"
-			}
-		}
-	} else if a.currentView == "checks" {
-		currentIndex := a.checksList.GetCurrentItem()
-		if currentIndex >= 0 && currentIndex < len(a.data.DetailsCheckFocused) {
-			a.currentSubject = a.data.DetailsCheckFocused[currentIndex].Checkname
-		}
-	}
-	
-	// Update sections with the new selection
-	a.populateSections()
+func (a *App) showErrorsPanel() {
+	a.leftContent.Clear()
+	content := a.getErrorsContent()
+	errorsView := tview.NewTextView().SetDynamicColors(true).SetScrollable(true).SetWrap(true)
+	errorsView.SetText(content)
+	errorsView.SetBorder(true).SetTitle(" Errors ")
+	a.leftContent.SetDirection(tview.FlexRow).
+		AddItem(errorsView, 0, 1, true)
 }
 
-func (a *App) getDetailsCount() int {
+func (a *App) showEmptyLeftPanel(title string) {
+	a.leftContent.Clear()
+	emptyView := tview.NewTextView().SetDynamicColors(true)
+	emptyView.SetText(fmt.Sprintf("[dim]%s[white]\n\n[dim]Details shown in right panel[white]", title))
+	emptyView.SetBorder(true).SetTitle(fmt.Sprintf(" %s ", title))
+	a.leftContent.SetDirection(tview.FlexRow).
+		AddItem(emptyView, 0, 1, true)
+}
+
+func (a *App) showSubjectDetails() {
 	if a.currentSubject == "" {
-		return 0
-	}
-	
-	// Count issues for current subject
-	for _, subject := range a.data.DetailsSubjectFocused {
-		if subject.Subject == a.currentSubject {
-			return len(subject.Issues)
-		}
-	}
-	
-	// Check in check-focused data
-	for _, check := range a.data.DetailsCheckFocused {
-		if check.Checkname == a.currentSubject {
-			return len(check.Issues)
-		}
-	}
-	
-	return 0
-}
-
-
-func (a *App) navigateSectionsLeft() {
-	if a.selectedSection > 0 {
-		a.selectedSection--
-		a.populateSections()
-	}
-}
-
-func (a *App) navigateSectionsRight() {
-	if a.selectedSection < 4 { // 0-4 for 5 sections
-		a.selectedSection++
-		a.populateSections()
-	}
-}
-
-func (a *App) updateSectionContent() {
-	if a.selectedSection < 0 || a.selectedSection >= 5 {
-		a.detailsContent.SetText("[dim]Select a section to view content[white]")
+		a.detailsContent.SetText("[dim]No subject selected[white]")
 		return
-	}
-	
-	var content string
-	switch a.selectedSection {
-	case 0: // Details
-		content = a.getDetailsContent()
-	case 1: // PDF Files
-		content = a.getPDFFilesContent()
-	case 2: // Warnings
-		content = a.getWarningsContent()
-	case 3: // Errors
-		content = a.getErrorsContent()
-	case 4: // Skipped
-		content = a.getSkippedContent()
-	}
-	
-	a.detailsContent.SetText(content)
-}
-
-func (a *App) getDetailsContent() string {
-	if a.currentSubject == "" {
-		return "[dim]No subject selected[white]"
 	}
 	
 	// Find subject details
@@ -808,11 +572,21 @@ func (a *App) getDetailsContent() string {
 				content += fmt.Sprintf("\n[cyan]%d. %s[white]\n", i+1, issue.Checkname)
 				content += fmt.Sprintf("   %s\n", issue.Message)
 			}
-			return content
+			a.detailsContent.SetText(content)
+			return
 		}
 	}
 	
-	// Check in check-focused data
+	a.detailsContent.SetText("[dim]No details found[white]")
+}
+
+func (a *App) showCheckDetails() {
+	if a.currentSubject == "" {
+		a.detailsContent.SetText("[dim]No check selected[white]")
+		return
+	}
+	
+	// Find check details
 	for _, check := range a.data.DetailsCheckFocused {
 		if check.Checkname == a.currentSubject {
 			content := fmt.Sprintf("[yellow]Check: %s[white]\n", a.currentSubject)
@@ -825,14 +599,35 @@ func (a *App) getDetailsContent() string {
 				}
 				content += fmt.Sprintf("   %s\n", issue.Message)
 			}
-			return content
+			a.detailsContent.SetText(content)
+			return
 		}
 	}
 	
-	return "[dim]No details found[white]"
+	a.detailsContent.SetText("[dim]No details found[white]")
 }
 
-func (a *App) getPDFFilesContent() string {
+func (a *App) showSkippedDetails() {
+	content := a.getSkippedContent()
+	a.detailsContent.SetText(content)
+}
+
+func (a *App) showWarningsDetails() {
+	content := a.getWarningsContent()
+	a.detailsContent.SetText(content)
+}
+
+func (a *App) showErrorsDetails() {
+	content := a.getErrorsContent()
+	a.detailsContent.SetText(content)
+}
+
+func (a *App) showPDFsDetails() {
+	content := a.getPDFsContent()
+	a.detailsContent.SetText(content)
+}
+
+func (a *App) getPDFsContent() string {
 	if len(a.data.PDFFiles) == 0 {
 		return "[dim]No PDF files found[white]"
 	}
@@ -840,6 +635,119 @@ func (a *App) getPDFFilesContent() string {
 	content := fmt.Sprintf("[yellow]PDF Files (%d):[white]\n\n", len(a.data.PDFFiles))
 	for i, file := range a.data.PDFFiles {
 		content += fmt.Sprintf("[cyan]%d.[white] %s\n", i+1, file)
+	}
+	return content
+}
+
+func (a *App) navigateLeftPanelLeft() {
+	if a.selectedLeftPanel > 0 {
+		a.selectedLeftPanel--
+		a.populateLeftSections()
+		a.switchToSelectedLeftPanel()
+		a.updateControls()
+	}
+}
+
+func (a *App) navigateLeftPanelRight() {
+	if a.selectedLeftPanel < 5 {  // Now we have 6 categories (0-5)
+		a.selectedLeftPanel++
+		a.populateLeftSections()
+		a.switchToSelectedLeftPanel()
+		a.updateControls()
+	}
+}
+
+func (a *App) switchToSelectedLeftPanel() {
+	// Reset all colors to white
+	a.subjectsList.SetBorderColor(tcell.ColorWhite)
+	a.checksList.SetBorderColor(tcell.ColorWhite)
+	a.detailsContent.SetBorderColor(tcell.ColorWhite)
+	
+	// Set navigation header to yellow
+	a.leftSections.SetBorderColor(tcell.ColorYellow)
+	
+	switch a.selectedLeftPanel {
+	case 0: // Subjects
+		a.currentView = "subjects"
+		a.showSubjectsPanel()
+		a.app.SetFocus(a.subjectsList)
+		a.subjectsList.SetBorderColor(tcell.ColorGreen)
+		a.updateDetailsForCurrentSelection()
+		
+	case 1: // Checks
+		a.currentView = "checks"
+		a.showChecksPanel()
+		a.app.SetFocus(a.checksList)
+		a.checksList.SetBorderColor(tcell.ColorGreen)
+		a.updateDetailsForCurrentSelection()
+		
+	case 2: // PDFs
+		a.currentView = "pdfs"
+		a.showEmptyLeftPanel("PDF Files")
+		a.showPDFsDetails()
+		a.app.SetFocus(a.detailsContent)
+		a.detailsContent.SetBorderColor(tcell.ColorGreen)
+		
+	case 3: // Skipped
+		a.currentView = "skipped"
+		a.showEmptyLeftPanel("Skipped Files")
+		a.showSkippedDetails()
+		a.app.SetFocus(a.detailsContent)
+		a.detailsContent.SetBorderColor(tcell.ColorGreen)
+		
+	case 4: // Warnings
+		a.currentView = "warnings"
+		a.showEmptyLeftPanel("Warnings")
+		a.showWarningsDetails()
+		a.app.SetFocus(a.detailsContent)
+		a.detailsContent.SetBorderColor(tcell.ColorGreen)
+		
+	case 5: // Errors
+		a.currentView = "errors"
+		a.showEmptyLeftPanel("Errors")
+		a.showErrorsDetails()
+		a.app.SetFocus(a.detailsContent)
+		a.detailsContent.SetBorderColor(tcell.ColorGreen)
+	}
+}
+
+func (a *App) updateDetailsForCurrentSelection() {
+	// Get the currently selected item from the active list
+	if a.currentView == "subjects" {
+		currentIndex := a.subjectsList.GetCurrentItem()
+		if currentIndex >= 0 {
+			// Get subject name based on index
+			if currentIndex < len(a.data.Scanned) {
+				a.currentSubject = a.data.Scanned[currentIndex].Filename
+			} else {
+				// Must be repository
+				a.currentSubject = "repository"
+			}
+			// Update details panel with selected subject
+			a.showSubjectDetails()
+		}
+	} else if a.currentView == "checks" {
+		currentIndex := a.checksList.GetCurrentItem()
+		if currentIndex >= 0 && currentIndex < len(a.data.DetailsCheckFocused) {
+			a.currentSubject = a.data.DetailsCheckFocused[currentIndex].Checkname
+			// Update details panel with selected check
+			a.showCheckDetails()
+		}
+	}
+}
+
+func (a *App) getSkippedContent() string {
+	if len(a.data.Skipped) == 0 {
+		return "[dim]No skipped files[white]"
+	}
+	
+	content := fmt.Sprintf("[yellow]Skipped Files (%d):[white]\n\n", len(a.data.Skipped))
+	for i, file := range a.data.Skipped {
+		content += fmt.Sprintf("[cyan]%d.[white] %s\n", i+1, file.Filename)
+		if file.Path != "" {
+			content += fmt.Sprintf("   [dim]Path: %s[white]\n", file.Path)
+		}
+		content += fmt.Sprintf("   [dim]Reason: %s[white]\n\n", file.Reason)
 	}
 	return content
 }
@@ -868,27 +776,35 @@ func (a *App) getErrorsContent() string {
 	return content
 }
 
-func (a *App) getSkippedContent() string {
-	if len(a.data.Skipped) == 0 {
-		return "[dim]No skipped files[white]"
+func (a *App) getDetailsCount() int {
+	if a.currentSubject == "" {
+		return 0
 	}
 	
-	content := fmt.Sprintf("[yellow]Skipped Files (%d):[white]\n\n", len(a.data.Skipped))
-	for i, file := range a.data.Skipped {
-		content += fmt.Sprintf("[cyan]%d.[white] %s\n", i+1, file.Filename)
-		if file.Path != "" {
-			content += fmt.Sprintf("   [dim]Path: %s[white]\n", file.Path)
+	// Count issues for current subject
+	for _, subject := range a.data.DetailsSubjectFocused {
+		if subject.Subject == a.currentSubject {
+			return len(subject.Issues)
 		}
-		content += fmt.Sprintf("   [dim]Reason: %s[white]\n\n", file.Reason)
 	}
-	return content
+	
+	// Check in check-focused data
+	for _, check := range a.data.DetailsCheckFocused {
+		if check.Checkname == a.currentSubject {
+			return len(check.Issues)
+		}
+	}
+	
+	return 0
 }
+
+
+
 
 func (a *App) showHelp() {
 	helpText := fmt.Sprintf(`[yellow]PC Scanner TUI - Help[white]
 
 [green]Navigation:[white]
-  %-12s %s
   %-12s %s
   %-12s %s
   %-12s %s
@@ -899,13 +815,12 @@ func (a *App) showHelp() {
   %-12s %s
   %-12s %s
   %-12s %s
-  %-12s %s
 
 [green]Layout:[white]
   %-12s %s
   %-12s %s
 
-[green]Details Sections:[white]
+[green]Categories (Left Panel):[white]
   %-12s %s
   %-12s %s
   %-12s %s
@@ -919,19 +834,20 @@ func (a *App) showHelp() {
 [yellow]Press any key to close help[white]`,
 		"Tab", "Switch between left panel and content area",
 		"↑/↓", "Navigate within panels / Scroll content",
-		"←/→", "Switch panels (Subjects/Checks) or sections (Details)",
+		"←/→", "Switch between categories in left panel",
 		"s/S", "Focus Subjects panel",
 		"c/C", "Focus Checks panel",
 		"d/D", "Focus Details panel (when available)",
 		"h/H", "Show this help",
 		"q/Q or Esc", "Quit application",
-		"Left Panel", "Focused on header + selected content (Subjects or Checks)",
-		"Right Panel", "Summary (top) / Sections (middle) / Content (bottom)",
-		"Details", "Issues for selected subject/check",
-		"PDF Files", "List of PDF files found during scan",
+		"Left Panel", "Focused on category + content (consolidated navigation)",
+		"Right Panel", "Details area for selected items",
+		"Subjects", "Scanned files with issues",
+		"Checks", "Types of checks performed",
+		"PDFs", "PDF files found during scan",
+		"Skipped", "Files skipped during scan with reasons",
 		"Warnings", "Warning messages from scan",
-		"Errors", "Error messages from scan",
-		"Skipped", "Files skipped during scan with reasons")
+		"Errors", "Error messages from scan")
 
 	modal := tview.NewModal().
 		SetText(helpText).
@@ -1007,7 +923,6 @@ func (a *App) UpdateData(newData *ScanResult) {
 	a.populateSubjectsList()
 	a.populateChecksList()
 	a.populateLeftSections() // Update navigation counts
-	a.populateSections()
 	a.updateInfo()
 	
 	// Auto-select first subject if available
@@ -1026,15 +941,13 @@ func (a *App) autoSelectFirstSubject() {
 		firstFile := a.data.Scanned[0]
 		a.currentSubject = firstFile.Filename
 		a.subjectsList.SetCurrentItem(0)
-		a.populateSections()
-	} else {
+		} else {
 		// Check if repository has issues and select it
 		for _, subject := range a.data.DetailsSubjectFocused {
 			if subject.Subject == "repository" {
 				a.currentSubject = "repository"
 				a.subjectsList.SetCurrentItem(0)
-				a.populateSections()
-				break
+							break
 			}
 		}
 	}

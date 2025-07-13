@@ -36,6 +36,7 @@ func main() {
 	folder_or_url := flag.String("location", defaultFolder, "Path to local folder or CKAN package name. It depends on the set collector.")
 	help := flag.Bool("help", false, "Show usage information")
 	tuiOutput := flag.Bool("tui", false, "Launch interactive TUI viewer after scan")
+	htmlOutput := flag.String("html", "", "Generate static HTML report to specified file (e.g., --html report.html)")
 	cpuprofile := flag.String("cpuprofile", "", "write cpu profile to file")
 	memprofile := flag.String("memprofile", "", "write memory profile to file")
 	flag.Parse()
@@ -198,6 +199,31 @@ func main() {
 			outputError("tui_error", fmt.Sprintf("Error running TUI: %v", err))
 			return
 		}
+	} else if *htmlOutput != "" {
+		// Generate HTML report
+		messages := utils.ApplyAllChecks(*generalConfig, files, true)
+		
+		// Create JSON formatter and generate output
+		formatter := output.NewJSONFormatter()
+		
+		// Get collector name from config
+		collectorName := generalConfig.Operation["main"].Collector
+		
+		jsonResult, err := formatter.FormatResults(*folder_or_url, collectorName, messages, len(files), helpers.PDFTracker.Files)
+		if err != nil {
+			outputError("formatting_error", fmt.Sprintf("Error formatting JSON output: %v", err))
+			return
+		}
+		
+		// Generate HTML report
+		htmlFormatter := output.NewHTMLFormatter()
+		
+		if err := htmlFormatter.GenerateReport(jsonResult, *htmlOutput); err != nil {
+			outputError("html_error", fmt.Sprintf("Error generating HTML report: %v", err))
+			return
+		}
+		
+		fmt.Printf("HTML report generated: %s\n", *htmlOutput)
 	} else {
 		// Regular scanning without TUI
 		messages := utils.ApplyAllChecks(*generalConfig, files, true)

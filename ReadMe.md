@@ -121,5 +121,8 @@ go test ./...
 
 ## Next steps
 
-I would like a progressbar during the scan. Maybe the nicest is that during the scan the json messages are collected and TUI is started straight away and then updated with the progressbar and the json data during the scan. THe progressbar should be in the bottom of the TUI across the entire width.
+Continue
 
+Also please make sure I can add a filename/path for the html flag. if not give a cli "error" should occur, explaing that a name if required.
+
+Also the actual layout at the moment is a bit troublesome. You but the "issue categories" (focused on) and Details in the same menu. like that I cant select the details I want to see properly they should be on the side in a dropdown. The stats up top should be way smaller and out of the way. I need to be able to see the details very well. Make all the text slightly small so I can see better. The search bar should be called filter.
