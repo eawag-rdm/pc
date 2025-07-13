@@ -113,6 +113,46 @@ echo -e "\e[31m=>This script is running a binary on prod2!\e[0m"
 ssh -i .../.ssh/id_ed25519_ckool rdm@production-ckan /home/rdm/pc "$@"
 ```
 
+### Running TUI over SSH
+
+When running the package checker with TUI interface over SSH, you need to ensure proper terminal allocation:
+
+**Basic SSH execution with TUI:**
+```bash
+ssh -t user@remote-server "cd /path/to/pc && ./pc"
+```
+
+**For better terminal compatibility:**
+```bash
+ssh -t user@remote-server "export TERM=xterm-256color && cd /path/to/pc && ./pc"
+```
+
+**With full environment setup:**
+```bash
+ssh -t user@remote-server "TERM=xterm-256color LANG=en_US.UTF-8 cd /path/to/pc && ./pc"
+```
+
+**Troubleshooting TUI Issues:**
+
+- **Garbled display**: Try different TERM values:
+  ```bash
+  ssh -t user@remote-server "TERM=screen cd /path/to/pc && ./pc"
+  ssh -t user@remote-server "TERM=xterm cd /path/to/pc && ./pc"
+  ssh -t user@remote-server "TERM=vt100 cd /path/to/pc && ./pc"
+  ```
+
+- **No arrow key navigation**: Ensure your local terminal supports the TERM type being used. Modern terminals like iTerm2, Windows Terminal, or GNOME Terminal work best.
+
+- **Color issues**: Use `TERM=xterm-256color` for full color support, or `TERM=xterm` for basic colors.
+
+- **Using tmux/screen**: For persistent sessions:
+  ```bash
+  ssh user@remote-server
+  tmux new-session "cd /path/to/pc && ./pc"
+  ```
+
+**Important**: The `-t` flag is essential as it allocates a pseudo-terminal required for interactive TUI applications.
+
 
 ## Testing
 ```
