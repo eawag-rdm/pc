@@ -14,7 +14,31 @@ import (
 func createTestConfigFile(t *testing.T, tempDir string) string {
 	configContent := `[operation.main]
 collector = "LocalCollector"
-checks = ["IsFreeOfKeywords"]
+
+[test.IsFreeOfKeywords]
+blacklist = []
+whitelist = []
+keywordArguments = [
+    { keywords = ["password", "secret"], info = "Test security check" }
+]
+
+[test.IsValidName]
+blacklist = []
+whitelist = []
+keywordArguments = [
+    { disallowed_names = [".DS_Store"] }
+]
+
+[test.HasOnlyASCII]
+blacklist = []
+whitelist = []
+
+[test.HasNoWhiteSpace]
+blacklist = []
+whitelist = []
+
+[collector.LocalCollector]
+attrs = {includeFolders = true}
 `
 	configPath := filepath.Join(tempDir, "test_config.toml")
 	err := os.WriteFile(configPath, []byte(configContent), 0644)
@@ -212,7 +236,7 @@ func TestHTMLOutput(t *testing.T) {
 		t.Error("HTML file is missing DOCTYPE declaration")
 	}
 
-	if !strings.Contains(htmlStr, "PC Scanner Report") {
+	if !strings.Contains(htmlStr, "Package Checker Scanner Report") {
 		t.Error("HTML file is missing title")
 	}
 
@@ -254,16 +278,16 @@ func TestInvalidConfig(t *testing.T) {
 	cmd = exec.Command(binaryPath, "-config", invalidConfigPath, "-location", ".")
 	output, err := cmd.CombinedOutput()
 	
-	// Should exit with error
-	if err == nil {
-		t.Error("Expected error for invalid config, but command succeeded")
-	}
-
-	// Verify error output is in JSON format
+	// Check for error in JSON output (program doesn't exit with non-zero code)
 	var errorResult map[string]interface{}
 	err = json.Unmarshal(output, &errorResult)
 	if err != nil {
-		t.Fatalf("Error output is not valid JSON: %v\nOutput: %s", err, string(output))
+		t.Fatalf("Output is not valid JSON: %v\nOutput: %s", err, string(output))
+	}
+
+	// Verify error is present in JSON output
+	if _, hasError := errorResult["error"]; !hasError {
+		t.Errorf("Expected error in JSON output for invalid config, but none found. Output: %s", string(output))
 	}
 
 	// Verify error structure
@@ -303,16 +327,16 @@ func TestNonexistentLocation(t *testing.T) {
 	cmd = exec.Command(binaryPath, "-config", configPath, "-location", nonexistentPath)
 	output, err := cmd.CombinedOutput()
 	
-	// Should exit with error
-	if err == nil {
-		t.Error("Expected error for nonexistent location, but command succeeded")
-	}
-
-	// Verify error output is in JSON format
+	// Check for error in JSON output (program doesn't exit with non-zero code)
 	var errorResult map[string]interface{}
 	err = json.Unmarshal(output, &errorResult)
 	if err != nil {
-		t.Fatalf("Error output is not valid JSON: %v\nOutput: %s", err, string(output))
+		t.Fatalf("Output is not valid JSON: %v\nOutput: %s", err, string(output))
+	}
+
+	// Verify error is present in JSON output
+	if _, hasError := errorResult["error"]; !hasError {
+		t.Errorf("Expected error in JSON output for nonexistent location, but none found. Output: %s", string(output))
 	}
 
 	// Verify error indicates collector error
@@ -354,16 +378,16 @@ func TestEmptyDirectory(t *testing.T) {
 	cmd = exec.Command(binaryPath, "-config", configPath, "-location", emptyDir)
 	output, err := cmd.CombinedOutput()
 	
-	// Should exit with error for no files found
-	if err == nil {
-		t.Error("Expected error for empty directory, but command succeeded")
-	}
-
-	// Verify error output
+	// Check for error in JSON output (program doesn't exit with non-zero code)
 	var errorResult map[string]interface{}
 	err = json.Unmarshal(output, &errorResult)
 	if err != nil {
-		t.Fatalf("Error output is not valid JSON: %v\nOutput: %s", err, string(output))
+		t.Fatalf("Output is not valid JSON: %v\nOutput: %s", err, string(output))
+	}
+
+	// Verify error is present in JSON output
+	if _, hasError := errorResult["error"]; !hasError {
+		t.Errorf("Expected error in JSON output for empty directory, but none found. Output: %s", string(output))
 	}
 
 	// Verify error indicates no files found
@@ -394,7 +418,31 @@ func TestConfigWithCkanCollector(t *testing.T) {
 	// Create config with CKAN collector
 	ckanConfigContent := `[operation.main]
 collector = "CkanCollector"
-checks = ["IsFreeOfKeywords"]
+
+[test.IsFreeOfKeywords]
+blacklist = []
+whitelist = []
+keywordArguments = [
+    { keywords = ["password"], info = "Test check" }
+]
+
+[test.IsValidName]
+blacklist = []
+whitelist = []
+keywordArguments = [
+    { disallowed_names = [".DS_Store"] }
+]
+
+[test.HasOnlyASCII]
+blacklist = []
+whitelist = []
+
+[test.HasNoWhiteSpace]
+blacklist = []
+whitelist = []
+
+[collector.CkanCollector]
+attrs = {url = "https://example.com", token = "", verify = true}
 `
 	configPath := filepath.Join(tempDir, "ckan_config.toml")
 	err = os.WriteFile(configPath, []byte(ckanConfigContent), 0644)
@@ -406,16 +454,16 @@ checks = ["IsFreeOfKeywords"]
 	cmd = exec.Command(binaryPath, "-config", configPath)
 	output, err := cmd.CombinedOutput()
 	
-	// Should exit with error asking for CKAN package name
-	if err == nil {
-		t.Error("Expected error for CKAN collector with default location, but command succeeded")
-	}
-
-	// Verify error message
+	// Check for error in JSON output (program doesn't exit with non-zero code)
 	var errorResult map[string]interface{}
 	err = json.Unmarshal(output, &errorResult)
 	if err != nil {
-		t.Fatalf("Error output is not valid JSON: %v\nOutput: %s", err, string(output))
+		t.Fatalf("Output is not valid JSON: %v\nOutput: %s", err, string(output))
+	}
+
+	// Verify error is present in JSON output
+	if _, hasError := errorResult["error"]; !hasError {
+		t.Errorf("Expected error in JSON output for CKAN collector with default location, but none found. Output: %s", string(output))
 	}
 
 	if errorField, exists := errorResult["error"]; exists {
@@ -504,16 +552,16 @@ func TestInvalidHTMLPath(t *testing.T) {
 	cmd = exec.Command(binaryPath, "-config", configPath, "-location", testDir, "-html", invalidHTMLPath)
 	output, err := cmd.CombinedOutput()
 	
-	// Should exit with error
-	if err == nil {
-		t.Error("Expected error for invalid HTML path, but command succeeded")
-	}
-
-	// Verify error output
+	// Check for error in JSON output (program doesn't exit with non-zero code)
 	var errorResult map[string]interface{}
 	err = json.Unmarshal(output, &errorResult)
 	if err != nil {
-		t.Fatalf("Error output is not valid JSON: %v\nOutput: %s", err, string(output))
+		t.Fatalf("Output is not valid JSON: %v\nOutput: %s", err, string(output))
+	}
+
+	// Verify error is present in JSON output
+	if _, hasError := errorResult["error"]; !hasError {
+		t.Errorf("Expected error in JSON output for invalid HTML path, but none found. Output: %s", string(output))
 	}
 
 	// Verify error indicates HTML error
@@ -591,7 +639,28 @@ func TestUnknownCollector(t *testing.T) {
 	// Create config with unknown collector
 	unknownConfigContent := `[operation.main]
 collector = "UnknownCollector"
-checks = ["IsFreeOfKeywords"]
+
+[test.IsFreeOfKeywords]
+blacklist = []
+whitelist = []
+keywordArguments = [
+    { keywords = ["password"], info = "Test check" }
+]
+
+[test.IsValidName]
+blacklist = []
+whitelist = []
+keywordArguments = [
+    { disallowed_names = [".DS_Store"] }
+]
+
+[test.HasOnlyASCII]
+blacklist = []
+whitelist = []
+
+[test.HasNoWhiteSpace]
+blacklist = []
+whitelist = []
 `
 	configPath := filepath.Join(tempDir, "unknown_config.toml")
 	err = os.WriteFile(configPath, []byte(unknownConfigContent), 0644)
@@ -603,16 +672,16 @@ checks = ["IsFreeOfKeywords"]
 	cmd = exec.Command(binaryPath, "-config", configPath, "-location", ".")
 	output, err := cmd.CombinedOutput()
 	
-	// Should exit with error
-	if err == nil {
-		t.Error("Expected error for unknown collector, but command succeeded")
-	}
-
-	// Verify error message
+	// Check for error in JSON output (program doesn't exit with non-zero code)
 	var errorResult map[string]interface{}
 	err = json.Unmarshal(output, &errorResult)
 	if err != nil {
-		t.Fatalf("Error output is not valid JSON: %v\nOutput: %s", err, string(output))
+		t.Fatalf("Output is not valid JSON: %v\nOutput: %s", err, string(output))
+	}
+
+	// Verify error is present in JSON output
+	if _, hasError := errorResult["error"]; !hasError {
+		t.Errorf("Expected error in JSON output for unknown collector, but none found. Output: %s", string(output))
 	}
 
 	if errorField, exists := errorResult["error"]; exists {

@@ -259,7 +259,7 @@ func TestStdinReading_Simulation(t *testing.T) {
 	}
 }
 
-func TestLargeJSONData(t *testing.T) {
+func TestLargeJSONDataIntegration(t *testing.T) {
 	// Test with larger dataset to ensure the viewer can handle it
 	var scannedFiles []tui.ScannedFile
 	var subjectDetails []tui.SubjectDetails

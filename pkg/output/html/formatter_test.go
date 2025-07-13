@@ -156,7 +156,7 @@ func TestGenerateReport_Success(t *testing.T) {
 		t.Error("Generated HTML is missing html tag")
 	}
 
-	if !strings.Contains(htmlContent, "PC Scanner Report") {
+	if !strings.Contains(htmlContent, "Package Checker Scanner Report") {
 		t.Error("Generated HTML is missing title")
 	}
 
@@ -224,7 +224,7 @@ func TestGenerateReport_EmptyData(t *testing.T) {
 
 	// Verify basic structure is still present
 	htmlContent := string(content)
-	if !strings.Contains(htmlContent, "PC Scanner Report") {
+	if !strings.Contains(htmlContent, "Package Checker Scanner Report") {
 		t.Error("Generated HTML with empty data is missing title")
 	}
 }

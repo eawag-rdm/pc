@@ -34,7 +34,7 @@ func (h *HTMLFormatter) GenerateReport(jsonData string, outputPath string) error
 	}{
 		JSONData:    template.JS(jsonData), // Use template.JS to safely embed JSON
 		GeneratedAt: time.Now().Format("2006-01-02 15:04:05"),
-		Title:       "PC Scanner Report",
+		Title:       "Package Checker Scanner Report",
 	}
 
 	// Create the HTML template
@@ -69,7 +69,8 @@ const htmlTemplate = `<!DOCTYPE html>
     <title>{{.Title}}</title>
     <style>
         :root {
-            --primary-color: #2563eb;
+            --primary-color: #035C77;
+            --primary-light: #118EC6;
             --secondary-color: #64748b;
             --success-color: #10b981;
             --warning-color: #f59e0b;
@@ -81,15 +82,21 @@ const htmlTemplate = `<!DOCTYPE html>
             --border-color: #e2e8f0;
             --shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1);
             --sidebar-width: 280px;
+            --eawag-primary: #035C77;
+            --eawag-accent: #118EC6;
         }
 
         [data-theme="dark"] {
+            --primary-color: #118EC6;
+            --primary-light: #35A5D1;
             --background-color: #0f172a;
             --surface-color: #1e293b;
             --text-color: #f1f5f9;
             --text-secondary: #94a3b8;
             --border-color: #334155;
             --shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.3);
+            --eawag-primary: #118EC6;
+            --eawag-accent: #35A5D1;
         }
 
         * {
@@ -157,11 +164,11 @@ const htmlTemplate = `<!DOCTYPE html>
             border-radius: 4px;
             cursor: pointer;
             font-size: 12px;
-            transition: opacity 0.2s;
+            transition: background-color 0.2s ease;
         }
 
         .theme-toggle:hover {
-            opacity: 0.9;
+            background: var(--primary-light);
         }
 
         .filter-box {
@@ -256,6 +263,10 @@ const htmlTemplate = `<!DOCTYPE html>
             display: none;
             max-height: 300px;
             overflow-y: auto;
+        }
+
+        .nav-section-content:focus {
+            outline: none;
         }
 
         .nav-section-content.expanded {
@@ -431,6 +442,13 @@ const htmlTemplate = `<!DOCTYPE html>
                 </div>
                 
                 <div class="nav-section">
+                    <div class="nav-section-header" onclick="showAllDetails('pdfs')" id="pdfs-header">
+                        <span>PDF Files</span>
+                        <span class="nav-section-count" id="pdfs-count">0</span>
+                    </div>
+                </div>
+                
+                <div class="nav-section">
                     <div class="nav-section-header" onclick="showAllDetails('skipped')" id="skipped-header">
                         <span>Skipped Files</span>
                         <span class="nav-section-count" id="skipped-count">0</span>
@@ -522,9 +540,10 @@ const htmlTemplate = `<!DOCTYPE html>
             const content = document.getElementById(sectionName + '-content');
             const isExpanded = content.classList.contains('expanded');
             
-            // Close all sections first
+            // Close all sections first and clear all active states
             document.querySelectorAll('.nav-section-content').forEach(c => c.classList.remove('expanded'));
             document.querySelectorAll('.nav-section-header').forEach(h => h.classList.remove('active'));
+            document.querySelectorAll('.nav-item').forEach(item => item.classList.remove('active'));
             
             if (!isExpanded) {
                 // Open this section
@@ -532,10 +551,17 @@ const htmlTemplate = `<!DOCTYPE html>
                 header.classList.add('active');
                 currentSection = sectionName;
                 
-                // If first time opening, select first item
+                // If first time opening, select first item and set focus
                 const firstItem = content.querySelector('.nav-item');
                 if (firstItem) {
                     selectNavItem(sectionName, firstItem.dataset.id);
+                    // Set focus to the content area to enable keyboard navigation
+                    content.focus();
+                    content.setAttribute('tabindex', '0');
+                } else {
+                    // No items, but still set focus for potential future items
+                    content.focus();
+                    content.setAttribute('tabindex', '0');
                 }
             } else {
                 currentSection = null;
@@ -545,13 +571,15 @@ const htmlTemplate = `<!DOCTYPE html>
 
         // Select navigation item
         function selectNavItem(sectionName, itemId) {
-            // Remove active from all nav items
+            // Remove active from all nav items and section headers
             document.querySelectorAll('.nav-item').forEach(item => item.classList.remove('active'));
+            document.querySelectorAll('.nav-section-header').forEach(h => h.classList.remove('active'));
             
-            // Add active to selected item
+            // Add active to selected item and its section header
             const selectedItem = document.querySelector('[data-section="' + sectionName + '"][data-id="' + itemId + '"]');
             if (selectedItem) {
                 selectedItem.classList.add('active');
+                document.getElementById(sectionName + '-header').classList.add('active');
                 currentItem = itemId;
                 showItemDetails(sectionName, itemId);
             }
@@ -646,14 +674,22 @@ const htmlTemplate = `<!DOCTYPE html>
                 if (newIndex !== currentIndex && newIndex >= 0) {
                     const newItem = items[newIndex];
                     selectNavItem(currentSection, newItem.dataset.id);
+                    
+                    // Scroll the selected item into view
+                    newItem.scrollIntoView({
+                        behavior: 'smooth',
+                        block: 'nearest',
+                        inline: 'nearest'
+                    });
                 }
             }
         });
 
-        // Show all details for simple sections (skipped, warnings, errors)
+        // Show all details for simple sections (pdfs, skipped, warnings, errors)
         function showAllDetails(sectionName) {
-            // Clear active states
+            // Clear active states from section headers and navigation items
             document.querySelectorAll('.nav-section-header').forEach(h => h.classList.remove('active'));
+            document.querySelectorAll('.nav-item').forEach(item => item.classList.remove('active'));
             document.getElementById(sectionName + '-header').classList.add('active');
             
             currentSection = sectionName;
@@ -668,6 +704,12 @@ const htmlTemplate = `<!DOCTYPE html>
             let subtitle = '';
             
             switch (sectionName) {
+                case 'pdfs':
+                    title = 'PDF Files';
+                    subtitle = scanData.pdf_files ? scanData.pdf_files.length + ' files' : '0 files';
+                    html = generateAllPDFDetails();
+                    break;
+                    
                 case 'skipped':
                     title = 'Skipped Files';
                     subtitle = scanData.skipped ? scanData.skipped.length + ' files' : '0 files';
@@ -734,6 +776,7 @@ const htmlTemplate = `<!DOCTYPE html>
         function populateNavigation() {
             populateSubjectsNav();
             populateChecksNav();
+            populatePDFsCount();
             populateSkippedCount();
             populateWarningsCount();
             populateErrorsCount();
@@ -788,6 +831,11 @@ const htmlTemplate = `<!DOCTYPE html>
         }
 
         // Populate counts only for simple sections
+        function populatePDFsCount() {
+            const countElement = document.getElementById('pdfs-count');
+            countElement.textContent = scanData.pdf_files ? scanData.pdf_files.length : '0';
+        }
+
         function populateSkippedCount() {
             const countElement = document.getElementById('skipped-count');
             countElement.textContent = scanData.skipped ? scanData.skipped.length : '0';
@@ -865,6 +913,21 @@ const htmlTemplate = `<!DOCTYPE html>
         }
 
         // Generate all details functions for simple sections
+        function generateAllPDFDetails() {
+            let html = '';
+            if (scanData.pdf_files && scanData.pdf_files.length > 0) {
+                scanData.pdf_files.forEach((file, index) => {
+                    html += '<div class="detail-item">';
+                    html += '<div class="detail-header">PDF File ' + (index + 1) + '</div>';
+                    html += '<div class="detail-content">' + escapeHtml(file) + '</div>';
+                    html += '</div>';
+                });
+            } else {
+                html = '<div class="detail-item"><div class="detail-content">No PDF files found.</div></div>';
+            }
+            return html;
+        }
+
         function generateAllSkippedDetails() {
             let html = '';
             if (scanData.skipped && scanData.skipped.length > 0) {
