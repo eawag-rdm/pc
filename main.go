@@ -9,7 +9,9 @@ import (
 	"runtime/pprof"
 	"time"
 
-	"github.com/eawag-rdm/pc/internal/tui"
+	"github.com/eawag-rdm/pc/pkg/output/tui"
+	jsonformatter "github.com/eawag-rdm/pc/pkg/output/json"
+	htmlformatter "github.com/eawag-rdm/pc/pkg/output/html"
 	"github.com/eawag-rdm/pc/pkg/collectors"
 	"github.com/eawag-rdm/pc/pkg/config"
 	"github.com/eawag-rdm/pc/pkg/helpers"
@@ -159,7 +161,7 @@ func main() {
 				})
 				
 				// Create JSON formatter and generate output
-				formatter := output.NewJSONFormatter()
+				formatter := jsonformatter.NewJSONFormatter()
 				
 				// Get collector name from config
 				collectorName := generalConfig.Operation["main"].Collector
@@ -204,7 +206,7 @@ func main() {
 		messages := utils.ApplyAllChecks(*generalConfig, files, true)
 		
 		// Create JSON formatter and generate output
-		formatter := output.NewJSONFormatter()
+		formatter := jsonformatter.NewJSONFormatter()
 		
 		// Get collector name from config
 		collectorName := generalConfig.Operation["main"].Collector
@@ -216,7 +218,7 @@ func main() {
 		}
 		
 		// Generate HTML report
-		htmlFormatter := output.NewHTMLFormatter()
+		htmlFormatter := htmlformatter.NewHTMLFormatter()
 		
 		if err := htmlFormatter.GenerateReport(jsonResult, *htmlOutput); err != nil {
 			outputError("html_error", fmt.Sprintf("Error generating HTML report: %v", err))
@@ -229,7 +231,7 @@ func main() {
 		messages := utils.ApplyAllChecks(*generalConfig, files, true)
 		
 		// Create JSON formatter and generate output
-		formatter := output.NewJSONFormatter()
+		formatter := jsonformatter.NewJSONFormatter()
 		
 		// Get collector name from config
 		collectorName := generalConfig.Operation["main"].Collector

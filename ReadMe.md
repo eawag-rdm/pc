@@ -119,10 +119,3 @@ ssh -i .../.ssh/id_ed25519_ckool rdm@production-ckan /home/rdm/pc "$@"
 go test ./...
 ```
 
-## Next steps
-
-Continue
-
-Also please make sure I can add a filename/path for the html flag. if not give a cli "error" should occur, explaing that a name if required.
-
-Also the actual layout at the moment is a bit troublesome. You but the "issue categories" (focused on) and Details in the same menu. like that I cant select the details I want to see properly they should be on the side in a dropdown. The stats up top should be way smaller and out of the way. I need to be able to see the details very well. Make all the text slightly small so I can see better. The search bar should be called filter.

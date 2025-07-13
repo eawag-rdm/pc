@@ -6,7 +6,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/eawag-rdm/pc/internal/tui"
+	"github.com/eawag-rdm/pc/pkg/output/tui"
 )
 
 func main() {

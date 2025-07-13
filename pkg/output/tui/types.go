@@ -1,5 +1,7 @@
 package tui
 
+import "github.com/eawag-rdm/pc/pkg/output"
+
 // ScanResult represents the JSON structure from PC scanner
 type ScanResult struct {
 	Timestamp              string           `json:"timestamp"`
@@ -8,8 +10,8 @@ type ScanResult struct {
 	DetailsSubjectFocused  []SubjectDetails `json:"details_subject_focused"`
 	DetailsCheckFocused    []CheckDetails   `json:"details_check_focused"`
 	PDFFiles               []string         `json:"pdf_files"`
-	Errors                 []LogMessage     `json:"errors"`
-	Warnings               []LogMessage     `json:"warnings"`
+	Errors                 []output.LogMessage     `json:"errors"`
+	Warnings               []output.LogMessage     `json:"warnings"`
 }
 
 type ScannedFile struct {
@@ -50,8 +52,4 @@ type SubjectIssue struct {
 	Message string `json:"message"`
 }
 
-type LogMessage struct {
-	Level     string `json:"level"`
-	Message   string `json:"message"`
-	Timestamp string `json:"timestamp"`
-}
+// Using LogMessage from output package

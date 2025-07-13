@@ -7,6 +7,7 @@ import (
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
+	"github.com/eawag-rdm/pc/pkg/output"
 )
 
 type App struct {
@@ -55,8 +56,8 @@ func NewScanningApp() *App {
 		DetailsSubjectFocused: []SubjectDetails{},
 		DetailsCheckFocused:   []CheckDetails{},
 		PDFFiles:              []string{},
-		Errors:                []LogMessage{},
-		Warnings:              []LogMessage{},
+		Errors:                []output.LogMessage{},
+		Warnings:              []output.LogMessage{},
 	}
 	
 	app := &App{
@@ -266,10 +267,24 @@ func (a *App) updateInfo() {
 
 func (a *App) updateControls() {
 	var controls string
+	
+	// Determine if TAB is available (only for Subjects/Checks that can switch to details)
+	tabAvailable := a.currentView == "details" || a.currentView == "subjects" || a.currentView == "checks"
+	
 	if a.currentView == "details" {
-		controls = "[yellow]TAB[white]=Switch  [yellow]←→[white]=Sections  [yellow]↑↓[white]=Scroll  [yellow]S[white]=Subjects  [yellow]C[white]=Checks  [yellow]H[white]=Help  [yellow]Q[white]=Quit"
+		// When focused on details (right side), no left/right arrow navigation
+		if tabAvailable {
+			controls = "[yellow]TAB[white]=Issues  [yellow]↑↓[white]=Scroll  [yellow]S[white]=Subjects  [yellow]C[white]=Checks  [yellow]Q[white]=Quit"
+		} else {
+			controls = "[yellow]↑↓[white]=Scroll  [yellow]S[white]=Subjects  [yellow]C[white]=Checks  [yellow]Q[white]=Quit"
+		}
 	} else {
-		controls = "[yellow]TAB[white]=Switch  [yellow]←→[white]=Panel  [yellow]↑↓[white]=Navigate  [yellow]S[white]=Subjects  [yellow]C[white]=Checks  [yellow]H[white]=Help  [yellow]Q[white]=Quit"
+		// When focused on left side, show category navigation
+		if tabAvailable {
+			controls = "[yellow]TAB[white]=Details  [yellow]←→[white]=Categories  [yellow]↑↓[white]=Navigate  [yellow]S[white]=Subjects  [yellow]C[white]=Checks  [yellow]Q[white]=Quit"
+		} else {
+			controls = "[yellow]←→[white]=Categories  [yellow]↑↓[white]=Navigate  [yellow]S[white]=Subjects  [yellow]C[white]=Checks  [yellow]Q[white]=Quit"
+		}
 	}
 	
 	a.controls.SetText(controls)
@@ -297,9 +312,6 @@ func (a *App) setupKeyBindings() {
 		case 'q', 'Q':
 			a.app.Stop()
 			return nil
-		case 'h', 'H':
-			a.showHelp()
-			return nil
 		case 's', 'S':
 			a.focusSubjects()
 			return nil
@@ -316,12 +328,16 @@ func (a *App) setupKeyBindings() {
 		// Handle arrow keys for navigation
 		switch event.Key() {
 		case tcell.KeyLeft:
-			// Navigate between categories in left panel
-			a.navigateLeftPanelLeft()
+			// Only navigate categories when focused on left side
+			if a.currentView != "details" {
+				a.navigateLeftPanelLeft()
+			}
 			return nil
 		case tcell.KeyRight:
-			// Navigate between categories in left panel
-			a.navigateLeftPanelRight()
+			// Only navigate categories when focused on left side  
+			if a.currentView != "details" {
+				a.navigateLeftPanelRight()
+			}
 			return nil
 		}
 		
@@ -801,63 +817,6 @@ func (a *App) getDetailsCount() int {
 
 
 
-func (a *App) showHelp() {
-	helpText := fmt.Sprintf(`[yellow]PC Scanner TUI - Help[white]
-
-[green]Navigation:[white]
-  %-12s %s
-  %-12s %s
-  %-12s %s
-  %-12s %s
-  
-[green]Shortcuts:[white]
-  %-12s %s
-  %-12s %s
-  %-12s %s
-  %-12s %s
-
-[green]Layout:[white]
-  %-12s %s
-  %-12s %s
-
-[green]Categories (Left Panel):[white]
-  %-12s %s
-  %-12s %s
-  %-12s %s
-  %-12s %s
-  %-12s %s
-
-[green]Content Scrolling:[white]
-  When focused on the content area, use ↑/↓ to scroll through content.
-  Long lists and text will scroll automatically.
-
-[yellow]Press any key to close help[white]`,
-		"Tab", "Switch between left panel and content area",
-		"↑/↓", "Navigate within panels / Scroll content",
-		"←/→", "Switch between categories in left panel",
-		"s/S", "Focus Subjects panel",
-		"c/C", "Focus Checks panel",
-		"d/D", "Focus Details panel (when available)",
-		"h/H", "Show this help",
-		"q/Q or Esc", "Quit application",
-		"Left Panel", "Focused on category + content (consolidated navigation)",
-		"Right Panel", "Details area for selected items",
-		"Subjects", "Scanned files with issues",
-		"Checks", "Types of checks performed",
-		"PDFs", "PDF files found during scan",
-		"Skipped", "Files skipped during scan with reasons",
-		"Warnings", "Warning messages from scan",
-		"Errors", "Error messages from scan")
-
-	modal := tview.NewModal().
-		SetText(helpText).
-		AddButtons([]string{"Close"}).
-		SetDoneFunc(func(buttonIndex int, buttonLabel string) {
-			a.app.SetRoot(a.flex, true)
-		})
-
-	a.app.SetRoot(modal, true)
-}
 
 func (a *App) ShowProgressBar() {
 	if !a.isScanning {
@@ -941,13 +900,17 @@ func (a *App) autoSelectFirstSubject() {
 		firstFile := a.data.Scanned[0]
 		a.currentSubject = firstFile.Filename
 		a.subjectsList.SetCurrentItem(0)
-		} else {
+		// Explicitly update details for the selected subject
+		a.showSubjectDetails()
+	} else {
 		// Check if repository has issues and select it
 		for _, subject := range a.data.DetailsSubjectFocused {
 			if subject.Subject == "repository" {
 				a.currentSubject = "repository"
 				a.subjectsList.SetCurrentItem(0)
-							break
+				// Explicitly update details for the selected subject
+				a.showSubjectDetails()
+				break
 			}
 		}
 	}

@@ -5,6 +5,13 @@ import (
 	"time"
 )
 
+// LogMessage represents a log entry with level, message and timestamp
+type LogMessage struct {
+	Level     string `json:"level"`
+	Message   string `json:"message"`
+	Timestamp string `json:"timestamp"`
+}
+
 // Logger provides configurable output destinations
 type Logger struct {
 	jsonMode bool

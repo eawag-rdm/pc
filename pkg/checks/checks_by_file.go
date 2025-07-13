@@ -10,7 +10,6 @@ import (
 	"unicode"
 
 	"github.com/eawag-rdm/pc/pkg/config"
-	"github.com/eawag-rdm/pc/pkg/helpers"
 	"github.com/eawag-rdm/pc/pkg/optimization"
 	"github.com/eawag-rdm/pc/pkg/output"
 	"github.com/eawag-rdm/pc/pkg/readers"
@@ -244,7 +243,7 @@ func IsArchiveFreeOfKeywords(file structs.File, config config.Config) []structs.
 func IsFreeOfKeywords(file structs.File, config config.Config) []structs.Message {
 	var messages []structs.Message
 
-	helpers.WarnForLargeFile(file, 10*1024*1024, "pretty big file, this may take a little longer.")
+	// Large file warning removed - processing continues without notification
 
 	// Check file size limit for content scanning
 	fileInfo, err := os.Stat(file.Path)

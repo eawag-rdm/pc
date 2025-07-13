@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"sync"
 
-	"github.com/eawag-rdm/pc/pkg/helpers"
 	"github.com/eawag-rdm/pc/pkg/structs"
 	"github.com/thedatashed/xlsxreader"
 )
@@ -25,7 +24,7 @@ func ReadXLSXFile(file structs.File) ([][]byte, error) {
 	// Ensure the file reader is closed once utilized
 	defer xl.Close()
 
-	helpers.WarnForLargeFile(file, 2*1024*1024, "pretty big file, this may take a little longer.")
+	// Large file warning removed - processing continues without notification
 
 	XLSXContent := make([][]byte, 0, len(xl.Sheets))
 	

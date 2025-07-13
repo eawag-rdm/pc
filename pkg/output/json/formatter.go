@@ -1,4 +1,4 @@
-package output
+package json
 
 import (
 	"encoding/json"
@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/eawag-rdm/pc/pkg/structs"
+	"github.com/eawag-rdm/pc/pkg/output"
 )
 
 // ScanResult represents the complete output of a package check scan
@@ -17,8 +18,8 @@ type ScanResult struct {
 	DetailsSubjectFocused  []SubjectDetails `json:"details_subject_focused"`
 	DetailsCheckFocused    []CheckDetails   `json:"details_check_focused"`
 	PDFFiles               []string         `json:"pdf_files"`
-	Errors                 []LogMessage     `json:"errors"`
-	Warnings               []LogMessage     `json:"warnings"`
+	Errors                 []output.LogMessage     `json:"errors"`
+	Warnings               []output.LogMessage     `json:"warnings"`
 }
 
 // ScannedFile represents a file that was scanned with summary of issues
@@ -66,12 +67,7 @@ type SubjectIssue struct {
 	Message string `json:"message"`
 }
 
-// LogMessage represents warning/info messages from the scan
-type LogMessage struct {
-	Level     string `json:"level"`
-	Message   string `json:"message"`
-	Timestamp string `json:"timestamp"`
-}
+// Using LogMessage from output package
 
 
 
@@ -132,15 +128,15 @@ func (jf *JSONFormatter) FormatResults(location, collector string, messages []st
 		DetailsSubjectFocused: make([]SubjectDetails, 0),
 		DetailsCheckFocused:   make([]CheckDetails, 0),
 		PDFFiles:              make([]string, 0),
-		Errors:                make([]LogMessage, 0),
-		Warnings:              make([]LogMessage, 0),
+		Errors:                make([]output.LogMessage, 0),
+		Warnings:              make([]output.LogMessage, 0),
 	}
 
 	// Process messages into the new structured format
 	result.processMessages(messages)
 
 	// Separate logger messages by level and extract skipped files
-	logMessages := GlobalLogger.GetMessages()
+	logMessages := output.GlobalLogger.GetMessages()
 	for _, msg := range logMessages {
 		switch msg.Level {
 		case "error":

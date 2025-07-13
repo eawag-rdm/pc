@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 	"time"
+	"github.com/eawag-rdm/pc/pkg/output"
 )
 
 func TestScanResult_JSONSerialization(t *testing.T) {
@@ -40,10 +41,10 @@ func TestScanResult_JSONSerialization(t *testing.T) {
 			},
 		},
 		PDFFiles: []string{"document.pdf", "report.pdf"},
-		Errors: []LogMessage{
+		Errors: []output.LogMessage{
 			{Level: "error", Message: "Test error", Timestamp: timestamp},
 		},
-		Warnings: []LogMessage{
+		Warnings: []output.LogMessage{
 			{Level: "warning", Message: "Test warning", Timestamp: timestamp},
 		},
 	}
@@ -103,8 +104,8 @@ func TestEmptyScanResult(t *testing.T) {
 		DetailsSubjectFocused: []SubjectDetails{},
 		DetailsCheckFocused:   []CheckDetails{},
 		PDFFiles:              []string{},
-		Errors:                []LogMessage{},
-		Warnings:              []LogMessage{},
+		Errors:                []output.LogMessage{},
+		Warnings:              []output.LogMessage{},
 	}
 
 	jsonData, err := json.Marshal(scanResult)

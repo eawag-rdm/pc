@@ -3,6 +3,7 @@ package tui
 import (
 	"testing"
 	"time"
+	"github.com/eawag-rdm/pc/pkg/output"
 )
 
 func TestNewApp(t *testing.T) {
@@ -21,8 +22,8 @@ func TestNewApp(t *testing.T) {
 		DetailsCheckFocused: []CheckDetails{
 			{Checkname: "TestCheck", Issues: []SubjectIssue{{Subject: "test.go", Path: "/path/test.go", Message: "Test issue"}}},
 		},
-		Errors:   []LogMessage{{Level: "error", Message: "Test error", Timestamp: time.Now().UTC().Format(time.RFC3339)}},
-		Warnings: []LogMessage{{Level: "warning", Message: "Test warning", Timestamp: time.Now().UTC().Format(time.RFC3339)}},
+		Errors:   []output.LogMessage{{Level: "error", Message: "Test error", Timestamp: time.Now().UTC().Format(time.RFC3339)}},
+		Warnings: []output.LogMessage{{Level: "warning", Message: "Test warning", Timestamp: time.Now().UTC().Format(time.RFC3339)}},
 	}
 
 	// Create app
@@ -54,9 +55,7 @@ func TestNewApp(t *testing.T) {
 		t.Error("Checks list not initialized")
 	}
 
-	if app.detailsSections == nil {
-		t.Error("Details sections view not initialized")
-	}
+	// detailsSections removed in new layout
 
 	if app.detailsContent == nil {
 		t.Error("Details content view not initialized")
@@ -79,8 +78,8 @@ func TestAppWithEmptyData(t *testing.T) {
 		Skipped:               []SkippedFile{},
 		DetailsSubjectFocused: []SubjectDetails{},
 		DetailsCheckFocused:   []CheckDetails{},
-		Errors:                []LogMessage{},
-		Warnings:              []LogMessage{},
+		Errors:                []output.LogMessage{},
+		Warnings:              []output.LogMessage{},
 	}
 
 	// Create app
@@ -122,11 +121,11 @@ func TestAppDataCounting(t *testing.T) {
 			{Checkname: "Check1", Issues: []SubjectIssue{{Subject: "file1.go", Path: "/path/file1.go", Message: "Issue 1"}}},
 			{Checkname: "Check2", Issues: []SubjectIssue{{Subject: "file2.py", Path: "/path/file2.py", Message: "Issue 2"}}},
 		},
-		Errors: []LogMessage{
+		Errors: []output.LogMessage{
 			{Level: "error", Message: "Error 1", Timestamp: time.Now().UTC().Format(time.RFC3339)},
 			{Level: "error", Message: "Error 2", Timestamp: time.Now().UTC().Format(time.RFC3339)},
 		},
-		Warnings: []LogMessage{
+		Warnings: []output.LogMessage{
 			{Level: "warning", Message: "Warning 1", Timestamp: time.Now().UTC().Format(time.RFC3339)},
 		},
 	}

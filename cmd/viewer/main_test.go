@@ -11,7 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/eawag-rdm/pc/internal/tui"
+	"github.com/eawag-rdm/pc/pkg/output/tui"
+	"github.com/eawag-rdm/pc/pkg/output"
 )
 
 func TestJSONParsing(t *testing.T) {
@@ -30,8 +31,8 @@ func TestJSONParsing(t *testing.T) {
 		DetailsCheckFocused: []tui.CheckDetails{
 			{Checkname: "TestCheck", Issues: []tui.SubjectIssue{{Subject: "test.go", Path: "/path/test.go", Message: "Test issue"}}},
 		},
-		Errors:   []tui.LogMessage{{Level: "error", Message: "Test error", Timestamp: time.Now().UTC().Format(time.RFC3339)}},
-		Warnings: []tui.LogMessage{{Level: "warning", Message: "Test warning", Timestamp: time.Now().UTC().Format(time.RFC3339)}},
+		Errors:   []output.LogMessage{{Level: "error", Message: "Test error", Timestamp: time.Now().UTC().Format(time.RFC3339)}},
+		Warnings: []output.LogMessage{{Level: "warning", Message: "Test warning", Timestamp: time.Now().UTC().Format(time.RFC3339)}},
 	}
 
 	// Convert to JSON
@@ -73,8 +74,8 @@ func TestEmptyJSONParsing(t *testing.T) {
 		Skipped:               []tui.SkippedFile{},
 		DetailsSubjectFocused: []tui.SubjectDetails{},
 		DetailsCheckFocused:   []tui.CheckDetails{},
-		Errors:                []tui.LogMessage{},
-		Warnings:              []tui.LogMessage{},
+		Errors:                []output.LogMessage{},
+		Warnings:              []output.LogMessage{},
 	}
 
 	jsonData, err := json.Marshal(scanResult)
@@ -116,8 +117,8 @@ func TestFileReading(t *testing.T) {
 		Skipped:   []tui.SkippedFile{},
 		DetailsSubjectFocused: []tui.SubjectDetails{},
 		DetailsCheckFocused:   []tui.CheckDetails{},
-		Errors:    []tui.LogMessage{},
-		Warnings:  []tui.LogMessage{},
+		Errors:    []output.LogMessage{},
+		Warnings:  []output.LogMessage{},
 	}
 
 	jsonData, err := json.Marshal(scanResult)
@@ -162,8 +163,8 @@ func TestStdinReading(t *testing.T) {
 		Skipped:   []tui.SkippedFile{},
 		DetailsSubjectFocused: []tui.SubjectDetails{},
 		DetailsCheckFocused:   []tui.CheckDetails{},
-		Errors:    []tui.LogMessage{},
-		Warnings:  []tui.LogMessage{},
+		Errors:    []output.LogMessage{},
+		Warnings:  []output.LogMessage{},
 	}
 
 	jsonData, err := json.Marshal(scanResult)
@@ -220,8 +221,8 @@ func TestLargeJSONData(t *testing.T) {
 		Skipped:               []tui.SkippedFile{},
 		DetailsSubjectFocused: subjectDetails,
 		DetailsCheckFocused:   []tui.CheckDetails{},
-		Errors:                []tui.LogMessage{},
-		Warnings:              []tui.LogMessage{},
+		Errors:                []output.LogMessage{},
+		Warnings:              []output.LogMessage{},
 	}
 
 	jsonData, err := json.Marshal(scanResult)
@@ -263,8 +264,8 @@ func TestSpecialCharactersInJSON(t *testing.T) {
 		},
 		Skipped:             []tui.SkippedFile{},
 		DetailsCheckFocused: []tui.CheckDetails{},
-		Errors:              []tui.LogMessage{},
-		Warnings:            []tui.LogMessage{},
+		Errors:              []output.LogMessage{},
+		Warnings:            []output.LogMessage{},
 	}
 
 	jsonData, err := json.Marshal(scanResult)
