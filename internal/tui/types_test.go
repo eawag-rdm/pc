@@ -39,6 +39,7 @@ func TestScanResult_JSONSerialization(t *testing.T) {
 				},
 			},
 		},
+		PDFFiles: []string{"document.pdf", "report.pdf"},
 		Errors: []LogMessage{
 			{Level: "error", Message: "Test error", Timestamp: timestamp},
 		},
@@ -88,6 +89,10 @@ func TestScanResult_JSONSerialization(t *testing.T) {
 	if len(unmarshaled.Warnings) != 1 {
 		t.Fatalf("Expected 1 warning, got %d", len(unmarshaled.Warnings))
 	}
+
+	if len(unmarshaled.PDFFiles) != 2 {
+		t.Fatalf("Expected 2 PDF files, got %d", len(unmarshaled.PDFFiles))
+	}
 }
 
 func TestEmptyScanResult(t *testing.T) {
@@ -97,6 +102,7 @@ func TestEmptyScanResult(t *testing.T) {
 		Skipped:               []SkippedFile{},
 		DetailsSubjectFocused: []SubjectDetails{},
 		DetailsCheckFocused:   []CheckDetails{},
+		PDFFiles:              []string{},
 		Errors:                []LogMessage{},
 		Warnings:              []LogMessage{},
 	}

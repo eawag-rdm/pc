@@ -16,6 +16,7 @@ type ScanResult struct {
 	Skipped                []SkippedFile    `json:"skipped"`
 	DetailsSubjectFocused  []SubjectDetails `json:"details_subject_focused"`
 	DetailsCheckFocused    []CheckDetails   `json:"details_check_focused"`
+	PDFFiles               []string         `json:"pdf_files"`
 	Errors                 []LogMessage     `json:"errors"`
 	Warnings               []LogMessage     `json:"warnings"`
 }
@@ -122,13 +123,14 @@ func (jf *JSONFormatter) AddError(errorType, file, message string) {
 }
 
 // FormatResults converts messages to structured JSON output
-func (jf *JSONFormatter) FormatResults(location, collector string, messages []structs.Message, totalFiles int) (string, error) {
+func (jf *JSONFormatter) FormatResults(location, collector string, messages []structs.Message, totalFiles int, pdfFiles []string) (string, error) {
 	result := ScanResult{
 		Timestamp:             time.Now().UTC().Format(time.RFC3339),
 		Scanned:               make([]ScannedFile, 0),
 		Skipped:               make([]SkippedFile, 0),
 		DetailsSubjectFocused: make([]SubjectDetails, 0),
 		DetailsCheckFocused:   make([]CheckDetails, 0),
+		PDFFiles:              make([]string, 0),
 		Errors:                make([]LogMessage, 0),
 		Warnings:              make([]LogMessage, 0),
 	}
@@ -160,6 +162,9 @@ func (jf *JSONFormatter) FormatResults(location, collector string, messages []st
 			}
 		}
 	}
+
+	// Add PDF files passed from caller
+	result.PDFFiles = pdfFiles
 
 	// Generate JSON
 	jsonBytes, err := json.MarshalIndent(result, "", "  ")

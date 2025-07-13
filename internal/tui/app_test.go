@@ -54,8 +54,12 @@ func TestNewApp(t *testing.T) {
 		t.Error("Checks list not initialized")
 	}
 
-	if app.details == nil {
-		t.Error("Details view not initialized")
+	if app.detailsSections == nil {
+		t.Error("Details sections view not initialized")
+	}
+
+	if app.detailsContent == nil {
+		t.Error("Details content view not initialized")
 	}
 
 	if app.info == nil {

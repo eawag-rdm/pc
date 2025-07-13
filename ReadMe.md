@@ -119,21 +119,7 @@ ssh -i .../.ssh/id_ed25519_ckool rdm@production-ckan /home/rdm/pc "$@"
 go test ./...
 ```
 
-## Example output
+## Next steps
 
-This is the general structure I want. the keywords are up for debate... Scanned and skipped is only relevant for files.
-```json
-{
-    "timestamp": "TIMESTAMP-OF-SCAN",
-    "scanned": [ {filename:"", issues: [{"checkname": ..., "issue_count": ...}, ...]}, ... ],
-    "skipped": [ {filename: ..., "reason": ...}, ... ],
-    "details_subject_focsued": [
-        {subject:..., path: ..., issues: [{checkname: ..., message:...,},...]}, ...
-],
-    "details_check-focused": [
-        {checkname: ..., issues: [{"subject":..., "path": ..., "message": ... },...]}, ...
-]
-  "errors": [],
-  "warnings": [],      
-  }
-```
+I would like a progressbar during the scan. Maybe the nicest is that during the scan the json messages are collected and TUI is started straight away and then updated with the progressbar and the json data during the scan. THe progressbar should be in the bottom of the TUI across the entire width.
+

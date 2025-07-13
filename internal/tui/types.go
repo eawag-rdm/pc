@@ -7,6 +7,7 @@ type ScanResult struct {
 	Skipped                []SkippedFile    `json:"skipped"`
 	DetailsSubjectFocused  []SubjectDetails `json:"details_subject_focused"`
 	DetailsCheckFocused    []CheckDetails   `json:"details_check_focused"`
+	PDFFiles               []string         `json:"pdf_files"`
 	Errors                 []LogMessage     `json:"errors"`
 	Warnings               []LogMessage     `json:"warnings"`
 }

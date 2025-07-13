@@ -78,7 +78,7 @@ func TestFormatResults_EmptyMessages(t *testing.T) {
 	formatter := NewJSONFormatter()
 	messages := []structs.Message{}
 
-	result, err := formatter.FormatResults("/test/location", "LocalCollector", messages, 0)
+	result, err := formatter.FormatResults("/test/location", "LocalCollector", messages, 0, []string{})
 	if err != nil {
 		t.Fatalf("FormatResults failed: %v", err)
 	}
@@ -128,7 +128,7 @@ func TestFormatResults_WithMessages(t *testing.T) {
 		},
 	}
 
-	result, err := formatter.FormatResults("/test/location", "LocalCollector", messages, 1)
+	result, err := formatter.FormatResults("/test/location", "LocalCollector", messages, 1, []string{})
 	if err != nil {
 		t.Fatalf("FormatResults failed: %v", err)
 	}
@@ -187,7 +187,7 @@ func TestFormatResults_RepositoryMessage(t *testing.T) {
 		},
 	}
 
-	result, err := formatter.FormatResults("/test/location", "LocalCollector", messages, 0)
+	result, err := formatter.FormatResults("/test/location", "LocalCollector", messages, 0, []string{})
 	if err != nil {
 		t.Fatalf("FormatResults failed: %v", err)
 	}
@@ -281,7 +281,7 @@ func TestJSONStructureIntegrity(t *testing.T) {
 		},
 	}
 
-	result, err := formatter.FormatResults("/test", "LocalCollector", messages, 1)
+	result, err := formatter.FormatResults("/test", "LocalCollector", messages, 1, []string{})
 	if err != nil {
 		t.Fatalf("FormatResults failed: %v", err)
 	}

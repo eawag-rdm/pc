@@ -103,6 +103,72 @@ func ApplyChecksFilteredByFile(config config.Config, checks []func(file structs.
 	return messages
 }
 
+// ApplyChecksFilteredByFileWithProgress is like ApplyChecksFilteredByFile but reports progress per file
+func ApplyChecksFilteredByFileWithProgress(config config.Config, checks []func(file structs.File, config config.Config) []structs.Message, files []structs.File, progressCallback func(int)) []structs.Message {
+	// For progress reporting, we'll use sequential processing to get accurate file-by-file progress
+	var messages = []structs.Message{}
+	
+	for i, file := range files {
+		helpers.PDFTracker.AddFileIfPDF("", file)
+		
+		// Report progress for this file
+		if progressCallback != nil {
+			progressCallback(i + 1)
+		}
+		
+		// apply checks by file but only for file.Name
+		for _, check := range checks {
+			if skipFileCheck(config, check, file) {
+				continue
+			}
+			testName := getFunctionName(check)
+			ret := check(file, config)
+			if ret != nil {
+				// Add test name to each message
+				for j := range ret {
+					ret[j].TestName = testName
+				}
+				messages = append(messages, ret...)
+			}
+		}
+	}
+	return messages
+}
+
+// ApplyChecksFilteredByFileWithTestProgress reports progress per test (including skipped tests)
+func ApplyChecksFilteredByFileWithTestProgress(config config.Config, checks []func(file structs.File, config config.Config) []structs.Message, files []structs.File, progressCallback func(int)) []structs.Message {
+	var messages = []structs.Message{}
+	testsProcessed := 0
+	
+	for _, file := range files {
+		helpers.PDFTracker.AddFileIfPDF("", file)
+		
+		// Process all checks for this file (including skipped ones)
+		for _, check := range checks {
+			// Count this test (whether run or skipped)
+			testsProcessed++
+			if progressCallback != nil {
+				progressCallback(testsProcessed)
+			}
+			
+			if skipFileCheck(config, check, file) {
+				continue // Skip this test, but we already counted it
+			}
+			
+			testName := getFunctionName(check)
+			ret := check(file, config)
+			if ret != nil {
+				// Add test name to each message
+				for j := range ret {
+					ret[j].TestName = testName
+				}
+				messages = append(messages, ret...)
+			}
+		}
+	}
+	return messages
+}
+
 // applyChecksParallel processes files concurrently using worker pools
 // Each file is processed by a single worker with all its checks to avoid IO conflicts
 func applyChecksParallel(cfg config.Config, checks []func(file structs.File, config config.Config) []structs.Message, files []structs.File) []structs.Message {
@@ -340,6 +406,9 @@ func ApplyChecksFilteredByRepository(config config.Config, checks []func(reposit
 	return messages
 }
 
+// ProgressCallback is called during scanning to report progress
+type ProgressCallback func(current, total int, message string)
+
 func ApplyAllChecks(config config.Config, files []structs.File, checksAcrossFiles bool) []structs.Message {
 	var messages []structs.Message
 
@@ -351,6 +420,95 @@ func ApplyAllChecks(config config.Config, files []structs.File, checksAcrossFile
 	}
 
 	// Apply message truncation
+	messages = TruncateMessages(messages, config.General.MaxMessagesPerType)
+
+	return messages
+}
+
+func ApplyAllChecksWithProgress(config config.Config, files []structs.File, checksAcrossFiles bool, progressCallback ProgressCallback) []structs.Message {
+	var messages []structs.Message
+	
+	// Calculate total number of tests (including skipped tests)
+	totalTests := 0
+	
+	// Count ALL file-based tests (including skipped ones)
+	for range files {
+		totalTests += len(BY_FILE)
+	}
+	
+	// Count ALL archive file list tests (including skipped ones)
+	for _, file := range files {
+		if file.IsArchive {
+			totalTests += len(BY_FILE_ON_ARCHIVE_FILE_LIST)
+		}
+	}
+	
+	// Count ALL archive content tests (including skipped ones)
+	for _, file := range files {
+		if file.IsArchive {
+			totalTests += len(BY_FILE_ON_ARCHIVE)
+		}
+	}
+	
+	// Count repository tests
+	if checksAcrossFiles {
+		totalTests += len(BY_REPOSITORY)
+	}
+	
+	testsRun := 0
+	
+	// Step 1: File checks (with per-test progress)
+	if progressCallback != nil {
+		progressCallback(testsRun, totalTests, "Running file checks...")
+	}
+	
+	messages = append(messages, ApplyChecksFilteredByFileWithTestProgress(config, BY_FILE, files, func(current int) {
+		testsRun = current
+		if progressCallback != nil {
+			progressCallback(testsRun, totalTests, fmt.Sprintf("Running file tests... (%d/%d)", testsRun, totalTests))
+		}
+	})...)
+	
+	// Step 2: Archive file list checks  
+	if progressCallback != nil {
+		progressCallback(testsRun, totalTests, "Running archive file list tests...")
+	}
+	archiveListTests := ApplyChecksFilteredByFileOnArchiveFileList(config, BY_FILE_ON_ARCHIVE_FILE_LIST, files)
+	messages = append(messages, archiveListTests...)
+	// Update count for archive list tests (including skipped ones)
+	for _, file := range files {
+		if file.IsArchive {
+			testsRun += len(BY_FILE_ON_ARCHIVE_FILE_LIST)
+		}
+	}
+	
+	// Step 3: Archive content checks
+	if progressCallback != nil {
+		progressCallback(testsRun, totalTests, "Running archive content tests...")
+	}
+	archiveContentTests := ApplyChecksFilteredByFileOnArchive(config, BY_FILE_ON_ARCHIVE, files)
+	messages = append(messages, archiveContentTests...)
+	// Update count for archive content tests (including skipped ones)
+	for _, file := range files {
+		if file.IsArchive {
+			testsRun += len(BY_FILE_ON_ARCHIVE)
+		}
+	}
+	
+	// Step 4: Repository checks (if enabled)
+	if checksAcrossFiles {
+		if progressCallback != nil {
+			progressCallback(testsRun, totalTests, "Running repository tests...")
+		}
+		repoTests := ApplyChecksFilteredByRepository(config, BY_REPOSITORY, files)
+		messages = append(messages, repoTests...)
+		testsRun += len(BY_REPOSITORY)
+	}
+	
+	// Final step: Apply message truncation
+	if progressCallback != nil {
+		progressCallback(testsRun, totalTests, "Finalizing results...")
+	}
 	messages = TruncateMessages(messages, config.General.MaxMessagesPerType)
 
 	return messages
@@ -415,8 +573,9 @@ func TruncateMessages(messages []structs.Message, maxPerType int) []structs.Mess
 			
 			// Create truncation message
 			truncationMsg := structs.Message{
-				Content: fmt.Sprintf("... and %d more similar messages (truncated)", len(msgs)-(maxPerType-1)),
-				Source:  msgs[0].Source, // Use the same source as the first message
+				Content:  fmt.Sprintf("... and %d more similar messages (truncated)", len(msgs)-(maxPerType-1)),
+				Source:   msgs[0].Source, // Use the same source as the first message
+				TestName: msgs[0].TestName, // Use the same test name as the first message
 			}
 			result = append(result, truncationMsg)
 		}

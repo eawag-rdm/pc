@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"runtime/pprof"
+	"time"
 
 	"github.com/eawag-rdm/pc/internal/tui"
 	"github.com/eawag-rdm/pc/pkg/collectors"
@@ -34,15 +35,13 @@ func main() {
 	cfg := flag.String("config", defaultConfig, "Path to the config file")
 	folder_or_url := flag.String("location", defaultFolder, "Path to local folder or CKAN package name. It depends on the set collector.")
 	help := flag.Bool("help", false, "Show usage information")
-	jsonOutput := flag.Bool("json", false, "Output results in JSON format for visualization tools")
 	tuiOutput := flag.Bool("tui", false, "Launch interactive TUI viewer after scan")
 	cpuprofile := flag.String("cpuprofile", "", "write cpu profile to file")
 	memprofile := flag.String("memprofile", "", "write memory profile to file")
 	flag.Parse()
 	
-	// Configure logger for output mode immediately after parsing flags
-	// Use JSON mode for both --json and --tui flags
-	output.GlobalLogger.SetJSONMode(*jsonOutput || *tuiOutput)
+	// Configure logger for JSON mode by default
+	output.GlobalLogger.SetJSONMode(true)
 	
 	// Enable CPU profiling if requested
 	if *cpuprofile != "" {
@@ -64,7 +63,19 @@ func main() {
 
 	generalConfig, err := config.LoadConfig(*cfg)
 	if err != nil {
-		fmt.Printf("Error loading config: %v\n", err)
+		// Output config error in JSON format
+		errorResult := map[string]interface{}{
+			"timestamp": time.Now().UTC().Format(time.RFC3339),
+			"error": map[string]string{
+				"type": "config_error",
+				"message": fmt.Sprintf("Error loading config: %v", err),
+			},
+		}
+		if jsonBytes, marshalErr := json.MarshalIndent(errorResult, "", "  "); marshalErr == nil {
+			fmt.Println(string(jsonBytes))
+		} else {
+			fmt.Printf("{\"error\": \"Error loading config: %v\"}\n", err)
+		}
 		return
 	}
 
@@ -73,79 +84,138 @@ func main() {
 		filesErr error
 	)
 
+	// Helper function to output error in JSON format
+	outputError := func(errorType, message string) {
+		errorResult := map[string]interface{}{
+			"timestamp": time.Now().UTC().Format(time.RFC3339),
+			"error": map[string]string{
+				"type":    errorType,
+				"message": message,
+			},
+		}
+		if jsonBytes, marshalErr := json.MarshalIndent(errorResult, "", "  "); marshalErr == nil {
+			fmt.Println(string(jsonBytes))
+		} else {
+			fmt.Printf("{\"error\": \"%s\"}\n", message)
+		}
+	}
+
 	// Decide which collector to use
 	if generalConfig.Operation["main"].Collector == "LocalCollector" {
 		files, filesErr = collectors.LocalCollector(*folder_or_url, *generalConfig)
 		if filesErr != nil {
-			fmt.Printf("Error: %v\n", filesErr)
+			outputError("collector_error", filesErr.Error())
 			return
 		}
 
 	} else if generalConfig.Operation["main"].Collector == "CkanCollector" {
 		if *folder_or_url == "." {
-			fmt.Println("Please provide a CKAN package name (use the location flag '-location')")
+			outputError("collector_error", "Please provide a CKAN package name (use the location flag '-location')")
 			return
 		}
 		files, filesErr = collectors.CkanCollector(*folder_or_url, *generalConfig)
 		if filesErr != nil {
-			fmt.Printf("Error: %v\n", filesErr)
+			outputError("collector_error", filesErr.Error())
 			return
 		}
 
 	} else {
-		fmt.Println("Unknown collector")
+		outputError("collector_error", "Unknown collector")
 		return
 	}
 
 	// Check if we found any files to process
 	if len(files) == 0 {
-		fmt.Printf("No files found in location: %s\n", *folder_or_url)
+		outputError("no_files", fmt.Sprintf("No files found in location: %s", *folder_or_url))
 		return
 	}
-
-	messages := utils.ApplyAllChecks(*generalConfig, files, true)
 	
-	// Output results in requested format
-	if *jsonOutput || *tuiOutput {
-		// Create JSON formatter
+
+	if *tuiOutput {
+		// Launch TUI with live scanning
+		app := tui.NewScanningApp()
+		
+		// Channel for scan completion
+		scanComplete := make(chan *tui.ScanResult)
+		scanErrors := make(chan error)
+		
+		// Set up startup callback to begin scanning
+		app.SetStartupCallback(func() {
+			// Start scanning in a goroutine
+			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						scanErrors <- fmt.Errorf("scan panic: %v", r)
+					}
+				}()
+				
+				// Update progress to show scanning started
+				app.UpdateProgress(0, 1, "Starting scan...")
+				
+				// Run scanning with progress updates
+				messages := utils.ApplyAllChecksWithProgress(*generalConfig, files, true, func(current, total int, message string) {
+					app.UpdateProgress(current, total, message)
+				})
+				
+				// Create JSON formatter and generate output
+				formatter := output.NewJSONFormatter()
+				
+				// Get collector name from config
+				collectorName := generalConfig.Operation["main"].Collector
+				
+				jsonResult, err := formatter.FormatResults(*folder_or_url, collectorName, messages, len(files), helpers.PDFTracker.Files)
+				if err != nil {
+					scanErrors <- fmt.Errorf("formatting error: %v", err)
+					return
+				}
+				
+				// Parse JSON for TUI
+				var scanResult tui.ScanResult
+				if err := json.Unmarshal([]byte(jsonResult), &scanResult); err != nil {
+					scanErrors <- fmt.Errorf("JSON parsing error: %v", err)
+					return
+				}
+				
+				// Send results
+				scanComplete <- &scanResult
+			}()
+			
+			// Handle scan completion
+			go func() {
+				select {
+				case result := <-scanComplete:
+					app.UpdateData(result)
+					// Progress should show total tests run (including skipped tests)
+					// This will be handled by the final callback from ApplyAllChecksWithProgress
+				case err := <-scanErrors:
+					app.UpdateProgress(0, 1, fmt.Sprintf("Scan failed: %v", err))
+				}
+			}()
+		})
+		
+		// Run TUI (this blocks until user exits)
+		if err := app.Run(); err != nil {
+			outputError("tui_error", fmt.Sprintf("Error running TUI: %v", err))
+			return
+		}
+	} else {
+		// Regular scanning without TUI
+		messages := utils.ApplyAllChecks(*generalConfig, files, true)
+		
+		// Create JSON formatter and generate output
 		formatter := output.NewJSONFormatter()
 		
 		// Get collector name from config
 		collectorName := generalConfig.Operation["main"].Collector
 		
-		jsonResult, err := formatter.FormatResults(*folder_or_url, collectorName, messages, len(files))
+		jsonResult, err := formatter.FormatResults(*folder_or_url, collectorName, messages, len(files), helpers.PDFTracker.Files)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error formatting JSON output: %v\n", err)
+			outputError("formatting_error", fmt.Sprintf("Error formatting JSON output: %v", err))
 			return
 		}
 		
-		if *tuiOutput {
-			// Parse JSON for TUI
-			var scanResult tui.ScanResult
-			if err := json.Unmarshal([]byte(jsonResult), &scanResult); err != nil {
-				fmt.Fprintf(os.Stderr, "Error parsing JSON for TUI: %v\n", err)
-				return
-			}
-			
-			// Launch TUI
-			app := tui.NewApp(&scanResult)
-			if err := app.Run(); err != nil {
-				fmt.Fprintf(os.Stderr, "Error running TUI: %v\n", err)
-				return
-			}
-		} else {
-			// Just output JSON
-			fmt.Println(jsonResult)
-		}
-	} else {
-		// Traditional text output
-		if len(messages) > 0 {
-			fmt.Println("=== Results ===")
-			for _, message := range messages {
-				fmt.Println(message.Format())
-			}
-		}
-		fmt.Println(helpers.PDFTracker.FormatFiles())
+		// Output JSON (default behavior)
+		fmt.Println(jsonResult)
 	}
 	
 	// Enable memory profiling if requested
