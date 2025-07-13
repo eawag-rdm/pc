@@ -30,6 +30,7 @@ type ScannedFile struct {
 // SkippedFile represents a file that was skipped during scanning
 type SkippedFile struct {
 	Filename string `json:"filename"`
+	Path     string `json:"path"`
 	Reason   string `json:"reason"`
 }
 
@@ -149,15 +150,71 @@ func (jf *JSONFormatter) FormatResults(location, collector string, messages []st
 		case "info":
 			// Check if this is a binary file skip message
 			if strings.Contains(msg.Message, "Not checking contents of file") && strings.Contains(msg.Message, "binary") {
-				// Extract filename from message like "Not checking contents of file: 'filename'. The file seems to be binary."
+				// Extract filename and path from message like "Not checking contents of file: 'filename' (path: 'filepath'). The file seems to be binary."
+				
+				// Extract filename (first quoted string)
 				start := strings.Index(msg.Message, "'")
-				end := strings.LastIndex(msg.Message, "'")
-				if start != -1 && end != -1 && start < end {
-					filename := msg.Message[start+1 : end]
-					result.Skipped = append(result.Skipped, SkippedFile{
-						Filename: filename,
-						Reason:   "Binary file detected",
-					})
+				if start != -1 {
+					end := strings.Index(msg.Message[start+1:], "'")
+					if end != -1 {
+						filename := msg.Message[start+1 : start+1+end]
+						
+						// Extract path (second quoted string after "path: '")
+						pathStart := strings.Index(msg.Message, "(path: '")
+						var path string
+						if pathStart != -1 {
+							pathStart += len("(path: '")
+							pathEnd := strings.Index(msg.Message[pathStart:], "'")
+							if pathEnd != -1 {
+								path = msg.Message[pathStart : pathStart+pathEnd]
+							}
+						}
+						
+						// Fallback to filename if path not found
+						if path == "" {
+							path = filename
+						}
+						
+						result.Skipped = append(result.Skipped, SkippedFile{
+							Filename: filename,
+							Path:     path,
+							Reason:   "Binary file detected",
+						})
+					}
+				}
+			} else if strings.Contains(msg.Message, "Skipping content scan of file") && strings.Contains(msg.Message, "exceeds maximum") {
+				// Check if this is a file size limit skip message
+				// Extract filename and path from message like "Skipping content scan of file: 'filename' (path: 'filepath'). File size (X bytes) exceeds maximum (Y bytes)."
+				
+				// Extract filename (first quoted string)
+				start := strings.Index(msg.Message, "'")
+				if start != -1 {
+					end := strings.Index(msg.Message[start+1:], "'")
+					if end != -1 {
+						filename := msg.Message[start+1 : start+1+end]
+						
+						// Extract path (second quoted string after "path: '")
+						pathStart := strings.Index(msg.Message, "(path: '")
+						var path string
+						if pathStart != -1 {
+							pathStart += len("(path: '")
+							pathEnd := strings.Index(msg.Message[pathStart:], "'")
+							if pathEnd != -1 {
+								path = msg.Message[pathStart : pathStart+pathEnd]
+							}
+						}
+						
+						// Fallback to filename if path not found
+						if path == "" {
+							path = filename
+						}
+						
+						result.Skipped = append(result.Skipped, SkippedFile{
+							Filename: filename,
+							Path:     path,
+							Reason:   "File too large for content scanning",
+						})
+					}
 				}
 			}
 		}

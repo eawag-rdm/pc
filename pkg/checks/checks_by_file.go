@@ -246,19 +246,26 @@ func IsFreeOfKeywords(file structs.File, config config.Config) []structs.Message
 
 	helpers.WarnForLargeFile(file, 10*1024*1024, "pretty big file, this may take a little longer.")
 
+	// Check file size limit for content scanning
+	fileInfo, err := os.Stat(file.Path)
+	if err != nil {
+		output.GlobalLogger.Warning("Error getting file info '%s': %v", file.Path, err)
+		return messages
+	}
+
+	// Check if file exceeds the configured maximum size for content scanning
+	if fileInfo.Size() > config.General.MaxContentScanFileSize {
+		output.GlobalLogger.Info("Skipping content scan of file: '%s' (path: '%s'). File size (%d bytes) exceeds maximum (%d bytes).", 
+			file.Name, file.Path, fileInfo.Size(), config.General.MaxContentScanFileSize)
+		return messages
+	}
+
 	isText, err := isTextFile(file.Path)
 	if err != nil {
 		return messages
 	}
 
 	if isText {
-		// Use streaming for large text files
-		fileInfo, err := os.Stat(file.Path)
-		if err != nil {
-			output.GlobalLogger.Warning("Error getting file info '%s': %v", file.Path, err)
-			return messages
-		}
-
 		// Use streaming for files larger than 1MB (reduced threshold for better performance)
 		if fileInfo.Size() > 1024*1024 {
 			for _, argumentSet := range config.Tests["IsFreeOfKeywords"].KeywordArguments {
@@ -396,7 +403,7 @@ func tryReadBinary(file structs.File) [][]byte {
 		}
 		return content
 	} else if !readers.IsSupportedArchive(file.Name) {
-		output.GlobalLogger.Info("Not checking contents of file: '%s'. The file seems to be binary.", file.Name)
+		output.GlobalLogger.Info("Not checking contents of file: '%s' (path: '%s'). The file seems to be binary.", file.Name, file.Path)
 	}
 	return [][]byte{}
 }

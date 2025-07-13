@@ -40,11 +40,13 @@
 
 [general]
 # Maximum number of messages of the same type before truncating
-maxMessagesPerType = 10
-# Maximum size for individual files in archives (bytes) - 10MB default
+maxMessagesPerType = 5
+# Maximum size for individual files in archives (bytes) - 10MB
 maxArchiveFileSize = 10485760
-# Maximum total memory for archive processing (bytes) - 100MB default
-maxTotalArchiveMemory = 104857600
+# Maximum total memory for archive processing (bytes) - 500MB
+maxTotalArchiveMemory = 536870912
+# Maximum size for files that read content (like IsFreeOfKeywords) (bytes) - 20MB
+maxContentScanFileSize = 20971520
 
 [operation.main]
 collector = "LocalCollector"
@@ -66,9 +68,15 @@ blacklist = []
 whitelist = []
 # keywords: Use literal strings only (case-insensitive matching)
 keywordArguments = [
-    { keywords = ["pwd","password","token", "id_rsa", "id_ed25519"], info = "Sensitive data in File? Found suspicious keyword(s):" },
-    { keywords = ["Q:"], info = "Do you have Eawag internal information in your files?  Found suspicious keyword(s):" },
-    { keywords = ["/Users/"], info = "Do you have hardcoded filepaths in your files?  Found suspicious keyword(s):" }
+    { keywords = ["password", "secret", "key", "token", "api", "credential", "auth"], info = "Security credentials detected" },
+    { keywords = ["id_rsa", "id_ed25519", "BEGIN PRIVATE KEY", "BEGIN RSA PRIVATE KEY"], info = "Private key detected" },
+    { keywords = ["AKIAI", "AKIA", "sk_live", "sk_test", "xoxb", "xoxp"], info = "API key detected" },
+    { keywords = ["jwt", "bearer", "oauth", "client_secret"], info = "Authentication token detected" },
+    { keywords = ["database", "db_password", "connection_string"], info = "Database credentials detected" },
+    { keywords = ["stripe", "paypal", "sendgrid", "twilio", "slack"], info = "Third-party service credentials" },
+    { keywords = ["/Users/", "C:\\Users\\", "Q:"], info = "Hardcoded file paths detected" },
+    { keywords = ["admin", "root", "superuser"], info = "Administrative accounts detected" },
+    { keywords = ["ssn", "social_security", "credit_card", "phone"], info = "PII detected" }
 ]
 
 [test.IsValidName]
@@ -92,4 +100,4 @@ keywordArguments = [
 attrs = {url = "https://example.com", token = "", verify = true, ckan_storage_path = "/nfsmount/ckan/default"}
 
 [collector.LocalCollector]
-attrs = {includeFolders = true}
+attrs = {includeFolders = false}

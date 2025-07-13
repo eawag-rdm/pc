@@ -99,10 +99,12 @@ func LocalCollector(path string, config config.Config) ([]structs.File, error) {
 		}
 		
 		if d.IsDir() {
-			// Include directory only if includeFolders is true
-			if includeFolders {
-				foundFiles = append(foundFiles, structs.ToFile(currentPath, d.Name(), -1, ""))
+			// If includeFolders is false, skip traversing into subdirectories
+			if !includeFolders {
+				return filepath.SkipDir
 			}
+			// Include directory only if includeFolders is true
+			foundFiles = append(foundFiles, structs.ToFile(currentPath, d.Name(), -1, ""))
 		} else {
 			// Add regular files
 			info, err := d.Info()

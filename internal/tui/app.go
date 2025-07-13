@@ -876,6 +876,9 @@ func (a *App) getSkippedContent() string {
 	content := fmt.Sprintf("[yellow]Skipped Files (%d):[white]\n\n", len(a.data.Skipped))
 	for i, file := range a.data.Skipped {
 		content += fmt.Sprintf("[cyan]%d.[white] %s\n", i+1, file.Filename)
+		if file.Path != "" {
+			content += fmt.Sprintf("   [dim]Path: %s[white]\n", file.Path)
+		}
 		content += fmt.Sprintf("   [dim]Reason: %s[white]\n\n", file.Reason)
 	}
 	return content
