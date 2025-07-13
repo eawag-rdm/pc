@@ -14,65 +14,9 @@ func TestNewJSONFormatter(t *testing.T) {
 	if formatter == nil {
 		t.Fatal("NewJSONFormatter returned nil")
 	}
-
-	if formatter.warnings == nil {
-		t.Error("Warnings slice not initialized")
-	}
-
-	if formatter.errors == nil {
-		t.Error("Errors slice not initialized")
-	}
-
-	if formatter.scanStart.IsZero() {
-		t.Error("Scan start time not set")
-	}
 }
 
-func TestAddWarning(t *testing.T) {
-	formatter := NewJSONFormatter()
 
-	formatter.AddWarning("test_type", "test_file.txt", "Test warning message")
-
-	if len(formatter.warnings) != 1 {
-		t.Fatalf("Expected 1 warning, got %d", len(formatter.warnings))
-	}
-
-	warning := formatter.warnings[0]
-	if warning.Type != "test_type" {
-		t.Errorf("Expected type 'test_type', got '%s'", warning.Type)
-	}
-
-	if warning.File != "test_file.txt" {
-		t.Errorf("Expected file 'test_file.txt', got '%s'", warning.File)
-	}
-
-	if warning.Message != "Test warning message" {
-		t.Errorf("Expected message 'Test warning message', got '%s'", warning.Message)
-	}
-}
-
-func TestAddError(t *testing.T) {
-	formatter := NewJSONFormatter()
-
-	formatter.AddError("test_error", "error_file.txt", "Test error message")
-
-	if len(formatter.errors) != 1 {
-		t.Fatalf("Expected 1 error, got %d", len(formatter.errors))
-	}
-
-	error := formatter.errors[0]
-	if error.Type != "test_error" {
-		t.Errorf("Expected type 'test_error', got '%s'", error.Type)
-	}
-
-	if error.File != "error_file.txt" {
-		t.Errorf("Expected file 'error_file.txt', got '%s'", error.File)
-	}
-
-	if error.Message != "Test error message" {
-		t.Errorf("Expected message 'Test error message', got '%s'", error.Message)
-	}
-}
 
 func TestFormatResults_EmptyMessages(t *testing.T) {
 	formatter := NewJSONFormatter()

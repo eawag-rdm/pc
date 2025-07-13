@@ -69,55 +69,14 @@ type SubjectIssue struct {
 
 // Using LogMessage from output package
 
-
-
-// Warning represents processing warnings
-type Warning struct {
-	Type    string `json:"type"`
-	File    string `json:"file,omitempty"`
-	Message string `json:"message"`
-}
-
-// Error represents processing errors
-type Error struct {
-	Type    string `json:"type"`
-	File    string `json:"file,omitempty"`
-	Message string `json:"message"`
-}
-
 // JSONFormatter handles conversion of results to JSON
-type JSONFormatter struct {
-	scanStart time.Time
-	warnings  []Warning
-	errors    []Error
-}
+type JSONFormatter struct {}
 
 // NewJSONFormatter creates a new JSON formatter
 func NewJSONFormatter() *JSONFormatter {
-	return &JSONFormatter{
-		scanStart: time.Now(),
-		warnings:  make([]Warning, 0),
-		errors:    make([]Error, 0),
-	}
+	return &JSONFormatter{}
 }
 
-// AddWarning adds a warning message
-func (jf *JSONFormatter) AddWarning(warningType, file, message string) {
-	jf.warnings = append(jf.warnings, Warning{
-		Type:    warningType,
-		File:    file,
-		Message: message,
-	})
-}
-
-// AddError adds an error message
-func (jf *JSONFormatter) AddError(errorType, file, message string) {
-	jf.errors = append(jf.errors, Error{
-		Type:    errorType,
-		File:    file,
-		Message: message,
-	})
-}
 
 // FormatResults converts messages to structured JSON output
 func (jf *JSONFormatter) FormatResults(location, collector string, messages []structs.Message, totalFiles int, pdfFiles []string) (string, error) {
