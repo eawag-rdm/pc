@@ -79,6 +79,18 @@ keywordArguments = [
     { keywords = ["ssn", "social_security", "credit_card", "phone"], info = "PII detected" }
 ]
 
+[test.HasFileNameSpecialChars]
+# Checking for invalid/special characters in file names
+# blacklist/whitelist: Use regex patterns to include/exclude files by path
+blacklist = []
+whitelist = []
+
+[test.IsFileNameTooLong]
+# Checking if file names are longer than 64 characters
+# blacklist/whitelist: Use regex patterns to include/exclude files by path
+blacklist = []
+whitelist = []
+
 [test.IsValidName]
 # Checking for invalid files and folders
 # blacklist/whitelist: Use regex patterns to include/exclude files by path

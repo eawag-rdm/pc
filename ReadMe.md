@@ -159,3 +159,8 @@ ssh -t user@remote-server "TERM=xterm-256color LANG=en_US.UTF-8 cd /path/to/pc &
 go test ./...
 ```
 
+## Next steps
+
+I added to new checks in the checks by file file. Please include these in the config and add white and blacklist functionalities as requires. I believe it should already be implemented. Please hten add the corresponding sdections to the 3 toml files. 
+
+After adding the tests please check the functionality of pc. I belive there must be a bug. Running this go run . -config pc.toml -location testdata/archives should find a lot of problem but it is not. the data in the different archive formats is identical. So it should always find the same for zip, tar and 7z. What is going on?

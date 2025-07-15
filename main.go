@@ -12,6 +12,7 @@ import (
 	"github.com/eawag-rdm/pc/pkg/output/tui"
 	jsonformatter "github.com/eawag-rdm/pc/pkg/output/json"
 	htmlformatter "github.com/eawag-rdm/pc/pkg/output/html"
+	plainformatter "github.com/eawag-rdm/pc/pkg/output/plain"
 	"github.com/eawag-rdm/pc/pkg/collectors"
 	"github.com/eawag-rdm/pc/pkg/config"
 	"github.com/eawag-rdm/pc/pkg/helpers"
@@ -39,6 +40,7 @@ func main() {
 	help := flag.Bool("help", false, "Show usage information")
 	tuiOutput := flag.Bool("tui", false, "Launch interactive TUI viewer after scan")
 	htmlOutput := flag.String("html", "", "Generate static HTML report to specified file (e.g., --html report.html)")
+	plainOutput := flag.Bool("plain", false, "Output a concise plain text summary instead of JSON")
 	cpuprofile := flag.String("cpuprofile", "", "write cpu profile to file")
 	memprofile := flag.String("memprofile", "", "write memory profile to file")
 	flag.Parse()
@@ -230,20 +232,27 @@ func main() {
 		// Regular scanning without TUI
 		messages := utils.ApplyAllChecks(*generalConfig, files, true)
 		
-		// Create JSON formatter and generate output
-		formatter := jsonformatter.NewJSONFormatter()
-		
 		// Get collector name from config
 		collectorName := generalConfig.Operation["main"].Collector
 		
-		jsonResult, err := formatter.FormatResults(*folder_or_url, collectorName, messages, len(files), helpers.PDFTracker.Files)
-		if err != nil {
-			outputError("formatting_error", fmt.Sprintf("Error formatting JSON output: %v", err))
-			return
+		if *plainOutput {
+			// Output plain text summary
+			formatter := plainformatter.NewPlainFormatter()
+			plainResult := formatter.FormatResults(*folder_or_url, collectorName, messages, len(files), helpers.PDFTracker.Files)
+			fmt.Print(plainResult)
+		} else {
+			// Create JSON formatter and generate output (default behavior)
+			formatter := jsonformatter.NewJSONFormatter()
+			
+			jsonResult, err := formatter.FormatResults(*folder_or_url, collectorName, messages, len(files), helpers.PDFTracker.Files)
+			if err != nil {
+				outputError("formatting_error", fmt.Sprintf("Error formatting JSON output: %v", err))
+				return
+			}
+			
+			// Output JSON
+			fmt.Println(jsonResult)
 		}
-		
-		// Output JSON (default behavior)
-		fmt.Println(jsonResult)
 	}
 	
 	// Enable memory profiling if requested

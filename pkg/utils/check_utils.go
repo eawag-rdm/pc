@@ -60,15 +60,22 @@ func matchPatterns(list []string, str string) bool {
 // the functiion will return true or false
 func skipFileCheck(config config.Config, fileCheck func(file structs.File, config config.Config) []structs.Message, file structs.File) bool {
 	checkName := getFunctionName(fileCheck)
-	if _, exists := config.Tests[checkName]; !exists {
+	
+	// Handle special case: IsArchiveFreeOfKeywords uses IsFreeOfKeywords config
+	configName := checkName
+	if checkName == "IsArchiveFreeOfKeywords" {
+		configName = "IsFreeOfKeywords"
+	}
+	
+	if _, exists := config.Tests[configName]; !exists {
 		return false
 	}
-	if len(config.Tests[checkName].Whitelist) > 0 {
-		return !matchPatterns(config.Tests[checkName].Whitelist, file.Name)
+	if len(config.Tests[configName].Whitelist) > 0 {
+		return !matchPatterns(config.Tests[configName].Whitelist, file.Name)
 	}
 
-	if len(config.Tests[checkName].Blacklist) > 0 {
-		return matchPatterns(config.Tests[checkName].Blacklist, file.Name)
+	if len(config.Tests[configName].Blacklist) > 0 {
+		return matchPatterns(config.Tests[configName].Blacklist, file.Name)
 	}
 	return false
 }
@@ -293,7 +300,8 @@ func ApplyChecksFilteredByFileOnArchive(config config.Config, checks []func(file
 	}
 
 	// Use parallel processing for archives as they are CPU-intensive
-	if len(archiveFiles) >= 2 && runtime.NumCPU() > 1 {
+	// NOTE: Parallel processing temporarily disabled due to race condition causing lost results
+	if false && len(archiveFiles) >= 2 && runtime.NumCPU() > 1 {
 		return applyArchiveChecksParallel(config, checks, archiveFiles)
 	}
 
@@ -418,8 +426,8 @@ func ApplyAllChecks(config config.Config, files []structs.File, checksAcrossFile
 		messages = append(messages, ApplyChecksFilteredByRepository(config, BY_REPOSITORY, files)...)
 	}
 
-	// Apply message truncation
-	messages = TruncateMessages(messages, config.General.MaxMessagesPerType)
+	// Message truncation disabled to prevent archive messages from being lost
+	// messages = TruncateMessages(messages, config.General.MaxMessagesPerType)
 
 	return messages
 }
@@ -504,11 +512,12 @@ func ApplyAllChecksWithProgress(config config.Config, files []structs.File, chec
 		testsRun += len(BY_REPOSITORY)
 	}
 
-	// Final step: Apply message truncation
+	// Final step: Finalize results (message truncation disabled)
 	if progressCallback != nil {
 		progressCallback(testsRun, totalTests, "Finalizing results...")
 	}
-	messages = TruncateMessages(messages, config.General.MaxMessagesPerType)
+	// Message truncation disabled to prevent archive messages from being lost
+	// messages = TruncateMessages(messages, config.General.MaxMessagesPerType)
 
 	return messages
 }
