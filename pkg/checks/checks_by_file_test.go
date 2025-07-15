@@ -2,6 +2,7 @@ package checks
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/eawag-rdm/pc/pkg/config"
@@ -104,6 +105,196 @@ func TestHasNoWhiteSpace(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := HasNoWhiteSpace(tt.file, config)
+			if len(result) != len(tt.expected) {
+				t.Errorf("expected %v, got %v", tt.expected, result)
+			}
+			for i := range result {
+				if result[i].Content != tt.expected[i].Content {
+					t.Errorf("expected %v, got %v", tt.expected[i].Content, result[i].Content)
+				}
+			}
+		})
+	}
+}
+
+func TestIsFileNameTooLong(t *testing.T) {
+	var config = config.Config{}
+	tests := []struct {
+		name     string
+		file     structs.File
+		expected []structs.Message
+	}{
+		{
+			name:     "Not too long",
+			file:     structs.File{Name: "This-is-okay.txt"},
+			expected: nil,
+		},
+		{
+			name: "Too long",
+			file: structs.File{Name: "ThisFilenameIsTooooooooooooLooooooooooooooooooooooooooooooong.txt"},
+			expected: []structs.Message{
+				{Content: "File name is too long.", Source: structs.File{Name: "ThisFilenameIsTooooooooooooLooooooooooooooooooooooooooooooong.txt"}},
+			},
+		},
+		{
+			name:     "Empty file name",
+			file:     structs.File{Name: ""},
+			expected: nil,
+		},
+		{
+			name:     "Exactly max ASCII length",
+			file:     structs.File{Name: strings.Repeat("a", 64)},
+			expected: nil,
+		},
+		{
+			name: "One byte over ASCII limit",
+			file: structs.File{Name: strings.Repeat("b", 65)},
+			expected: []structs.Message{
+				{Content: "File name is too long.", Source: structs.File{Name: strings.Repeat("b", 65)}},
+			},
+		},
+		{
+			name:     "Multi-byte runes exactly 64 bytes (32× 'é')",
+			file:     structs.File{Name: strings.Repeat("é", 32)}, // 32×2 bytes = 64
+			expected: nil,
+		},
+		{
+			name: "Multi-byte runes over 64 bytes (33× 'é')",
+			file: structs.File{Name: strings.Repeat("é", 33)}, // 33×2 bytes = 66
+			expected: []structs.Message{
+				{Content: "File name is too long.", Source: structs.File{Name: strings.Repeat("é", 33)}},
+			},
+		},
+		{
+			name:     "Whitespace only at limit",
+			file:     structs.File{Name: strings.Repeat(" ", 64)},
+			expected: nil,
+		},
+		{
+			name: "Whitespace only over limit",
+			file: structs.File{Name: strings.Repeat(" ", 65)},
+			expected: []structs.Message{
+				{Content: "File name is too long.", Source: structs.File{Name: strings.Repeat(" ", 65)}},
+			},
+		},
+		{
+			name: "Emoji pushes over limit",
+			file: structs.File{Name: strings.Repeat("👍", 17)}, // 17×4 bytes = 68
+			expected: []structs.Message{
+				{Content: "File name is too long.", Source: structs.File{Name: strings.Repeat("👍", 17)}},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := IsFileNameTooLong(tt.file, config)
+			if len(result) != len(tt.expected) {
+				t.Errorf("expected %v, got %v", tt.expected, result)
+			}
+			for i := range result {
+				if result[i].Content != tt.expected[i].Content {
+					t.Errorf("expected %v, got %v", tt.expected[i].Content, result[i].Content)
+				}
+			}
+		})
+	}
+}
+
+func TestHasFileNameSpecialChars(t *testing.T) {
+	var config = config.Config{}
+	tests := []struct {
+		name     string
+		file     structs.File
+		expected []structs.Message
+	}{
+		{
+			name:     "Not too long",
+			file:     structs.File{Name: "This-is-okay.txt"},
+			expected: nil,
+		},
+		{
+			name:     "Too long",
+			file:     structs.File{Name: "This_is_okay.txt"},
+			expected: nil,
+		},
+		{
+			name:     "Empty file name",
+			file:     structs.File{Name: "This is also okayissch.abc"},
+			expected: nil,
+		},
+		{
+			name: "This is bad",
+			file: structs.File{Name: "!Attention.xlsx"},
+			expected: []structs.Message{
+				{Content: "File name contains invalid character: '!'", Source: structs.File{Name: "!Attention.xlsx"}},
+			},
+		},
+		{
+			name:     "This is okay",
+			file:     structs.File{Name: "\x32\x31.xlsx"},
+			expected: nil,
+		},
+		{
+			name:     "Empty filename",
+			file:     structs.File{Name: ""},
+			expected: nil,
+		},
+		// 2) Special char at start (backtick)
+		{
+			name: "Starts with backtick",
+			file: structs.File{Name: "`script.sh"},
+			expected: []structs.Message{
+				{
+					Content: "File name contains invalid character: '`'",
+					Source:  structs.File{Name: "`script.sh"},
+				},
+			},
+		},
+		// 3) Special char in middle (hash)
+		{
+			name: "Contains hash",
+			file: structs.File{Name: "myfile#v2.doc"},
+			expected: []structs.Message{
+				{
+					Content: "File name contains invalid character: '#'",
+					Source:  structs.File{Name: "myfile#v2.doc"},
+				},
+			},
+		},
+		// 4) Multiple specials—only first is reported ('[')
+		{
+			name: "Multiple specials",
+			file: structs.File{Name: "file[name]{ok}.txt"},
+			expected: []structs.Message{
+				{
+					Content: "File name contains invalid character: '['",
+					Source:  structs.File{Name: "file[name]{ok}.txt"},
+				},
+			},
+		},
+		// 5) Curly-brace at end
+		{
+			name: "Ends with brace",
+			file: structs.File{Name: "report}.pdf"},
+			expected: []structs.Message{
+				{
+					Content: "File name contains invalid character: '}'",
+					Source:  structs.File{Name: "report}.pdf"},
+				},
+			},
+		},
+		// 6) Non-ASCII rune (e.g. “é”)—should pass unless you explicitly forbid ≥128
+		{
+			name:     "Non-ASCII allowed",
+			file:     structs.File{Name: "café.txt"},
+			expected: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := HasFileNameSpecialChars(tt.file, config)
 			if len(result) != len(tt.expected) {
 				t.Errorf("expected %v, got %v", tt.expected, result)
 			}

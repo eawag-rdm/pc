@@ -21,6 +21,8 @@ var BY_FILE = []func(file structs.File, config config.Config) []structs.Message{
 	checks.HasNoWhiteSpace,
 	checks.IsFreeOfKeywords,
 	checks.IsValidName,
+	checks.HasFileNameSpecialChars,
+	checks.IsFileNameTooLong,
 }
 var BY_REPOSITORY = []func(repository structs.Repository, config config.Config) []structs.Message{
 	checks.HasReadme,
@@ -36,8 +38,6 @@ var BY_FILE_ON_ARCHIVE_FILE_LIST = []func(file structs.File, config config.Confi
 	checks.HasNoWhiteSpace,
 	checks.IsValidName,
 }
-
-
 
 func getFunctionName(i interface{}) string {
 	fullName := runtime.FuncForPC(reflect.ValueOf(i).Pointer()).Name()
@@ -79,7 +79,7 @@ func ApplyChecksFilteredByFile(config config.Config, checks []func(file structs.
 	if len(files) >= 2 && runtime.NumCPU() > 1 {
 		return applyChecksParallel(config, checks, files)
 	}
-	
+
 	// Sequential processing for small workloads
 	var messages = []structs.Message{}
 	for _, file := range files {
@@ -107,15 +107,15 @@ func ApplyChecksFilteredByFile(config config.Config, checks []func(file structs.
 func ApplyChecksFilteredByFileWithProgress(config config.Config, checks []func(file structs.File, config config.Config) []structs.Message, files []structs.File, progressCallback func(int)) []structs.Message {
 	// For progress reporting, we'll use sequential processing to get accurate file-by-file progress
 	var messages = []structs.Message{}
-	
+
 	for i, file := range files {
 		helpers.PDFTracker.AddFileIfPDF("", file)
-		
+
 		// Report progress for this file
 		if progressCallback != nil {
 			progressCallback(i + 1)
 		}
-		
+
 		// apply checks by file but only for file.Name
 		for _, check := range checks {
 			if skipFileCheck(config, check, file) {
@@ -139,10 +139,10 @@ func ApplyChecksFilteredByFileWithProgress(config config.Config, checks []func(f
 func ApplyChecksFilteredByFileWithTestProgress(config config.Config, checks []func(file structs.File, config config.Config) []structs.Message, files []structs.File, progressCallback func(int)) []structs.Message {
 	var messages = []structs.Message{}
 	testsProcessed := 0
-	
+
 	for _, file := range files {
 		helpers.PDFTracker.AddFileIfPDF("", file)
-		
+
 		// Process all checks for this file (including skipped ones)
 		for _, check := range checks {
 			// Count this test (whether run or skipped)
@@ -150,11 +150,11 @@ func ApplyChecksFilteredByFileWithTestProgress(config config.Config, checks []fu
 			if progressCallback != nil {
 				progressCallback(testsProcessed)
 			}
-			
+
 			if skipFileCheck(config, check, file) {
 				continue // Skip this test, but we already counted it
 			}
-			
+
 			testName := getFunctionName(check)
 			ret := check(file, config)
 			if ret != nil {
@@ -175,7 +175,7 @@ func applyChecksParallel(cfg config.Config, checks []func(file structs.File, con
 	// Create work items where each item contains one file with all its applicable checks
 	// This ensures all checks for a single file run in the same worker thread,
 	// avoiding concurrent file access that could cause IO conflicts
-	
+
 	numWorkers := runtime.NumCPU()
 	if len(files) < numWorkers {
 		numWorkers = len(files)
@@ -189,7 +189,7 @@ func applyChecksParallel(cfg config.Config, checks []func(file structs.File, con
 	go func() {
 		for _, file := range files {
 			helpers.PDFTracker.AddFileIfPDF("", file)
-			
+
 			// Filter checks for this specific file
 			var validChecks []func(structs.File, config.Config) []structs.Message
 			for _, check := range checks {
@@ -197,14 +197,14 @@ func applyChecksParallel(cfg config.Config, checks []func(file structs.File, con
 					validChecks = append(validChecks, check)
 				}
 			}
-			
+
 			if len(validChecks) > 0 {
 				work := optimization.WorkItem{
 					File:   file,
 					Checks: validChecks,
 					Config: cfg,
 				}
-				
+
 				// If we can't submit (queue full), this will block
 				// ensuring we don't lose work items
 				for !pool.Submit(work) {
@@ -219,7 +219,7 @@ func applyChecksParallel(cfg config.Config, checks []func(file structs.File, con
 	var allMessages []structs.Message
 	resultsCollected := 0
 	expectedResults := 0
-	
+
 	// Count expected results
 	for _, file := range files {
 		hasValidChecks := false
@@ -244,7 +244,6 @@ func applyChecksParallel(cfg config.Config, checks []func(file structs.File, con
 
 	return allMessages
 }
-
 
 func ApplyChecksFilteredByFileOnArchiveFileList(config config.Config, checks []func(file structs.File, config config.Config) []structs.Message, files []structs.File) []structs.Message {
 
@@ -288,11 +287,11 @@ func ApplyChecksFilteredByFileOnArchive(config config.Config, checks []func(file
 			archiveFiles = append(archiveFiles, file)
 		}
 	}
-	
+
 	if len(archiveFiles) == 0 {
 		return []structs.Message{}
 	}
-	
+
 	// Use parallel processing for archives as they are CPU-intensive
 	if len(archiveFiles) >= 2 && runtime.NumCPU() > 1 {
 		return applyArchiveChecksParallel(config, checks, archiveFiles)
@@ -345,14 +344,14 @@ func applyArchiveChecksParallel(cfg config.Config, checks []func(file structs.Fi
 					validChecks = append(validChecks, check)
 				}
 			}
-			
+
 			if len(validChecks) > 0 {
 				work := optimization.WorkItem{
 					File:   file,
 					Checks: validChecks,
 					Config: cfg,
 				}
-				
+
 				for !pool.Submit(work) {
 					runtime.Gosched()
 				}
@@ -364,7 +363,7 @@ func applyArchiveChecksParallel(cfg config.Config, checks []func(file structs.Fi
 	var allMessages []structs.Message
 	resultsCollected := 0
 	expectedResults := 0
-	
+
 	for _, file := range files {
 		hasValidChecks := false
 		for _, check := range checks {
@@ -427,49 +426,49 @@ func ApplyAllChecks(config config.Config, files []structs.File, checksAcrossFile
 
 func ApplyAllChecksWithProgress(config config.Config, files []structs.File, checksAcrossFiles bool, progressCallback ProgressCallback) []structs.Message {
 	var messages []structs.Message
-	
+
 	// Calculate total number of tests (including skipped tests)
 	totalTests := 0
-	
+
 	// Count ALL file-based tests (including skipped ones)
 	for range files {
 		totalTests += len(BY_FILE)
 	}
-	
+
 	// Count ALL archive file list tests (including skipped ones)
 	for _, file := range files {
 		if file.IsArchive {
 			totalTests += len(BY_FILE_ON_ARCHIVE_FILE_LIST)
 		}
 	}
-	
+
 	// Count ALL archive content tests (including skipped ones)
 	for _, file := range files {
 		if file.IsArchive {
 			totalTests += len(BY_FILE_ON_ARCHIVE)
 		}
 	}
-	
+
 	// Count repository tests
 	if checksAcrossFiles {
 		totalTests += len(BY_REPOSITORY)
 	}
-	
+
 	testsRun := 0
-	
+
 	// Step 1: File checks (with per-test progress)
 	if progressCallback != nil {
 		progressCallback(testsRun, totalTests, "Running file checks...")
 	}
-	
+
 	messages = append(messages, ApplyChecksFilteredByFileWithTestProgress(config, BY_FILE, files, func(current int) {
 		testsRun = current
 		if progressCallback != nil {
 			progressCallback(testsRun, totalTests, fmt.Sprintf("Running file tests... (%d/%d)", testsRun, totalTests))
 		}
 	})...)
-	
-	// Step 2: Archive file list checks  
+
+	// Step 2: Archive file list checks
 	if progressCallback != nil {
 		progressCallback(testsRun, totalTests, "Running archive file list tests...")
 	}
@@ -481,7 +480,7 @@ func ApplyAllChecksWithProgress(config config.Config, files []structs.File, chec
 			testsRun += len(BY_FILE_ON_ARCHIVE_FILE_LIST)
 		}
 	}
-	
+
 	// Step 3: Archive content checks
 	if progressCallback != nil {
 		progressCallback(testsRun, totalTests, "Running archive content tests...")
@@ -494,7 +493,7 @@ func ApplyAllChecksWithProgress(config config.Config, files []structs.File, chec
 			testsRun += len(BY_FILE_ON_ARCHIVE)
 		}
 	}
-	
+
 	// Step 4: Repository checks (if enabled)
 	if checksAcrossFiles {
 		if progressCallback != nil {
@@ -504,7 +503,7 @@ func ApplyAllChecksWithProgress(config config.Config, files []structs.File, chec
 		messages = append(messages, repoTests...)
 		testsRun += len(BY_REPOSITORY)
 	}
-	
+
 	// Final step: Apply message truncation
 	if progressCallback != nil {
 		progressCallback(testsRun, totalTests, "Finalizing results...")
@@ -570,11 +569,11 @@ func TruncateMessages(messages []structs.Message, maxPerType int) []structs.Mess
 		} else {
 			// Add first (maxPerType-1) messages and a truncation notice
 			result = append(result, msgs[:maxPerType-1]...)
-			
+
 			// Create truncation message
 			truncationMsg := structs.Message{
 				Content:  fmt.Sprintf("... and %d more similar messages (truncated)", len(msgs)-(maxPerType-1)),
-				Source:   msgs[0].Source, // Use the same source as the first message
+				Source:   msgs[0].Source,   // Use the same source as the first message
 				TestName: msgs[0].TestName, // Use the same test name as the first message
 			}
 			result = append(result, truncationMsg)

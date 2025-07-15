@@ -16,18 +16,52 @@ import (
 	"github.com/eawag-rdm/pc/pkg/structs"
 )
 
-/*
-This file contains tests that run on single files and do not need any other information. They especially do not need other files.
-*/
+var invalidFileNameChars [256]bool
 
+func init() {
+	// Control chars (0x00–0x1F)
+	for c := byte(0); c < 32; c++ {
+		invalidFileNameChars[c] = true
+	}
+	// Your full set of special chars:
+	//  ~ ! @ # $ % ^ & * ( ) ` ; < > ? , [ ] { } ' "
+	for _, c := range []byte{
+		'~', '!', '@', '#', '$', '%', '^', '&', '*',
+		'(', ')', '`', ';', '<', '>', '?', ',',
+		'[', ']', '{', '}', '\'', '"',
+	} {
+		invalidFileNameChars[c] = true
+	}
+}
+
+// HasFileNameSpecialChars returns a non-empty slice if file.Name contains
+// any invalid/special characters.
+func HasFileNameSpecialChars(file structs.File, cfg config.Config) []structs.Message {
+	for i := 0; i < len(file.Name); i++ {
+		if invalidFileNameChars[file.Name[i]] {
+			return []structs.Message{{
+				Content: fmt.Sprintf("File name contains invalid character: %q", file.Name[i]),
+				Source:  file,
+			}}
+		}
+	}
+	return []structs.Message{}
+}
+
+func IsFileNameTooLong(file structs.File, config config.Config) []structs.Message {
+	if len(file.Name) > 64 {
+		return []structs.Message{{Content: "File name is too long.", Source: file}}
+	}
+	return []structs.Message{}
+}
 
 // streamingReadFile reads a file in chunks and applies pattern matching
 // This is more memory-efficient for large files
 // streamingReadFileList is an optimized version that takes a pattern slice directly
 func streamingReadFileList(filePath string, patternList []string) ([]string, error) {
 	const maxFileSize = 2 * 1024 * 1024 * 1024 // 2GB limit for streaming (increased)
-	const chunkSize = 1024 * 1024               // 1MB chunks (increased for better performance)
-	
+	const chunkSize = 1024 * 1024              // 1MB chunks (increased for better performance)
+
 	file, err := os.Open(filePath)
 	if err != nil {
 		return nil, err
@@ -44,7 +78,7 @@ func streamingReadFileList(filePath string, patternList []string) ([]string, err
 	if len(patternList) == 0 {
 		return []string{}, nil
 	}
-	
+
 	matcher := optimization.GetMatcher(patternList)
 
 	// For small files (under 1MB), read normally
@@ -65,22 +99,22 @@ func streamingReadFileList(filePath string, patternList []string) ([]string, err
 	foundMatches := make(map[string]struct{})
 	buffer := make([]byte, chunkSize)
 	overlap := make([]byte, 0, 4096) // Increased overlap for better pattern detection
-	
+
 	for {
 		n, err := file.Read(buffer)
 		if n == 0 {
 			break
 		}
-		
+
 		// Combine overlap with new data
 		combined := append(overlap, buffer[:n]...)
-		
+
 		// Check for patterns in combined data using fast matcher
 		matches := matcher.FindMatches(combined)
 		for _, match := range matches {
 			foundMatches[match] = struct{}{}
 		}
-		
+
 		// Keep last 2KB as overlap for next chunk to ensure patterns spanning chunks are caught
 		overlapSize := 2048
 		if n < overlapSize {
@@ -91,7 +125,7 @@ func streamingReadFileList(filePath string, patternList []string) ([]string, err
 		} else {
 			overlap = combined
 		}
-		
+
 		if err == io.EOF {
 			break
 		}
@@ -99,16 +133,15 @@ func streamingReadFileList(filePath string, patternList []string) ([]string, err
 			return nil, err
 		}
 	}
-	
+
 	// Convert map to slice
 	result := make([]string, 0, len(foundMatches))
 	for match := range foundMatches {
 		result = append(result, match)
 	}
-	
+
 	return result, nil
 }
-
 
 func HasOnlyASCII(file structs.File, config config.Config) []structs.Message {
 	var nonASCII string
@@ -200,7 +233,7 @@ func isTextFile(filePath string) (bool, error) {
 
 func IsArchiveFreeOfKeywords(file structs.File, config config.Config) []structs.Message {
 	var messages []structs.Message
-	
+
 	// Use configurable memory limits
 	maxFileSize := int(config.General.MaxArchiveFileSize)
 	if maxFileSize <= 0 {
@@ -239,7 +272,6 @@ func IsArchiveFreeOfKeywords(file structs.File, config config.Config) []structs.
 	return messages
 }
 
-
 func IsFreeOfKeywords(file structs.File, config config.Config) []structs.Message {
 	var messages []structs.Message
 
@@ -254,7 +286,7 @@ func IsFreeOfKeywords(file structs.File, config config.Config) []structs.Message
 
 	// Check if file exceeds the configured maximum size for content scanning
 	if fileInfo.Size() > config.General.MaxContentScanFileSize {
-		output.GlobalLogger.Info("Skipping content scan of file: '%s' (path: '%s'). File size (%d bytes) exceeds maximum (%d bytes).", 
+		output.GlobalLogger.Info("Skipping content scan of file: '%s' (path: '%s'). File size (%d bytes) exceeds maximum (%d bytes).",
 			file.Name, file.Path, fileInfo.Size(), config.General.MaxContentScanFileSize)
 		return messages
 	}
@@ -364,12 +396,12 @@ func matchPatternsList(patternList []string, body []byte) string {
 	// Use fast matcher for pattern detection with original case preservation
 	matcher := optimization.GetMatcher(patternList)
 	foundMatches := matcher.FindMatchesWithOriginalCase(body)
-	
+
 	if len(foundMatches) > 0 {
 		// Deduplicate and format results
 		keywordSet := make(map[string]struct{})
 		var foundKeywordsStr string
-		
+
 		for _, match := range foundMatches {
 			if _, exists := keywordSet[match]; !exists {
 				if foundKeywordsStr != "" {
@@ -379,10 +411,10 @@ func matchPatternsList(patternList []string, body []byte) string {
 				keywordSet[match] = struct{}{}
 			}
 		}
-		
+
 		return foundKeywordsStr
 	}
-	
+
 	return ""
 }
 
