@@ -104,7 +104,7 @@ func TestReadArchiveFileList(t *testing.T) {
 			},
 		},
 		{
-			file:     structs.File{Path: "../../testdata/archives/test.tar.gz", Name: "test.tar.gz", Suffix: ".gz"},
+			file: structs.File{Path: "../../testdata/archives/test.tar.gz", Name: "test.tar.gz", Suffix: ".gz"},
 			expected: []structs.File{
 				{Path: "../../testdata/archives/test.tar.gz", Name: "test/", Size: 0, Suffix: ""},
 				{Path: "../../testdata/archives/test.tar.gz", Name: "test/file2", Size: 0, Suffix: ""},
