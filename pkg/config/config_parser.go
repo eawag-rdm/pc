@@ -23,7 +23,6 @@ type OperationConfig struct {
 }
 
 type GeneralConfig struct {
-	MaxMessagesPerType     int
 	MaxArchiveFileSize     int64 // Maximum size for individual files in archives (bytes)
 	MaxTotalArchiveMemory  int64 // Maximum total memory for archive processing (bytes)
 	MaxContentScanFileSize int64 // Maximum size for files that read content (like IsFreeOfKeywords) (bytes)
@@ -45,7 +44,6 @@ func ParseConfig(filename string) (*Config, error) {
 
 	c := &Config{
 		General: &GeneralConfig{
-			MaxMessagesPerType:     10,                      // Default value
 			MaxArchiveFileSize:     10 * 1024 * 1024,       // 10MB default
 			MaxTotalArchiveMemory:  100 * 1024 * 1024,      // 100MB default
 			MaxContentScanFileSize: 1024 * 1024 * 1024,     // 1GB default for content scanning
@@ -86,9 +84,6 @@ func ParseConfig(filename string) (*Config, error) {
 
 	// Parse general section
 	if generalData, ok := raw["general"].(map[string]interface{}); ok {
-		if maxMsgs, ok := generalData["maxMessagesPerType"].(int64); ok {
-			c.General.MaxMessagesPerType = int(maxMsgs)
-		}
 		if maxArchiveFileSize, ok := generalData["maxArchiveFileSize"].(int64); ok {
 			c.General.MaxArchiveFileSize = maxArchiveFileSize
 		}

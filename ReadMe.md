@@ -10,8 +10,10 @@ Currently only a few checks are implemented:
 - HasNoWhiteSpace (for filenames)
 - IsFreeOfKeywords (checking file contents); non binary, .xlsx and .docx are supported
 - IsValidName (checking if nonsense files are present eg: .Rhistory)
+- HasFileNameSpecialChars (~!?@#$%^&*`;,'"()<>[]{})
+- IsFileNameTooLong (>64 is too long)
 
-Archives (.zip, .tar, .7z) are also supported. On these the content (IsFreeOfKeywords) on each file is **not** checked.
+Archives (.zip, .tar, .7z) are also supported. On these the content (IsFreeOfKeywords) on each file is checked if the file is not too big.
 As *.tar.gz* files require complete unpacking of the archive to access the list of contained files it is not supported as it would be too slow for large archives.
 
 **By respository:**
@@ -87,6 +89,21 @@ or you compile first and run via:
 pc -location your-ckan-package-name
 ```
 
+run with Terminal User Interface:
+```bash
+pc -config pc.toml -location .  --tui
+```
+
+run with html output:
+```bash
+pc -config pc.toml -location .  --html report.html
+```
+
+run with plain output:
+```bash
+pc -config pc.toml -location .  --plain
+```
+
 ## Building
 To build (https://github.com/confluentinc/confluent-kafka-go/issues/1092#issuecomment-2373681430): 
 ```bash
@@ -159,8 +176,3 @@ ssh -t user@remote-server "TERM=xterm-256color LANG=en_US.UTF-8 cd /path/to/pc &
 go test ./...
 ```
 
-## Next steps
-
-I added to new checks in the checks by file file. Please include these in the config and add white and blacklist functionalities as requires. I believe it should already be implemented. Please hten add the corresponding sdections to the 3 toml files. 
-
-After adding the tests please check the functionality of pc. I belive there must be a bug. Running this go run . -config pc.toml -location testdata/archives should find a lot of problem but it is not. the data in the different archive formats is identical. So it should always find the same for zip, tar and 7z. What is going on?
