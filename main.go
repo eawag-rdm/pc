@@ -38,13 +38,20 @@ func main() {
 	cfg := flag.String("config", defaultConfig, "Path to the config file")
 	folder_or_url := flag.String("location", defaultFolder, "Path to local folder or CKAN package name. It depends on the set collector.")
 	help := flag.Bool("help", false, "Show usage information")
-	tuiOutput := flag.Bool("tui", false, "Launch interactive TUI viewer after scan")
-	htmlOutput := flag.String("html", "", "Generate static HTML report to specified file (e.g., --html report.html)")
-	plainOutput := flag.Bool("plain", false, "Output a concise plain text summary instead of JSON")
+	noTui := flag.Bool("no-tui", false, "Disable interactive TUI viewer")
+	jsonOutput := flag.Bool("json", false, "Output JSON format to stdout")
+	htmlOutput := flag.String("html", "", "Generate HTML report to specified file (e.g., --html report.html)")
+	plainOutput := flag.Bool("plain", false, "Output plain text summary to stdout")
 	cpuprofile := flag.String("cpuprofile", "", "write cpu profile to file")
 	memprofile := flag.String("memprofile", "", "write memory profile to file")
 	flag.Parse()
-	
+
+	// Validate mutually exclusive flags
+	if *jsonOutput && *plainOutput {
+		fmt.Fprintln(os.Stderr, "Error: --json and --plain cannot be used together. Please choose one output format.")
+		os.Exit(1)
+	}
+
 	// Configure logger for JSON mode by default
 	output.GlobalLogger.SetJSONMode(true)
 	
@@ -136,14 +143,21 @@ func main() {
 	}
 	
 
-	if *tuiOutput {
-		// Launch TUI with live scanning
+	// Determine output modes
+	generateHtml := *htmlOutput != ""
+	showTui := !*noTui && !*jsonOutput && !*plainOutput
+
+	if showTui {
+		// TUI mode (default behavior)
 		app := tui.NewScanningApp()
-		
+
 		// Channel for scan completion
 		scanComplete := make(chan *tui.ScanResult)
 		scanErrors := make(chan error)
-		
+
+		// Store JSON result for potential HTML generation
+		var jsonResultForHtml string
+
 		// Set up startup callback to begin scanning
 		app.SetStartupCallback(func() {
 			// Start scanning in a goroutine
@@ -153,106 +167,105 @@ func main() {
 						scanErrors <- fmt.Errorf("scan panic: %v", r)
 					}
 				}()
-				
+
 				// Update progress to show scanning started
 				app.UpdateProgress(0, 1, "Starting scan...")
-				
+
 				// Run scanning with progress updates
 				messages := utils.ApplyAllChecksWithProgress(*generalConfig, files, true, func(current, total int, message string) {
 					app.UpdateProgress(current, total, message)
 				})
-				
+
 				// Create JSON formatter and generate output
 				formatter := jsonformatter.NewJSONFormatter()
-				
+
 				// Get collector name from config
 				collectorName := generalConfig.Operation["main"].Collector
-				
+
 				jsonResult, err := formatter.FormatResults(*folder_or_url, collectorName, messages, len(files), helpers.PDFTracker.Files)
 				if err != nil {
 					scanErrors <- fmt.Errorf("formatting error: %v", err)
 					return
 				}
-				
+
+				// Store for HTML generation if needed
+				jsonResultForHtml = jsonResult
+
+				// Generate HTML if requested (during TUI scan)
+				if generateHtml {
+					htmlFormatter := htmlformatter.NewHTMLFormatter()
+					if err := htmlFormatter.GenerateReport(jsonResult, *htmlOutput); err != nil {
+						scanErrors <- fmt.Errorf("HTML generation error: %v", err)
+						return
+					}
+				}
+
 				// Parse JSON for TUI
 				var scanResult tui.ScanResult
 				if err := json.Unmarshal([]byte(jsonResult), &scanResult); err != nil {
 					scanErrors <- fmt.Errorf("JSON parsing error: %v", err)
 					return
 				}
-				
+
 				// Send results
 				scanComplete <- &scanResult
 			}()
-			
+
 			// Handle scan completion
 			go func() {
 				select {
 				case result := <-scanComplete:
 					app.UpdateData(result)
-					// Progress should show total tests run (including skipped tests)
-					// This will be handled by the final callback from ApplyAllChecksWithProgress
 				case err := <-scanErrors:
 					app.UpdateProgress(0, 1, fmt.Sprintf("Scan failed: %v", err))
 				}
 			}()
 		})
-		
+
 		// Run TUI (this blocks until user exits)
 		if err := app.Run(); err != nil {
 			outputError("tui_error", fmt.Sprintf("Error running TUI: %v", err))
 			return
 		}
-	} else if *htmlOutput != "" {
-		// Generate HTML report
+
+		// After TUI exits, print HTML generation message if applicable
+		if generateHtml && jsonResultForHtml != "" {
+			fmt.Printf("HTML report generated: %s\n", *htmlOutput)
+		}
+	} else {
+		// Non-TUI mode: run regular scan
 		messages := utils.ApplyAllChecks(*generalConfig, files, true)
-		
-		// Create JSON formatter and generate output
-		formatter := jsonformatter.NewJSONFormatter()
-		
+
 		// Get collector name from config
 		collectorName := generalConfig.Operation["main"].Collector
-		
+
+		// Generate JSON result (needed for HTML and JSON output)
+		formatter := jsonformatter.NewJSONFormatter()
 		jsonResult, err := formatter.FormatResults(*folder_or_url, collectorName, messages, len(files), helpers.PDFTracker.Files)
 		if err != nil {
-			outputError("formatting_error", fmt.Sprintf("Error formatting JSON output: %v", err))
+			outputError("formatting_error", fmt.Sprintf("Error formatting output: %v", err))
 			return
 		}
-		
-		// Generate HTML report
-		htmlFormatter := htmlformatter.NewHTMLFormatter()
-		
-		if err := htmlFormatter.GenerateReport(jsonResult, *htmlOutput); err != nil {
-			outputError("html_error", fmt.Sprintf("Error generating HTML report: %v", err))
-			return
-		}
-		
-		fmt.Printf("HTML report generated: %s\n", *htmlOutput)
-	} else {
-		// Regular scanning without TUI
-		messages := utils.ApplyAllChecks(*generalConfig, files, true)
-		
-		// Get collector name from config
-		collectorName := generalConfig.Operation["main"].Collector
-		
-		if *plainOutput {
-			// Output plain text summary
-			formatter := plainformatter.NewPlainFormatter()
-			plainResult := formatter.FormatResults(*folder_or_url, collectorName, messages, len(files), helpers.PDFTracker.Files)
-			fmt.Print(plainResult)
-		} else {
-			// Create JSON formatter and generate output (default behavior)
-			formatter := jsonformatter.NewJSONFormatter()
-			
-			jsonResult, err := formatter.FormatResults(*folder_or_url, collectorName, messages, len(files), helpers.PDFTracker.Files)
-			if err != nil {
-				outputError("formatting_error", fmt.Sprintf("Error formatting JSON output: %v", err))
+
+		// Generate HTML if requested
+		if generateHtml {
+			htmlFormatter := htmlformatter.NewHTMLFormatter()
+			if err := htmlFormatter.GenerateReport(jsonResult, *htmlOutput); err != nil {
+				outputError("html_error", fmt.Sprintf("Error generating HTML report: %v", err))
 				return
 			}
-			
-			// Output JSON
-			fmt.Println(jsonResult)
+			fmt.Printf("HTML report generated: %s\n", *htmlOutput)
 		}
+
+		// Output to stdout based on flags
+		if *jsonOutput {
+			fmt.Println(jsonResult)
+		} else if *plainOutput {
+			plainFormatter := plainformatter.NewPlainFormatter()
+			plainResult := plainFormatter.FormatResults(*folder_or_url, collectorName, messages, len(files), helpers.PDFTracker.Files)
+			fmt.Print(plainResult)
+		}
+		// If only --no-tui (with or without --html), no stdout output beyond HTML message
 	}
 	
 	// Enable memory profiling if requested

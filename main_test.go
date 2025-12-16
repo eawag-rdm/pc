@@ -131,7 +131,7 @@ func TestHelpFlag(t *testing.T) {
 
 	// Verify help output contains expected flags
 	helpText := string(output)
-	expectedFlags := []string{"-config", "-location", "-help", "-tui", "-html"}
+	expectedFlags := []string{"-config", "-location", "-help", "-no-tui", "-html", "-json", "-plain"}
 	for _, flag := range expectedFlags {
 		if !strings.Contains(helpText, flag) {
 			t.Errorf("Help output missing flag: %s", flag)
@@ -158,8 +158,8 @@ func TestJSONOutput(t *testing.T) {
 	configPath := createTestConfigFile(t, tempDir)
 	testDir := createTestFiles(t, tempDir)
 
-	// Run scanner with JSON output (default)
-	cmd = exec.Command(binaryPath, "-config", configPath, "-location", testDir)
+	// Run scanner with JSON output (explicit --json flag, since TUI is now default)
+	cmd = exec.Command(binaryPath, "-config", configPath, "-location", testDir, "-json")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("Scanner failed: %v\nOutput: %s", err, string(output))
@@ -211,8 +211,8 @@ func TestHTMLOutput(t *testing.T) {
 	testDir := createTestFiles(t, tempDir)
 	htmlPath := filepath.Join(tempDir, "report.html")
 
-	// Run scanner with HTML output
-	cmd = exec.Command(binaryPath, "-config", configPath, "-location", testDir, "-html", htmlPath)
+	// Run scanner with HTML output (need --no-tui since --html alone launches TUI)
+	cmd = exec.Command(binaryPath, "-config", configPath, "-location", testDir, "-html", htmlPath, "-no-tui")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("Scanner with HTML output failed: %v\nOutput: %s", err, string(output))
@@ -498,12 +498,13 @@ func TestProfileFlags(t *testing.T) {
 	cpuProfilePath := filepath.Join(tempDir, "cpu.prof")
 	memProfilePath := filepath.Join(tempDir, "mem.prof")
 
-	// Run scanner with profiling flags
-	cmd = exec.Command(binaryPath, 
-		"-config", configPath, 
+	// Run scanner with profiling flags (need --json since TUI is now default)
+	cmd = exec.Command(binaryPath,
+		"-config", configPath,
 		"-location", testDir,
 		"-cpuprofile", cpuProfilePath,
-		"-memprofile", memProfilePath)
+		"-memprofile", memProfilePath,
+		"-json")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("Scanner with profiling failed: %v\nOutput: %s", err, string(output))
@@ -548,8 +549,8 @@ func TestInvalidHTMLPath(t *testing.T) {
 	// Try to write HTML to invalid path
 	invalidHTMLPath := "/root/readonly/report.html" // Should fail on most systems
 
-	// Run scanner with invalid HTML path
-	cmd = exec.Command(binaryPath, "-config", configPath, "-location", testDir, "-html", invalidHTMLPath)
+	// Run scanner with invalid HTML path (need --no-tui since --html alone launches TUI)
+	cmd = exec.Command(binaryPath, "-config", configPath, "-location", testDir, "-html", invalidHTMLPath, "-no-tui")
 	output, err := cmd.CombinedOutput()
 	
 	// Check for error in JSON output (program doesn't exit with non-zero code)
@@ -692,5 +693,40 @@ whitelist = []
 				}
 			}
 		}
+	}
+}
+
+func TestJSONAndPlainConflict(t *testing.T) {
+	if os.Getenv("CI") != "" {
+		t.Skip("Skipping JSON/plain conflict test in CI environment")
+	}
+
+	tempDir := t.TempDir()
+	binaryPath := filepath.Join(tempDir, "pc")
+
+	// Build the binary
+	cmd := exec.Command("go", "build", "-o", binaryPath, ".")
+	_, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("Failed to build binary: %v", err)
+	}
+
+	// Create test config and files
+	configPath := createTestConfigFile(t, tempDir)
+	testDir := createTestFiles(t, tempDir)
+
+	// Run scanner with both --json and --plain (should fail)
+	cmd = exec.Command(binaryPath, "-config", configPath, "-location", testDir, "-json", "-plain")
+	output, err := cmd.CombinedOutput()
+
+	// Command should exit with non-zero code
+	if err == nil {
+		t.Fatal("Expected error when using both --json and --plain, but command succeeded")
+	}
+
+	// Verify error message
+	outputStr := string(output)
+	if !strings.Contains(outputStr, "--json and --plain cannot be used together") {
+		t.Errorf("Expected conflict error message, got: %s", outputStr)
 	}
 }
