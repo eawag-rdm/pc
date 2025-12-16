@@ -257,12 +257,13 @@ func TestGenerateReport_InvalidOutputPath(t *testing.T) {
 		t.Fatalf("Failed to marshal test data: %v", err)
 	}
 
-	// Use invalid output path (non-existent directory with read-only parent)
-	invalidPath := "/nonexistent/directory/report.html"
+	// Use path that cannot be written to even as root
+	// /dev/null is a device, not a directory, so /dev/null/anything will always fail
+	invalidPath := "/dev/null/report.html"
 
 	formatter := NewHTMLFormatter()
 	err = formatter.GenerateReport(string(jsonData), invalidPath)
-	
+
 	if err == nil {
 		t.Error("Expected error for invalid output path, but got none")
 	}
