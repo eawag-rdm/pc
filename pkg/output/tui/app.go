@@ -1,7 +1,9 @@
 package tui
 
 import (
+	"encoding/base64"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -10,6 +12,14 @@ import (
 	"github.com/rivo/tview"
 	"github.com/eawag-rdm/pc/pkg/output"
 )
+
+// copyToClipboardOSC52 uses OSC 52 escape sequence to copy to clipboard.
+// This works over SSH/tmux when the terminal supports it.
+func copyToClipboardOSC52(text string) {
+	encoded := base64.StdEncoding.EncodeToString([]byte(text))
+	// OSC 52 sequence: \033]52;c;<base64>\a
+	fmt.Fprintf(os.Stdout, "\033]52;c;%s\a", encoded)
+}
 
 type App struct {
 	app               *tview.Application
@@ -968,8 +978,10 @@ func (a *App) showSummaryModal() {
 	// Try to copy to clipboard
 	clipboardStatus := ""
 	if err := clipboard.WriteAll(summary); err != nil {
-		clipboardStatus = "\n\n[red]Note: Could not copy to clipboard: " + err.Error() + "[white]"
-		a.summaryTextView.SetTitle(" Summary (clipboard unavailable) ")
+		// Fallback to OSC 52 for remote/tmux environments
+		copyToClipboardOSC52(summary)
+		clipboardStatus = "\n\n[yellow]Note: Used OSC 52 for clipboard (works if terminal supports it)[white]"
+		a.summaryTextView.SetTitle(" Summary (OSC 52 clipboard) ")
 	} else {
 		a.summaryTextView.SetTitle(" Summary (copied to clipboard) ")
 	}
