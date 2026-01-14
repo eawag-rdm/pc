@@ -3,6 +3,7 @@ package helpers
 import (
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/eawag-rdm/pc/pkg/structs"
@@ -242,6 +243,30 @@ func TestFileTracker_EdgeCases(t *testing.T) {
 
 	if len(tracker3.Files) != 0 {
 		t.Errorf("Expected 0 files for name containing '.pdf' but not ending with it, got %d", len(tracker3.Files))
+	}
+}
+
+func TestFileTracker_ConcurrentAccess(t *testing.T) {
+	tracker := NewFileTracker("Test")
+	var wg sync.WaitGroup
+	numGoroutines := 100
+
+	for i := 0; i < numGoroutines; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			file := structs.File{
+				Name:   fmt.Sprintf("doc%d.pdf", id),
+				Suffix: ".pdf",
+			}
+			tracker.AddFileIfPDF("", file)
+		}(i)
+	}
+
+	wg.Wait()
+
+	if len(tracker.Files) != numGoroutines {
+		t.Errorf("Expected %d files, got %d", numGoroutines, len(tracker.Files))
 	}
 }
 

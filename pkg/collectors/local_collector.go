@@ -31,28 +31,6 @@ func validatePath(path string) error {
 	return nil
 }
 
-// securePath safely joins path components and validates the result
-func securePath(base, name string) (string, error) {
-	// Clean both components
-	cleanBase := filepath.Clean(base)
-	cleanName := filepath.Clean(name)
-	
-	// Ensure the file name doesn't contain traversal patterns
-	if strings.Contains(cleanName, "..") || strings.Contains(cleanName, "/") || strings.Contains(cleanName, "\\") {
-		return "", fmt.Errorf("unsafe file name: %s", name)
-	}
-	
-	// Join paths securely
-	fullPath := filepath.Join(cleanBase, cleanName)
-	
-	// Ensure the resulting path is still within the base directory
-	if !strings.HasPrefix(fullPath, cleanBase) {
-		return "", fmt.Errorf("path escape detected: %s -> %s", name, fullPath)
-	}
-	
-	return fullPath, nil
-}
-
 // read all files from a local directory
 func LocalCollector(path string, config config.Config) ([]structs.File, error) {
 	collectorName := "LocalCollector"

@@ -300,8 +300,7 @@ func ApplyChecksFilteredByFileOnArchive(config config.Config, checks []func(file
 	}
 
 	// Use parallel processing for archives as they are CPU-intensive
-	// NOTE: Parallel processing temporarily disabled due to race condition causing lost results
-	if false && len(archiveFiles) >= 2 && runtime.NumCPU() > 1 {
+	if len(archiveFiles) >= 2 && runtime.NumCPU() > 1 {
 		return applyArchiveChecksParallel(config, checks, archiveFiles)
 	}
 
@@ -328,69 +327,68 @@ func ApplyChecksFilteredByFileOnArchive(config config.Config, checks []func(file
 
 // applyArchiveChecksParallel processes archive files in parallel
 func applyArchiveChecksParallel(cfg config.Config, checks []func(file structs.File, config config.Config) []structs.Message, files []structs.File) []structs.Message {
-	numWorkers := runtime.NumCPU()
+	numWorkers := runtime.NumCPU() / 2
+	if numWorkers < 1 {
+		numWorkers = 1
+	}
 	if len(files) < numWorkers {
 		numWorkers = len(files)
 	}
 
-	// Use fewer workers for archives due to memory constraints
-	numWorkers = numWorkers / 2
-	if numWorkers < 1 {
-		numWorkers = 1
+	// Use ArchiveWorkerPool for memory management
+	memoryLimitMB := cfg.General.MaxTotalArchiveMemory / (1024 * 1024)
+	if memoryLimitMB <= 0 {
+		memoryLimitMB = 100
 	}
-
-	pool := optimization.NewWorkerPool(numWorkers)
+	pool := optimization.NewArchiveWorkerPool(numWorkers, memoryLimitMB)
 	pool.Start()
 	defer pool.Stop()
 
+	// Pre-calculate work items BEFORE submission (fixes race condition)
+	type workEntry struct {
+		file   structs.File
+		checks []func(structs.File, config.Config) []structs.Message
+	}
+	workItems := make([]workEntry, 0, len(files))
+
+	for _, file := range files {
+		var validChecks []func(structs.File, config.Config) []structs.Message
+		for _, check := range checks {
+			if !skipFileCheck(cfg, check, file) {
+				validChecks = append(validChecks, check)
+			}
+		}
+		if len(validChecks) > 0 {
+			workItems = append(workItems, workEntry{file: file, checks: validChecks})
+		}
+	}
+
+	expectedResults := len(workItems)
+	if expectedResults == 0 {
+		return []structs.Message{}
+	}
+
 	// Submit work items
 	go func() {
-		for _, file := range files {
-			var validChecks []func(structs.File, config.Config) []structs.Message
-			for _, check := range checks {
-				if !skipFileCheck(cfg, check, file) {
-					validChecks = append(validChecks, check)
-				}
+		for _, entry := range workItems {
+			work := optimization.WorkItem{
+				File:   entry.file,
+				Checks: entry.checks,
+				Config: cfg,
 			}
-
-			if len(validChecks) > 0 {
-				work := optimization.WorkItem{
-					File:   file,
-					Checks: validChecks,
-					Config: cfg,
-				}
-
-				for !pool.Submit(work) {
-					runtime.Gosched()
-				}
+			for !pool.Submit(work) {
+				runtime.Gosched()
 			}
 		}
 	}()
 
 	// Collect results
 	var allMessages []structs.Message
-	resultsCollected := 0
-	expectedResults := 0
-
-	for _, file := range files {
-		hasValidChecks := false
-		for _, check := range checks {
-			if !skipFileCheck(cfg, check, file) {
-				hasValidChecks = true
-				break
-			}
-		}
-		if hasValidChecks {
-			expectedResults++
-		}
-	}
-
-	for resultsCollected < expectedResults {
+	for i := 0; i < expectedResults; i++ {
 		result := <-pool.Results()
 		if len(result.Messages) > 0 {
 			allMessages = append(allMessages, result.Messages...)
 		}
-		resultsCollected++
 	}
 
 	return allMessages

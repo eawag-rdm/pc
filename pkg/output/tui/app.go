@@ -22,10 +22,9 @@ type App struct {
 	controls          *tview.TextView
 	progressBar       *tview.TextView // Progress bar for scanning
 	flex              *tview.Flex
-	leftPanel         *tview.Flex     // Store reference to left panel for dynamic content
-	rightPanel        *tview.Flex     // Store reference to right panel for dynamic height
-	pages             *tview.Pages
-	currentView       string // "subjects", "checks", or "details"
+	leftPanel         *tview.Flex // Store reference to left panel for dynamic content
+	rightPanel        *tview.Flex // Store reference to right panel for dynamic height
+	currentView       string      // "subjects", "checks", or "details"
 	currentSubject    string // Currently selected subject/check
 	selectedSection   int    // Currently selected details section (0-3)
 	selectedLeftPanel int    // Currently selected left panel (0=subjects, 1=checks)
@@ -530,36 +529,6 @@ func (a *App) showChecksPanel() {
 		AddItem(a.checksList, 0, 1, true)
 }
 
-func (a *App) showSkippedPanel() {
-	a.leftContent.Clear()
-	content := a.getSkippedContent()
-	skippedView := tview.NewTextView().SetDynamicColors(true).SetScrollable(true).SetWrap(true)
-	skippedView.SetText(content)
-	skippedView.SetBorder(true).SetTitle(" Skipped Files ")
-	a.leftContent.SetDirection(tview.FlexRow).
-		AddItem(skippedView, 0, 1, true)
-}
-
-func (a *App) showWarningsPanel() {
-	a.leftContent.Clear()
-	content := a.getWarningsContent()
-	warningsView := tview.NewTextView().SetDynamicColors(true).SetScrollable(true).SetWrap(true)
-	warningsView.SetText(content)
-	warningsView.SetBorder(true).SetTitle(" Warnings ")
-	a.leftContent.SetDirection(tview.FlexRow).
-		AddItem(warningsView, 0, 1, true)
-}
-
-func (a *App) showErrorsPanel() {
-	a.leftContent.Clear()
-	content := a.getErrorsContent()
-	errorsView := tview.NewTextView().SetDynamicColors(true).SetScrollable(true).SetWrap(true)
-	errorsView.SetText(content)
-	errorsView.SetBorder(true).SetTitle(" Errors ")
-	a.leftContent.SetDirection(tview.FlexRow).
-		AddItem(errorsView, 0, 1, true)
-}
-
 func (a *App) showEmptyLeftPanel(title string) {
 	a.leftContent.Clear()
 	emptyView := tview.NewTextView().SetDynamicColors(true)
@@ -791,30 +760,6 @@ func (a *App) getErrorsContent() string {
 	}
 	return content
 }
-
-func (a *App) getDetailsCount() int {
-	if a.currentSubject == "" {
-		return 0
-	}
-	
-	// Count issues for current subject
-	for _, subject := range a.data.DetailsSubjectFocused {
-		if subject.Subject == a.currentSubject {
-			return len(subject.Issues)
-		}
-	}
-	
-	// Check in check-focused data
-	for _, check := range a.data.DetailsCheckFocused {
-		if check.Checkname == a.currentSubject {
-			return len(check.Issues)
-		}
-	}
-	
-	return 0
-}
-
-
 
 
 

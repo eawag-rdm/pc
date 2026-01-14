@@ -276,8 +276,8 @@ func TestInvalidConfig(t *testing.T) {
 
 	// Run scanner with invalid config
 	cmd = exec.Command(binaryPath, "-config", invalidConfigPath, "-location", ".")
-	output, err := cmd.CombinedOutput()
-	
+	output, _ := cmd.CombinedOutput()
+
 	// Check for error in JSON output (program doesn't exit with non-zero code)
 	var errorResult map[string]interface{}
 	err = json.Unmarshal(output, &errorResult)
@@ -325,8 +325,8 @@ func TestNonexistentLocation(t *testing.T) {
 	// Run scanner with nonexistent location
 	nonexistentPath := filepath.Join(tempDir, "nonexistent")
 	cmd = exec.Command(binaryPath, "-config", configPath, "-location", nonexistentPath)
-	output, err := cmd.CombinedOutput()
-	
+	output, _ := cmd.CombinedOutput()
+
 	// Check for error in JSON output (program doesn't exit with non-zero code)
 	var errorResult map[string]interface{}
 	err = json.Unmarshal(output, &errorResult)
@@ -376,8 +376,8 @@ func TestEmptyDirectory(t *testing.T) {
 
 	// Run scanner with empty directory
 	cmd = exec.Command(binaryPath, "-config", configPath, "-location", emptyDir)
-	output, err := cmd.CombinedOutput()
-	
+	output, _ := cmd.CombinedOutput()
+
 	// Check for error in JSON output (program doesn't exit with non-zero code)
 	var errorResult map[string]interface{}
 	err = json.Unmarshal(output, &errorResult)
@@ -452,8 +452,8 @@ attrs = {url = "https://example.com", token = "", verify = true}
 
 	// Run scanner with CKAN collector but default location (should fail)
 	cmd = exec.Command(binaryPath, "-config", configPath)
-	output, err := cmd.CombinedOutput()
-	
+	output, _ := cmd.CombinedOutput()
+
 	// Check for error in JSON output (program doesn't exit with non-zero code)
 	var errorResult map[string]interface{}
 	err = json.Unmarshal(output, &errorResult)
@@ -551,8 +551,8 @@ func TestInvalidHTMLPath(t *testing.T) {
 
 	// Run scanner with invalid HTML path (need --no-tui since --html alone launches TUI)
 	cmd = exec.Command(binaryPath, "-config", configPath, "-location", testDir, "-html", invalidHTMLPath, "-no-tui")
-	output, err := cmd.CombinedOutput()
-	
+	output, _ := cmd.CombinedOutput()
+
 	// Check for error in JSON output (program doesn't exit with non-zero code)
 	var errorResult map[string]interface{}
 	err = json.Unmarshal(output, &errorResult)
@@ -671,8 +671,8 @@ whitelist = []
 
 	// Run scanner with unknown collector
 	cmd = exec.Command(binaryPath, "-config", configPath, "-location", ".")
-	output, err := cmd.CombinedOutput()
-	
+	output, _ := cmd.CombinedOutput()
+
 	// Check for error in JSON output (program doesn't exit with non-zero code)
 	var errorResult map[string]interface{}
 	err = json.Unmarshal(output, &errorResult)

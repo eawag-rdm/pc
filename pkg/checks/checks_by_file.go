@@ -373,20 +373,6 @@ func IsFreeOfKeywordsCoreList(file structs.File, keywordList []string, info stri
 	return messages
 }
 
-func matchPatterns(patterns string, body []byte) string {
-	if len(body) == 0 {
-		return ""
-	}
-
-	// Split patterns and use fast matcher
-	patternList := strings.Split(patterns, "|")
-	if len(patternList) == 0 {
-		return ""
-	}
-
-	return matchPatternsList(patternList, body)
-}
-
 // matchPatternsList is an optimized version that takes a pattern slice directly
 func matchPatternsList(patternList []string, body []byte) string {
 	if len(body) == 0 || len(patternList) == 0 {

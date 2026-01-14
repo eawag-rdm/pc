@@ -1,6 +1,7 @@
 package output
 
 import (
+	"sync"
 	"testing"
 	"time"
 )
@@ -224,5 +225,28 @@ func TestLogger_FormattingEdgeCases(t *testing.T) {
 
 	if logger.messages[2].Message != "" {
 		t.Errorf("Expected empty message, got '%s'", logger.messages[2].Message)
+	}
+}
+
+func TestLogger_ConcurrentAccess(t *testing.T) {
+	logger := &Logger{jsonMode: true, messages: []LogMessage{}}
+	var wg sync.WaitGroup
+	numGoroutines := 100
+
+	for i := 0; i < numGoroutines; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			logger.Warning("Warning from %d", id)
+			logger.Error("Error from %d", id)
+			logger.Info("Info from %d", id)
+		}(i)
+	}
+
+	wg.Wait()
+
+	messages := logger.GetMessages()
+	if len(messages) != numGoroutines*3 {
+		t.Errorf("Expected %d messages, got %d", numGoroutines*3, len(messages))
 	}
 }

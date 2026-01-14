@@ -2,6 +2,7 @@ package output
 
 import (
 	"fmt"
+	"sync"
 	"time"
 )
 
@@ -16,6 +17,7 @@ type LogMessage struct {
 type Logger struct {
 	jsonMode bool
 	messages []LogMessage
+	mu       sync.Mutex
 }
 
 var GlobalLogger = &Logger{jsonMode: false, messages: []LogMessage{}}
@@ -29,13 +31,15 @@ func (l *Logger) SetJSONMode(enabled bool) {
 func (l *Logger) Warning(format string, args ...interface{}) {
 	message := fmt.Sprintf(format, args...)
 	if l.jsonMode {
+		l.mu.Lock()
 		l.messages = append(l.messages, LogMessage{
 			Level:     "warning",
 			Message:   message,
 			Timestamp: time.Now().Format(time.RFC3339),
 		})
+		l.mu.Unlock()
 	} else {
-		fmt.Printf(message+"\n")
+		fmt.Printf(message + "\n")
 	}
 }
 
@@ -43,13 +47,15 @@ func (l *Logger) Warning(format string, args ...interface{}) {
 func (l *Logger) Error(format string, args ...interface{}) {
 	message := fmt.Sprintf(format, args...)
 	if l.jsonMode {
+		l.mu.Lock()
 		l.messages = append(l.messages, LogMessage{
 			Level:     "error",
 			Message:   message,
 			Timestamp: time.Now().Format(time.RFC3339),
 		})
+		l.mu.Unlock()
 	} else {
-		fmt.Printf(message+"\n")
+		fmt.Printf(message + "\n")
 	}
 }
 
@@ -57,22 +63,28 @@ func (l *Logger) Error(format string, args ...interface{}) {
 func (l *Logger) Info(format string, args ...interface{}) {
 	message := fmt.Sprintf(format, args...)
 	if l.jsonMode {
+		l.mu.Lock()
 		l.messages = append(l.messages, LogMessage{
 			Level:     "info",
 			Message:   message,
 			Timestamp: time.Now().Format(time.RFC3339),
 		})
+		l.mu.Unlock()
 	} else {
-		fmt.Printf(message+"\n")
+		fmt.Printf(message + "\n")
 	}
 }
 
 // GetMessages returns captured messages for JSON output
 func (l *Logger) GetMessages() []LogMessage {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	return l.messages
 }
 
 // ClearMessages clears the captured messages
 func (l *Logger) ClearMessages() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	l.messages = []LogMessage{}
 }

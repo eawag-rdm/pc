@@ -186,18 +186,21 @@ func TestMessage_TestNameField(t *testing.T) {
 
 func TestMessage_SourceInterface(t *testing.T) {
 	// Test that both File and Repository implement Source interface
-	var source Source
+	// Compile-time check: these assignments verify interface implementation
+	var _ Source = File{Name: "test.txt"}
+	var _ Source = Repository{Files: []File{}}
 
+	// Runtime check: verify GetValue returns expected values
 	file := File{Name: "test.txt"}
-	source = file
-	if source == nil {
-		t.Error("File should implement Source interface")
+	files := file.GetValue()
+	if len(files) != 1 || files[0].Name != "test.txt" {
+		t.Errorf("File.GetValue() returned unexpected result")
 	}
 
-	repo := Repository{Files: []File{}}
-	source = repo
-	if source == nil {
-		t.Error("Repository should implement Source interface")
+	repo := Repository{Files: []File{{Name: "a.txt"}, {Name: "b.txt"}}}
+	repoFiles := repo.GetValue()
+	if len(repoFiles) != 2 {
+		t.Errorf("Repository.GetValue() = %d files, want 2", len(repoFiles))
 	}
 }
 

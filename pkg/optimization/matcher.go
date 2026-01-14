@@ -9,12 +9,10 @@ import (
 
 // FastMatcher provides high-performance string matching using multiple algorithms
 type FastMatcher struct {
-	patterns    []string
-	maxLen      int
-	minLen      int
-	caseMap     map[string]string // lowercase pattern -> original pattern
-	suffixArray [][]byte          // for longer patterns
-	mutex       sync.RWMutex
+	patterns []string
+	maxLen   int
+	minLen   int
+	caseMap  map[string]string // lowercase pattern -> original pattern
 }
 
 // NewFastMatcher creates a new fast string matcher optimized for the given patterns

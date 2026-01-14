@@ -79,13 +79,13 @@ func TestQueue_Dequeue(t *testing.T) {
 	}
 
 	// Dequeue second item
-	item, ok = queue.Dequeue()
+	item, _ = queue.Dequeue()
 	if item != "second" {
 		t.Errorf("Expected 'second', got %v", item)
 	}
 
 	// Dequeue third item
-	item, ok = queue.Dequeue()
+	item, _ = queue.Dequeue()
 	if item != "third" {
 		t.Errorf("Expected 'third', got %v", item)
 	}
