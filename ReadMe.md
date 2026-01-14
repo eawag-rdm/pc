@@ -290,6 +290,26 @@ ssh -t user@remote-server "TERM=xterm-256color LANG=en_US.UTF-8 cd /path/to/pc &
 
 **Important**: The `-t` flag is essential as it allocates a pseudo-terminal required for interactive TUI applications.
 
+**Clipboard Issues (Copy Summary)**
+
+When using the TUI summary feature (press `c`) over SSH, the clipboard uses OSC 52 escape sequences to copy to your local clipboard. This requires terminal support:
+
+- **iTerm2 (macOS)**: Enable in Preferences → General → Selection → "Applications in terminal may access clipboard"
+- **kitty, alacritty, Windows Terminal**: Works by default
+- **GNOME Terminal**: Not supported - use an alternative terminal
+
+**Recommended terminals for Linux:**
+- `kitty` - `sudo apt install kitty`
+- `alacritty` - `sudo apt install alacritty`
+- `tilix` - `sudo apt install tilix`
+
+**For tmux users**, add to `~/.tmux.conf`:
+```bash
+set -g set-clipboard on
+set -g allow-passthrough on
+```
+Then reload: `tmux source-file ~/.tmux.conf`
+
 
 ## Testing
 ```
