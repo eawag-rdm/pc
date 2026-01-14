@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"sync"
 
 	"github.com/eawag-rdm/pc/pkg/checks"
 	"github.com/eawag-rdm/pc/pkg/config"
@@ -253,37 +254,109 @@ func applyChecksParallel(cfg config.Config, checks []func(file structs.File, con
 }
 
 func ApplyChecksFilteredByFileOnArchiveFileList(config config.Config, checks []func(file structs.File, config config.Config) []structs.Message, files []structs.File) []structs.Message {
-
-	var messages = []structs.Message{}
+	// Filter to only archive files
+	var archiveFiles []structs.File
 	for _, file := range files {
-		fileList, err := readers.ReadArchiveFileList(file)
-		if err != nil {
-			// handle the error appropriately, e.g., log it or return it
-			output.GlobalLogger.Warning("Error (archive filelist checks) reading archive file list of '%s' -> %v", file.Name, err)
-			continue
+		if file.IsArchive {
+			archiveFiles = append(archiveFiles, file)
 		}
-		for _, archivedFile := range fileList {
-			helpers.PDFTracker.AddFileIfPDF(file.Name+" -> ", archivedFile)
+	}
 
-			for _, check := range checks {
-				if skipFileCheck(config, check, archivedFile) {
-					continue
-				}
-				testName := getFunctionName(check)
-				ret := check(archivedFile, config)
+	if len(archiveFiles) == 0 {
+		return []structs.Message{}
+	}
 
-				if ret != nil {
-					// Add test name to each message
-					for i := range ret {
-						ret[i].TestName = testName
-					}
-					messages = append(messages, ret...)
+	// Use parallel processing for multiple archives
+	if len(archiveFiles) >= 2 && runtime.NumCPU() > 1 {
+		return applyArchiveFileListChecksParallel(config, checks, archiveFiles)
+	}
+
+	// Sequential processing for single archive or single CPU
+	var messages = []structs.Message{}
+	for _, file := range archiveFiles {
+		msgs := processArchiveFileList(config, checks, file)
+		messages = append(messages, msgs...)
+	}
+	return messages
+}
+
+// processArchiveFileList processes all file list checks for a single archive
+// This keeps files within each archive sequential while allowing parallelism across archives
+func processArchiveFileList(cfg config.Config, checks []func(file structs.File, config config.Config) []structs.Message, archiveFile structs.File) []structs.Message {
+	var messages []structs.Message
+
+	fileList, err := readers.ReadArchiveFileList(archiveFile)
+	if err != nil {
+		output.GlobalLogger.Warning("Error (archive filelist checks) reading archive file list of '%s' -> %v", archiveFile.Name, err)
+		return messages
+	}
+
+	for _, archivedFile := range fileList {
+		helpers.PDFTracker.AddFileIfPDF(archiveFile.Name+" -> ", archivedFile)
+
+		for _, check := range checks {
+			if skipFileCheck(cfg, check, archivedFile) {
+				continue
+			}
+			testName := getFunctionName(check)
+			ret := check(archivedFile, cfg)
+
+			if ret != nil {
+				for i := range ret {
+					ret[i].TestName = testName
 				}
+				messages = append(messages, ret...)
 			}
 		}
 	}
 	return messages
+}
 
+// applyArchiveFileListChecksParallel processes archive file list checks in parallel across archives
+// Each archive is processed by a single worker, keeping files within each archive sequential
+func applyArchiveFileListChecksParallel(cfg config.Config, checks []func(file structs.File, config config.Config) []structs.Message, archiveFiles []structs.File) []structs.Message {
+	numWorkers := runtime.NumCPU()
+	if len(archiveFiles) < numWorkers {
+		numWorkers = len(archiveFiles)
+	}
+
+	// Channel for archive files to process
+	archiveChan := make(chan structs.File, len(archiveFiles))
+	// Channel for results
+	resultChan := make(chan []structs.Message, len(archiveFiles))
+
+	// Start workers
+	var wg sync.WaitGroup
+	for i := 0; i < numWorkers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for archiveFile := range archiveChan {
+				messages := processArchiveFileList(cfg, checks, archiveFile)
+				resultChan <- messages
+			}
+		}()
+	}
+
+	// Send work
+	for _, file := range archiveFiles {
+		archiveChan <- file
+	}
+	close(archiveChan)
+
+	// Wait for workers to finish and close result channel
+	go func() {
+		wg.Wait()
+		close(resultChan)
+	}()
+
+	// Collect results
+	var allMessages []structs.Message
+	for messages := range resultChan {
+		allMessages = append(allMessages, messages...)
+	}
+
+	return allMessages
 }
 
 func ApplyChecksFilteredByFileOnArchive(config config.Config, checks []func(file structs.File, config config.Config) []structs.Message, files []structs.File) []structs.Message {
