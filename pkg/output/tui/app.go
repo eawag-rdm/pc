@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atotto/clipboard"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 	"github.com/eawag-rdm/pc/pkg/output"
@@ -30,6 +31,10 @@ type App struct {
 	selectedLeftPanel int    // Currently selected left panel (0=subjects, 1=checks)
 	isScanning        bool   // Whether we're currently scanning
 	startupCallback   func() // Called when TUI starts running
+	location          string // Location/path being scanned (for summary)
+	summaryModal      *tview.Flex     // Modal overlay for summary
+	summaryTextView   *tview.TextView // Scrollable summary content
+	summaryVisible    bool            // Track modal visibility
 }
 
 func NewApp(data *ScanResult) *App {
@@ -151,6 +156,9 @@ func (a *App) setupUI() {
 	// Set up resize handler for responsive sections
 	a.setupResizeHandler()
 
+	// Set up summary modal
+	a.setupSummaryModal()
+
 	// Set root
 	a.app.SetRoot(a.flex, true)
 }
@@ -266,26 +274,26 @@ func (a *App) updateInfo() {
 
 func (a *App) updateControls() {
 	var controls string
-	
+
 	// Determine if TAB is available (only for Subjects/Checks that can switch to details)
 	tabAvailable := a.currentView == "details" || a.currentView == "subjects" || a.currentView == "checks"
-	
+
 	if a.currentView == "details" {
 		// When focused on details (right side), no left/right arrow navigation
 		if tabAvailable {
-			controls = "[yellow]TAB[white]=Issues  [yellow]↑↓[white]=Scroll  [yellow]S[white]=Subjects  [yellow]C[white]=Checks  [yellow]Q[white]=Quit"
+			controls = "[yellow]TAB[white]=Issues  [yellow]↑↓[white]=Scroll  [yellow]S[white]=Subjects  [yellow]C[white]=Checks  [yellow]X[white]=Summary  [yellow]Q[white]=Quit"
 		} else {
-			controls = "[yellow]↑↓[white]=Scroll  [yellow]S[white]=Subjects  [yellow]C[white]=Checks  [yellow]Q[white]=Quit"
+			controls = "[yellow]↑↓[white]=Scroll  [yellow]S[white]=Subjects  [yellow]C[white]=Checks  [yellow]X[white]=Summary  [yellow]Q[white]=Quit"
 		}
 	} else {
 		// When focused on left side, show category navigation
 		if tabAvailable {
-			controls = "[yellow]TAB[white]=Details  [yellow]←→[white]=Categories  [yellow]↑↓[white]=Navigate  [yellow]S[white]=Subjects  [yellow]C[white]=Checks  [yellow]Q[white]=Quit"
+			controls = "[yellow]TAB[white]=Details  [yellow]←→[white]=Categories  [yellow]↑↓[white]=Navigate  [yellow]S[white]=Subjects  [yellow]C[white]=Checks  [yellow]X[white]=Summary  [yellow]Q[white]=Quit"
 		} else {
-			controls = "[yellow]←→[white]=Categories  [yellow]↑↓[white]=Navigate  [yellow]S[white]=Subjects  [yellow]C[white]=Checks  [yellow]Q[white]=Quit"
+			controls = "[yellow]←→[white]=Categories  [yellow]↑↓[white]=Navigate  [yellow]S[white]=Subjects  [yellow]C[white]=Checks  [yellow]X[white]=Summary  [yellow]Q[white]=Quit"
 		}
 	}
-	
+
 	a.controls.SetText(controls)
 }
 
@@ -298,6 +306,22 @@ func (a *App) setupResizeHandler() {
 
 func (a *App) setupKeyBindings() {
 	a.app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		// Handle summary modal input separately
+		if a.summaryVisible {
+			switch event.Key() {
+			case tcell.KeyEsc:
+				a.hideSummaryModal()
+				return nil
+			}
+			switch event.Rune() {
+			case 'x', 'X', 'q', 'Q':
+				a.hideSummaryModal()
+				return nil
+			}
+			// Allow scrolling in the modal
+			return event
+		}
+
 		switch event.Key() {
 		case tcell.KeyTab:
 			a.switchFocus()
@@ -306,7 +330,7 @@ func (a *App) setupKeyBindings() {
 			a.app.Stop()
 			return nil
 		}
-		
+
 		switch event.Rune() {
 		case 'q', 'Q':
 			a.app.Stop()
@@ -322,8 +346,11 @@ func (a *App) setupKeyBindings() {
 				a.focusDetails()
 			}
 			return nil
+		case 'x', 'X':
+			a.showSummaryModal()
+			return nil
 		}
-		
+
 		// Handle arrow keys for navigation
 		switch event.Key() {
 		case tcell.KeyLeft:
@@ -333,13 +360,13 @@ func (a *App) setupKeyBindings() {
 			}
 			return nil
 		case tcell.KeyRight:
-			// Only navigate categories when focused on left side  
+			// Only navigate categories when focused on left side
 			if a.currentView != "details" {
 				a.navigateLeftPanelRight()
 			}
 			return nil
 		}
-		
+
 		return event
 	})
 }
@@ -875,4 +902,93 @@ func (a *App) Run() error {
 		}()
 	}
 	return a.app.Run()
+}
+
+// SetLocation sets the location/path being scanned (used in summary)
+func (a *App) SetLocation(location string) {
+	a.location = location
+}
+
+// setupSummaryModal creates the modal overlay for the copy-paste summary
+func (a *App) setupSummaryModal() {
+	// Create the text view for summary content
+	a.summaryTextView = tview.NewTextView().
+		SetDynamicColors(true).
+		SetScrollable(true).
+		SetWrap(true)
+	a.summaryTextView.SetBorder(true).SetTitle(" Summary (copied to clipboard) ")
+
+	// Create instructions text
+	instructions := tview.NewTextView().
+		SetDynamicColors(true).
+		SetText("[yellow]Press ESC or X to close[white]  |  [yellow]↑↓[white] to scroll")
+	instructions.SetTextAlign(tview.AlignCenter)
+
+	// Create the modal container
+	innerFlex := tview.NewFlex().SetDirection(tview.FlexRow).
+		AddItem(a.summaryTextView, 0, 1, true).
+		AddItem(instructions, 1, 0, false)
+	innerFlex.SetBorder(true).SetTitle(" Copy-Paste Summary ")
+	innerFlex.SetBorderColor(tcell.ColorYellow)
+
+	// Create centered modal with padding
+	a.summaryModal = tview.NewFlex().SetDirection(tview.FlexRow).
+		AddItem(nil, 2, 0, false).  // Top padding
+		AddItem(tview.NewFlex().
+			AddItem(nil, 4, 0, false).  // Left padding
+			AddItem(innerFlex, 0, 1, true).
+			AddItem(nil, 4, 0, false),  // Right padding
+		0, 1, true).
+		AddItem(nil, 2, 0, false)  // Bottom padding
+}
+
+// showSummaryModal generates the summary, copies to clipboard, and shows the modal
+func (a *App) showSummaryModal() {
+	if a.summaryVisible {
+		return
+	}
+
+	// Generate the summary
+	generator := NewSummaryGenerator(a.data, a.location)
+	summary := generator.Generate()
+
+	// Try to copy to clipboard
+	clipboardStatus := ""
+	if err := clipboard.WriteAll(summary); err != nil {
+		clipboardStatus = "\n\n[red]Note: Could not copy to clipboard: " + err.Error() + "[white]"
+		a.summaryTextView.SetTitle(" Summary (clipboard unavailable) ")
+	} else {
+		a.summaryTextView.SetTitle(" Summary (copied to clipboard) ")
+	}
+
+	// Set the summary text
+	a.summaryTextView.SetText(summary + clipboardStatus)
+	a.summaryTextView.ScrollToBeginning()
+
+	// Show the modal by replacing the root
+	a.summaryVisible = true
+	a.app.SetRoot(a.summaryModal, true)
+	a.app.SetFocus(a.summaryTextView)
+}
+
+// hideSummaryModal hides the modal and returns to the main view
+func (a *App) hideSummaryModal() {
+	if !a.summaryVisible {
+		return
+	}
+
+	a.summaryVisible = false
+	a.app.SetRoot(a.flex, true)
+
+	// Restore focus to previous view
+	switch a.currentView {
+	case "subjects":
+		a.app.SetFocus(a.subjectsList)
+	case "checks":
+		a.app.SetFocus(a.checksList)
+	case "details":
+		a.app.SetFocus(a.detailsContent)
+	default:
+		a.app.SetFocus(a.subjectsList)
+	}
 }
