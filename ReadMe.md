@@ -220,6 +220,36 @@ curl -X POST http://localhost:8080/api/v1/analyze \
 | 500 | `no_ckan_url` | CKAN URL not configured |
 | 500 | `internal_error` | Server-side error during check |
 
+### Production Deployment
+
+The server only supports HTTP. For production use with HTTPS, deploy behind a reverse proxy like nginx:
+
+```nginx
+server {
+    listen 44433 ssl;
+    server_name pc.example.com;
+
+    ssl_certificate /etc/ssl/certs/your-cert.pem;
+    ssl_certificate_key /etc/ssl/private/your-key.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # Longer timeout for package analysis
+        proxy_read_timeout 300s;
+    }
+}
+```
+
+Then run the server bound to localhost only:
+```bash
+pc-server -addr 127.0.0.1:8080 -config ./pc.toml
+```
+
 ### Running TUI over SSH
 
 When running the package checker with TUI interface over SSH, you need to ensure proper terminal allocation:
