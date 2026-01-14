@@ -9,14 +9,14 @@ import (
 	"runtime/pprof"
 	"time"
 
-	"github.com/eawag-rdm/pc/pkg/output/tui"
-	jsonformatter "github.com/eawag-rdm/pc/pkg/output/json"
-	htmlformatter "github.com/eawag-rdm/pc/pkg/output/html"
-	plainformatter "github.com/eawag-rdm/pc/pkg/output/plain"
 	"github.com/eawag-rdm/pc/pkg/collectors"
 	"github.com/eawag-rdm/pc/pkg/config"
 	"github.com/eawag-rdm/pc/pkg/helpers"
 	"github.com/eawag-rdm/pc/pkg/output"
+	htmlformatter "github.com/eawag-rdm/pc/pkg/output/html"
+	jsonformatter "github.com/eawag-rdm/pc/pkg/output/json"
+	plainformatter "github.com/eawag-rdm/pc/pkg/output/plain"
+	"github.com/eawag-rdm/pc/pkg/output/tui"
 	"github.com/eawag-rdm/pc/pkg/structs"
 	"github.com/eawag-rdm/pc/pkg/utils"
 )
