@@ -15,10 +15,18 @@ import (
 
 // copyToClipboardOSC52 uses OSC 52 escape sequence to copy to clipboard.
 // This works over SSH/tmux when the terminal supports it.
-func copyToClipboardOSC52(text string) {
+// Writes directly to /dev/tty to bypass tview's terminal capture.
+func copyToClipboardOSC52(text string) error {
+	tty, err := os.OpenFile("/dev/tty", os.O_WRONLY, 0)
+	if err != nil {
+		return err
+	}
+	defer tty.Close()
+
 	encoded := base64.StdEncoding.EncodeToString([]byte(text))
 	// OSC 52 sequence: \033]52;c;<base64>\a
-	fmt.Fprintf(os.Stdout, "\033]52;c;%s\a", encoded)
+	_, err = fmt.Fprintf(tty, "\033]52;c;%s\a", encoded)
+	return err
 }
 
 type App struct {
@@ -979,9 +987,13 @@ func (a *App) showSummaryModal() {
 	clipboardStatus := ""
 	if err := clipboard.WriteAll(summary); err != nil {
 		// Fallback to OSC 52 for remote/tmux environments
-		copyToClipboardOSC52(summary)
-		clipboardStatus = "\n\n[yellow]Note: Used OSC 52 for clipboard (works if terminal supports it)[white]"
-		a.summaryTextView.SetTitle(" Summary (OSC 52 clipboard) ")
+		if osc52Err := copyToClipboardOSC52(summary); osc52Err != nil {
+			clipboardStatus = "\n\n[red]Note: Could not copy to clipboard: " + err.Error() + "[white]"
+			a.summaryTextView.SetTitle(" Summary (clipboard unavailable) ")
+		} else {
+			clipboardStatus = "\n\n[yellow]Note: Used OSC 52 for clipboard (works if terminal supports it)[white]"
+			a.summaryTextView.SetTitle(" Summary (OSC 52 clipboard) ")
+		}
 	} else {
 		a.summaryTextView.SetTitle(" Summary (copied to clipboard) ")
 	}
