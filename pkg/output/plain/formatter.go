@@ -29,14 +29,20 @@ func (f *PlainFormatter) FormatResults(location string, collectorName string, me
 		return output.String()
 	}
 	
-	// Group messages by source file
+	// Group messages by source file (using display name with archive context)
 	fileIssues := make(map[string][]structs.Message)
 	repoIssues := []structs.Message{}
-	
+
 	for _, msg := range messages {
 		switch source := msg.Source.(type) {
 		case structs.File:
-			fileIssues[source.Name] = append(fileIssues[source.Name], msg)
+			// Create a key that includes archive context for proper grouping
+			displayName := source.GetDisplayName()
+			key := displayName
+			if source.ArchiveName != "" {
+				key = source.ArchiveName + " > " + displayName
+			}
+			fileIssues[key] = append(fileIssues[key], msg)
 		case structs.Repository:
 			repoIssues = append(repoIssues, msg)
 		}

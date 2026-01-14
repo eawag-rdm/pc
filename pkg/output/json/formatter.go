@@ -37,9 +37,10 @@ type SkippedFile struct {
 
 // SubjectDetails represents detailed issues for a specific subject
 type SubjectDetails struct {
-	Subject string        `json:"subject"`
-	Path    string        `json:"path"`
-	Issues  []CheckIssue  `json:"issues"`
+	Subject     string       `json:"subject"`
+	Path        string       `json:"path"`
+	ArchiveName string       `json:"archive_name,omitempty"` // Parent archive if file is inside archive
+	Issues      []CheckIssue `json:"issues"`
 }
 
 // CheckDetails represents detailed issues for a specific check
@@ -62,9 +63,10 @@ type CheckIssue struct {
 
 // SubjectIssue represents an issue in a specific subject for a check
 type SubjectIssue struct {
-	Subject string `json:"subject"`
-	Path    string `json:"path"`
-	Message string `json:"message"`
+	Subject     string `json:"subject"`
+	Path        string `json:"path"`
+	ArchiveName string `json:"archive_name,omitempty"` // Parent archive if file is inside archive
+	Message     string `json:"message"`
 }
 
 // Using LogMessage from output package
@@ -187,13 +189,23 @@ func (jf *JSONFormatter) FormatResults(location, collector string, messages []st
 	return string(jsonBytes), nil
 }
 
+// subjectKey creates a unique key for a subject considering archive context
+func subjectKey(displayName, archiveName string) string {
+	if archiveName != "" {
+		return archiveName + " > " + displayName
+	}
+	return displayName
+}
+
 // processMessages analyzes messages and creates the new structured output
 func (result *ScanResult) processMessages(messages []structs.Message) {
 	// Maps to organize data
-	fileIssueMap := make(map[string]map[string]int)         // filename -> checkname -> count (only for files)
-	subjectDetailMap := make(map[string][]CheckIssue)       // subject -> []CheckIssue  
+	fileIssueMap := make(map[string]map[string]int)         // subject_key -> checkname -> count (only for files)
+	subjectDetailMap := make(map[string][]CheckIssue)       // subject_key -> []CheckIssue
 	checkDetailMap := make(map[string][]SubjectIssue)       // checkname -> []SubjectIssue
-	subjectPathMap := make(map[string]string)               // subject -> path
+	subjectPathMap := make(map[string]string)               // subject_key -> path
+	subjectArchiveMap := make(map[string]string)            // subject_key -> archive_name
+	subjectDisplayMap := make(map[string]string)            // subject_key -> display_name
 
 	for _, msg := range messages {
 		testName := msg.TestName
@@ -202,11 +214,13 @@ func (result *ScanResult) processMessages(messages []structs.Message) {
 		}
 
 		// Determine subject and path
-		var subject, path string
+		var subject, displayName, filePath, archiveName string
 		if file, isFile := msg.Source.(structs.File); isFile {
-			subject = file.Name
-			path = file.Path
-			
+			displayName = file.GetDisplayName()
+			filePath = file.Path
+			archiveName = file.ArchiveName
+			subject = subjectKey(displayName, archiveName)
+
 			// Only track scanned files for actual files, not repository
 			if fileIssueMap[subject] == nil {
 				fileIssueMap[subject] = make(map[string]int)
@@ -214,10 +228,14 @@ func (result *ScanResult) processMessages(messages []structs.Message) {
 			fileIssueMap[subject][testName]++
 		} else {
 			subject = "repository"
-			path = ""
+			displayName = "repository"
+			filePath = ""
+			archiveName = ""
 		}
 
-		subjectPathMap[subject] = path
+		subjectPathMap[subject] = filePath
+		subjectArchiveMap[subject] = archiveName
+		subjectDisplayMap[subject] = displayName
 
 		// Add to subject-focused details
 		subjectDetailMap[subject] = append(subjectDetailMap[subject], CheckIssue{
@@ -227,16 +245,26 @@ func (result *ScanResult) processMessages(messages []structs.Message) {
 
 		// Add to check-focused details
 		checkDetailMap[testName] = append(checkDetailMap[testName], SubjectIssue{
-			Subject: subject,
-			Path:    path,
-			Message: msg.Content,
+			Subject:     displayName,
+			Path:        filePath,
+			ArchiveName: archiveName,
+			Message:     msg.Content,
 		})
 	}
 
 	// Build scanned files (only for actual files, not repository)
-	for fileName, checks := range fileIssueMap {
+	for subjectKey, checks := range fileIssueMap {
+		displayName := subjectDisplayMap[subjectKey]
+		archiveName := subjectArchiveMap[subjectKey]
+
+		// For scanned list, show archive context in filename if present
+		filename := displayName
+		if archiveName != "" {
+			filename = archiveName + " > " + displayName
+		}
+
 		scanned := ScannedFile{
-			Filename: fileName,
+			Filename: filename,
 			Issues:   []CheckSummary{},
 		}
 		for checkname, count := range checks {
@@ -249,11 +277,13 @@ func (result *ScanResult) processMessages(messages []structs.Message) {
 	}
 
 	// Build subject-focused details
-	for subject, issues := range subjectDetailMap {
+	for subjectKey, issues := range subjectDetailMap {
+		displayName := subjectDisplayMap[subjectKey]
 		result.DetailsSubjectFocused = append(result.DetailsSubjectFocused, SubjectDetails{
-			Subject: subject,
-			Path:    subjectPathMap[subject],
-			Issues:  issues,
+			Subject:     displayName,
+			Path:        subjectPathMap[subjectKey],
+			ArchiveName: subjectArchiveMap[subjectKey],
+			Issues:      issues,
 		})
 	}
 

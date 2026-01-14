@@ -570,16 +570,24 @@ func (a *App) showSubjectDetails() {
 		a.detailsContent.SetText("[dim]No subject selected[white]")
 		return
 	}
-	
+
 	// Find subject details
 	for _, subject := range a.data.DetailsSubjectFocused {
-		if subject.Subject == a.currentSubject {
-			content := fmt.Sprintf("[yellow]Subject: %s[white]\n", a.currentSubject)
+		// Match by subject name or by "archive > subject" format
+		subjectKey := subject.Subject
+		if subject.ArchiveName != "" {
+			subjectKey = subject.ArchiveName + " > " + subject.Subject
+		}
+		if subjectKey == a.currentSubject {
+			content := fmt.Sprintf("[yellow]Subject: %s[white]\n", subject.Subject)
+			if subject.ArchiveName != "" {
+				content += fmt.Sprintf("Archive: %s\n", subject.ArchiveName)
+			}
 			if subject.Path != "" {
 				content += fmt.Sprintf("Path: %s\n", subject.Path)
 			}
 			content += fmt.Sprintf("\n[green]Issues (%d):[white]\n", len(subject.Issues))
-			
+
 			for i, issue := range subject.Issues {
 				content += fmt.Sprintf("\n[cyan]%d. %s[white]\n", i+1, issue.Checkname)
 				content += fmt.Sprintf("   %s\n", issue.Message)
@@ -588,7 +596,7 @@ func (a *App) showSubjectDetails() {
 			return
 		}
 	}
-	
+
 	a.detailsContent.SetText("[dim]No details found[white]")
 }
 
@@ -597,15 +605,20 @@ func (a *App) showCheckDetails() {
 		a.detailsContent.SetText("[dim]No check selected[white]")
 		return
 	}
-	
+
 	// Find check details
 	for _, check := range a.data.DetailsCheckFocused {
 		if check.Checkname == a.currentSubject {
 			content := fmt.Sprintf("[yellow]Check: %s[white]\n", a.currentSubject)
 			content += fmt.Sprintf("\n[green]Issues (%d):[white]\n", len(check.Issues))
-			
+
 			for i, issue := range check.Issues {
-				content += fmt.Sprintf("\n[cyan]%d. %s[white]\n", i+1, issue.Subject)
+				// Show archive context if present
+				if issue.ArchiveName != "" {
+					content += fmt.Sprintf("\n[cyan]%d. %s > %s[white]\n", i+1, issue.ArchiveName, issue.Subject)
+				} else {
+					content += fmt.Sprintf("\n[cyan]%d. %s[white]\n", i+1, issue.Subject)
+				}
 				if issue.Path != "" {
 					content += fmt.Sprintf("   Path: %s\n", issue.Path)
 				}
@@ -615,7 +628,7 @@ func (a *App) showCheckDetails() {
 			return
 		}
 	}
-	
+
 	a.detailsContent.SetText("[dim]No details found[white]")
 }
 

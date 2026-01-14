@@ -121,14 +121,16 @@ func TestSummaryGenerator_Generate_ArchiveNesting(t *testing.T) {
 				Checkname: "IsFreeOfKeywords",
 				Issues: []SubjectIssue{
 					{
-						Subject: "archive.zip",
-						Path:    "/path/archive.zip",
-						Message: "Possible credentials in file 'PASSWORD'. In archived file: 'secrets/config.txt'",
+						Subject:     "secrets/config.txt",
+						Path:        "/path/archive.zip",
+						ArchiveName: "archive.zip",
+						Message:     "Possible credentials in file 'PASSWORD'",
 					},
 					{
-						Subject: "data.tar.gz",
-						Path:    "/path/data.tar.gz",
-						Message: "Possible credentials in file 'API_KEY'. In archived file: 'backup/settings.ini'",
+						Subject:     "backup/settings.ini",
+						Path:        "/path/data.tar.gz",
+						ArchiveName: "data.tar.gz",
+						Message:     "Possible credentials in file 'API_KEY'",
 					},
 				},
 			},
@@ -185,7 +187,7 @@ func TestSummaryGenerator_Generate_MixedIssues(t *testing.T) {
 				Checkname: "IsFreeOfKeywords",
 				Issues: []SubjectIssue{
 					{Subject: "config.yaml", Message: "Found 'PASSWORD'"},
-					{Subject: "archive.zip", Message: "Found 'SECRET'. In archived file: 'nested/file.txt'"},
+					{Subject: "nested/file.txt", ArchiveName: "archive.zip", Message: "Found 'SECRET'"},
 				},
 			},
 			{
@@ -243,9 +245,10 @@ func TestParseIssueItem_RegularIssue(t *testing.T) {
 
 func TestParseIssueItem_ArchiveIssue(t *testing.T) {
 	issue := SubjectIssue{
-		Subject: "archive.zip",
-		Path:    "/path/archive.zip",
-		Message: "Found keyword 'PASSWORD'. In archived file: 'config/secrets.txt'",
+		Subject:     "config/secrets.txt",
+		Path:        "/path/archive.zip",
+		ArchiveName: "archive.zip",
+		Message:     "Found keyword 'PASSWORD'",
 	}
 
 	item := parseIssueItem(issue)

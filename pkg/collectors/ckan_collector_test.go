@@ -80,10 +80,11 @@ func TestGetCKANResources(t *testing.T) {
 	}
 
 	expectedFile := structs.File{
-		Path:   "https://opendata.eawag.ch/dataset/3c2ff3ab-151c-44a4-8769-fba684663020/resource/8bf5b5f2-75a0-4a6a-a484-8b4dacd324bc/download/finalreportlakeice.pdf",
-		Name:   "finalreportlakeice.pdf",
-		Size:   8655745,
-		Suffix: ".pdf",
+		Path:        "https://opendata.eawag.ch/dataset/3c2ff3ab-151c-44a4-8769-fba684663020/resource/8bf5b5f2-75a0-4a6a-a484-8b4dacd324bc/download/finalreportlakeice.pdf",
+		Name:        "finalreportlakeice.pdf",
+		DisplayName: "finalreportlakeice.pdf",
+		Size:        8655745,
+		Suffix:      ".pdf",
 	}
 
 	if files[0] != expectedFile {

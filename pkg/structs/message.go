@@ -26,7 +26,12 @@ type Message struct {
 func (m Message) Format() string {
 	switch m.Source.(type) {
 	case File:
-		return "- File issue in '" + m.Source.(File).Name + "': " + m.Content
+		file := m.Source.(File)
+		displayName := file.GetDisplayName()
+		if file.ArchiveName != "" {
+			return "- File issue in '" + file.ArchiveName + " > " + displayName + "': " + m.Content
+		}
+		return "- File issue in '" + displayName + "': " + m.Content
 	case Repository:
 		return "- Repository issue: " + m.Content
 	default:

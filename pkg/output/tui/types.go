@@ -26,9 +26,10 @@ type SkippedFile struct {
 }
 
 type SubjectDetails struct {
-	Subject string       `json:"subject"`
-	Path    string       `json:"path"`
-	Issues  []CheckIssue `json:"issues"`
+	Subject     string       `json:"subject"`
+	Path        string       `json:"path"`
+	ArchiveName string       `json:"archive_name,omitempty"` // Parent archive if file is inside archive
+	Issues      []CheckIssue `json:"issues"`
 }
 
 type CheckDetails struct {
@@ -47,9 +48,10 @@ type CheckIssue struct {
 }
 
 type SubjectIssue struct {
-	Subject string `json:"subject"`
-	Path    string `json:"path"`
-	Message string `json:"message"`
+	Subject     string `json:"subject"`
+	Path        string `json:"path"`
+	ArchiveName string `json:"archive_name,omitempty"` // Parent archive if file is inside archive
+	Message     string `json:"message"`
 }
 
 // Using LogMessage from output package

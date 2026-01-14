@@ -253,10 +253,14 @@ func IsArchiveFreeOfKeywords(file structs.File, config config.Config) []structs.
 	if !archiveIterator.HasFilesToUnpack() {
 		return messages
 	}
+
+	// Get the archive's display name for consistent output
+	archiveDisplayName := file.GetDisplayName()
+
 	for archiveIterator.HasNext() {
 
 		archiveIterator.Next()
-		fileName, fileContent, _ := archiveIterator.UnpackedFile()
+		fileName, fileContent, fileSize := archiveIterator.UnpackedFile()
 
 		for _, argumentSet := range config.Tests["IsFreeOfKeywords"].KeywordArguments {
 			var keywordList = argumentSet["keywords"].([]string)
@@ -264,7 +268,19 @@ func IsArchiveFreeOfKeywords(file structs.File, config config.Config) []structs.
 			foundKeywordsStr := matchPatternsList(keywordList, fileContent)
 
 			if foundKeywordsStr != "" {
-				messages = append(messages, structs.Message{Content: info + " '" + foundKeywordsStr + "'. In archived file: '" + fileName + "'", Source: file})
+				// Create a File struct for the archived file with proper archive reference
+				archivedFile := structs.ToFileWithDisplay(
+					file.Path,         // path stays as archive path
+					fileName,          // name is the path within archive
+					fileName,          // display name
+					int64(fileSize),   // size
+					"",                // suffix (auto-detected)
+					archiveDisplayName, // archive name reference
+				)
+				messages = append(messages, structs.Message{
+					Content: info + " '" + foundKeywordsStr + "'",
+					Source:  archivedFile,
+				})
 			}
 		}
 

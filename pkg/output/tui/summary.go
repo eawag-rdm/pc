@@ -2,7 +2,6 @@ package tui
 
 import (
 	"fmt"
-	"regexp"
 	"sort"
 	"strings"
 )
@@ -27,9 +26,6 @@ func NewSummaryGenerator(data *ScanResult, location string) *SummaryGenerator {
 		location: location,
 	}
 }
-
-// archivePattern matches "In archived file: 'path/to/file'" at end of message
-var archivePattern = regexp.MustCompile(`\. In archived file: '([^']+)'$`)
 
 // Generate creates the plain-text summary grouped by check type
 func (sg *SummaryGenerator) Generate() string {
@@ -116,12 +112,10 @@ func parseIssueItem(issue SubjectIssue) IssueItem {
 		Message: issue.Message,
 	}
 
-	// Check if this is an archive issue
-	matches := archivePattern.FindStringSubmatch(issue.Message)
-	if len(matches) == 2 {
-		item.ArchivePath = matches[1]
-		// Remove the archive suffix from the message
-		item.Message = strings.TrimSuffix(issue.Message, matches[0])
+	// Use structured ArchiveName field if present
+	if issue.ArchiveName != "" {
+		item.ArchivePath = issue.Subject // The subject is the file path within archive
+		item.Subject = issue.ArchiveName // The archive name becomes the main subject
 	}
 
 	return item

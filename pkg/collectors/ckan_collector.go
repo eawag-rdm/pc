@@ -78,7 +78,16 @@ func GetCKANResources(jsonMap map[string]interface{}) ([]structs.File, error) {
 			for _, resource := range resources {
 				if res, ok := resource.(map[string]interface{}); ok {
 					if resourceIsFile(res) {
-						file := structs.ToFile(res["url"].(string), res["name"].(string), int64(res["size"].(float64)), "")
+						resourceName := res["name"].(string)
+						// Use ToFileWithDisplay to preserve CKAN resource name as DisplayName
+						file := structs.ToFileWithDisplay(
+							res["url"].(string),  // path (will be converted to local path later)
+							resourceName,          // name
+							resourceName,          // displayName (CKAN resource name)
+							int64(res["size"].(float64)),
+							"",
+							"", // archiveName (not in archive)
+						)
 						files = append(files, file)
 					}
 				}

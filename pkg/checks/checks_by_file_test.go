@@ -568,71 +568,76 @@ func TestIsArchiveFreeOfKeywordsWithRealArchives(t *testing.T) {
 	cfg.Tests["IsFreeOfKeywords"].Whitelist = []string{}
 	cfg.Tests["IsFreeOfKeywords"].Blacklist = []string{}
 
-	zipFile := structs.File{Path: "../../testdata/archives/complex_archive.zip", Name: "complex_archive.zip", IsArchive: true}
-	sevenZipFile := structs.File{Path: "../../testdata/archives/complex_archive.7z", Name: "complex_archive.7z", IsArchive: true}
-	tarFile := structs.File{Path: "../../testdata/archives/complex_archive.tar", Name: "complex_archive.tar", IsArchive: true}
+	zipFile := structs.File{Path: "../../testdata/archives/complex_archive.zip", Name: "complex_archive.zip", DisplayName: "complex_archive.zip", IsArchive: true}
+	sevenZipFile := structs.File{Path: "../../testdata/archives/complex_archive.7z", Name: "complex_archive.7z", DisplayName: "complex_archive.7z", IsArchive: true}
+	tarFile := structs.File{Path: "../../testdata/archives/complex_archive.tar", Name: "complex_archive.tar", DisplayName: "complex_archive.tar", IsArchive: true}
+
+	// Expected message contents (without archive suffix - now stored in ArchiveName field)
+	expectedContents := []string{
+		"Possible credentials in file 'User'",
+		"Possible internal information in file 'Q:'",
+		"Do you have hardcoded filepaths in your files?  Found suspicious keyword(s): '/Users/'",
+		"Possible credentials in file 'PASSWORD', 'USER'",
+		"Possible credentials in file 'Password'",
+		"Possible internal information in file 'Q:'",
+	}
+
 	tests := []struct {
-		name     string
-		file     structs.File
-		expected []structs.Message
+		name            string
+		file            structs.File
+		expectedCount   int
+		archiveNameInSource string
 	}{
 		{
-			name: "Complex zip archive",
-			file: zipFile,
-			expected: []structs.Message{
-				{Content: "Possible credentials in file 'User'. In archived file: 'complex_archive/alsoHasKeywords.py'", Source: zipFile},
-				{Content: "Possible internal information in file 'Q:'. In archived file: 'complex_archive/alsoHasKeywords.py'", Source: zipFile},
-				{Content: "Do you have hardcoded filepaths in your files?  Found suspicious keyword(s): '/Users/'. In archived file: 'complex_archive/alsoHasKeywords.py'", Source: zipFile},
-				{Content: "Possible credentials in file 'PASSWORD', 'USER'. In archived file: 'complex_archive/hasKeywords'", Source: zipFile},
-				{Content: "Possible credentials in file 'Password'. In archived file: 'complex_archive/nested/hasKeywords.md'", Source: zipFile},
-				{Content: "Possible internal information in file 'Q:'. In archived file: 'complex_archive/nested/hasKeywords.md'", Source: zipFile},
-			},
+			name:            "Complex zip archive",
+			file:            zipFile,
+			expectedCount:   6,
+			archiveNameInSource: "complex_archive.zip",
 		},
 		{
-			name: "Complex 7z archive",
-			file: sevenZipFile,
-			expected: []structs.Message{
-				{Content: "Possible credentials in file 'User'. In archived file: 'complex_archive/alsoHasKeywords.py'", Source: sevenZipFile},
-				{Content: "Possible internal information in file 'Q:'. In archived file: 'complex_archive/alsoHasKeywords.py'", Source: sevenZipFile},
-				{Content: "Do you have hardcoded filepaths in your files?  Found suspicious keyword(s): '/Users/'. In archived file: 'complex_archive/alsoHasKeywords.py'", Source: sevenZipFile},
-				{Content: "Possible credentials in file 'PASSWORD', 'USER'. In archived file: 'complex_archive/hasKeywords'", Source: sevenZipFile},
-				{Content: "Possible credentials in file 'Password'. In archived file: 'complex_archive/nested/hasKeywords.md'", Source: sevenZipFile},
-				{Content: "Possible internal information in file 'Q:'. In archived file: 'complex_archive/nested/hasKeywords.md'", Source: sevenZipFile},
-			},
+			name:            "Complex 7z archive",
+			file:            sevenZipFile,
+			expectedCount:   6,
+			archiveNameInSource: "complex_archive.7z",
 		},
 		{
-			name: "Complex tar archive",
-			file: tarFile,
-			expected: []structs.Message{
-				{Content: "Possible credentials in file 'User'. In archived file: 'complex_archive/alsoHasKeywords.py'", Source: tarFile},
-				{Content: "Possible internal information in file 'Q:'. In archived file: 'complex_archive/alsoHasKeywords.py'", Source: tarFile},
-				{Content: "Do you have hardcoded filepaths in your files?  Found suspicious keyword(s): '/Users/'. In archived file: 'complex_archive/alsoHasKeywords.py'", Source: tarFile},
-				{Content: "Possible credentials in file 'PASSWORD', 'USER'. In archived file: 'complex_archive/hasKeywords'", Source: tarFile},
-				{Content: "Possible credentials in file 'Password'. In archived file: 'complex_archive/nested/hasKeywords.md'", Source: tarFile},
-				{Content: "Possible internal information in file 'Q:'. In archived file: 'complex_archive/nested/hasKeywords.md'", Source: tarFile},
-			},
+			name:            "Complex tar archive",
+			file:            tarFile,
+			expectedCount:   6,
+			archiveNameInSource: "complex_archive.tar",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := IsArchiveFreeOfKeywords(tt.file, *cfg)
-			if len(result) != len(tt.expected) {
-				t.Errorf("expected %v, got %v", tt.expected, result)
+			if len(result) != tt.expectedCount {
+				t.Errorf("expected %d messages, got %d", tt.expectedCount, len(result))
+				for _, r := range result {
+					t.Logf("  message: %s", r.Content)
+				}
 			}
-			for i := range result {
-				inExpected := false
-				for j := range tt.expected {
-					if result[i].Content == tt.expected[j].Content {
-						inExpected = true
+
+			// Verify each message content is expected
+			for _, msg := range result {
+				found := false
+				for _, expected := range expectedContents {
+					if msg.Content == expected {
+						found = true
 						break
 					}
 				}
-				if !inExpected {
-					t.Errorf("unexpected message: %v", result[i].Content)
+				if !found {
+					t.Errorf("unexpected message content: %v", msg.Content)
 				}
-				if result[i].Source != tt.expected[i].Source {
-					t.Errorf("expected %v, got %v", tt.expected[i].Source, result[i].Source)
+
+				// Verify source has ArchiveName set
+				if source, ok := msg.Source.(structs.File); ok {
+					if source.ArchiveName != tt.archiveNameInSource {
+						t.Errorf("expected ArchiveName=%s, got %s", tt.archiveNameInSource, source.ArchiveName)
+					}
+				} else {
+					t.Errorf("expected Source to be structs.File")
 				}
 			}
 		})
