@@ -35,8 +35,11 @@ func (sg *SummaryGenerator) Generate() string {
 
 	var sb strings.Builder
 
+	// Introductory text
+	sb.WriteString("We have analyzed your data package and found a few issues. Please address them and get back to us once you're done. Then, we can continue with the publication process. Feel free to get back to us, if something is unclear.\n\n")
+
 	// Header
-	sb.WriteString("=== PC Scan Summary ===\n")
+	sb.WriteString("=== Package Checker Scan Summary ===\n")
 	if sg.location != "" {
 		sb.WriteString(fmt.Sprintf("Location: %s\n", sg.location))
 	}

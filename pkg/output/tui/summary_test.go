@@ -48,7 +48,7 @@ func TestSummaryGenerator_Generate_SingleCheck(t *testing.T) {
 	result := sg.Generate()
 
 	// Check header
-	if !strings.Contains(result, "=== PC Scan Summary ===") {
+	if !strings.Contains(result, "=== Package Checker Scan Summary ===") {
 		t.Error("Missing header")
 	}
 	if !strings.Contains(result, "Location: my-package") {
