@@ -149,31 +149,39 @@ func (u *UnpackedFileIterator) findFirstTar() bool {
 
 		isFile := !(header.Typeflag == tar.TypeDir)
 		isGreaterZero := header.Size > 0
-		isBelowMaxSize := header.Size < int64(u.MaxSize)
+		isBelowMaxSize := header.Size <= int64(u.MaxSize)
 
-		isGoodToUnpack := false
+		// Check memory limits
+		if !u.checkMemoryLimit(header.Size) {
+			// Skip remaining bytes
+			_, _ = io.CopyN(io.Discard, u.tarReader, header.Size)
+			continue
+		}
+
+		var isGoodToUnpack bool
 		if isFile && isGreaterZero && isBelowMaxSize {
 			isGoodToUnpack = fileGoodToUnpack(u.Whitelist, u.Blacklist, header.Name)
+		}
+
+		if isGoodToUnpack {
+			isText, content, err := u.isTarTextFileWithContent(header, u.tarReader)
+			if err != nil {
+				continue
+			}
+			if !isText {
+				continue
+			}
+
+			u.bufferedFilename = header.Name
+			u.bufferedFileContent = content
+			u.bufferedFileSize = len(content)
+			u.updateMemoryUsage(len(content))
+			return true
 		} else {
+			// Skip non-matching files
+			_, _ = io.CopyN(io.Discard, u.tarReader, header.Size)
 			continue
 		}
-		if !isGoodToUnpack {
-			continue
-		}
-
-		isText, content, err := u.isTarTextFileWithContent(header, u.tarReader)
-		if err != nil {
-			u.iterationEnded = true
-			return false
-		}
-		if !isText {
-			continue
-		}
-
-		u.bufferedFilename = header.Name
-		u.bufferedFileContent = content
-		u.bufferedFileSize = len(content)
-		return true
 	}
 }
 
@@ -305,31 +313,40 @@ func unpackTar(u *UnpackedFileIterator) (bool, error) {
 
 		isFile := !(header.Typeflag == tar.TypeDir)
 		isGreaterZero := header.Size > 0
-		isBelowMaxSize := header.Size < int64(u.MaxSize)
+		isBelowMaxSize := header.Size <= int64(u.MaxSize)
 
-		isGoodToUnpack := false
+		// Check memory limits
+		if !u.checkMemoryLimit(header.Size) {
+			// Skip remaining bytes
+			_, _ = io.CopyN(io.Discard, u.tarReader, header.Size)
+			continue
+		}
+
+		var isGoodToUnpack bool
 		if isFile && isGreaterZero && isBelowMaxSize {
 			isGoodToUnpack = fileGoodToUnpack(u.Whitelist, u.Blacklist, header.Name)
+		}
+
+		if isGoodToUnpack {
+			isText, content, err := u.isTarTextFileWithContent(header, u.tarReader)
+			if err != nil {
+				u.iterationEnded = true
+				return true, err
+			}
+			if !isText {
+				continue
+			}
+
+			u.bufferedFilename = header.Name
+			u.bufferedFileContent = content
+			u.bufferedFileSize = len(content)
+			u.updateMemoryUsage(len(content))
+			break
 		} else {
+			// Skip non-matching files
+			_, _ = io.CopyN(io.Discard, u.tarReader, header.Size)
 			continue
 		}
-		if !isGoodToUnpack {
-			continue
-		}
-
-		isText, content, err := u.isTarTextFileWithContent(header, u.tarReader)
-		if err != nil {
-			u.iterationEnded = true
-			return true, err
-		}
-		if !isText {
-			continue
-		}
-
-		u.bufferedFilename = header.Name
-		u.bufferedFileContent = content
-		u.bufferedFileSize = len(content)
-		break
 	}
 
 	return true, nil

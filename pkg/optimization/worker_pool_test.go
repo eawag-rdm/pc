@@ -192,9 +192,8 @@ func TestWorkerPool_ConcurrentProcessing(t *testing.T) {
 }
 
 func TestWorkerPool_ChannelFullHandling(t *testing.T) {
-	// Create pool with small buffer
+	// Create pool with small buffer (but start workers so it processes)
 	pool := NewWorkerPool(1)
-	// Don't start workers to simulate full channels
 
 	testFile := structs.File{Name: "test.txt", Path: "/test/test.txt"}
 	testCheck := func(file structs.File, cfg config.Config) []structs.Message {
@@ -207,20 +206,20 @@ func TestWorkerPool_ChannelFullHandling(t *testing.T) {
 		Config: config.Config{},
 	}
 
-	// Fill up the channel
-	success := true
-	count := 0
-	for success && count < 100 { // Prevent infinite loop
-		success = pool.Submit(workItem)
-		count++
+	// Submit should succeed when workers are running
+	success := pool.Submit(workItem)
+	if !success {
+		t.Error("Expected Submit to return true when pool is running")
 	}
 
-	// Should eventually return false when channel is full
-	if success {
-		t.Error("Expected Submit to return false when channel is full")
-	}
-
+	// Test that Submit returns false after Stop is called
 	pool.Stop()
+
+	// After stop, context is cancelled so Submit should return false
+	success = pool.Submit(workItem)
+	if success {
+		t.Error("Expected Submit to return false after pool is stopped")
+	}
 }
 
 func TestGetFunctionName(t *testing.T) {

@@ -1,6 +1,7 @@
 package optimization
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 )
@@ -13,9 +14,10 @@ func TestFindOriginalCase_BoundsProtection(t *testing.T) {
 	// Create a text where lowerText and original text might have different byte lengths
 	// This can happen with Unicode characters
 	text := []byte("This is a TEST string with unicode characters: café")
-	
+	lowerText := bytes.ToLower(text)
+
 	// This should not panic
-	original := matcher.findOriginalCase(text, "test")
+	original := matcher.findOriginalCase(text, lowerText, "test")
 	
 	if original != "TEST" {
 		t.Errorf("Expected 'TEST', got '%s'", original)
@@ -30,9 +32,10 @@ func TestFindOriginalCase_LargeText(t *testing.T) {
 	largePrefix := strings.Repeat("x", 100000)
 	largeSuffix := strings.Repeat("y", 100000)
 	text := []byte(largePrefix + " PASSWORD " + largeSuffix)
-	
+	lowerText := bytes.ToLower(text)
+
 	// This should not panic
-	original := matcher.findOriginalCase(text, "password")
+	original := matcher.findOriginalCase(text, lowerText, "password")
 	
 	if original != "PASSWORD" {
 		t.Errorf("Expected 'PASSWORD', got '%s'", original)
@@ -45,9 +48,10 @@ func TestFindOriginalCase_EdgeCaseBounds(t *testing.T) {
 
 	// Text where pattern is at the very end
 	text := []byte("This text ends with END")
-	
+	lowerText := bytes.ToLower(text)
+
 	// This should not panic even if bounds calculation is wrong
-	original := matcher.findOriginalCase(text, "end")
+	original := matcher.findOriginalCase(text, lowerText, "end")
 	
 	// The function finds lowercase 'end' first, so it returns 'end', not 'END'
 	if original != "end" {
@@ -60,9 +64,10 @@ func TestFindOriginalCase_PatternNotFound(t *testing.T) {
 	matcher := NewFastMatcher(patterns)
 
 	text := []byte("This text has found but not the other")
-	
+	lowerText := bytes.ToLower(text)
+
 	// Should fallback to original pattern when not found
-	original := matcher.findOriginalCase(text, "missing")
+	original := matcher.findOriginalCase(text, lowerText, "missing")
 	
 	if original != "missing" {
 		t.Errorf("Expected fallback 'missing', got '%s'", original)

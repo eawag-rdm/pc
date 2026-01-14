@@ -213,12 +213,8 @@ func applyChecksParallel(cfg config.Config, checks []func(file structs.File, con
 					Config: cfg,
 				}
 
-				// If we can't submit (queue full), this will block
-				// ensuring we don't lose work items
-				for !pool.Submit(work) {
-					// Small delay to prevent busy waiting
-					runtime.Gosched()
-				}
+				// Submit work to the pool (blocks until space is available)
+				pool.Submit(work)
 			}
 		}
 	}()
@@ -449,9 +445,7 @@ func applyArchiveChecksParallel(cfg config.Config, checks []func(file structs.Fi
 				Checks: entry.checks,
 				Config: cfg,
 			}
-			for !pool.Submit(work) {
-				runtime.Gosched()
-			}
+			pool.Submit(work)
 		}
 	}()
 

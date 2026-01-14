@@ -1,6 +1,7 @@
 package optimization
 
 import (
+	"bytes"
 	"reflect"
 	"strings"
 	"testing"
@@ -176,7 +177,8 @@ func TestFindOriginalCase(t *testing.T) {
 	matcher := NewFastMatcher(patterns)
 
 	text := []byte("My PASSWORD is secret")
-	original := matcher.findOriginalCase(text, "password")
+	lowerText := bytes.ToLower(text)
+	original := matcher.findOriginalCase(text, lowerText, "password")
 
 	if original != "PASSWORD" {
 		t.Errorf("Expected 'PASSWORD', got '%s'", original)
@@ -188,7 +190,8 @@ func TestFindOriginalCase_NotFound(t *testing.T) {
 	matcher := NewFastMatcher(patterns)
 
 	text := []byte("No sensitive data here")
-	original := matcher.findOriginalCase(text, "password")
+	lowerText := bytes.ToLower(text)
+	original := matcher.findOriginalCase(text, lowerText, "password")
 
 	// Should fallback to original pattern
 	if original != "password" {

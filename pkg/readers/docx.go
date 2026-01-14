@@ -11,19 +11,24 @@ func ReadDOCXFile(file structs.File) ([][]byte, error) {
 	// Create an instance of the reader by opening a target file
 	f, err := os.Open(file.Path)
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
 	defer f.Close()
 
 	fileinfo, err := f.Stat()
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
 
 	size := fileinfo.Size()
 	doc, err := docx.Parse(f, size)
 	if err != nil {
-		panic(err)
+		return nil, err
+	}
+
+	// Validate document pointer
+	if doc == nil {
+		return [][]byte{}, nil
 	}
 
 	DOCXContent := [][]byte{}

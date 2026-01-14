@@ -9,10 +9,12 @@ import (
 
 // FastMatcher provides high-performance string matching using multiple algorithms
 type FastMatcher struct {
-	patterns []string
-	maxLen   int
-	minLen   int
-	caseMap  map[string]string // lowercase pattern -> original pattern
+	patterns      []string
+	lowerPatterns []string   // pre-computed lowercased patterns
+	patternBytes  [][]byte   // pre-computed pattern byte slices for large text search
+	maxLen        int
+	minLen        int
+	caseMap       map[string]string // lowercase pattern -> original pattern
 }
 
 // NewFastMatcher creates a new fast string matcher optimized for the given patterns
@@ -22,10 +24,12 @@ func NewFastMatcher(patterns []string) *FastMatcher {
 	}
 
 	fm := &FastMatcher{
-		patterns: make([]string, len(patterns)),
-		caseMap:  make(map[string]string),
-		minLen:   1000000,
-		maxLen:   0,
+		patterns:      make([]string, len(patterns)),
+		lowerPatterns: make([]string, len(patterns)),
+		patternBytes:  make([][]byte, len(patterns)),
+		caseMap:       make(map[string]string),
+		minLen:        1000000,
+		maxLen:        0,
 	}
 
 	// Process patterns and build lookup structures
@@ -33,11 +37,13 @@ func NewFastMatcher(patterns []string) *FastMatcher {
 		if len(pattern) == 0 {
 			continue
 		}
-		
+
 		fm.patterns[i] = pattern
 		lowerPattern := strings.ToLower(pattern)
+		fm.lowerPatterns[i] = lowerPattern
+		fm.patternBytes[i] = []byte(lowerPattern)
 		fm.caseMap[lowerPattern] = pattern
-		
+
 		if len(pattern) > fm.maxLen {
 			fm.maxLen = len(pattern)
 		}
@@ -97,7 +103,7 @@ func (fm *FastMatcher) FindMatchesWithOriginalCase(text []byte) []string {
 	// For each found pattern, find its original case in the text
 	for lowerMatch := range matchSet {
 		// Find the original case in the text
-		originalCase := fm.findOriginalCase(text, lowerMatch)
+		originalCase := fm.findOriginalCase(text, lowerText, lowerMatch)
 		found[lowerMatch] = originalCase
 	}
 
@@ -112,10 +118,9 @@ func (fm *FastMatcher) FindMatchesWithOriginalCase(text []byte) []string {
 }
 
 // findOriginalCase finds the original case of a pattern in the text
-func (fm *FastMatcher) findOriginalCase(text []byte, lowerPattern string) string {
+func (fm *FastMatcher) findOriginalCase(text []byte, lowerText []byte, lowerPattern string) string {
 	pattern := []byte(lowerPattern)
-	lowerText := bytes.ToLower(text)
-	
+
 	// Find the first occurrence of the pattern
 	idx := bytes.Index(lowerText, pattern)
 	if idx == -1 {
@@ -142,13 +147,12 @@ func (fm *FastMatcher) findOriginalCase(text []byte, lowerPattern string) string
 // findInSmallText uses simple string contains for small texts
 func (fm *FastMatcher) findInSmallText(lowerText []byte, found map[string]struct{}) {
 	textStr := string(lowerText)
-	
-	for _, pattern := range fm.patterns {
-		if len(pattern) == 0 {
+
+	for i, lowerPattern := range fm.lowerPatterns {
+		if len(fm.patterns[i]) == 0 {
 			continue
 		}
-		
-		lowerPattern := strings.ToLower(pattern)
+
 		if strings.Contains(textStr, lowerPattern) {
 			found[lowerPattern] = struct{}{}
 		}
@@ -158,16 +162,13 @@ func (fm *FastMatcher) findInSmallText(lowerText []byte, found map[string]struct
 // findInLargeText uses optimized algorithms for larger texts
 func (fm *FastMatcher) findInLargeText(lowerText []byte, found map[string]struct{}) {
 	// Use bytes.Contains which is optimized in Go's stdlib
-	for _, pattern := range fm.patterns {
-		if len(pattern) == 0 {
+	for i, patternBytes := range fm.patternBytes {
+		if len(fm.patterns[i]) == 0 {
 			continue
 		}
-		
-		lowerPattern := strings.ToLower(pattern)
-		patternBytes := []byte(lowerPattern)
-		
+
 		if bytes.Contains(lowerText, patternBytes) {
-			found[lowerPattern] = struct{}{}
+			found[fm.lowerPatterns[i]] = struct{}{}
 		}
 	}
 }
@@ -179,20 +180,17 @@ func (fm *FastMatcher) HasAnyMatch(text []byte) bool {
 	}
 
 	lowerText := bytes.ToLower(text)
-	
-	for _, pattern := range fm.patterns {
-		if len(pattern) == 0 {
+
+	for i, patternBytes := range fm.patternBytes {
+		if len(fm.patterns[i]) == 0 {
 			continue
 		}
-		
-		lowerPattern := strings.ToLower(pattern)
-		patternBytes := []byte(lowerPattern)
-		
+
 		if bytes.Contains(lowerText, patternBytes) {
 			return true
 		}
 	}
-	
+
 	return false
 }
 

@@ -121,15 +121,19 @@ func (wp *WorkerPool) processWorkItem(work WorkItem) []structs.Message {
 	return allMessages
 }
 
-// Submit adds a work item to the processing queue
+// Submit adds a work item to the processing queue (blocks until space is available)
 func (wp *WorkerPool) Submit(work WorkItem) bool {
+	// Check if context is cancelled first to avoid sending on closed channel
+	select {
+	case <-wp.ctx.Done():
+		return false
+	default:
+	}
+	// Now try to send
 	select {
 	case wp.workChan <- work:
 		return true
 	case <-wp.ctx.Done():
-		return false
-	default:
-		// Channel is full, could implement backpressure here
 		return false
 	}
 }
@@ -141,9 +145,9 @@ func (wp *WorkerPool) Results() <-chan WorkResult {
 
 // Stop gracefully shuts down the worker pool
 func (wp *WorkerPool) Stop() {
+	wp.cancel() // Cancel context first to stop accepting new work
 	close(wp.workChan)
 	wp.wg.Wait()
-	wp.cancel()
 	close(wp.resultChan)
 }
 
