@@ -234,6 +234,19 @@ func isTextFile(filePath string) (bool, error) {
 func IsArchiveFreeOfKeywords(file structs.File, config config.Config) []structs.Message {
 	var messages []structs.Message
 
+	// Check if the archive file itself exceeds the configured maximum size for content scanning
+	// This prevents conflicting behavior where archive is listed as "skipped" but contents still scanned
+	fileInfo, err := os.Stat(file.Path)
+	if err != nil {
+		output.GlobalLogger.Warning("Error getting file info '%s': %v", file.Path, err)
+		return messages
+	}
+
+	if fileInfo.Size() > config.General.MaxContentScanFileSize {
+		// Archive too large - already logged by IsFreeOfKeywords, skip silently here
+		return messages
+	}
+
 	// Use configurable memory limits
 	maxFileSize := int(config.General.MaxArchiveFileSize)
 	if maxFileSize <= 0 {
