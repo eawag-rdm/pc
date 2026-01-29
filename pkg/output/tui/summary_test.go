@@ -325,3 +325,209 @@ func TestFormatIssueItem_Repository(t *testing.T) {
 		t.Errorf("Expected '%s', got '%s'", expected, result)
 	}
 }
+
+func TestExtractParentPath(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"archive.zip -> folder/subfolder/file.txt", "archive.zip -> folder/subfolder"},
+		{"folder/file.txt", "folder"},
+		{"file.txt", ""},
+		{"archive.zip -> Level0/2022-09-02T122044.xml", "archive.zip -> Level0"},
+		{"Lake Hallwil data.zip -> Level0/not used/file.xml", "Lake Hallwil data.zip -> Level0/not used"},
+	}
+
+	for _, tt := range tests {
+		result := extractParentPath(tt.input)
+		if result != tt.expected {
+			t.Errorf("extractParentPath(%q) = %q, expected %q", tt.input, result, tt.expected)
+		}
+	}
+}
+
+func TestNormalizeMessageKey(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"Security credentials detected 'password'", "Security credentials detected"},
+		{"Hardcoded file paths detected 'Q:'", "Hardcoded file paths detected"},
+		{"File name contains spaces", "File name contains spaces"},
+		{"Found keyword \"SECRET\"", "Found keyword"},
+	}
+
+	for _, tt := range tests {
+		result := normalizeMessageKey(tt.input)
+		if result != tt.expected {
+			t.Errorf("normalizeMessageKey(%q) = %q, expected %q", tt.input, result, tt.expected)
+		}
+	}
+}
+
+func TestTruncation_SameParentPath(t *testing.T) {
+	// Create 10 issues in the same parent folder
+	issues := make([]SubjectIssue, 10)
+	for i := 0; i < 10; i++ {
+		issues[i] = SubjectIssue{
+			Subject:     "Level0/not used/file" + string(rune('A'+i)) + ".xml",
+			ArchiveName: "data.zip",
+			Message:     "File name contains spaces",
+		}
+	}
+
+	data := &ScanResult{
+		Timestamp: "2024-01-14T10:30:00Z",
+		DetailsCheckFocused: []CheckDetails{
+			{
+				Checkname: "HasValidFileName",
+				Issues:    issues,
+			},
+		},
+	}
+
+	sg := NewSummaryGenerator(data, "test")
+	result := sg.Generate()
+
+	// Should show 5 issues and truncation message
+	if !strings.Contains(result, "... and 5 more in") {
+		t.Errorf("Expected truncation message, got:\n%s", result)
+	}
+
+	// Should mention the parent path
+	if !strings.Contains(result, "data.zip -> Level0/not used") {
+		t.Errorf("Expected parent path in truncation message, got:\n%s", result)
+	}
+}
+
+func TestTruncation_DifferentMessageTypes(t *testing.T) {
+	// Create issues with DIFFERENT error types in the same parent folder
+	issues := []SubjectIssue{}
+
+	// 8 issues with keyword detection
+	for i := 0; i < 8; i++ {
+		issues = append(issues, SubjectIssue{
+			Subject:     "Level0/file" + string(rune('A'+i)) + ".xml",
+			ArchiveName: "data.zip",
+			Message:     "Hardcoded file paths detected 'Q:'",
+		})
+	}
+
+	// 8 issues with different error type (spaces in filename)
+	for i := 0; i < 8; i++ {
+		issues = append(issues, SubjectIssue{
+			Subject:     "Level0/my file" + string(rune('A'+i)) + ".xml",
+			ArchiveName: "data.zip",
+			Message:     "File name contains spaces",
+		})
+	}
+
+	data := &ScanResult{
+		Timestamp: "2024-01-14T10:30:00Z",
+		DetailsCheckFocused: []CheckDetails{
+			{
+				Checkname: "IsFreeOfKeywords",
+				Issues:    issues,
+			},
+		},
+	}
+
+	sg := NewSummaryGenerator(data, "test")
+	result := sg.Generate()
+
+	// Should have two separate truncation messages (one per message type)
+	count := strings.Count(result, "... and")
+	if count != 2 {
+		t.Errorf("Expected 2 truncation messages (one per message type), got %d in:\n%s", count, result)
+	}
+
+	// Both groups should reference the parent path
+	if !strings.Contains(result, "data.zip -> Level0") {
+		t.Errorf("Expected parent path in truncation message, got:\n%s", result)
+	}
+}
+
+func TestTruncation_SameMessageNormalized(t *testing.T) {
+	// Create issues with same error TYPE but different specific values
+	// These should be grouped together since the normalized message is the same
+	issues := []SubjectIssue{}
+
+	// 8 issues with 'Q:' detected
+	for i := 0; i < 8; i++ {
+		issues = append(issues, SubjectIssue{
+			Subject:     "Level0/file" + string(rune('A'+i)) + ".xml",
+			ArchiveName: "data.zip",
+			Message:     "Hardcoded file paths detected 'Q:'",
+		})
+	}
+
+	// 8 issues with '/Users/' detected (same error type, different value)
+	for i := 0; i < 8; i++ {
+		issues = append(issues, SubjectIssue{
+			Subject:     "Level0/file" + string(rune('A'+8+i)) + ".xml",
+			ArchiveName: "data.zip",
+			Message:     "Hardcoded file paths detected '/Users/'",
+		})
+	}
+
+	data := &ScanResult{
+		Timestamp: "2024-01-14T10:30:00Z",
+		DetailsCheckFocused: []CheckDetails{
+			{
+				Checkname: "IsFreeOfKeywords",
+				Issues:    issues,
+			},
+		},
+	}
+
+	sg := NewSummaryGenerator(data, "test")
+	result := sg.Generate()
+
+	// Should have ONE truncation message (normalized message groups them together)
+	count := strings.Count(result, "... and")
+	if count != 1 {
+		t.Errorf("Expected 1 truncation message (same normalized message type), got %d in:\n%s", count, result)
+	}
+
+	// Should mention the normalized message type
+	if !strings.Contains(result, "Hardcoded file paths detected") {
+		t.Errorf("Expected normalized message in truncation, got:\n%s", result)
+	}
+}
+
+func TestTruncation_NoTruncationForSmallGroups(t *testing.T) {
+	// Create only 4 issues - below truncation threshold
+	issues := make([]SubjectIssue, 4)
+	for i := 0; i < 4; i++ {
+		issues[i] = SubjectIssue{
+			Subject: "file" + string(rune('A'+i)) + ".txt",
+			Message: "Some issue",
+		}
+	}
+
+	data := &ScanResult{
+		Timestamp: "2024-01-14T10:30:00Z",
+		DetailsCheckFocused: []CheckDetails{
+			{
+				Checkname: "HasValidFileName",
+				Issues:    issues,
+			},
+		},
+	}
+
+	sg := NewSummaryGenerator(data, "test")
+	result := sg.Generate()
+
+	// Should NOT have truncation message
+	if strings.Contains(result, "... and") {
+		t.Errorf("Should not truncate small groups, got:\n%s", result)
+	}
+
+	// Should contain all 4 files
+	for i := 0; i < 4; i++ {
+		expected := "file" + string(rune('A'+i)) + ".txt"
+		if !strings.Contains(result, expected) {
+			t.Errorf("Missing %s in:\n%s", expected, result)
+		}
+	}
+}
