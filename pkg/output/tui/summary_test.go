@@ -6,7 +6,7 @@ import (
 )
 
 func TestSummaryGenerator_Generate_EmptyData(t *testing.T) {
-	sg := NewSummaryGenerator(nil, "test-location", "Test intro text.")
+	sg := NewSummaryGenerator(nil, "test-location", "Test intro text.", 5, 3)
 	result := sg.Generate()
 
 	if result != "No scan data available." {
@@ -20,7 +20,7 @@ func TestSummaryGenerator_Generate_NoIssues(t *testing.T) {
 		DetailsCheckFocused:   []CheckDetails{},
 	}
 
-	sg := NewSummaryGenerator(data, "test-package", "Test intro text.")
+	sg := NewSummaryGenerator(data, "test-package", "Test intro text.", 5, 3)
 	result := sg.Generate()
 
 	if !strings.Contains(result, "No issues found.") {
@@ -44,7 +44,7 @@ func TestSummaryGenerator_Generate_SingleCheck(t *testing.T) {
 		},
 	}
 
-	sg := NewSummaryGenerator(data, "my-package", "Test intro text.")
+	sg := NewSummaryGenerator(data, "my-package", "Test intro text.", 5, 3)
 	result := sg.Generate()
 
 	// Check header
@@ -96,7 +96,7 @@ func TestSummaryGenerator_Generate_MultipleChecks(t *testing.T) {
 		},
 	}
 
-	sg := NewSummaryGenerator(data, "test", "Test intro text.")
+	sg := NewSummaryGenerator(data, "test", "Test intro text.", 5, 3)
 	result := sg.Generate()
 
 	// Check both check types are present
@@ -137,7 +137,7 @@ func TestSummaryGenerator_Generate_ArchiveNesting(t *testing.T) {
 		},
 	}
 
-	sg := NewSummaryGenerator(data, "test", "Test intro text.")
+	sg := NewSummaryGenerator(data, "test", "Test intro text.", 5, 3)
 	result := sg.Generate()
 
 	// Check archive nesting format
@@ -167,7 +167,7 @@ func TestSummaryGenerator_Generate_RepositoryIssues(t *testing.T) {
 		},
 	}
 
-	sg := NewSummaryGenerator(data, "test", "Test intro text.")
+	sg := NewSummaryGenerator(data, "test", "Test intro text.", 5, 3)
 	result := sg.Generate()
 
 	// Check repository issue is formatted correctly
@@ -199,7 +199,7 @@ func TestSummaryGenerator_Generate_MixedIssues(t *testing.T) {
 		},
 	}
 
-	sg := NewSummaryGenerator(data, "mixed-test", "Test intro text.")
+	sg := NewSummaryGenerator(data, "mixed-test", "Test intro text.", 5, 3)
 	result := sg.Generate()
 
 	// Regular file issue
@@ -386,7 +386,7 @@ func TestTruncation_SameParentPath(t *testing.T) {
 		},
 	}
 
-	sg := NewSummaryGenerator(data, "test", "Test intro text.")
+	sg := NewSummaryGenerator(data, "test", "Test intro text.", 5, 3)
 	result := sg.Generate()
 
 	// Should show 5 issues and truncation message
@@ -432,7 +432,7 @@ func TestTruncation_DifferentMessageTypes(t *testing.T) {
 		},
 	}
 
-	sg := NewSummaryGenerator(data, "test", "Test intro text.")
+	sg := NewSummaryGenerator(data, "test", "Test intro text.", 5, 3)
 	result := sg.Generate()
 
 	// Should have two separate truncation messages (one per message type)
@@ -480,7 +480,7 @@ func TestTruncation_SameMessageNormalized(t *testing.T) {
 		},
 	}
 
-	sg := NewSummaryGenerator(data, "test", "Test intro text.")
+	sg := NewSummaryGenerator(data, "test", "Test intro text.", 5, 3)
 	result := sg.Generate()
 
 	// Should have ONE truncation message (normalized message groups them together)
@@ -515,7 +515,7 @@ func TestTruncation_NoTruncationForSmallGroups(t *testing.T) {
 		},
 	}
 
-	sg := NewSummaryGenerator(data, "test", "Test intro text.")
+	sg := NewSummaryGenerator(data, "test", "Test intro text.", 5, 3)
 	result := sg.Generate()
 
 	// Should NOT have truncation message
@@ -539,7 +539,7 @@ func TestSummaryGenerator_CustomIntroText(t *testing.T) {
 	}
 
 	customIntro := "This is a custom intro message for the summary."
-	sg := NewSummaryGenerator(data, "test", customIntro)
+	sg := NewSummaryGenerator(data, "test", customIntro, 5, 3)
 	result := sg.Generate()
 
 	if !strings.Contains(result, customIntro) {
@@ -553,11 +553,73 @@ func TestSummaryGenerator_EmptyIntroText(t *testing.T) {
 		DetailsCheckFocused: []CheckDetails{},
 	}
 
-	sg := NewSummaryGenerator(data, "test", "")
+	sg := NewSummaryGenerator(data, "test", "", 5, 3)
 	result := sg.Generate()
 
 	// Should start directly with the header when intro is empty
 	if !strings.HasPrefix(result, "=== Package Checker Scan Summary ===") {
 		t.Errorf("Expected summary to start with header when intro is empty, got:\n%s", result)
 	}
+}
+
+func TestSummaryGenerator_CustomTruncationSettings(t *testing.T) {
+	// Create 8 issues in the same parent folder
+	issues := make([]SubjectIssue, 8)
+	for i := 0; i < 8; i++ {
+		issues[i] = SubjectIssue{
+			Subject:     "Level0/file" + string(rune('A'+i)) + ".xml",
+			ArchiveName: "data.zip",
+			Message:     "File name contains spaces",
+		}
+	}
+
+	data := &ScanResult{
+		Timestamp: "2024-01-14T10:30:00Z",
+		DetailsCheckFocused: []CheckDetails{
+			{
+				Checkname: "HasValidFileName",
+				Issues:    issues,
+			},
+		},
+	}
+
+	t.Run("DefaultTruncation", func(t *testing.T) {
+		// With default settings (5, 3), should truncate to 5 + "... and 3 more"
+		sg := NewSummaryGenerator(data, "test", "", 5, 3)
+		result := sg.Generate()
+
+		if !strings.Contains(result, "... and 3 more in") {
+			t.Errorf("Expected truncation with default settings, got:\n%s", result)
+		}
+	})
+
+	t.Run("HigherMaxIssues", func(t *testing.T) {
+		// With maxIssues=10, should NOT truncate (only 8 issues)
+		sg := NewSummaryGenerator(data, "test", "", 10, 3)
+		result := sg.Generate()
+
+		if strings.Contains(result, "... and") {
+			t.Errorf("Should not truncate with maxIssues=10, got:\n%s", result)
+		}
+	})
+
+	t.Run("HigherMinGroupSize", func(t *testing.T) {
+		// With minGroupSize=10, should NOT truncate (group size 8 < 10)
+		sg := NewSummaryGenerator(data, "test", "", 5, 10)
+		result := sg.Generate()
+
+		if strings.Contains(result, "... and") {
+			t.Errorf("Should not truncate with minGroupSize=10, got:\n%s", result)
+		}
+	})
+
+	t.Run("LowerMaxIssues", func(t *testing.T) {
+		// With maxIssues=3, should truncate to 3 + "... and 5 more"
+		sg := NewSummaryGenerator(data, "test", "", 3, 3)
+		result := sg.Generate()
+
+		if !strings.Contains(result, "... and 5 more in") {
+			t.Errorf("Expected '... and 5 more' with maxIssues=3, got:\n%s", result)
+		}
+	})
 }

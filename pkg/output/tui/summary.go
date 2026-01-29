@@ -6,18 +6,13 @@ import (
 	"strings"
 )
 
-const (
-	// maxIssuesBeforeTruncation is the number of issues to show before truncating
-	maxIssuesBeforeTruncation = 5
-	// minGroupSizeForTruncation is the minimum group size to trigger truncation
-	minGroupSizeForTruncation = 3
-)
-
 // SummaryGenerator creates plain-text summaries grouped by check type
 type SummaryGenerator struct {
-	data      *ScanResult
-	location  string
-	introText string
+	data                      *ScanResult
+	location                  string
+	introText                 string
+	maxIssuesBeforeTruncation int
+	minGroupSizeForTruncation int
 }
 
 // IssueItem represents a single issue for the summary
@@ -46,11 +41,13 @@ type issueGroup struct {
 }
 
 // NewSummaryGenerator creates a generator from scan results
-func NewSummaryGenerator(data *ScanResult, location, introText string) *SummaryGenerator {
+func NewSummaryGenerator(data *ScanResult, location, introText string, maxIssues, minGroupSize int) *SummaryGenerator {
 	return &SummaryGenerator{
-		data:      data,
-		location:  location,
-		introText: introText,
+		data:                      data,
+		location:                  location,
+		introText:                 introText,
+		maxIssuesBeforeTruncation: maxIssues,
+		minGroupSizeForTruncation: minGroupSize,
 	}
 }
 
@@ -120,7 +117,7 @@ func (sg *SummaryGenerator) Generate() string {
 		sb.WriteString(")\n")
 
 		// Format issues with smart truncation
-		sb.WriteString(formatIssuesWithTruncation(issues))
+		sb.WriteString(formatIssuesWithTruncation(issues, sg.maxIssuesBeforeTruncation, sg.minGroupSizeForTruncation))
 		sb.WriteString("\n")
 	}
 
@@ -140,8 +137,8 @@ func (sg *SummaryGenerator) Generate() string {
 }
 
 // formatIssuesWithTruncation formats issues with automatic pattern-based truncation
-func formatIssuesWithTruncation(issues []SubjectIssue) string {
-	if len(issues) <= maxIssuesBeforeTruncation {
+func formatIssuesWithTruncation(issues []SubjectIssue, maxIssues, minGroupSize int) string {
+	if len(issues) <= maxIssues {
 		// No truncation needed, output all
 		var sb strings.Builder
 		for _, issue := range issues {
@@ -161,7 +158,7 @@ func formatIssuesWithTruncation(issues []SubjectIssue) string {
 	groups := detectAndGroupIssues(grouped)
 
 	// Format output with truncation
-	return formatGroupedOutput(groups)
+	return formatGroupedOutput(groups, maxIssues, minGroupSize)
 }
 
 // computeGroupingKeys extracts grouping keys from an issue
@@ -269,12 +266,12 @@ func buildGroupDisplayName(group *issueGroup) string {
 }
 
 // formatGroupedOutput formats groups with truncation where applicable
-func formatGroupedOutput(groups []issueGroup) string {
+func formatGroupedOutput(groups []issueGroup, maxIssues, minGroupSize int) string {
 	var sb strings.Builder
 
 	for _, group := range groups {
-		if len(group.issues) <= maxIssuesBeforeTruncation ||
-			len(group.issues) < minGroupSizeForTruncation {
+		if len(group.issues) <= maxIssues ||
+			len(group.issues) < minGroupSize {
 			// Small group - show all issues
 			for _, gi := range group.issues {
 				item := parseIssueItem(gi.issue)
@@ -282,12 +279,12 @@ func formatGroupedOutput(groups []issueGroup) string {
 			}
 		} else {
 			// Large group - show first N and truncate
-			for i := 0; i < maxIssuesBeforeTruncation; i++ {
+			for i := 0; i < maxIssues; i++ {
 				item := parseIssueItem(group.issues[i].issue)
 				sb.WriteString(formatIssueItem(item))
 			}
 
-			remaining := len(group.issues) - maxIssuesBeforeTruncation
+			remaining := len(group.issues) - maxIssues
 			sb.WriteString(fmt.Sprintf("  ... and %d more in %s\n", remaining, group.displayName))
 		}
 	}

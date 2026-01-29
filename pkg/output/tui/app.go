@@ -50,10 +50,12 @@ type App struct {
 	isScanning        bool   // Whether we're currently scanning
 	startupCallback   func() // Called when TUI starts running
 	location          string // Location/path being scanned (for summary)
-	summaryModal      *tview.Flex     // Modal overlay for summary
-	summaryTextView   *tview.TextView // Scrollable summary content
-	summaryVisible    bool            // Track modal visibility
-	summaryIntroText  string          // Configurable intro text for summary
+	summaryModal                     *tview.Flex     // Modal overlay for summary
+	summaryTextView                  *tview.TextView // Scrollable summary content
+	summaryVisible                   bool            // Track modal visibility
+	summaryIntroText                 string          // Configurable intro text for summary
+	summaryMaxIssuesBeforeTruncation int             // Number of issues to show before truncating
+	summaryMinGroupSizeForTruncation int             // Minimum group size to trigger truncation
 }
 
 func NewApp(data *ScanResult) *App {
@@ -965,6 +967,16 @@ func (a *App) SetSummaryIntroText(text string) {
 	a.summaryIntroText = text
 }
 
+// SetSummaryMaxIssuesBeforeTruncation sets the number of issues to show before truncating
+func (a *App) SetSummaryMaxIssuesBeforeTruncation(n int) {
+	a.summaryMaxIssuesBeforeTruncation = n
+}
+
+// SetSummaryMinGroupSizeForTruncation sets the minimum group size to trigger truncation
+func (a *App) SetSummaryMinGroupSizeForTruncation(n int) {
+	a.summaryMinGroupSizeForTruncation = n
+}
+
 // setupSummaryModal creates the modal overlay for the copy-paste summary
 func (a *App) setupSummaryModal() {
 	// Create the text view for summary content
@@ -1005,7 +1017,7 @@ func (a *App) showSummaryModal() {
 	}
 
 	// Generate the summary
-	generator := NewSummaryGenerator(a.data, a.location, a.summaryIntroText)
+	generator := NewSummaryGenerator(a.data, a.location, a.summaryIntroText, a.summaryMaxIssuesBeforeTruncation, a.summaryMinGroupSizeForTruncation)
 	summary := generator.Generate()
 
 	// Try to copy to clipboard

@@ -25,11 +25,19 @@ type OperationConfig struct {
 // Default intro text for summary when not configured
 const DefaultSummaryIntroText = "We have analyzed your data package and found a few issues. Please address them and get back to us once you're done. Then, we can continue with the publication process. Feel free to get back to us, if something is unclear."
 
+// Default truncation settings for summary
+const (
+	DefaultSummaryMaxIssuesBeforeTruncation = 5 // Number of issues to show before truncating
+	DefaultSummaryMinGroupSizeForTruncation = 3 // Minimum group size to trigger truncation
+)
+
 type GeneralConfig struct {
-	MaxArchiveFileSize     int64  // Maximum size for individual files in archives (bytes)
-	MaxTotalArchiveMemory  int64  // Maximum total memory for archive processing (bytes)
-	MaxContentScanFileSize int64  // Maximum size for files that read content (like IsFreeOfKeywords) (bytes)
-	SummaryIntroText       string // Introductory text shown at the top of the summary
+	MaxArchiveFileSize               int64  // Maximum size for individual files in archives (bytes)
+	MaxTotalArchiveMemory            int64  // Maximum total memory for archive processing (bytes)
+	MaxContentScanFileSize           int64  // Maximum size for files that read content (like IsFreeOfKeywords) (bytes)
+	SummaryIntroText                 string // Introductory text shown at the top of the summary
+	SummaryMaxIssuesBeforeTruncation int    // Number of issues to show before truncating
+	SummaryMinGroupSizeForTruncation int    // Minimum group size to trigger truncation
 }
 
 type Config struct {
@@ -48,10 +56,12 @@ func ParseConfig(filename string) (*Config, error) {
 
 	c := &Config{
 		General: &GeneralConfig{
-			MaxArchiveFileSize:     10 * 1024 * 1024,       // 10MB default
-			MaxTotalArchiveMemory:  100 * 1024 * 1024,      // 100MB default
-			MaxContentScanFileSize: 1024 * 1024 * 1024,     // 1GB default for content scanning
-			SummaryIntroText:       DefaultSummaryIntroText,
+			MaxArchiveFileSize:               10 * 1024 * 1024,                    // 10MB default
+			MaxTotalArchiveMemory:            100 * 1024 * 1024,                   // 100MB default
+			MaxContentScanFileSize:           1024 * 1024 * 1024,                  // 1GB default for content scanning
+			SummaryIntroText:                 DefaultSummaryIntroText,
+			SummaryMaxIssuesBeforeTruncation: DefaultSummaryMaxIssuesBeforeTruncation,
+			SummaryMinGroupSizeForTruncation: DefaultSummaryMinGroupSizeForTruncation,
 		},
 		Tests:      map[string]*TestConfig{},
 		Operation:  map[string]*OperationConfig{},
@@ -100,6 +110,12 @@ func ParseConfig(filename string) (*Config, error) {
 		}
 		if summaryIntroText, ok := generalData["summaryIntroText"].(string); ok {
 			c.General.SummaryIntroText = summaryIntroText
+		}
+		if val, ok := generalData["summaryMaxIssuesBeforeTruncation"].(int64); ok {
+			c.General.SummaryMaxIssuesBeforeTruncation = int(val)
+		}
+		if val, ok := generalData["summaryMinGroupSizeForTruncation"].(int64); ok {
+			c.General.SummaryMinGroupSizeForTruncation = int(val)
 		}
 	}
 

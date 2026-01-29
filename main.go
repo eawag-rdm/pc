@@ -152,6 +152,8 @@ func main() {
 		app := tui.NewScanningApp()
 		app.SetLocation(*folder_or_url)
 		app.SetSummaryIntroText(generalConfig.General.SummaryIntroText)
+		app.SetSummaryMaxIssuesBeforeTruncation(generalConfig.General.SummaryMaxIssuesBeforeTruncation)
+		app.SetSummaryMinGroupSizeForTruncation(generalConfig.General.SummaryMinGroupSizeForTruncation)
 
 		// Channel for scan completion
 		scanComplete := make(chan *tui.ScanResult)

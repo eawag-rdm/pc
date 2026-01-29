@@ -232,3 +232,48 @@ func TestParseSummaryIntroText(t *testing.T) {
 		assert.Equal(t, DefaultSummaryIntroText, config.General.SummaryIntroText)
 	})
 }
+
+func TestParseSummaryTruncationSettings(t *testing.T) {
+	t.Run("CustomValues", func(t *testing.T) {
+		tomlContent := `
+		[general]
+		summaryMaxIssuesBeforeTruncation = 10
+		summaryMinGroupSizeForTruncation = 5
+		`
+		configFile := createTempConfigFile(t, tomlContent)
+		defer os.Remove(configFile)
+
+		config, err := ParseConfig(configFile)
+		assert.NoError(t, err)
+		assert.Equal(t, 10, config.General.SummaryMaxIssuesBeforeTruncation)
+		assert.Equal(t, 5, config.General.SummaryMinGroupSizeForTruncation)
+	})
+
+	t.Run("DefaultValues", func(t *testing.T) {
+		tomlContent := `
+		[general]
+		maxArchiveFileSize = 1000
+		`
+		configFile := createTempConfigFile(t, tomlContent)
+		defer os.Remove(configFile)
+
+		config, err := ParseConfig(configFile)
+		assert.NoError(t, err)
+		assert.Equal(t, DefaultSummaryMaxIssuesBeforeTruncation, config.General.SummaryMaxIssuesBeforeTruncation)
+		assert.Equal(t, DefaultSummaryMinGroupSizeForTruncation, config.General.SummaryMinGroupSizeForTruncation)
+	})
+
+	t.Run("NoGeneralSection", func(t *testing.T) {
+		tomlContent := `
+		[test.test1]
+		blacklist = []
+		`
+		configFile := createTempConfigFile(t, tomlContent)
+		defer os.Remove(configFile)
+
+		config, err := ParseConfig(configFile)
+		assert.NoError(t, err)
+		assert.Equal(t, DefaultSummaryMaxIssuesBeforeTruncation, config.General.SummaryMaxIssuesBeforeTruncation)
+		assert.Equal(t, DefaultSummaryMinGroupSizeForTruncation, config.General.SummaryMinGroupSizeForTruncation)
+	})
+}

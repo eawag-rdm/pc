@@ -40,6 +40,8 @@
 
 [general]
 summaryIntroText = "Test config intro text."
+summaryMaxIssuesBeforeTruncation = 5
+summaryMinGroupSizeForTruncation = 3
 
 [operation.main]
 collector = "LocalCollector"
