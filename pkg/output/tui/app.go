@@ -56,6 +56,9 @@ type App struct {
 }
 
 func NewApp(data *ScanResult) *App {
+	if data != nil {
+		data.BuildCache()
+	}
 	app := &App{
 		app:               tview.NewApplication(),
 		data:              data,
@@ -183,36 +186,36 @@ func (a *App) setupUI() {
 
 func (a *App) populateSubjectsList() {
 	a.subjectsList.Clear()
-	
-	// Store subject names for selection change handler
-	var subjectNames []string
-	
+
+	// Pre-allocate with known capacity
+	capacity := len(a.data.Scanned)
+	if a.data.cachedHasRepository {
+		capacity++
+	}
+	subjectNames := make([]string, 0, capacity)
+
 	// Add scanned files
 	for _, file := range a.data.Scanned {
 		issueCount := 0
 		for _, issue := range file.Issues {
 			issueCount += issue.IssueCount
 		}
-		
+
 		mainText := fmt.Sprintf("%s (%d)", file.Filename, issueCount)
-		
 		a.subjectsList.AddItem(mainText, "", 0, nil)
 		subjectNames = append(subjectNames, file.Filename)
 	}
 
-	// Add repository if it has issues
-	for _, subject := range a.data.DetailsSubjectFocused {
-		if subject.Subject == "repository" {
-			issueCount := len(subject.Issues)
-			
+	// Add repository if cached flag indicates it exists
+	if a.data.cachedHasRepository {
+		if repo, ok := a.data.subjectIndex["repository"]; ok {
+			issueCount := len(repo.Issues)
 			mainText := fmt.Sprintf("repository (%d)", issueCount)
-			
 			a.subjectsList.AddItem(mainText, "", 0, nil)
 			subjectNames = append(subjectNames, "repository")
-			break
 		}
 	}
-	
+
 	// Set up selection change handler for automatic details update
 	a.subjectsList.SetChangedFunc(func(index int, mainText, secondaryText string, shortcut rune) {
 		if index >= 0 && index < len(subjectNames) {
@@ -258,27 +261,15 @@ func (a *App) updateInfo() {
 	if a.data.Skipped != nil {
 		totalSkipped = len(a.data.Skipped)
 	}
-	totalIssues := 0
-	
-	// Count issues from scanned files
-	for _, file := range a.data.Scanned {
-		for _, issue := range file.Issues {
-			totalIssues += issue.IssueCount
-		}
-	}
-	
-	// Add repository issues
-	for _, subject := range a.data.DetailsSubjectFocused {
-		if subject.Subject == "repository" {
-			totalIssues += len(subject.Issues)
-		}
-	}
+
+	// Use cached total instead of iterating
+	totalIssues := a.data.cachedTotalIssues
 
 	info := fmt.Sprintf(
 		"[yellow]PC Scanner Results[white]\n"+
-		"Timestamp: %s\n"+
-		"Scanned: %d  |  Skipped: %d\n"+
-		"Issues: %d  |  Errors: %d  |  Warnings: %d",
+			"Timestamp: %s\n"+
+			"Scanned: %d  |  Skipped: %d\n"+
+			"Issues: %d  |  Errors: %d  |  Warnings: %d",
 		a.data.Timestamp,
 		totalScanned,
 		totalSkipped,
@@ -286,7 +277,7 @@ func (a *App) updateInfo() {
 		len(a.data.Errors),
 		len(a.data.Warnings),
 	)
-	
+
 	a.info.SetText(info)
 }
 
@@ -523,18 +514,15 @@ func (a *App) formatSectionsResponsive(sectionTexts []string) (string, int) {
 func (a *App) populateLeftSections() {
 	sections := []string{"Subjects", "Checks", "PDFs", "Skipped", "Warnings", "Errors"}
 	var sectionTexts []string
-	
+
 	for i, section := range sections {
 		var count int
 		switch i {
 		case 0: // Subjects
 			count = len(a.data.Scanned)
-			// Add repository if it has issues
-			for _, subject := range a.data.DetailsSubjectFocused {
-				if subject.Subject == "repository" {
-					count++
-					break
-				}
+			// Use cached flag instead of loop
+			if a.data.cachedHasRepository {
+				count++
 			}
 		case 1: // Checks
 			count = len(a.data.DetailsCheckFocused)
@@ -547,7 +535,7 @@ func (a *App) populateLeftSections() {
 		case 5: // Errors
 			count = len(a.data.Errors)
 		}
-		
+
 		var sectionText string
 		if i == a.selectedLeftPanel {
 			sectionText = fmt.Sprintf("[black:white]%s (%d)[-:-]", section, count)
@@ -556,7 +544,7 @@ func (a *App) populateLeftSections() {
 		}
 		sectionTexts = append(sectionTexts, sectionText)
 	}
-	
+
 	// Check if sections fit on one line, otherwise wrap them (same logic as right sections)
 	sectionsDisplay, _ := a.formatSectionsResponsive(sectionTexts)
 	a.leftSections.SetText(sectionsDisplay)
@@ -589,33 +577,42 @@ func (a *App) showSubjectDetails() {
 		return
 	}
 
-	// Find subject details
-	for _, subject := range a.data.DetailsSubjectFocused {
-		// Match by subject name or by "archive > subject" format
-		subjectKey := subject.Subject
-		if subject.ArchiveName != "" {
-			subjectKey = subject.ArchiveName + " > " + subject.Subject
-		}
-		if subjectKey == a.currentSubject {
-			content := fmt.Sprintf("[yellow]Subject: %s[white]\n", subject.Subject)
-			if subject.ArchiveName != "" {
-				content += fmt.Sprintf("Archive: %s\n", subject.ArchiveName)
-			}
-			if subject.Path != "" {
-				content += fmt.Sprintf("Path: %s\n", subject.Path)
-			}
-			content += fmt.Sprintf("\n[green]Issues (%d):[white]\n", len(subject.Issues))
-
-			for i, issue := range subject.Issues {
-				content += fmt.Sprintf("\n[cyan]%d. %s[white]\n", i+1, issue.Checkname)
-				content += fmt.Sprintf("   %s\n", issue.Message)
-			}
-			a.detailsContent.SetText(content)
-			return
-		}
+	// O(1) lookup instead of O(n) loop
+	subject, ok := a.data.subjectIndex[a.currentSubject]
+	if !ok {
+		a.detailsContent.SetText("[dim]No details found[white]")
+		return
 	}
 
-	a.detailsContent.SetText("[dim]No details found[white]")
+	// Use strings.Builder instead of += concatenation
+	var sb strings.Builder
+	sb.Grow(256 + len(subject.Issues)*100) // Pre-allocate estimated size
+
+	sb.WriteString("[yellow]Subject: ")
+	sb.WriteString(subject.Subject)
+	sb.WriteString("[white]\n")
+
+	if subject.ArchiveName != "" {
+		sb.WriteString("Archive: ")
+		sb.WriteString(subject.ArchiveName)
+		sb.WriteString("\n")
+	}
+	if subject.Path != "" {
+		sb.WriteString("Path: ")
+		sb.WriteString(subject.Path)
+		sb.WriteString("\n")
+	}
+
+	sb.WriteString(fmt.Sprintf("\n[green]Issues (%d):[white]\n", len(subject.Issues)))
+
+	for i, issue := range subject.Issues {
+		sb.WriteString(fmt.Sprintf("\n[cyan]%d. %s[white]\n", i+1, issue.Checkname))
+		sb.WriteString("   ")
+		sb.WriteString(issue.Message)
+		sb.WriteString("\n")
+	}
+
+	a.detailsContent.SetText(sb.String())
 }
 
 func (a *App) showCheckDetails() {
@@ -624,30 +621,39 @@ func (a *App) showCheckDetails() {
 		return
 	}
 
-	// Find check details
-	for _, check := range a.data.DetailsCheckFocused {
-		if check.Checkname == a.currentSubject {
-			content := fmt.Sprintf("[yellow]Check: %s[white]\n", a.currentSubject)
-			content += fmt.Sprintf("\n[green]Issues (%d):[white]\n", len(check.Issues))
-
-			for i, issue := range check.Issues {
-				// Show archive context if present
-				if issue.ArchiveName != "" {
-					content += fmt.Sprintf("\n[cyan]%d. %s > %s[white]\n", i+1, issue.ArchiveName, issue.Subject)
-				} else {
-					content += fmt.Sprintf("\n[cyan]%d. %s[white]\n", i+1, issue.Subject)
-				}
-				if issue.Path != "" {
-					content += fmt.Sprintf("   Path: %s\n", issue.Path)
-				}
-				content += fmt.Sprintf("   %s\n", issue.Message)
-			}
-			a.detailsContent.SetText(content)
-			return
-		}
+	// O(1) lookup instead of O(n) loop
+	check, ok := a.data.checkIndex[a.currentSubject]
+	if !ok {
+		a.detailsContent.SetText("[dim]No details found[white]")
+		return
 	}
 
-	a.detailsContent.SetText("[dim]No details found[white]")
+	// Use strings.Builder with pre-allocation
+	var sb strings.Builder
+	sb.Grow(128 + len(check.Issues)*150)
+
+	sb.WriteString("[yellow]Check: ")
+	sb.WriteString(a.currentSubject)
+	sb.WriteString("[white]\n")
+	sb.WriteString(fmt.Sprintf("\n[green]Issues (%d):[white]\n", len(check.Issues)))
+
+	for i, issue := range check.Issues {
+		if issue.ArchiveName != "" {
+			sb.WriteString(fmt.Sprintf("\n[cyan]%d. %s > %s[white]\n", i+1, issue.ArchiveName, issue.Subject))
+		} else {
+			sb.WriteString(fmt.Sprintf("\n[cyan]%d. %s[white]\n", i+1, issue.Subject))
+		}
+		if issue.Path != "" {
+			sb.WriteString("   Path: ")
+			sb.WriteString(issue.Path)
+			sb.WriteString("\n")
+		}
+		sb.WriteString("   ")
+		sb.WriteString(issue.Message)
+		sb.WriteString("\n")
+	}
+
+	a.detailsContent.SetText(sb.String())
 }
 
 func (a *App) showSkippedDetails() {
@@ -674,12 +680,15 @@ func (a *App) getPDFsContent() string {
 	if len(a.data.PDFFiles) == 0 {
 		return "[dim]No PDF files found[white]"
 	}
-	
-	content := fmt.Sprintf("[yellow]PDF Files (%d):[white]\n\n", len(a.data.PDFFiles))
+
+	var sb strings.Builder
+	sb.Grow(64 + len(a.data.PDFFiles)*80)
+
+	sb.WriteString(fmt.Sprintf("[yellow]PDF Files (%d):[white]\n\n", len(a.data.PDFFiles)))
 	for i, file := range a.data.PDFFiles {
-		content += fmt.Sprintf("[cyan]%d.[white] %s\n", i+1, file)
+		sb.WriteString(fmt.Sprintf("[cyan]%d.[white] %s\n", i+1, file))
 	}
-	return content
+	return sb.String()
 }
 
 func (a *App) navigateLeftPanelLeft() {
@@ -783,40 +792,53 @@ func (a *App) getSkippedContent() string {
 	if len(a.data.Skipped) == 0 {
 		return "[dim]No skipped files[white]"
 	}
-	
-	content := fmt.Sprintf("[yellow]Skipped Files (%d):[white]\n\n", len(a.data.Skipped))
+
+	var sb strings.Builder
+	sb.Grow(64 + len(a.data.Skipped)*100)
+
+	sb.WriteString(fmt.Sprintf("[yellow]Skipped Files (%d):[white]\n\n", len(a.data.Skipped)))
 	for i, file := range a.data.Skipped {
-		content += fmt.Sprintf("[cyan]%d.[white] %s\n", i+1, file.Filename)
+		sb.WriteString(fmt.Sprintf("[cyan]%d.[white] %s\n", i+1, file.Filename))
 		if file.Path != "" {
-			content += fmt.Sprintf("   [dim]Path: %s[white]\n", file.Path)
+			sb.WriteString("   [dim]Path: ")
+			sb.WriteString(file.Path)
+			sb.WriteString("[white]\n")
 		}
-		content += fmt.Sprintf("   [dim]Reason: %s[white]\n\n", file.Reason)
+		sb.WriteString("   [dim]Reason: ")
+		sb.WriteString(file.Reason)
+		sb.WriteString("[white]\n\n")
 	}
-	return content
+	return sb.String()
 }
 
 func (a *App) getWarningsContent() string {
 	if len(a.data.Warnings) == 0 {
 		return "[dim]No warnings[white]"
 	}
-	
-	content := fmt.Sprintf("[yellow]Warnings (%d):[white]\n\n", len(a.data.Warnings))
+
+	var sb strings.Builder
+	sb.Grow(64 + len(a.data.Warnings)*100)
+
+	sb.WriteString(fmt.Sprintf("[yellow]Warnings (%d):[white]\n\n", len(a.data.Warnings)))
 	for i, warning := range a.data.Warnings {
-		content += fmt.Sprintf("[yellow]%d.[white] [%s] %s\n", i+1, warning.Timestamp, warning.Message)
+		sb.WriteString(fmt.Sprintf("[yellow]%d.[white] [%s] %s\n", i+1, warning.Timestamp, warning.Message))
 	}
-	return content
+	return sb.String()
 }
 
 func (a *App) getErrorsContent() string {
 	if len(a.data.Errors) == 0 {
 		return "[dim]No errors[white]"
 	}
-	
-	content := fmt.Sprintf("[red]Errors (%d):[white]\n\n", len(a.data.Errors))
+
+	var sb strings.Builder
+	sb.Grow(64 + len(a.data.Errors)*100)
+
+	sb.WriteString(fmt.Sprintf("[red]Errors (%d):[white]\n\n", len(a.data.Errors)))
 	for i, err := range a.data.Errors {
-		content += fmt.Sprintf("[red]%d.[white] [%s] %s\n", i+1, err.Timestamp, err.Message)
+		sb.WriteString(fmt.Sprintf("[red]%d.[white] [%s] %s\n", i+1, err.Timestamp, err.Message))
 	}
-	return content
+	return sb.String()
 }
 
 
@@ -882,17 +904,19 @@ func (a *App) UpdateProgress(current, total int, message string) {
 
 func (a *App) UpdateData(newData *ScanResult) {
 	a.data = newData
+	a.data.BuildCache() // Build lookup maps once
+
 	a.populateSubjectsList()
 	a.populateChecksList()
 	a.populateLeftSections() // Update navigation counts
 	a.updateInfo()
-	
+
 	// Auto-select first subject if available
 	a.autoSelectFirstSubject()
-	
+
 	// Focus the navigation panel so user can immediately start navigating
 	a.focusSubjects()
-	
+
 	a.app.QueueUpdateDraw(func() {})
 }
 
@@ -905,17 +929,12 @@ func (a *App) autoSelectFirstSubject() {
 		a.subjectsList.SetCurrentItem(0)
 		// Explicitly update details for the selected subject
 		a.showSubjectDetails()
-	} else {
-		// Check if repository has issues and select it
-		for _, subject := range a.data.DetailsSubjectFocused {
-			if subject.Subject == "repository" {
-				a.currentSubject = "repository"
-				a.subjectsList.SetCurrentItem(0)
-				// Explicitly update details for the selected subject
-				a.showSubjectDetails()
-				break
-			}
-		}
+	} else if a.data.cachedHasRepository {
+		// Use cached flag instead of loop
+		a.currentSubject = "repository"
+		a.subjectsList.SetCurrentItem(0)
+		// Explicitly update details for the selected subject
+		a.showSubjectDetails()
 	}
 }
 
