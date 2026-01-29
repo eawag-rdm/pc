@@ -11,7 +11,7 @@
 #
 # REGEX USAGE RULES:
 # ==================
-# 
+#
 # REGEX PATTERNS ARE ALLOWED IN:
 # - blacklist: File paths that match these patterns are skipped
 # - whitelist: Only file paths that match these patterns are checked
@@ -38,6 +38,8 @@
 #
 #####################################################################################
 
+[general]
+summaryIntroText = "Test config intro text."
 
 [operation.main]
 collector = "LocalCollector"

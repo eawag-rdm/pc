@@ -151,6 +151,7 @@ func main() {
 		// TUI mode (default behavior)
 		app := tui.NewScanningApp()
 		app.SetLocation(*folder_or_url)
+		app.SetSummaryIntroText(generalConfig.General.SummaryIntroText)
 
 		// Channel for scan completion
 		scanComplete := make(chan *tui.ScanResult)

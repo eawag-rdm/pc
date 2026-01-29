@@ -178,3 +178,57 @@ func TestAssesLists(t *testing.T) {
 		}
 	}
 }
+
+func TestParseSummaryIntroText(t *testing.T) {
+	t.Run("CustomIntroText", func(t *testing.T) {
+		tomlContent := `
+		[general]
+		summaryIntroText = "Custom intro text for testing."
+		`
+		configFile := createTempConfigFile(t, tomlContent)
+		defer os.Remove(configFile)
+
+		config, err := ParseConfig(configFile)
+		assert.NoError(t, err)
+		assert.Equal(t, "Custom intro text for testing.", config.General.SummaryIntroText)
+	})
+
+	t.Run("EmptyIntroText", func(t *testing.T) {
+		tomlContent := `
+		[general]
+		summaryIntroText = ""
+		`
+		configFile := createTempConfigFile(t, tomlContent)
+		defer os.Remove(configFile)
+
+		config, err := ParseConfig(configFile)
+		assert.NoError(t, err)
+		assert.Equal(t, "", config.General.SummaryIntroText)
+	})
+
+	t.Run("DefaultIntroText", func(t *testing.T) {
+		tomlContent := `
+		[general]
+		maxArchiveFileSize = 1000
+		`
+		configFile := createTempConfigFile(t, tomlContent)
+		defer os.Remove(configFile)
+
+		config, err := ParseConfig(configFile)
+		assert.NoError(t, err)
+		assert.Equal(t, DefaultSummaryIntroText, config.General.SummaryIntroText)
+	})
+
+	t.Run("NoGeneralSection", func(t *testing.T) {
+		tomlContent := `
+		[test.test1]
+		blacklist = []
+		`
+		configFile := createTempConfigFile(t, tomlContent)
+		defer os.Remove(configFile)
+
+		config, err := ParseConfig(configFile)
+		assert.NoError(t, err)
+		assert.Equal(t, DefaultSummaryIntroText, config.General.SummaryIntroText)
+	})
+}

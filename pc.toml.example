@@ -45,6 +45,8 @@ maxArchiveFileSize = 10485760
 maxTotalArchiveMemory = 536870912
 # Maximum size for files that read content (like IsFreeOfKeywords) (bytes) - 20MB
 maxContentScanFileSize = 20971520
+# Introductory text shown at the top of the summary (set to "" to disable)
+summaryIntroText = "We have analyzed your data package and found a few issues. Please address them and get back to us once you're done. Then, we can continue with the publication process. Feel free to get back to us, if something is unclear."
 
 [operation.main]
 collector = "LocalCollector"

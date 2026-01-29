@@ -6,7 +6,7 @@ import (
 )
 
 func TestSummaryGenerator_Generate_EmptyData(t *testing.T) {
-	sg := NewSummaryGenerator(nil, "test-location")
+	sg := NewSummaryGenerator(nil, "test-location", "Test intro text.")
 	result := sg.Generate()
 
 	if result != "No scan data available." {
@@ -20,7 +20,7 @@ func TestSummaryGenerator_Generate_NoIssues(t *testing.T) {
 		DetailsCheckFocused:   []CheckDetails{},
 	}
 
-	sg := NewSummaryGenerator(data, "test-package")
+	sg := NewSummaryGenerator(data, "test-package", "Test intro text.")
 	result := sg.Generate()
 
 	if !strings.Contains(result, "No issues found.") {
@@ -44,7 +44,7 @@ func TestSummaryGenerator_Generate_SingleCheck(t *testing.T) {
 		},
 	}
 
-	sg := NewSummaryGenerator(data, "my-package")
+	sg := NewSummaryGenerator(data, "my-package", "Test intro text.")
 	result := sg.Generate()
 
 	// Check header
@@ -96,7 +96,7 @@ func TestSummaryGenerator_Generate_MultipleChecks(t *testing.T) {
 		},
 	}
 
-	sg := NewSummaryGenerator(data, "test")
+	sg := NewSummaryGenerator(data, "test", "Test intro text.")
 	result := sg.Generate()
 
 	// Check both check types are present
@@ -137,7 +137,7 @@ func TestSummaryGenerator_Generate_ArchiveNesting(t *testing.T) {
 		},
 	}
 
-	sg := NewSummaryGenerator(data, "test")
+	sg := NewSummaryGenerator(data, "test", "Test intro text.")
 	result := sg.Generate()
 
 	// Check archive nesting format
@@ -167,7 +167,7 @@ func TestSummaryGenerator_Generate_RepositoryIssues(t *testing.T) {
 		},
 	}
 
-	sg := NewSummaryGenerator(data, "test")
+	sg := NewSummaryGenerator(data, "test", "Test intro text.")
 	result := sg.Generate()
 
 	// Check repository issue is formatted correctly
@@ -199,7 +199,7 @@ func TestSummaryGenerator_Generate_MixedIssues(t *testing.T) {
 		},
 	}
 
-	sg := NewSummaryGenerator(data, "mixed-test")
+	sg := NewSummaryGenerator(data, "mixed-test", "Test intro text.")
 	result := sg.Generate()
 
 	// Regular file issue
@@ -386,7 +386,7 @@ func TestTruncation_SameParentPath(t *testing.T) {
 		},
 	}
 
-	sg := NewSummaryGenerator(data, "test")
+	sg := NewSummaryGenerator(data, "test", "Test intro text.")
 	result := sg.Generate()
 
 	// Should show 5 issues and truncation message
@@ -432,7 +432,7 @@ func TestTruncation_DifferentMessageTypes(t *testing.T) {
 		},
 	}
 
-	sg := NewSummaryGenerator(data, "test")
+	sg := NewSummaryGenerator(data, "test", "Test intro text.")
 	result := sg.Generate()
 
 	// Should have two separate truncation messages (one per message type)
@@ -480,7 +480,7 @@ func TestTruncation_SameMessageNormalized(t *testing.T) {
 		},
 	}
 
-	sg := NewSummaryGenerator(data, "test")
+	sg := NewSummaryGenerator(data, "test", "Test intro text.")
 	result := sg.Generate()
 
 	// Should have ONE truncation message (normalized message groups them together)
@@ -515,7 +515,7 @@ func TestTruncation_NoTruncationForSmallGroups(t *testing.T) {
 		},
 	}
 
-	sg := NewSummaryGenerator(data, "test")
+	sg := NewSummaryGenerator(data, "test", "Test intro text.")
 	result := sg.Generate()
 
 	// Should NOT have truncation message
@@ -529,5 +529,35 @@ func TestTruncation_NoTruncationForSmallGroups(t *testing.T) {
 		if !strings.Contains(result, expected) {
 			t.Errorf("Missing %s in:\n%s", expected, result)
 		}
+	}
+}
+
+func TestSummaryGenerator_CustomIntroText(t *testing.T) {
+	data := &ScanResult{
+		Timestamp:           "2024-01-14T10:30:00Z",
+		DetailsCheckFocused: []CheckDetails{},
+	}
+
+	customIntro := "This is a custom intro message for the summary."
+	sg := NewSummaryGenerator(data, "test", customIntro)
+	result := sg.Generate()
+
+	if !strings.Contains(result, customIntro) {
+		t.Errorf("Expected custom intro text in output, got:\n%s", result)
+	}
+}
+
+func TestSummaryGenerator_EmptyIntroText(t *testing.T) {
+	data := &ScanResult{
+		Timestamp:           "2024-01-14T10:30:00Z",
+		DetailsCheckFocused: []CheckDetails{},
+	}
+
+	sg := NewSummaryGenerator(data, "test", "")
+	result := sg.Generate()
+
+	// Should start directly with the header when intro is empty
+	if !strings.HasPrefix(result, "=== Package Checker Scan Summary ===") {
+		t.Errorf("Expected summary to start with header when intro is empty, got:\n%s", result)
 	}
 }

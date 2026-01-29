@@ -53,6 +53,7 @@ type App struct {
 	summaryModal      *tview.Flex     // Modal overlay for summary
 	summaryTextView   *tview.TextView // Scrollable summary content
 	summaryVisible    bool            // Track modal visibility
+	summaryIntroText  string          // Configurable intro text for summary
 }
 
 func NewApp(data *ScanResult) *App {
@@ -959,6 +960,11 @@ func (a *App) SetLocation(location string) {
 	a.location = location
 }
 
+// SetSummaryIntroText sets the introductory text shown at the top of the summary
+func (a *App) SetSummaryIntroText(text string) {
+	a.summaryIntroText = text
+}
+
 // setupSummaryModal creates the modal overlay for the copy-paste summary
 func (a *App) setupSummaryModal() {
 	// Create the text view for summary content
@@ -999,7 +1005,7 @@ func (a *App) showSummaryModal() {
 	}
 
 	// Generate the summary
-	generator := NewSummaryGenerator(a.data, a.location)
+	generator := NewSummaryGenerator(a.data, a.location, a.summaryIntroText)
 	summary := generator.Generate()
 
 	// Try to copy to clipboard

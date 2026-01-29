@@ -22,10 +22,14 @@ type OperationConfig struct {
 	Collector string
 }
 
+// Default intro text for summary when not configured
+const DefaultSummaryIntroText = "We have analyzed your data package and found a few issues. Please address them and get back to us once you're done. Then, we can continue with the publication process. Feel free to get back to us, if something is unclear."
+
 type GeneralConfig struct {
-	MaxArchiveFileSize     int64 // Maximum size for individual files in archives (bytes)
-	MaxTotalArchiveMemory  int64 // Maximum total memory for archive processing (bytes)
-	MaxContentScanFileSize int64 // Maximum size for files that read content (like IsFreeOfKeywords) (bytes)
+	MaxArchiveFileSize     int64  // Maximum size for individual files in archives (bytes)
+	MaxTotalArchiveMemory  int64  // Maximum total memory for archive processing (bytes)
+	MaxContentScanFileSize int64  // Maximum size for files that read content (like IsFreeOfKeywords) (bytes)
+	SummaryIntroText       string // Introductory text shown at the top of the summary
 }
 
 type Config struct {
@@ -47,6 +51,7 @@ func ParseConfig(filename string) (*Config, error) {
 			MaxArchiveFileSize:     10 * 1024 * 1024,       // 10MB default
 			MaxTotalArchiveMemory:  100 * 1024 * 1024,      // 100MB default
 			MaxContentScanFileSize: 1024 * 1024 * 1024,     // 1GB default for content scanning
+			SummaryIntroText:       DefaultSummaryIntroText,
 		},
 		Tests:      map[string]*TestConfig{},
 		Operation:  map[string]*OperationConfig{},
@@ -92,6 +97,9 @@ func ParseConfig(filename string) (*Config, error) {
 		}
 		if maxContentScanFileSize, ok := generalData["maxContentScanFileSize"].(int64); ok {
 			c.General.MaxContentScanFileSize = maxContentScanFileSize
+		}
+		if summaryIntroText, ok := generalData["summaryIntroText"].(string); ok {
+			c.General.SummaryIntroText = summaryIntroText
 		}
 	}
 

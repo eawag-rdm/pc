@@ -15,8 +15,9 @@ const (
 
 // SummaryGenerator creates plain-text summaries grouped by check type
 type SummaryGenerator struct {
-	data     *ScanResult
-	location string
+	data      *ScanResult
+	location  string
+	introText string
 }
 
 // IssueItem represents a single issue for the summary
@@ -45,10 +46,11 @@ type issueGroup struct {
 }
 
 // NewSummaryGenerator creates a generator from scan results
-func NewSummaryGenerator(data *ScanResult, location string) *SummaryGenerator {
+func NewSummaryGenerator(data *ScanResult, location, introText string) *SummaryGenerator {
 	return &SummaryGenerator{
-		data:     data,
-		location: location,
+		data:      data,
+		location:  location,
+		introText: introText,
 	}
 }
 
@@ -60,8 +62,11 @@ func (sg *SummaryGenerator) Generate() string {
 
 	var sb strings.Builder
 
-	// Introductory text
-	sb.WriteString("We have analyzed your data package and found a few issues. Please address them and get back to us once you're done. Then, we can continue with the publication process. Feel free to get back to us, if something is unclear.\n\n")
+	// Introductory text (only if configured)
+	if sg.introText != "" {
+		sb.WriteString(sg.introText)
+		sb.WriteString("\n\n")
+	}
 
 	// Header
 	sb.WriteString("=== Package Checker Scan Summary ===\n")
