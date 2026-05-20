@@ -8,8 +8,10 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/eawag-rdm/pc/pkg/config"
+	"github.com/eawag-rdm/pc/pkg/metadata"
 	"github.com/eawag-rdm/pc/pkg/output"
 	"github.com/eawag-rdm/pc/pkg/structs"
 )
@@ -25,6 +27,7 @@ func Request(url, ckanToken string, verifyTLS bool) (string, error) {
 
 	client := &http.Client{
 		Transport: transport,
+		Timeout:   60 * time.Second,
 	}
 
 	req, err := http.NewRequest("GET", url, nil)
@@ -43,8 +46,18 @@ func Request(url, ckanToken string, verifyTLS bool) (string, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		fmt.Println("Request URL:", url, "token:", ckanToken)
-		return "", fmt.Errorf("request failed with status code %d. This might indicate the package is private and needs to be set to public", resp.StatusCode)
+		var hint string
+		switch resp.StatusCode {
+		case http.StatusUnauthorized:
+			hint = "the CKAN token is missing or invalid"
+		case http.StatusForbidden:
+			hint = "access denied - the package may be private or restricted"
+		case http.StatusNotFound:
+			hint = "the package was not found"
+		default:
+			hint = "unexpected response from the CKAN API"
+		}
+		return "", fmt.Errorf("request failed with status code %d: %s", resp.StatusCode, hint)
 	}
 
 	bodyBytes, err := io.ReadAll(resp.Body)
@@ -81,9 +94,9 @@ func GetCKANResources(jsonMap map[string]interface{}) ([]structs.File, error) {
 						resourceName := res["name"].(string)
 						// Use ToFileWithDisplay to preserve CKAN resource name as DisplayName
 						file := structs.ToFileWithDisplay(
-							res["url"].(string),  // path (will be converted to local path later)
-							resourceName,          // name
-							resourceName,          // displayName (CKAN resource name)
+							res["url"].(string), // path (will be converted to local path later)
+							resourceName,        // name
+							resourceName,        // displayName (CKAN resource name)
 							int64(res["size"].(float64)),
 							"",
 							"", // archiveName (not in archive)
@@ -172,4 +185,40 @@ func CkanCollector(package_id string, config config.Config) ([]structs.File, err
 	}
 
 	return files, nil
+}
+
+// CkanMetadataCollector fetches a CKAN package_show response and maps its
+// dataset-level metadata into a *metadata.Metadata for the metadata checks.
+// It reuses the same package_show endpoint as CkanCollector.
+func CkanMetadataCollector(package_id string, config config.Config) (*metadata.Metadata, error) {
+	collectorName := "CkanCollector"
+
+	urlAttr, ok := config.Collectors[collectorName].Attrs["url"].(string)
+	if !ok {
+		return nil, fmt.Errorf("url attribute not found or not a string")
+	}
+
+	url := fmt.Sprintf("%s/api/3/action/package_show?id=%s", urlAttr, package_id)
+	token, ok := config.Collectors[collectorName].Attrs["token"].(string)
+	if !ok {
+		return nil, fmt.Errorf("token attribute not found or not a string")
+	}
+	verify, ok := config.Collectors[collectorName].Attrs["verify"].(bool)
+	if !ok {
+		return nil, fmt.Errorf("verify attribute not found or not a bool")
+	}
+
+	jsonStr, err := Request(url, token, verify)
+	if err != nil {
+		return nil, err
+	}
+	jsonMap, err := JSONToMap(jsonStr)
+	if err != nil {
+		return nil, err
+	}
+	result, ok := jsonMap["result"].(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("ckan response has no 'result' object")
+	}
+	return metadata.CkanMetadataFromJSON(result), nil
 }

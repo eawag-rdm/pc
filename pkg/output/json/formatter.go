@@ -6,26 +6,28 @@ import (
 	"strings"
 	"time"
 
-	"github.com/eawag-rdm/pc/pkg/structs"
+	"github.com/eawag-rdm/pc/pkg/metadata"
 	"github.com/eawag-rdm/pc/pkg/output"
+	"github.com/eawag-rdm/pc/pkg/structs"
 )
 
 // ScanResult represents the complete output of a package check scan
 type ScanResult struct {
-	Timestamp              string           `json:"timestamp"`
-	Scanned                []ScannedFile    `json:"scanned"`
-	Skipped                []SkippedFile    `json:"skipped"`
-	DetailsSubjectFocused  []SubjectDetails `json:"details_subject_focused"`
-	DetailsCheckFocused    []CheckDetails   `json:"details_check_focused"`
-	PDFFiles               []string         `json:"pdf_files"`
-	Errors                 []output.LogMessage     `json:"errors"`
-	Warnings               []output.LogMessage     `json:"warnings"`
+	Timestamp             string              `json:"timestamp"`
+	Scanned               []ScannedFile       `json:"scanned"`
+	Skipped               []SkippedFile       `json:"skipped"`
+	DetailsSubjectFocused []SubjectDetails    `json:"details_subject_focused"`
+	DetailsCheckFocused   []CheckDetails      `json:"details_check_focused"`
+	DetailsMetadata       []MetadataDetails   `json:"details_metadata"`
+	PDFFiles              []string            `json:"pdf_files"`
+	Errors                []output.LogMessage `json:"errors"`
+	Warnings              []output.LogMessage `json:"warnings"`
 }
 
 // ScannedFile represents a file that was scanned with summary of issues
 type ScannedFile struct {
-	Filename string              `json:"filename"`
-	Issues   []CheckSummary      `json:"issues"`
+	Filename string         `json:"filename"`
+	Issues   []CheckSummary `json:"issues"`
 }
 
 // SkippedFile represents a file that was skipped during scanning
@@ -47,6 +49,14 @@ type SubjectDetails struct {
 type CheckDetails struct {
 	Checkname string         `json:"checkname"`
 	Issues    []SubjectIssue `json:"issues"`
+}
+
+// MetadataDetails represents the metadata-check findings for one entity
+// (a package or one of its resources).
+type MetadataDetails struct {
+	Kind   string       `json:"kind"`
+	Name   string       `json:"name"`
+	Issues []CheckIssue `json:"issues"`
 }
 
 // CheckSummary represents a summary of issues for a check within a file
@@ -72,13 +82,12 @@ type SubjectIssue struct {
 // Using LogMessage from output package
 
 // JSONFormatter handles conversion of results to JSON
-type JSONFormatter struct {}
+type JSONFormatter struct{}
 
 // NewJSONFormatter creates a new JSON formatter
 func NewJSONFormatter() *JSONFormatter {
 	return &JSONFormatter{}
 }
-
 
 // FormatResults converts messages to structured JSON output
 func (jf *JSONFormatter) FormatResults(location, collector string, messages []structs.Message, totalFiles int, pdfFiles []string) (string, error) {
@@ -88,6 +97,7 @@ func (jf *JSONFormatter) FormatResults(location, collector string, messages []st
 		Skipped:               make([]SkippedFile, 0),
 		DetailsSubjectFocused: make([]SubjectDetails, 0),
 		DetailsCheckFocused:   make([]CheckDetails, 0),
+		DetailsMetadata:       make([]MetadataDetails, 0),
 		PDFFiles:              make([]string, 0),
 		Errors:                make([]output.LogMessage, 0),
 		Warnings:              make([]output.LogMessage, 0),
@@ -108,14 +118,14 @@ func (jf *JSONFormatter) FormatResults(location, collector string, messages []st
 			// Check if this is a binary file skip message
 			if strings.Contains(msg.Message, "Not checking contents of file") && strings.Contains(msg.Message, "binary") {
 				// Extract filename and path from message like "Not checking contents of file: 'filename' (path: 'filepath'). The file seems to be binary."
-				
+
 				// Extract filename (first quoted string)
 				start := strings.Index(msg.Message, "'")
 				if start != -1 {
 					end := strings.Index(msg.Message[start+1:], "'")
 					if end != -1 {
 						filename := msg.Message[start+1 : start+1+end]
-						
+
 						// Extract path (second quoted string after "path: '")
 						pathStart := strings.Index(msg.Message, "(path: '")
 						var path string
@@ -126,12 +136,12 @@ func (jf *JSONFormatter) FormatResults(location, collector string, messages []st
 								path = msg.Message[pathStart : pathStart+pathEnd]
 							}
 						}
-						
+
 						// Fallback to filename if path not found
 						if path == "" {
 							path = filename
 						}
-						
+
 						result.Skipped = append(result.Skipped, SkippedFile{
 							Filename: filename,
 							Path:     path,
@@ -142,14 +152,14 @@ func (jf *JSONFormatter) FormatResults(location, collector string, messages []st
 			} else if strings.Contains(msg.Message, "Skipping content scan of file") && strings.Contains(msg.Message, "exceeds maximum") {
 				// Check if this is a file size limit skip message
 				// Extract filename and path from message like "Skipping content scan of file: 'filename' (path: 'filepath'). File size (X bytes) exceeds maximum (Y bytes)."
-				
+
 				// Extract filename (first quoted string)
 				start := strings.Index(msg.Message, "'")
 				if start != -1 {
 					end := strings.Index(msg.Message[start+1:], "'")
 					if end != -1 {
 						filename := msg.Message[start+1 : start+1+end]
-						
+
 						// Extract path (second quoted string after "path: '")
 						pathStart := strings.Index(msg.Message, "(path: '")
 						var path string
@@ -160,12 +170,12 @@ func (jf *JSONFormatter) FormatResults(location, collector string, messages []st
 								path = msg.Message[pathStart : pathStart+pathEnd]
 							}
 						}
-						
+
 						// Fallback to filename if path not found
 						if path == "" {
 							path = filename
 						}
-						
+
 						result.Skipped = append(result.Skipped, SkippedFile{
 							Filename: filename,
 							Path:     path,
@@ -200,17 +210,37 @@ func subjectKey(displayName, archiveName string) string {
 // processMessages analyzes messages and creates the new structured output
 func (result *ScanResult) processMessages(messages []structs.Message) {
 	// Maps to organize data
-	fileIssueMap := make(map[string]map[string]int)         // subject_key -> checkname -> count (only for files)
-	subjectDetailMap := make(map[string][]CheckIssue)       // subject_key -> []CheckIssue
-	checkDetailMap := make(map[string][]SubjectIssue)       // checkname -> []SubjectIssue
-	subjectPathMap := make(map[string]string)               // subject_key -> path
-	subjectArchiveMap := make(map[string]string)            // subject_key -> archive_name
-	subjectDisplayMap := make(map[string]string)            // subject_key -> display_name
+	fileIssueMap := make(map[string]map[string]int)   // subject_key -> checkname -> count (only for files)
+	subjectDetailMap := make(map[string][]CheckIssue) // subject_key -> []CheckIssue
+	checkDetailMap := make(map[string][]SubjectIssue) // checkname -> []SubjectIssue
+	subjectPathMap := make(map[string]string)         // subject_key -> path
+	subjectArchiveMap := make(map[string]string)      // subject_key -> archive_name
+	subjectDisplayMap := make(map[string]string)      // subject_key -> display_name
+	metadataIndex := make(map[*metadata.Entity]int)   // entity -> index in DetailsMetadata
 
 	for _, msg := range messages {
 		testName := msg.TestName
 		if testName == "" {
 			testName = "Unknown"
+		}
+
+		// Metadata entities form their own section, separate from files.
+		if ent, ok := msg.Source.(*metadata.Entity); ok {
+			idx, exists := metadataIndex[ent]
+			if !exists {
+				idx = len(result.DetailsMetadata)
+				result.DetailsMetadata = append(result.DetailsMetadata, MetadataDetails{
+					Kind:   ent.Kind,
+					Name:   ent.Name,
+					Issues: []CheckIssue{},
+				})
+				metadataIndex[ent] = idx
+			}
+			result.DetailsMetadata[idx].Issues = append(result.DetailsMetadata[idx].Issues, CheckIssue{
+				Checkname: testName,
+				Message:   msg.Content,
+			})
+			continue
 		}
 
 		// Determine subject and path
@@ -295,4 +325,3 @@ func (result *ScanResult) processMessages(messages []structs.Message) {
 		})
 	}
 }
-

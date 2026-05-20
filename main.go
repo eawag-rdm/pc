@@ -12,6 +12,7 @@ import (
 	"github.com/eawag-rdm/pc/pkg/collectors"
 	"github.com/eawag-rdm/pc/pkg/config"
 	"github.com/eawag-rdm/pc/pkg/helpers"
+	"github.com/eawag-rdm/pc/pkg/metadata"
 	"github.com/eawag-rdm/pc/pkg/output"
 	htmlformatter "github.com/eawag-rdm/pc/pkg/output/html"
 	jsonformatter "github.com/eawag-rdm/pc/pkg/output/json"
@@ -54,7 +55,7 @@ func main() {
 
 	// Configure logger for JSON mode by default
 	output.GlobalLogger.SetJSONMode(true)
-	
+
 	// Enable CPU profiling if requested
 	if *cpuprofile != "" {
 		f, err := os.Create(*cpuprofile)
@@ -79,7 +80,7 @@ func main() {
 		errorResult := map[string]interface{}{
 			"timestamp": time.Now().UTC().Format(time.RFC3339),
 			"error": map[string]string{
-				"type": "config_error",
+				"type":    "config_error",
 				"message": fmt.Sprintf("Error loading config: %v", err),
 			},
 		}
@@ -92,8 +93,9 @@ func main() {
 	}
 
 	var (
-		files    []structs.File
-		filesErr error
+		files          []structs.File
+		filesErr       error
+		metadataResult *metadata.Metadata
 	)
 
 	// Helper function to output error in JSON format
@@ -131,6 +133,13 @@ func main() {
 			return
 		}
 
+		var mdErr error
+		metadataResult, mdErr = collectors.CkanMetadataCollector(*folder_or_url, *generalConfig)
+		if mdErr != nil {
+			output.GlobalLogger.Warning("Could not collect package metadata: %v", mdErr)
+			metadataResult = nil
+		}
+
 	} else {
 		outputError("collector_error", "Unknown collector")
 		return
@@ -141,7 +150,6 @@ func main() {
 		outputError("no_files", fmt.Sprintf("No files found in location: %s", *folder_or_url))
 		return
 	}
-	
 
 	// Determine output modes
 	generateHtml := *htmlOutput != ""
@@ -176,9 +184,9 @@ func main() {
 				app.UpdateProgress(0, 1, "Starting scan...")
 
 				// Run scanning with progress updates
-				messages := utils.ApplyAllChecksWithProgress(*generalConfig, files, true, func(current, total int, message string) {
+				messages := append(metadata.RunChecks(metadataResult), utils.ApplyAllChecksWithProgress(*generalConfig, files, true, func(current, total int, message string) {
 					app.UpdateProgress(current, total, message)
-				})
+				})...)
 
 				// Create JSON formatter and generate output
 				formatter := jsonformatter.NewJSONFormatter()
@@ -238,7 +246,7 @@ func main() {
 		}
 	} else {
 		// Non-TUI mode: run regular scan
-		messages := utils.ApplyAllChecks(*generalConfig, files, true)
+		messages := append(metadata.RunChecks(metadataResult), utils.ApplyAllChecks(*generalConfig, files, true)...)
 
 		// Get collector name from config
 		collectorName := generalConfig.Operation["main"].Collector
@@ -271,7 +279,7 @@ func main() {
 		}
 		// If only --no-tui (with or without --html), no stdout output beyond HTML message
 	}
-	
+
 	// Enable memory profiling if requested
 	if *memprofile != "" {
 		f, err := os.Create(*memprofile)
