@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -212,13 +213,104 @@ func toLogAttrs(attrs []any) []slog.Attr {
 	return out
 }
 
-// clientIP returns the connection's remote address (host portion). Proxy-aware
-// X-Real-IP handling is introduced with rate limiting in a later step; here we
-// only record what is on the connection.
+// clientIP returns the connection's remote address (host portion), for access
+// logging. Rate-limit keying uses the proxy-aware rateLimiter.clientIPKey
+// instead; this function records only what is on the connection.
 func clientIP(r *http.Request) string {
 	addr := r.RemoteAddr
 	if i := strings.LastIndex(addr, ":"); i != -1 {
 		return addr[:i]
 	}
 	return addr
+}
+
+// RateLimitGlobal enforces the global (all-clients) fixed-hourly-window cap
+// (§4). It runs BEFORE any CKAN call and before the per-IP check; the token is
+// never consulted. On rejection it emits the rate_limited slog event and
+// renders the rate_limited envelope with a Retry-After header. It wraps
+// /analyze only — /health and /ready never see it.
+func (h *Handler) RateLimitGlobal(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if h.limiter == nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+		ok, count, limit, retryAfter := h.limiter.allow(globalKey, scopeGlobal)
+		if !ok {
+			h.logRateLimited(r, scopeGlobal, hashIPKey(h.limiter.clientIPKey(r)), count, limit, retryAfter)
+			writeRateLimited(w, r, retryAfter)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// RateLimitPerIP enforces the per-client-IP fixed-hourly-window cap (§4). The
+// key is the proxy-aware client IP (X-Real-IP only from trustedProxies; IPv6 on
+// the /64 prefix); the token is never a key. It runs after the global check and
+// before the concurrency semaphore.
+func (h *Handler) RateLimitPerIP(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if h.limiter == nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+		key := h.limiter.clientIPKey(r)
+		ok, count, limit, retryAfter := h.limiter.allow(key, scopeIP)
+		if !ok {
+			h.logRateLimited(r, scopeIP, hashIPKey(key), count, limit, retryAfter)
+			writeRateLimited(w, r, retryAfter)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// Concurrency bounds simultaneous analyses with a maxConcurrentAnalyses
+// semaphore (§4). When the semaphore is full it rejects immediately with
+// service_busy (503) — there is NO queueing. A token is released when the
+// handler returns.
+func (h *Handler) Concurrency(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if h.sem == nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+		select {
+		case h.sem <- struct{}{}:
+			defer func() { <-h.sem }()
+			next.ServeHTTP(w, r)
+		default:
+			// Full: reject immediately, no queueing.
+			writeError(w, r, CodeServiceBusy)
+		}
+	})
+}
+
+// writeRateLimited renders the rate_limited envelope (429) and the Retry-After
+// header (whole seconds until the next hour boundary, §4). Retry-After is set
+// before writeError writes the status/body.
+func writeRateLimited(w http.ResponseWriter, r *http.Request, retryAfter time.Duration) {
+	secs := int(retryAfter.Seconds())
+	if retryAfter > 0 && secs < 1 {
+		secs = 1
+	}
+	if secs < 0 {
+		secs = 0
+	}
+	w.Header().Set("Retry-After", strconv.Itoa(secs))
+	writeError(w, r, CodeRateLimited)
+}
+
+// logRateLimited emits the rate_limited slog event (§8): request_id, scope,
+// key (a hashed/truncated IP — never the token), count, limit, retry_after.
+func (h *Handler) logRateLimited(r *http.Request, scope rateScope, key string, count, limit int, retryAfter time.Duration) {
+	h.logger.LogAttrs(r.Context(), slog.LevelWarn, "rate_limited",
+		slog.String("request_id", GetRequestID(r)),
+		slog.String("scope", string(scope)),
+		slog.String("key", key),
+		slog.Int("count", count),
+		slog.Int("limit", limit),
+		slog.Int("retry_after", int(retryAfter.Seconds())),
+	)
 }

@@ -47,11 +47,20 @@ func New(cfg Config) (*Server, error) {
 	// Set up routes
 	mux := http.NewServeMux()
 
-	// Health endpoint (no auth required)
+	// Health endpoint (no auth required, exempt from rate limiting and the
+	// concurrency semaphore, §1/§4).
 	mux.HandleFunc("GET /health", handler.Health)
 
-	// Analyze endpoint (token extraction is optional - see ExtractToken).
-	mux.HandleFunc("POST /api/v1/analyze", ExtractToken(handler.Analyze))
+	// Analyze endpoint. The rate-limit and concurrency gates wrap THIS route
+	// only (§4/§9): outer -> inner the analyze chain is
+	// rate-limit(global) -> rate-limit(per-IP) -> concurrency-semaphore ->
+	// token extraction (optional, see ExtractToken) -> handler. /health (and a
+	// future /ready) bypass it entirely.
+	analyze := http.Handler(ExtractToken(handler.Analyze))
+	analyze = handler.Concurrency(analyze)
+	analyze = handler.RateLimitPerIP(analyze)
+	analyze = handler.RateLimitGlobal(analyze)
+	mux.Handle("POST /api/v1/analyze", analyze)
 
 	// Middleware chain (outer -> inner): request_id -> access-log -> routes.
 	loggedMux := handler.RequestContext(handler.AccessLog(mux))

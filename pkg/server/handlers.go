@@ -52,9 +52,18 @@ type Handler struct {
 	// used to build the response. Without this, one request's reset can wipe (or
 	// race with) another in-flight request's accumulated Messages/PDF notes,
 	// bleeding data across responses (§6, §9). It is effectively a
-	// concurrency=1 gate; the configurable maxConcurrentAnalyses semaphore and
-	// per-request logger/tracker instances arrive in a later step.
+	// concurrency=1 gate; the configurable maxConcurrentAnalyses semaphore (in
+	// middleware) caps how many requests reach this point at once.
 	analysisMu sync.Mutex
+
+	// limiter is the proxy-aware fixed-window rate limiter applied to /analyze
+	// only (§4). It is nil only in handler-isolation tests that never exercise
+	// the rate-limit middleware.
+	limiter *rateLimiter
+	// sem is the concurrency semaphore (§4): a buffered channel of
+	// maxConcurrentAnalyses tokens. A nil channel disables the gate (used by
+	// handler-isolation tests).
+	sem chan struct{}
 }
 
 // NewHandler creates a new handler with the given configuration. The slog
@@ -62,11 +71,26 @@ type Handler struct {
 func NewHandler(pcConfig *config.Config, serverCfg Config, logger *slog.Logger) *Handler {
 	contact := DefaultContactMessage
 	logClientIP := true
+	var limiter *rateLimiter
+	var sem chan struct{}
 	if pcConfig != nil && pcConfig.Server != nil {
-		if pcConfig.Server.ContactMessage != "" {
-			contact = pcConfig.Server.ContactMessage
+		s := pcConfig.Server
+		if s.ContactMessage != "" {
+			contact = s.ContactMessage
 		}
-		logClientIP = pcConfig.Server.LogClientIP
+		logClientIP = s.LogClientIP
+
+		limiter = newRateLimiter(
+			s.PerIPRequestsPerHour,
+			s.GlobalRequestsPerHour,
+			s.BurstFactor,
+			s.MaxTrackedRateKeys,
+			s.TrustProxyHeaders,
+			s.TrustedProxies,
+		)
+		if s.MaxConcurrentAnalyses > 0 {
+			sem = make(chan struct{}, s.MaxConcurrentAnalyses)
+		}
 	}
 
 	return &Handler{
@@ -75,6 +99,8 @@ func NewHandler(pcConfig *config.Config, serverCfg Config, logger *slog.Logger) 
 		logger:      logger,
 		contactMsg:  contact,
 		logClientIP: logClientIP,
+		limiter:     limiter,
+		sem:         sem,
 	}
 }
 
