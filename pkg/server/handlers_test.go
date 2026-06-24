@@ -915,6 +915,110 @@ func TestHandler_Analyze_Timeout_HungUpstream(t *testing.T) {
 	}
 }
 
+// TestHandler_Analyze_ClientCancelled_ServiceBusy drives Analyze with a request
+// context that is ALREADY cancelled (the client went away). This exercises the
+// ctx.Err()==context.Canceled branch — distinct from the DeadlineExceeded (504)
+// branch — which must render service_busy (503), not gateway_timeout. The
+// collector's in-flight call aborts immediately on the cancelled context, so the
+// handler sees a non-nil ctx.Err() that is NOT a deadline.
+func TestHandler_Analyze_ClientCancelled_ServiceBusy(t *testing.T) {
+	ckan := fakeCKAN(t, nil, nil)
+	defer ckan.Close()
+
+	handler := NewHandler(ckanPCConfig(ckan.URL), Config{}, discardLogger())
+
+	body := bytes.NewBufferString(`{"package_id":"cancel-pkg"}`)
+	req := httptest.NewRequest("POST", "/api/v1/analyze", body)
+	req = withRequestContext(req, "REQ-CANCEL", DefaultContactMessage)
+	req = req.WithContext(context.WithValue(req.Context(), CKANTokenKey, "tok"))
+
+	// Pre-cancel the request context: simulate the client disconnecting before /
+	// while the analysis runs. The handler's own WithTimeout wraps this cancelled
+	// parent, so the derived ctx is cancelled (Canceled, not DeadlineExceeded).
+	ctx, cancel := context.WithCancel(req.Context())
+	cancel()
+	req = req.WithContext(ctx)
+
+	rr := httptest.NewRecorder()
+	handler.Analyze(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 on client cancellation, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+	resp := decodeEnvelope(t, rr)
+	if resp.Error.Code != CodeServiceBusy {
+		t.Errorf("expected %q on client cancellation (not the 504 deadline branch), got %q", CodeServiceBusy, resp.Error.Code)
+	}
+}
+
+// TestHandler_Analyze_UnknownCKANType_InternalNoLeak: CKAN answers HTTP 200 with
+// success:false and an UNRECOGNISED error.__type ("Validation Error"). This is
+// not a 401/403/404/transport-5xx, so it maps to internal_error (500) — CKAN was
+// reachable, so it is NOT ckan_unavailable. Critically, the verbose CKAN body
+// text (including the __type and any message) must NOT leak into the client
+// envelope (spec §3: raw CKAN bodies are kept out and logged instead).
+func TestHandler_Analyze_UnknownCKANType_InternalNoLeak(t *testing.T) {
+	const leakyType = "Validation Error"
+	const leakySecret = "internal-ckan-detail-do-not-leak"
+	body := `{"success":false,"error":{"__type":"` + leakyType + `","message":"` + leakySecret + `"}}`
+	ckan := statusCKAN(t, http.StatusOK, body, nil, nil)
+	defer ckan.Close()
+
+	handler := NewHandler(ckanPCConfig(ckan.URL), Config{}, discardLogger())
+
+	rr := analyzeWithToken(handler, "unknown-type-pkg", "tok")
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 internal_error for an unknown __type, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+	resp := decodeEnvelope(t, rr)
+	if resp.Error.Code != CodeInternalError {
+		t.Errorf("expected %q for an unknown CKAN __type, got %q", CodeInternalError, resp.Error.Code)
+	}
+	// The verbose CKAN body must not surface to the client.
+	raw := rr.Body.String()
+	if strings.Contains(raw, leakyType) {
+		t.Errorf("CKAN __type leaked into the client envelope: %s", raw)
+	}
+	if strings.Contains(raw, leakySecret) {
+		t.Errorf("CKAN body detail leaked into the client envelope: %s", raw)
+	}
+}
+
+// TestHandler_Analyze_MalformedResource_InternalNoLeak: CKAN returns a package
+// whose single resource is missing BOTH url_type and url. The collector rejects
+// it with a verbose, user-facing fmt.Errorf (naming the resource/package). The
+// handler maps that non-CKANError collector error to internal_error (500), and
+// the verbose collector message must NOT be surfaced to the client — only the
+// fixed catalogue message (spec §3).
+func TestHandler_Analyze_MalformedResource_InternalNoLeak(t *testing.T) {
+	ckan := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// One resource missing both url_type and url -> malformed.
+		io.WriteString(w, `{"success":true,"result":{"name":"malformed-pkg","resources":[`+
+			`{"name":"broken-resource","size":10}]}}`)
+	}))
+	defer ckan.Close()
+
+	handler := NewHandler(ckanPCConfig(ckan.URL), Config{}, discardLogger())
+
+	rr := analyzeWithToken(handler, "malformed-pkg", "tok")
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 internal_error for malformed resource metadata, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+	resp := decodeEnvelope(t, rr)
+	if resp.Error.Code != CodeInternalError {
+		t.Errorf("expected %q for malformed resource metadata, got %q", CodeInternalError, resp.Error.Code)
+	}
+	// The verbose collector message (which names the resource/package and
+	// describes url_type) must NOT reach the client.
+	raw := rr.Body.String()
+	for _, leak := range []string{"broken-resource", "malformed-pkg", "url_type", "url type", "reupload", "recreate"} {
+		if strings.Contains(raw, leak) {
+			t.Errorf("verbose collector message leaked into the client envelope (found %q): %s", leak, raw)
+		}
+	}
+}
+
 func TestWithRequestID_Additive(t *testing.T) {
 	in := `{"timestamp":"t","scanned":[],"skipped":[]}`
 	out, err := withRequestID(in, "REQ-XYZ")

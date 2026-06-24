@@ -278,6 +278,57 @@ func TestCORS_DisallowedOrigin(t *testing.T) {
 	}
 }
 
+// TestCORS_ActualRequestAllowedOrigin asserts that a REAL (non-preflight)
+// cross-origin request from an allowed origin carries the CORS allow-origin
+// header AND a Vary: Origin header (so shared caches don't serve one origin's
+// CORS headers to another), and still reaches the inner handler (§9). The
+// preflight path is covered separately; this covers the simple GET/POST that the
+// browser actually issues after a successful preflight.
+func TestCORS_ActualRequestAllowedOrigin(t *testing.T) {
+	const origin = "https://frontend.example.org"
+	h := corsHandler(origin)
+
+	for _, method := range []string{"GET", "POST"} {
+		t.Run(method, func(t *testing.T) {
+			called := false
+			inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				called = true
+				w.WriteHeader(http.StatusOK)
+			})
+
+			req := httptest.NewRequest(method, "/api/v1/analyze", nil)
+			req.Header.Set("Origin", origin)
+			rr := httptest.NewRecorder()
+
+			h.CORS(inner).ServeHTTP(rr, req)
+
+			if !called {
+				t.Errorf("%s: non-preflight request must reach the inner handler", method)
+			}
+			if rr.Code != http.StatusOK {
+				t.Errorf("%s: expected 200 passthrough, got %d", method, rr.Code)
+			}
+			if got := rr.Header().Get("Access-Control-Allow-Origin"); got != origin {
+				t.Errorf("%s: Access-Control-Allow-Origin = %q, want %q", method, got, origin)
+			}
+			vary := rr.Header().Values("Vary")
+			if !containsString(vary, "Origin") {
+				t.Errorf("%s: Vary must include Origin (cache-poisoning guard), got %v", method, vary)
+			}
+		})
+	}
+}
+
+// containsString reports whether s is present in vs.
+func containsString(vs []string, s string) bool {
+	for _, v := range vs {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
+
 // TestRecover_PanicBecomesInternalError asserts a panic in a downstream handler
 // is turned into a clean internal_error envelope (500) by the Recover
 // middleware, and the process does not crash. It exercises the REAL production

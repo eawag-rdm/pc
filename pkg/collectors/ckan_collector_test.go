@@ -551,6 +551,16 @@ func TestRequestReturnsCKANError(t *testing.T) {
 			wantStatus: http.StatusNotFound,
 			wantBody:   true,
 		},
+		{
+			// An unrecognised __type on a 200+success:false body resolves to 500
+			// with StatusFromBody set; the server maps this StatusFromBody-500 to
+			// internal_error (CKAN was reachable), distinct from a transport 5xx.
+			name:       "200 with success:false unknown type -> 500 from body",
+			status:     http.StatusOK,
+			body:       `{"success":false,"error":{"__type":"Validation Error","message":"secret-detail"}}`,
+			wantStatus: http.StatusInternalServerError,
+			wantBody:   true,
+		},
 	}
 
 	for _, tt := range tests {

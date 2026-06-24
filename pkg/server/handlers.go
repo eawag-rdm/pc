@@ -361,11 +361,17 @@ func countSkipped(messages []structs.Message) int {
 // mapCKANError maps the single package_show outcome to a catalogue code (§3, §5):
 //   - ErrResourceUnreadable (a url_type=="upload" file missing/escaping storage)
 //     -> resource_unreadable;
-//   - a transport/connection failure or a 5xx -> ckan_unavailable;
+//   - a transport/connection failure or a transport-level HTTP 5xx ->
+//     ckan_unavailable (CKAN really is unreachable/erroring);
 //   - explicit 401 -> invalid_token, 403 -> access_denied;
 //   - 404 (nonexistent OR private-unauthorized under CKAN's default
 //     reveal_private_datasets=false), including a 200+success:false body that
 //     resolves to 404 -> package_not_found;
+//   - a 200+success:false body with an UNRECOGNISED error.__type (which
+//     ckanActionErrorStatus resolves to 500 with StatusFromBody set): CKAN was
+//     reachable and answered 200, so this is not "we can't reach CKAN" — it is an
+//     unexpected upstream condition mapped to internal_error so the verbose CKAN
+//     __type never leaks into the client envelope;
 //   - anything else -> internal_error.
 func mapCKANError(err error) string {
 	if errors.Is(err, collectors.ErrResourceUnreadable) {
@@ -385,6 +391,13 @@ func mapCKANError(err error) string {
 			return CodePackageNotFound
 		}
 		if ckanErr.StatusCode >= 500 {
+			// A status derived from a 200+success:false body (unrecognised
+			// __type) is an internal mapping gap, NOT a real upstream outage:
+			// CKAN was reachable. Only a genuine transport-level HTTP 5xx is
+			// ckan_unavailable.
+			if ckanErr.StatusFromBody {
+				return CodeInternalError
+			}
 			return CodeCKANUnavailable
 		}
 		return CodeInternalError
