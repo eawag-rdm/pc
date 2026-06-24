@@ -69,8 +69,8 @@ perIPRequestsPerHour  = 4
 globalRequestsPerHour = 20
 # Additional headroom applied to the budgets (+50%)
 burstFactor           = 0.5
-# Maximum simultaneous analyses
-maxConcurrentAnalyses = 3
+# Seconds a request waits for the single analysis gate before returning service_busy (503)
+analysisBusyWaitSeconds = 2
 # Limiter memory bound (max tracked rate keys)
 maxTrackedRateKeys    = 10000
 # Contact suffix shown in error envelopes

@@ -47,24 +47,33 @@ type Handler struct {
 	// logClientIP gates whether the client IP is recorded in access logs.
 	logClientIP bool
 
-	// analysisMu serializes the part of Analyze that touches process-global
-	// state (output.GlobalLogger and helpers.PDFTracker): the per-request reset,
-	// the analysis that accumulates into those globals, and the snapshot read
-	// used to build the response. Without this, one request's reset can wipe (or
-	// race with) another in-flight request's accumulated Messages/PDF notes,
-	// bleeding data across responses (§6, §9). It is effectively a
-	// concurrency=1 gate; the configurable maxConcurrentAnalyses semaphore (in
-	// middleware) caps how many requests reach this point at once.
+	// analysisMu is the single serialization gate (concurrency = 1, §4/§9). It
+	// serializes the part of Analyze that touches process-global state
+	// (output.GlobalLogger and helpers.PDFTracker): the per-request reset, the
+	// analysis that accumulates into those globals, and the snapshot read used to
+	// build the response. Without it, one request's reset can wipe (or race with)
+	// another in-flight request's accumulated Messages/PDF notes, bleeding data
+	// across responses. The Concurrency middleware's gate channel (sem) is the
+	// front door to this same single slot: it lets a request WAIT up to
+	// analysisBusyWait for the slot and rejects with service_busy on timeout, so
+	// the middleware gate and analysisMu are one coherent concurrency=1 gate
+	// rather than two overlapping ones.
 	analysisMu sync.Mutex
 
 	// limiter is the proxy-aware fixed-window rate limiter applied to /analyze
 	// only (§4). It is nil only in handler-isolation tests that never exercise
 	// the rate-limit middleware.
 	limiter *rateLimiter
-	// sem is the concurrency semaphore (§4): a buffered channel of
-	// maxConcurrentAnalyses tokens. A nil channel disables the gate (used by
+	// sem is the analysis gate (§4): a buffered channel of capacity 1, mirroring
+	// analysisMu's single slot. The Concurrency middleware acquires it (waiting up
+	// to analysisBusyWait) before the handler runs and releases it when the
+	// handler returns. A nil channel disables the gate (used by
 	// handler-isolation tests).
 	sem chan struct{}
+	// analysisBusyWait is how long the Concurrency middleware waits for the gate
+	// slot before rejecting with service_busy (503). Sourced from
+	// [server] analysisBusyWaitSeconds (default 2s).
+	analysisBusyWait time.Duration
 
 	// readiness computes and caches the /ready verdict (CKAN reachable AND
 	// storage mount readable), refreshed at most every readinessTTL (§1).
@@ -88,6 +97,10 @@ func NewHandler(pcConfig *config.Config, serverCfg Config, logger *slog.Logger) 
 	var limiter *rateLimiter
 	var sem chan struct{}
 	var allowedOrigins []string
+	// The analysis gate is ALWAYS concurrency = 1 for race-safety: only one
+	// analysis may touch the process-global GlobalLogger/PDFTracker at a time
+	// (§4/§9). The busy-wait duration is configurable; the capacity is not.
+	busyWait := time.Duration(config.DefaultServerAnalysisBusyWaitSeconds) * time.Second
 	if pcConfig != nil && pcConfig.Server != nil {
 		s := pcConfig.Server
 		if s.ContactMessage != "" {
@@ -104,20 +117,22 @@ func NewHandler(pcConfig *config.Config, serverCfg Config, logger *slog.Logger) 
 			s.TrustProxyHeaders,
 			s.TrustedProxies,
 		)
-		if s.MaxConcurrentAnalyses > 0 {
-			sem = make(chan struct{}, s.MaxConcurrentAnalyses)
+		if s.AnalysisBusyWaitSeconds > 0 {
+			busyWait = time.Duration(s.AnalysisBusyWaitSeconds) * time.Second
 		}
+		sem = make(chan struct{}, 1)
 	}
 
 	h := &Handler{
-		pcConfig:       pcConfig,
-		serverCfg:      serverCfg,
-		logger:         logger,
-		contactMsg:     contact,
-		logClientIP:    logClientIP,
-		limiter:        limiter,
-		sem:            sem,
-		allowedOrigins: allowedOrigins,
+		pcConfig:         pcConfig,
+		serverCfg:        serverCfg,
+		logger:           logger,
+		contactMsg:       contact,
+		logClientIP:      logClientIP,
+		limiter:          limiter,
+		sem:              sem,
+		analysisBusyWait: busyWait,
+		allowedOrigins:   allowedOrigins,
 	}
 	h.readiness = newReadinessChecker(h)
 	return h

@@ -261,7 +261,7 @@ See the `[server]` section in `pc.toml` for the full, commented list. Key knobs:
 `listenAddress`, `trustProxyHeaders` / `trustedProxies` (proxy-aware client IP),
 `allowedOrigins` (CORS allow-list), `perIPRequestsPerHour` /
 `globalRequestsPerHour` / `burstFactor` (fixed-window rate limiting),
-`maxConcurrentAnalyses`, `maxTrackedRateKeys`, `contactMessage`, `logClientIP`,
+`analysisBusyWaitSeconds`, `maxTrackedRateKeys`, `contactMessage`, `logClientIP`,
 `requestTimeoutSeconds`.
 
 ### Production Deployment

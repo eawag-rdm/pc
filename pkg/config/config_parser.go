@@ -42,30 +42,30 @@ type GeneralConfig struct {
 
 // Default values for the [server] section.
 const (
-	DefaultServerPerIPRequestsPerHour  = 4
-	DefaultServerGlobalRequestsPerHour = 20
-	DefaultServerBurstFactor           = 0.5
-	DefaultServerMaxConcurrentAnalyses = 3
-	DefaultServerMaxTrackedRateKeys    = 10000
-	DefaultServerContactMessage        = "If you can't resolve this yourself, please contact rdm@eawag.ch."
-	DefaultServerLogClientIP           = true
-	DefaultServerTrustProxyHeaders     = true
-	DefaultServerRequestTimeoutSeconds = 300
+	DefaultServerPerIPRequestsPerHour    = 4
+	DefaultServerGlobalRequestsPerHour   = 20
+	DefaultServerBurstFactor             = 0.5
+	DefaultServerAnalysisBusyWaitSeconds = 2
+	DefaultServerMaxTrackedRateKeys      = 10000
+	DefaultServerContactMessage          = "If you can't resolve this yourself, please contact rdm@eawag.ch."
+	DefaultServerLogClientIP             = true
+	DefaultServerTrustProxyHeaders       = true
+	DefaultServerRequestTimeoutSeconds   = 300
 )
 
 // ServerConfig holds the configuration for the HTTP server (the [server] section).
 type ServerConfig struct {
-	TrustProxyHeaders     bool     // Whether to trust proxy-set client IP headers
-	TrustedProxies        []string // CIDRs allowed to set X-Real-IP
-	AllowedOrigins        []string // CORS allow-list of origin URLs
-	PerIPRequestsPerHour  int      // Per-IP hourly request budget
-	GlobalRequestsPerHour int      // Global hourly request budget
-	BurstFactor           float64  // Additional headroom factor applied to budgets
-	MaxConcurrentAnalyses int      // Maximum simultaneous analyses
-	MaxTrackedRateKeys    int      // Limiter memory bound (max tracked rate keys)
-	ContactMessage        string   // Contact suffix shown in error envelopes
-	LogClientIP           bool     // Whether to log the client IP
-	RequestTimeoutSeconds int      // Hard upper bound for a request, in seconds
+	TrustProxyHeaders       bool     // Whether to trust proxy-set client IP headers
+	TrustedProxies          []string // CIDRs allowed to set X-Real-IP
+	AllowedOrigins          []string // CORS allow-list of origin URLs
+	PerIPRequestsPerHour    int      // Per-IP hourly request budget
+	GlobalRequestsPerHour   int      // Global hourly request budget
+	BurstFactor             float64  // Additional headroom factor applied to budgets
+	AnalysisBusyWaitSeconds int      // Seconds a busy request waits for the analysis gate before 503
+	MaxTrackedRateKeys      int      // Limiter memory bound (max tracked rate keys)
+	ContactMessage          string   // Contact suffix shown in error envelopes
+	LogClientIP             bool     // Whether to log the client IP
+	RequestTimeoutSeconds   int      // Hard upper bound for a request, in seconds
 }
 
 type Config struct {
@@ -93,17 +93,17 @@ func ParseConfig(filename string) (*Config, error) {
 			SummaryMinGroupSizeForTruncation: DefaultSummaryMinGroupSizeForTruncation,
 		},
 		Server: &ServerConfig{
-			TrustProxyHeaders:     DefaultServerTrustProxyHeaders,
-			TrustedProxies:        nil,
-			AllowedOrigins:        nil,
-			PerIPRequestsPerHour:  DefaultServerPerIPRequestsPerHour,
-			GlobalRequestsPerHour: DefaultServerGlobalRequestsPerHour,
-			BurstFactor:           DefaultServerBurstFactor,
-			MaxConcurrentAnalyses: DefaultServerMaxConcurrentAnalyses,
-			MaxTrackedRateKeys:    DefaultServerMaxTrackedRateKeys,
-			ContactMessage:        DefaultServerContactMessage,
-			LogClientIP:           DefaultServerLogClientIP,
-			RequestTimeoutSeconds: DefaultServerRequestTimeoutSeconds,
+			TrustProxyHeaders:       DefaultServerTrustProxyHeaders,
+			TrustedProxies:          nil,
+			AllowedOrigins:          nil,
+			PerIPRequestsPerHour:    DefaultServerPerIPRequestsPerHour,
+			GlobalRequestsPerHour:   DefaultServerGlobalRequestsPerHour,
+			BurstFactor:             DefaultServerBurstFactor,
+			AnalysisBusyWaitSeconds: DefaultServerAnalysisBusyWaitSeconds,
+			MaxTrackedRateKeys:      DefaultServerMaxTrackedRateKeys,
+			ContactMessage:          DefaultServerContactMessage,
+			LogClientIP:             DefaultServerLogClientIP,
+			RequestTimeoutSeconds:   DefaultServerRequestTimeoutSeconds,
 		},
 		Tests:      map[string]*TestConfig{},
 		Operation:  map[string]*OperationConfig{},
@@ -185,8 +185,8 @@ func ParseConfig(filename string) (*Config, error) {
 		case int64:
 			c.Server.BurstFactor = float64(val)
 		}
-		if val, ok := serverData["maxConcurrentAnalyses"].(int64); ok {
-			c.Server.MaxConcurrentAnalyses = int(val)
+		if val, ok := serverData["analysisBusyWaitSeconds"].(int64); ok {
+			c.Server.AnalysisBusyWaitSeconds = int(val)
 		}
 		if val, ok := serverData["maxTrackedRateKeys"].(int64); ok {
 			c.Server.MaxTrackedRateKeys = int(val)

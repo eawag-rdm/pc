@@ -296,7 +296,7 @@ func TestParseServerConfig(t *testing.T) {
 		assert.Equal(t, DefaultServerPerIPRequestsPerHour, config.Server.PerIPRequestsPerHour)
 		assert.Equal(t, DefaultServerGlobalRequestsPerHour, config.Server.GlobalRequestsPerHour)
 		assert.Equal(t, DefaultServerBurstFactor, config.Server.BurstFactor)
-		assert.Equal(t, DefaultServerMaxConcurrentAnalyses, config.Server.MaxConcurrentAnalyses)
+		assert.Equal(t, DefaultServerAnalysisBusyWaitSeconds, config.Server.AnalysisBusyWaitSeconds)
 		assert.Equal(t, DefaultServerMaxTrackedRateKeys, config.Server.MaxTrackedRateKeys)
 		assert.Equal(t, DefaultServerContactMessage, config.Server.ContactMessage)
 		assert.Equal(t, DefaultServerLogClientIP, config.Server.LogClientIP)
@@ -312,7 +312,7 @@ func TestParseServerConfig(t *testing.T) {
 		perIPRequestsPerHour  = 7
 		globalRequestsPerHour = 42
 		burstFactor           = 0.25
-		maxConcurrentAnalyses = 9
+		analysisBusyWaitSeconds = 9
 		maxTrackedRateKeys    = 500
 		contactMessage        = "Contact ops."
 		logClientIP           = false
@@ -329,7 +329,7 @@ func TestParseServerConfig(t *testing.T) {
 		assert.Equal(t, 7, config.Server.PerIPRequestsPerHour)
 		assert.Equal(t, 42, config.Server.GlobalRequestsPerHour)
 		assert.Equal(t, 0.25, config.Server.BurstFactor)
-		assert.Equal(t, 9, config.Server.MaxConcurrentAnalyses)
+		assert.Equal(t, 9, config.Server.AnalysisBusyWaitSeconds)
 		assert.Equal(t, 500, config.Server.MaxTrackedRateKeys)
 		assert.Equal(t, "Contact ops.", config.Server.ContactMessage)
 		assert.False(t, config.Server.LogClientIP)

@@ -267,25 +267,57 @@ func (h *Handler) RateLimitPerIP(next http.Handler) http.Handler {
 	})
 }
 
-// Concurrency bounds simultaneous analyses with a maxConcurrentAnalyses
-// semaphore (§4). When the semaphore is full it rejects immediately with
-// service_busy (503) — there is NO queueing. A token is released when the
-// handler returns.
+// Concurrency is the single analysis serialization gate (concurrency = 1,
+// §4/§9). It is the front door to the same single slot guarded by analysisMu:
+// only one analysis at a time may touch the process-global GlobalLogger/
+// PDFTracker. When the slot is busy, a request WAITS up to analysisBusyWait
+// (default 2s, from [server] analysisBusyWaitSeconds) for it to free; if it
+// frees in time the request proceeds, otherwise it is rejected with the
+// service_busy envelope (503) plus a Retry-After header so the frontend can
+// render a busy state and clients can back off. The slot is released when the
+// handler returns. There is no unbounded queue — the wait is capped.
 func (h *Handler) Concurrency(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if h.sem == nil {
 			next.ServeHTTP(w, r)
 			return
 		}
+		// Fast path: slot free right now.
 		select {
 		case h.sem <- struct{}{}:
 			defer func() { <-h.sem }()
 			next.ServeHTTP(w, r)
+			return
 		default:
-			// Full: reject immediately, no queueing.
+		}
+		// Busy: wait up to analysisBusyWait for the slot, honouring client
+		// cancellation. The timer is always stopped so it cannot leak.
+		timer := time.NewTimer(h.analysisBusyWait)
+		defer timer.Stop()
+		select {
+		case h.sem <- struct{}{}:
+			defer func() { <-h.sem }()
+			next.ServeHTTP(w, r)
+		case <-r.Context().Done():
+			// Client went away while waiting: nothing to serve.
 			writeError(w, r, CodeServiceBusy)
+		case <-timer.C:
+			// Still busy after the grace period: reject with a backoff hint.
+			writeServiceBusy(w, r)
 		}
 	})
+}
+
+// busyRetryAfterSeconds is the Retry-After advertised on a service_busy
+// rejection. It matches the catalogue message ("try again in a minute").
+const busyRetryAfterSeconds = 60
+
+// writeServiceBusy renders the service_busy envelope (503) with a Retry-After
+// header so clients/frontends can back off. The header is set before writeError
+// writes the status/body.
+func writeServiceBusy(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Retry-After", strconv.Itoa(busyRetryAfterSeconds))
+	writeError(w, r, CodeServiceBusy)
 }
 
 // writeRateLimited renders the rate_limited envelope (429) and the Retry-After

@@ -302,10 +302,9 @@ func rateTestHandler(t *testing.T, srv *config.ServerConfig) (*Handler, *bytes.B
 func TestRateLimitPerIP_429AndRetryAfter(t *testing.T) {
 	const token = "secret-token-do-not-log"
 	srv := &config.ServerConfig{
-		PerIPRequestsPerHour:  2,
-		BurstFactor:           0, // cap = 2
-		MaxTrackedRateKeys:    100,
-		MaxConcurrentAnalyses: 5,
+		PerIPRequestsPerHour: 2,
+		BurstFactor:          0, // cap = 2
+		MaxTrackedRateKeys:   100,
 	}
 	h, buf, mu := rateTestHandler(t, srv)
 
@@ -373,7 +372,6 @@ func TestRateLimitGlobal_429(t *testing.T) {
 		GlobalRequestsPerHour: 2,
 		BurstFactor:           0, // cap = 2
 		MaxTrackedRateKeys:    100,
-		MaxConcurrentAnalyses: 5,
 	}
 	h, buf, mu := rateTestHandler(t, srv)
 
@@ -408,69 +406,137 @@ func TestRateLimitGlobal_429(t *testing.T) {
 	}
 }
 
-// TestConcurrency_ServiceBusyNoQueueing: with maxConcurrentAnalyses=N, the
-// N+1th concurrent request is rejected immediately with service_busy (503) and
-// does NOT wait for an in-flight analysis to finish (§4).
+// TestConcurrency_ServiceBusyNoQueueing exercises the single serialization gate
+// (concurrency = 1) and its bounded busy-wait (§4/§9):
+//
+//	(a) a second request that arrives while the slot is busy SUCCEEDS if the
+//	    holder finishes within the busy-wait window; and
+//	(b) a second request that is still blocked after the busy-wait window gets
+//	    the busy response — HTTP 503, envelope code service_busy, and a
+//	    Retry-After header.
 func TestConcurrency_ServiceBusyNoQueueing(t *testing.T) {
-	const n = 2
-	srv := &config.ServerConfig{MaxConcurrentAnalyses: n, MaxTrackedRateKeys: 100}
-	h, _, _ := rateTestHandler(t, srv)
+	// Sub-case (a): the waiter proceeds once the holder releases within the
+	// busy-wait grace period.
+	t.Run("ProceedsIfSlotFreesWithinGrace", func(t *testing.T) {
+		srv := &config.ServerConfig{MaxTrackedRateKeys: 100}
+		h, _, _ := rateTestHandler(t, srv)
+		h.analysisBusyWait = time.Second // generous grace for the holder to finish
 
-	release := make(chan struct{})
-	entered := make(chan struct{}, n)
-	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		entered <- struct{}{}
-		<-release // hold the semaphore slot until the test releases it
-		w.WriteHeader(http.StatusOK)
-	})
-	mw := h.Concurrency(inner)
+		release := make(chan struct{})
+		entered := make(chan struct{}, 1)
+		inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			entered <- struct{}{}
+			<-release // hold the single slot until the test releases it
+			w.WriteHeader(http.StatusOK)
+		})
+		mw := h.Concurrency(inner)
 
-	// Occupy all N slots with blocked requests.
-	var wg sync.WaitGroup
-	for i := 0; i < n; i++ {
+		// Occupy the single slot with a blocked holder.
+		var wg sync.WaitGroup
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			req := httptest.NewRequest("POST", "/api/v1/analyze", nil)
-			req = withRequestContext(req, "REQ-BUSY", DefaultContactMessage)
+			req := withRequestContext(httptest.NewRequest("POST", "/api/v1/analyze", nil), "REQ-HOLD", DefaultContactMessage)
 			mw.ServeHTTP(httptest.NewRecorder(), req)
 		}()
-	}
-	// Wait until both in-flight requests are actually inside the handler.
-	for i := 0; i < n; i++ {
-		<-entered
-	}
+		<-entered // holder is inside the handler, owns the slot
 
-	// The N+1th request must be rejected immediately, NOT queued.
-	req := httptest.NewRequest("POST", "/api/v1/analyze", nil)
-	req = withRequestContext(req, "REQ-BUSY-EXTRA", DefaultContactMessage)
-	rr := httptest.NewRecorder()
-	done := make(chan struct{})
-	go func() {
-		mw.ServeHTTP(rr, req)
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
+		// A second request arrives while busy; it must WAIT, not reject.
+		rr := httptest.NewRecorder()
+		waiterDone := make(chan struct{})
+		go func() {
+			req := withRequestContext(httptest.NewRequest("POST", "/api/v1/analyze", nil), "REQ-WAIT", DefaultContactMessage)
+			mw.ServeHTTP(rr, req)
+			close(waiterDone)
+		}()
+
+		// Prove the waiter is genuinely blocked in the gate before freeing the
+		// slot. Without this barrier the scheduler could let the holder release
+		// and the waiter take the fast path before ever parking, so an
+		// immediate-reject regression (no busy-wait) would still reach 200 and
+		// ship green. If the waiter returns here it did NOT wait — fail loudly.
+		select {
+		case <-waiterDone:
+			t.Fatal("waiter returned before the slot was freed (it must WAIT in the gate, not reject)")
+		case <-time.After(50 * time.Millisecond):
+		}
+
+		// Free the slot well within the busy-wait window; the waiter should now
+		// acquire it and run the inner handler to a 200.
 		close(release)
+		select {
+		case <-waiterDone:
+		case <-time.After(2 * time.Second):
+			t.Fatal("waiter never completed after the slot freed")
+		}
+		if rr.Code != http.StatusOK {
+			t.Errorf("waiter status = %d, want 200 (should proceed once slot freed)", rr.Code)
+		}
 		wg.Wait()
-		t.Fatal("N+1th request queued instead of rejecting immediately")
-	}
+	})
 
-	if rr.Code != http.StatusServiceUnavailable {
-		t.Errorf("N+1th request: status %d, want 503", rr.Code)
-	}
-	var resp ErrorResponse
-	if err := json.NewDecoder(rr.Body).Decode(&resp); err == nil {
+	// Sub-case (b): the waiter is still blocked after the busy-wait window and
+	// must get the busy response. The status and code are asserted
+	// UNCONDITIONALLY (not gated behind a successful decode).
+	t.Run("RejectsAfterGraceWithBusyEnvelope", func(t *testing.T) {
+		srv := &config.ServerConfig{MaxTrackedRateKeys: 100}
+		h, _, _ := rateTestHandler(t, srv)
+		h.analysisBusyWait = 50 * time.Millisecond // short grace so the test is fast
+
+		release := make(chan struct{})
+		entered := make(chan struct{}, 1)
+		inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			entered <- struct{}{}
+			<-release // hold the single slot past the busy-wait window
+			w.WriteHeader(http.StatusOK)
+		})
+		mw := h.Concurrency(inner)
+
+		// Occupy the single slot and keep it occupied past the grace period.
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			req := withRequestContext(httptest.NewRequest("POST", "/api/v1/analyze", nil), "REQ-HOLD", DefaultContactMessage)
+			mw.ServeHTTP(httptest.NewRecorder(), req)
+		}()
+		<-entered
+
+		// The second request waits out the busy-wait window and is rejected.
+		req := withRequestContext(httptest.NewRequest("POST", "/api/v1/analyze", nil), "REQ-BUSY", DefaultContactMessage)
+		rr := httptest.NewRecorder()
+		done := make(chan struct{})
+		go func() {
+			mw.ServeHTTP(rr, req)
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			close(release)
+			wg.Wait()
+			t.Fatal("busy request never returned (gate did not time out)")
+		}
+
+		// Assert the busy response UNCONDITIONALLY.
+		if rr.Code != http.StatusServiceUnavailable {
+			t.Errorf("busy request: status %d, want 503", rr.Code)
+		}
+		if ra := rr.Header().Get("Retry-After"); ra == "" {
+			t.Error("busy request: missing Retry-After header on 503")
+		}
+		var resp ErrorResponse
+		if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode busy envelope: %v", err)
+		}
 		if resp.Error.Code != CodeServiceBusy {
 			t.Errorf("code = %q, want %q", resp.Error.Code, CodeServiceBusy)
 		}
-	}
 
-	// Release the blocked handlers.
-	close(release)
-	wg.Wait()
+		// Release the holder.
+		close(release)
+		wg.Wait()
+	})
 }
 
 // TestRateLimit_HealthAndReadyExempt: /health is wired without the rate-limit /
@@ -481,7 +547,6 @@ func TestRateLimit_HealthAndReadyExempt(t *testing.T) {
 		GlobalRequestsPerHour: 1,
 		PerIPRequestsPerHour:  1,
 		BurstFactor:           0, // cap = 1 everywhere
-		MaxConcurrentAnalyses: 1,
 		MaxTrackedRateKeys:    100,
 	}
 	h, _, _ := rateTestHandler(t, srv)

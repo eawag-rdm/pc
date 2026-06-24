@@ -58,9 +58,9 @@ func New(cfg Config) (*Server, error) {
 	// Analyze endpoint. The draining, rate-limit and concurrency gates wrap THIS
 	// route only (§4/§9): outer -> inner the analyze chain is
 	// draining -> rate-limit(global) -> rate-limit(per-IP) ->
-	// concurrency-semaphore -> token extraction (optional) -> handler. /health
-	// and /ready bypass it entirely (a draining server must still answer
-	// healthchecks).
+	// concurrency-gate (single slot, 2s busy-wait) -> token extraction
+	// (optional) -> handler. /health and /ready bypass it entirely (a draining
+	// server must still answer healthchecks).
 	analyze := http.Handler(ExtractToken(handler.Analyze))
 	analyze = handler.Concurrency(analyze)
 	analyze = handler.RateLimitPerIP(analyze)
