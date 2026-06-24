@@ -3,7 +3,6 @@ package optimization
 import (
 	"fmt"
 	"runtime"
-	"sync"
 	"testing"
 	"time"
 
@@ -176,7 +175,7 @@ func TestWorkerPool_ConcurrentProcessing(t *testing.T) {
 	// Collect results
 	results := 0
 	timeout := time.After(5 * time.Second)
-	
+
 	for results < submitted {
 		select {
 		case result := <-pool.Results():
@@ -228,7 +227,7 @@ func TestGetFunctionName(t *testing.T) {
 	}
 
 	name := getFunctionName(testFunc)
-	
+
 	// Function name should contain something meaningful
 	if name == "" {
 		t.Error("Function name should not be empty")
@@ -237,7 +236,7 @@ func TestGetFunctionName(t *testing.T) {
 	// Should work with actual check functions
 	mockCheck := func(structs.File, config.Config) []structs.Message { return nil }
 	name2 := getFunctionName(mockCheck)
-	
+
 	if name2 == "" {
 		t.Error("Mock check function name should not be empty")
 	}
@@ -252,15 +251,6 @@ func TestNewArchiveWorkerPool(t *testing.T) {
 
 	if pool.WorkerPool == nil {
 		t.Error("Base WorkerPool not initialized")
-	}
-
-	expectedMemLimit := int64(100 * 1024 * 1024)
-	if pool.memoryLimit != expectedMemLimit {
-		t.Errorf("Expected memory limit %d, got %d", expectedMemLimit, pool.memoryLimit)
-	}
-
-	if pool.currentMem != 0 {
-		t.Errorf("Expected initial memory usage 0, got %d", pool.currentMem)
 	}
 
 	pool.Stop()
@@ -280,74 +270,3 @@ func TestNewArchiveWorkerPool_DefaultWorkers(t *testing.T) {
 
 	pool.Stop()
 }
-
-func TestArchiveWorkerPool_MemoryManagement(t *testing.T) {
-	pool := NewArchiveWorkerPool(2, 1) // 1MB limit
-
-	// Test allocation
-	allocated := pool.AllocateMemory(512 * 1024) // 512KB
-	if !allocated {
-		t.Error("Should be able to allocate 512KB with 1MB limit")
-	}
-
-	// Test allocation that would exceed limit
-	allocated = pool.AllocateMemory(600 * 1024) // 600KB (total would be 1112KB > 1MB)
-	if allocated {
-		t.Error("Should not be able to allocate 600KB when 512KB already allocated")
-	}
-
-	// Test CanAllocate
-	if !pool.CanAllocate(400 * 1024) {
-		t.Error("Should be able to allocate 400KB when 512KB used out of 1MB")
-	}
-
-	if pool.CanAllocate(600 * 1024) {
-		t.Error("Should not be able to allocate 600KB when 512KB already used")
-	}
-
-	// Test memory release
-	pool.ReleaseMemory(512 * 1024)
-	if pool.currentMem != 0 {
-		t.Errorf("Expected 0 memory usage after release, got %d", pool.currentMem)
-	}
-
-	// Test release of more memory than allocated (should not go negative)
-	pool.ReleaseMemory(100 * 1024)
-	if pool.currentMem != 0 {
-		t.Errorf("Expected 0 memory usage after over-release, got %d", pool.currentMem)
-	}
-
-	pool.Stop()
-}
-
-func TestArchiveWorkerPool_ConcurrentMemoryAccess(t *testing.T) {
-	pool := NewArchiveWorkerPool(4, 10) // 10MB limit
-
-	var wg sync.WaitGroup
-	numGoroutines := 10
-
-	// Test concurrent memory allocation/release
-	for i := 0; i < numGoroutines; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-
-			// Allocate and release memory multiple times
-			for j := 0; j < 100; j++ {
-				if pool.AllocateMemory(1024 * 1024) { // 1MB
-					pool.ReleaseMemory(1024 * 1024)
-				}
-			}
-		}()
-	}
-
-	wg.Wait()
-
-	// Memory should be back to 0 after all operations
-	if pool.currentMem != 0 {
-		t.Errorf("Expected 0 memory usage after concurrent operations, got %d", pool.currentMem)
-	}
-
-	pool.Stop()
-}
-

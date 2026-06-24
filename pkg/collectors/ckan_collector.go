@@ -38,10 +38,9 @@ var ErrResourceUnreadable = errors.New("resource file is unreadable")
 // The error message is deliberately non-secret: it never embeds the token or
 // the package-id-carrying URL, only the status code.
 type CKANError struct {
-	StatusCode     int    // HTTP status; for a success:false body this is the effective status (e.g. 404)
-	ErrorType      string // CKAN error.__type from the response body, if present (diagnostic only)
-	Transport      bool   // true for a transport/connection error (no HTTP response)
-	StatusFromBody bool   // true when StatusCode was derived from a success:false body, not the HTTP status
+	StatusCode     int  // HTTP status; for a success:false body this is the effective status (e.g. 404)
+	Transport      bool // true for a transport/connection error (no HTTP response)
+	StatusFromBody bool // true when StatusCode was derived from a success:false body, not the HTTP status
 }
 
 func (e *CKANError) Error() string {
@@ -125,15 +124,7 @@ func Request(ctx context.Context, url, ckanToken string, verifyTLS bool) (string
 		// Log a non-secret diagnostic: status code only. Never log the URL (it
 		// carries the package id query) or the token (exfiltration vector).
 		output.GlobalLogger.Warning("CKAN request failed with status code %d", resp.StatusCode)
-		errType := ""
-		if readErr == nil {
-			if parsed, perr := JSONToMap(string(bodyBytes)); perr == nil {
-				if _, t, isErr := ckanActionErrorStatus(parsed); isErr {
-					errType = t
-				}
-			}
-		}
-		return "", &CKANError{StatusCode: resp.StatusCode, ErrorType: errType}
+		return "", &CKANError{StatusCode: resp.StatusCode}
 	}
 
 	if readErr != nil {
@@ -145,7 +136,7 @@ func Request(ctx context.Context, url, ckanToken string, verifyTLS bool) (string
 	if parsed, perr := JSONToMap(string(bodyBytes)); perr == nil {
 		if status, errType, isErr := ckanActionErrorStatus(parsed); isErr {
 			output.GlobalLogger.Warning("CKAN request succeeded (200) but body reports failure (__type=%q)", errType)
-			return "", &CKANError{StatusCode: status, ErrorType: errType, StatusFromBody: true}
+			return "", &CKANError{StatusCode: status, StatusFromBody: true}
 		}
 	}
 

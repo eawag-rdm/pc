@@ -49,20 +49,4 @@ func (ft *FileTracker) SnapshotFiles() []string {
 	return append([]string(nil), ft.Files...)
 }
 
-func (ft *FileTracker) FormatFiles() string {
-	ft.mu.Lock()
-	defer ft.mu.Unlock()
-	var sb strings.Builder
-	sb.WriteString(ft.Header + "\n")
-	noFilesFound := true
-	for _, fileInfo := range ft.Files {
-		noFilesFound = false
-		sb.WriteString(fileInfo + "\n")
-	}
-	if noFilesFound {
-		sb.WriteString("No files found.\n")
-	}
-	return sb.String()
-}
-
 var PDFTracker = NewFileTracker("=== PDF Files ===")

@@ -42,7 +42,6 @@ type GeneralConfig struct {
 
 // Default values for the [server] section.
 const (
-	DefaultServerListenAddress         = "127.0.0.1:8080"
 	DefaultServerPerIPRequestsPerHour  = 4
 	DefaultServerGlobalRequestsPerHour = 20
 	DefaultServerBurstFactor           = 0.5
@@ -56,7 +55,6 @@ const (
 
 // ServerConfig holds the configuration for the HTTP server (the [server] section).
 type ServerConfig struct {
-	ListenAddress         string   // Address the server listens on (e.g. "127.0.0.1:8080")
 	TrustProxyHeaders     bool     // Whether to trust proxy-set client IP headers
 	TrustedProxies        []string // CIDRs allowed to set X-Real-IP
 	AllowedOrigins        []string // CORS allow-list of origin URLs
@@ -95,7 +93,6 @@ func ParseConfig(filename string) (*Config, error) {
 			SummaryMinGroupSizeForTruncation: DefaultSummaryMinGroupSizeForTruncation,
 		},
 		Server: &ServerConfig{
-			ListenAddress:         DefaultServerListenAddress,
 			TrustProxyHeaders:     DefaultServerTrustProxyHeaders,
 			TrustedProxies:        nil,
 			AllowedOrigins:        nil,
@@ -166,9 +163,6 @@ func ParseConfig(filename string) (*Config, error) {
 
 	// Parse server section
 	if serverData, ok := raw["server"].(map[string]interface{}); ok {
-		if listenAddress, ok := serverData["listenAddress"].(string); ok {
-			c.Server.ListenAddress = listenAddress
-		}
 		if trustProxyHeaders, ok := serverData["trustProxyHeaders"].(bool); ok {
 			c.Server.TrustProxyHeaders = trustProxyHeaders
 		}

@@ -21,8 +21,6 @@ func newTestServerConfig(t *testing.T, addr, ckanURL, storagePath string) Config
 	dir := t.TempDir()
 	path := dir + "/pc.toml"
 	contents := "" +
-		"[server]\n" +
-		"listenAddress = \"" + addr + "\"\n\n" +
 		"[collector.CkanCollector]\n" +
 		"attrs = {url = \"" + ckanURL + "\", token = \"\", verify = false, ckan_storage_path = \"" + storagePath + "\"}\n"
 	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
