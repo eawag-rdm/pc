@@ -52,6 +52,34 @@ summaryMaxIssuesBeforeTruncation = 5
 # Minimum group size required to trigger truncation (default: 3)
 summaryMinGroupSizeForTruncation = 3
 
+[server]
+# Settings for the pc-server HTTP API. The CKAN URL is NOT configured here;
+# it is read from [collector.CkanCollector.attrs] url (the single source).
+# Address the server listens on
+listenAddress      = "127.0.0.1:8080"
+# Whether to trust proxy-set client IP headers (X-Real-IP)
+trustProxyHeaders  = true
+# CIDRs allowed to set X-Real-IP (only these connections are trusted as proxies)
+trustedProxies     = ["127.0.0.1/32"]
+# CORS allow-list of origin URLs
+allowedOrigins     = ["https://frontend.example.org"]
+# Per-IP hourly request budget
+perIPRequestsPerHour  = 4
+# Global hourly request budget
+globalRequestsPerHour = 20
+# Additional headroom applied to the budgets (+50%)
+burstFactor           = 0.5
+# Maximum simultaneous analyses
+maxConcurrentAnalyses = 3
+# Limiter memory bound (max tracked rate keys)
+maxTrackedRateKeys    = 10000
+# Contact suffix shown in error envelopes
+contactMessage        = "If you can't resolve this yourself, please contact rdm@eawag.ch."
+# Whether to log the client IP (personal data; documented purpose = abuse/security)
+logClientIP           = true
+# Hard upper bound for a request, in seconds
+requestTimeoutSeconds = 300
+
 [operation.main]
 collector = "LocalCollector"
 

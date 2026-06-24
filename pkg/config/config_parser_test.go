@@ -277,3 +277,91 @@ func TestParseSummaryTruncationSettings(t *testing.T) {
 		assert.Equal(t, DefaultSummaryMinGroupSizeForTruncation, config.General.SummaryMinGroupSizeForTruncation)
 	})
 }
+
+func TestParseServerConfig(t *testing.T) {
+	t.Run("DefaultsWhenAbsent", func(t *testing.T) {
+		tomlContent := `
+		[test.test1]
+		blacklist = []
+		`
+		configFile := createTempConfigFile(t, tomlContent)
+		defer os.Remove(configFile)
+
+		config, err := ParseConfig(configFile)
+		assert.NoError(t, err)
+		assert.NotNil(t, config.Server)
+		assert.Equal(t, DefaultServerListenAddress, config.Server.ListenAddress)
+		assert.Equal(t, DefaultServerTrustProxyHeaders, config.Server.TrustProxyHeaders)
+		assert.Nil(t, config.Server.TrustedProxies)
+		assert.Nil(t, config.Server.AllowedOrigins)
+		assert.Equal(t, DefaultServerPerIPRequestsPerHour, config.Server.PerIPRequestsPerHour)
+		assert.Equal(t, DefaultServerGlobalRequestsPerHour, config.Server.GlobalRequestsPerHour)
+		assert.Equal(t, DefaultServerBurstFactor, config.Server.BurstFactor)
+		assert.Equal(t, DefaultServerMaxConcurrentAnalyses, config.Server.MaxConcurrentAnalyses)
+		assert.Equal(t, DefaultServerMaxTrackedRateKeys, config.Server.MaxTrackedRateKeys)
+		assert.Equal(t, DefaultServerContactMessage, config.Server.ContactMessage)
+		assert.Equal(t, DefaultServerLogClientIP, config.Server.LogClientIP)
+		assert.Equal(t, DefaultServerRequestTimeoutSeconds, config.Server.RequestTimeoutSeconds)
+	})
+
+	t.Run("OverriddenWhenPresent", func(t *testing.T) {
+		tomlContent := `
+		[server]
+		listenAddress      = "0.0.0.0:9090"
+		trustProxyHeaders  = false
+		trustedProxies     = ["10.0.0.0/8", "192.168.0.0/16"]
+		allowedOrigins     = ["https://a.example.org", "https://b.example.org"]
+		perIPRequestsPerHour  = 7
+		globalRequestsPerHour = 42
+		burstFactor           = 0.25
+		maxConcurrentAnalyses = 9
+		maxTrackedRateKeys    = 500
+		contactMessage        = "Contact ops."
+		logClientIP           = false
+		requestTimeoutSeconds = 120
+		`
+		configFile := createTempConfigFile(t, tomlContent)
+		defer os.Remove(configFile)
+
+		config, err := ParseConfig(configFile)
+		assert.NoError(t, err)
+		assert.Equal(t, "0.0.0.0:9090", config.Server.ListenAddress)
+		assert.False(t, config.Server.TrustProxyHeaders)
+		assert.Equal(t, []string{"10.0.0.0/8", "192.168.0.0/16"}, config.Server.TrustedProxies)
+		assert.Equal(t, []string{"https://a.example.org", "https://b.example.org"}, config.Server.AllowedOrigins)
+		assert.Equal(t, 7, config.Server.PerIPRequestsPerHour)
+		assert.Equal(t, 42, config.Server.GlobalRequestsPerHour)
+		assert.Equal(t, 0.25, config.Server.BurstFactor)
+		assert.Equal(t, 9, config.Server.MaxConcurrentAnalyses)
+		assert.Equal(t, 500, config.Server.MaxTrackedRateKeys)
+		assert.Equal(t, "Contact ops.", config.Server.ContactMessage)
+		assert.False(t, config.Server.LogClientIP)
+		assert.Equal(t, 120, config.Server.RequestTimeoutSeconds)
+	})
+
+	t.Run("BurstFactorAsFloat", func(t *testing.T) {
+		tomlContent := `
+		[server]
+		burstFactor = 1.5
+		`
+		configFile := createTempConfigFile(t, tomlContent)
+		defer os.Remove(configFile)
+
+		config, err := ParseConfig(configFile)
+		assert.NoError(t, err)
+		assert.Equal(t, 1.5, config.Server.BurstFactor)
+	})
+
+	t.Run("BurstFactorAsInt", func(t *testing.T) {
+		tomlContent := `
+		[server]
+		burstFactor = 2
+		`
+		configFile := createTempConfigFile(t, tomlContent)
+		defer os.Remove(configFile)
+
+		config, err := ParseConfig(configFile)
+		assert.NoError(t, err)
+		assert.Equal(t, 2.0, config.Server.BurstFactor)
+	})
+}

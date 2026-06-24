@@ -40,8 +40,39 @@ type GeneralConfig struct {
 	SummaryMinGroupSizeForTruncation int    // Minimum group size to trigger truncation
 }
 
+// Default values for the [server] section.
+const (
+	DefaultServerListenAddress         = "127.0.0.1:8080"
+	DefaultServerPerIPRequestsPerHour  = 4
+	DefaultServerGlobalRequestsPerHour = 20
+	DefaultServerBurstFactor           = 0.5
+	DefaultServerMaxConcurrentAnalyses = 3
+	DefaultServerMaxTrackedRateKeys    = 10000
+	DefaultServerContactMessage        = "If you can't resolve this yourself, please contact rdm@eawag.ch."
+	DefaultServerLogClientIP           = true
+	DefaultServerTrustProxyHeaders     = true
+	DefaultServerRequestTimeoutSeconds = 300
+)
+
+// ServerConfig holds the configuration for the HTTP server (the [server] section).
+type ServerConfig struct {
+	ListenAddress         string   // Address the server listens on (e.g. "127.0.0.1:8080")
+	TrustProxyHeaders     bool     // Whether to trust proxy-set client IP headers
+	TrustedProxies        []string // CIDRs allowed to set X-Real-IP
+	AllowedOrigins        []string // CORS allow-list of origin URLs
+	PerIPRequestsPerHour  int      // Per-IP hourly request budget
+	GlobalRequestsPerHour int      // Global hourly request budget
+	BurstFactor           float64  // Additional headroom factor applied to budgets
+	MaxConcurrentAnalyses int      // Maximum simultaneous analyses
+	MaxTrackedRateKeys    int      // Limiter memory bound (max tracked rate keys)
+	ContactMessage        string   // Contact suffix shown in error envelopes
+	LogClientIP           bool     // Whether to log the client IP
+	RequestTimeoutSeconds int      // Hard upper bound for a request, in seconds
+}
+
 type Config struct {
 	General    *GeneralConfig
+	Server     *ServerConfig
 	Tests      map[string]*TestConfig
 	Operation  map[string]*OperationConfig
 	Collectors map[string]*CollectorConfig
@@ -56,12 +87,26 @@ func ParseConfig(filename string) (*Config, error) {
 
 	c := &Config{
 		General: &GeneralConfig{
-			MaxArchiveFileSize:               10 * 1024 * 1024,                    // 10MB default
-			MaxTotalArchiveMemory:            100 * 1024 * 1024,                   // 100MB default
-			MaxContentScanFileSize:           1024 * 1024 * 1024,                  // 1GB default for content scanning
+			MaxArchiveFileSize:               10 * 1024 * 1024,   // 10MB default
+			MaxTotalArchiveMemory:            100 * 1024 * 1024,  // 100MB default
+			MaxContentScanFileSize:           1024 * 1024 * 1024, // 1GB default for content scanning
 			SummaryIntroText:                 DefaultSummaryIntroText,
 			SummaryMaxIssuesBeforeTruncation: DefaultSummaryMaxIssuesBeforeTruncation,
 			SummaryMinGroupSizeForTruncation: DefaultSummaryMinGroupSizeForTruncation,
+		},
+		Server: &ServerConfig{
+			ListenAddress:         DefaultServerListenAddress,
+			TrustProxyHeaders:     DefaultServerTrustProxyHeaders,
+			TrustedProxies:        nil,
+			AllowedOrigins:        nil,
+			PerIPRequestsPerHour:  DefaultServerPerIPRequestsPerHour,
+			GlobalRequestsPerHour: DefaultServerGlobalRequestsPerHour,
+			BurstFactor:           DefaultServerBurstFactor,
+			MaxConcurrentAnalyses: DefaultServerMaxConcurrentAnalyses,
+			MaxTrackedRateKeys:    DefaultServerMaxTrackedRateKeys,
+			ContactMessage:        DefaultServerContactMessage,
+			LogClientIP:           DefaultServerLogClientIP,
+			RequestTimeoutSeconds: DefaultServerRequestTimeoutSeconds,
 		},
 		Tests:      map[string]*TestConfig{},
 		Operation:  map[string]*OperationConfig{},
@@ -116,6 +161,50 @@ func ParseConfig(filename string) (*Config, error) {
 		}
 		if val, ok := generalData["summaryMinGroupSizeForTruncation"].(int64); ok {
 			c.General.SummaryMinGroupSizeForTruncation = int(val)
+		}
+	}
+
+	// Parse server section
+	if serverData, ok := raw["server"].(map[string]interface{}); ok {
+		if listenAddress, ok := serverData["listenAddress"].(string); ok {
+			c.Server.ListenAddress = listenAddress
+		}
+		if trustProxyHeaders, ok := serverData["trustProxyHeaders"].(bool); ok {
+			c.Server.TrustProxyHeaders = trustProxyHeaders
+		}
+		if trustedProxies, ok := serverData["trustedProxies"].([]interface{}); ok {
+			c.Server.TrustedProxies = parseStringSlice(trustedProxies)
+		}
+		if allowedOrigins, ok := serverData["allowedOrigins"].([]interface{}); ok {
+			c.Server.AllowedOrigins = parseStringSlice(allowedOrigins)
+		}
+		if val, ok := serverData["perIPRequestsPerHour"].(int64); ok {
+			c.Server.PerIPRequestsPerHour = int(val)
+		}
+		if val, ok := serverData["globalRequestsPerHour"].(int64); ok {
+			c.Server.GlobalRequestsPerHour = int(val)
+		}
+		// burstFactor may be expressed as a TOML float (0.5) or a bare int (1, 2).
+		switch val := serverData["burstFactor"].(type) {
+		case float64:
+			c.Server.BurstFactor = val
+		case int64:
+			c.Server.BurstFactor = float64(val)
+		}
+		if val, ok := serverData["maxConcurrentAnalyses"].(int64); ok {
+			c.Server.MaxConcurrentAnalyses = int(val)
+		}
+		if val, ok := serverData["maxTrackedRateKeys"].(int64); ok {
+			c.Server.MaxTrackedRateKeys = int(val)
+		}
+		if contactMessage, ok := serverData["contactMessage"].(string); ok {
+			c.Server.ContactMessage = contactMessage
+		}
+		if logClientIP, ok := serverData["logClientIP"].(bool); ok {
+			c.Server.LogClientIP = logClientIP
+		}
+		if val, ok := serverData["requestTimeoutSeconds"].(int64); ok {
+			c.Server.RequestTimeoutSeconds = int(val)
 		}
 	}
 

@@ -17,7 +17,6 @@ func main() {
 	// Parse command line flags
 	addr := flag.String("addr", ":8080", "Server listen address (e.g., :8080 or 0.0.0.0:8080)")
 	configPath := flag.String("config", "", "Path to PC config file (pc.toml)")
-	ckanURL := flag.String("ckan-url", "", "CKAN base URL (overrides config)")
 	help := flag.Bool("help", false, "Show usage information")
 	flag.Parse()
 
@@ -34,12 +33,12 @@ func main() {
 		}
 	}
 
-	// Create server configuration
+	// Create server configuration. VerifyTLS is left nil so it falls back to
+	// the PC config's CkanCollector "verify" attr (and finally the secure
+	// default of true).
 	cfg := server.Config{
-		Address:     *addr,
-		ConfigPath:  *configPath,
-		CKANBaseURL: *ckanURL,
-		VerifyTLS:   true, // Default to secure
+		Address:    *addr,
+		ConfigPath: *configPath,
 	}
 
 	// Create server

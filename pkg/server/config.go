@@ -14,12 +14,11 @@ type Config struct {
 	// ConfigPath is the path to the PC config file (pc.toml)
 	ConfigPath string
 
-	// CKANBaseURL is the CKAN instance URL for authentication
-	// If empty, will be read from the PC config
-	CKANBaseURL string
-
-	// VerifyTLS controls whether to verify TLS certificates for CKAN API calls
-	VerifyTLS bool
+	// VerifyTLS optionally overrides TLS verification for CKAN API calls.
+	// nil means "not set" — fall back to the PC config (and finally the
+	// secure default). A non-nil value is honored exactly, so that an
+	// explicit false (verify=false) disables verification.
+	VerifyTLS *bool
 }
 
 // Validate ensures configuration is valid
@@ -38,13 +37,9 @@ func (c Config) LoadPCConfig() (*config.Config, error) {
 	return config.LoadConfig(c.ConfigPath)
 }
 
-// GetCKANBaseURL returns the CKAN base URL, either from server config or PC config
+// GetCKANBaseURL returns the CKAN base URL from the PC config. The collector
+// config (`[collector.CkanCollector.attrs] url`) is the single source of truth.
 func (c Config) GetCKANBaseURL(pcConfig *config.Config) string {
-	if c.CKANBaseURL != "" {
-		return c.CKANBaseURL
-	}
-
-	// Try to get from PC config
 	if ckanCollector, ok := pcConfig.Collectors["CkanCollector"]; ok {
 		if url, ok := ckanCollector.Attrs["url"].(string); ok {
 			return url
@@ -54,11 +49,17 @@ func (c Config) GetCKANBaseURL(pcConfig *config.Config) string {
 	return ""
 }
 
-// GetVerifyTLS returns whether TLS should be verified for CKAN API calls
+// GetVerifyTLS returns whether TLS should be verified for CKAN API calls.
+//
+// Resolution order:
+//  1. an explicit server-config override (c.VerifyTLS != nil) — honored as-is,
+//     so verify=false is respected;
+//  2. the PC config's CkanCollector "verify" attr;
+//  3. the secure default (true).
 func (c Config) GetVerifyTLS(pcConfig *config.Config) bool {
-	// If explicitly set in server config, use that
-	if c.VerifyTLS {
-		return true
+	// If explicitly set in server config, honor it exactly (including false).
+	if c.VerifyTLS != nil {
+		return *c.VerifyTLS
 	}
 
 	// Try to get from PC config

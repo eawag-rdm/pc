@@ -57,24 +57,9 @@ func TestConfig_Validate(t *testing.T) {
 }
 
 func TestConfig_GetCKANBaseURL(t *testing.T) {
-	// Test with server config override
-	t.Run("server config override", func(t *testing.T) {
-		cfg := Config{
-			CKANBaseURL: "https://server-override.example.com",
-		}
-		pcConfig := &config.Config{}
-
-		result := cfg.GetCKANBaseURL(pcConfig)
-		if result != "https://server-override.example.com" {
-			t.Errorf("Expected server override URL, got %s", result)
-		}
-	})
-
-	// Test with PC config
+	// The collector config is the single source of truth for the CKAN URL.
 	t.Run("pc config", func(t *testing.T) {
-		cfg := Config{
-			CKANBaseURL: "",
-		}
+		cfg := Config{}
 		pcConfig := &config.Config{
 			Collectors: map[string]*config.CollectorConfig{
 				"CkanCollector": {
@@ -103,10 +88,12 @@ func TestConfig_GetCKANBaseURL(t *testing.T) {
 	})
 }
 
+func boolPtr(b bool) *bool { return &b }
+
 func TestConfig_GetVerifyTLS(t *testing.T) {
-	// Test with server config true
-	t.Run("server config true", func(t *testing.T) {
-		cfg := Config{VerifyTLS: true}
+	// Test with explicit server config override true
+	t.Run("server config override true", func(t *testing.T) {
+		cfg := Config{VerifyTLS: boolPtr(true)}
 		pcConfig := &config.Config{}
 
 		result := cfg.GetVerifyTLS(pcConfig)
@@ -115,9 +102,29 @@ func TestConfig_GetVerifyTLS(t *testing.T) {
 		}
 	})
 
-	// Test with PC config
+	// Explicit server-config override of false must be honored, even if the
+	// PC config would otherwise say true. This is the core GetVerifyTLS fix.
+	t.Run("server config override false honored", func(t *testing.T) {
+		cfg := Config{VerifyTLS: boolPtr(false)}
+		pcConfig := &config.Config{
+			Collectors: map[string]*config.CollectorConfig{
+				"CkanCollector": {
+					Attrs: map[string]interface{}{
+						"verify": true,
+					},
+				},
+			},
+		}
+
+		result := cfg.GetVerifyTLS(pcConfig)
+		if result {
+			t.Error("Expected false from explicit server override")
+		}
+	})
+
+	// Test with PC config (no server override) honoring verify=false
 	t.Run("pc config false", func(t *testing.T) {
-		cfg := Config{VerifyTLS: false}
+		cfg := Config{}
 		pcConfig := &config.Config{
 			Collectors: map[string]*config.CollectorConfig{
 				"CkanCollector": {
