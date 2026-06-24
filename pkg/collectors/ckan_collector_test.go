@@ -2,6 +2,7 @@ package collectors
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -381,7 +382,10 @@ func TestGetLocalResourcePath(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := getLocalResourcePath(tt.resourceURL, tt.ckanStoragePath)
+			got, err := getLocalResourcePath(tt.resourceURL, tt.ckanStoragePath)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
 			if tt.expectEmptyPath {
 				if got != "" {
 					t.Errorf("expected empty path, got %v", got)
@@ -393,4 +397,124 @@ func TestGetLocalResourcePath(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestContainWithinRoot covers the path-containment primitive (spec §5):
+// normal paths under the root are accepted; paths that escape via "../" or an
+// absolute injection are rejected.
+func TestContainWithinRoot(t *testing.T) {
+	const root = "/srv/ckan/storage/resources/"
+
+	tests := []struct {
+		name     string
+		resolved string
+		wantOK   bool
+	}{
+		{
+			name:     "normal sharded path under root",
+			resolved: "/srv/ckan/storage/resources/f46/e74/be-1c61-4866-81da-9282c37c0c42",
+			wantOK:   true,
+		},
+		{
+			name:     "root itself",
+			resolved: "/srv/ckan/storage/resources",
+			wantOK:   true,
+		},
+		{
+			name:     "escape via ../ above the root",
+			resolved: "/srv/ckan/storage/resources/f46/../../../../../../etc/shadow",
+			wantOK:   false,
+		},
+		{
+			name:     "absolute injection outside the root",
+			resolved: "/etc/shadow",
+			wantOK:   false,
+		},
+		{
+			name:     "sibling-prefix path is not contained",
+			resolved: "/srv/ckan/storage/resources-evil/x",
+			wantOK:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, ok := containWithinRoot(root, tt.resolved)
+			if ok != tt.wantOK {
+				t.Errorf("containWithinRoot(%q, %q) = %v, want %v", root, tt.resolved, ok, tt.wantOK)
+			}
+		})
+	}
+}
+
+// TestGetLocalResourcePathContainment covers the containment guard as wired into
+// getLocalResourcePath (spec §5). A normal resource id resolves to a cleaned
+// path under the storage root. The escape-rejection path of the guard is proven
+// directly in TestContainWithinRoot; here we confirm getLocalResourcePath
+// returns the cleaned, contained path (and surfaces an ErrResourceUnreadable
+// error if the guard ever trips).
+func TestGetLocalResourcePathContainment(t *testing.T) {
+	const root = "/srv/ckan/storage"
+
+	url := "https://opendata.eawag.ch/dataset/d/resource/f46e74be-1c61-4866-81da-9282c37c0c42/download/readme.md"
+	got, err := getLocalResourcePath(url, root)
+	if err != nil {
+		if errors.Is(err, ErrResourceUnreadable) {
+			t.Fatalf("normal path was wrongly rejected as escaping: %v", err)
+		}
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := filepath.Clean(root + "/resources/f46/e74/be-1c61-4866-81da-9282c37c0c42")
+	if got != want {
+		t.Errorf("expected %q, got %q", want, got)
+	}
+	if !strings.HasPrefix(got, filepath.Clean(root+"/resources")+string(os.PathSeparator)) {
+		t.Errorf("resolved path %q is not under the storage root", got)
+	}
+}
+
+// TestResolveLocalResourceMissingOnDisk covers the missing-on-disk case (spec
+// §5): an upload resource whose resolved file does not exist must yield an
+// error wrapping ErrResourceUnreadable (so the server maps it to
+// resource_unreadable) rather than being silently skipped. A present file
+// resolves cleanly.
+func TestResolveLocalResourceMissingOnDisk(t *testing.T) {
+	root := t.TempDir()
+
+	// Build a resource URL whose sharded id maps under root.
+	// id "f46e74be-..." => resources/f46/e74/be-...
+	const resID = "f46e74be-1c61-4866-81da-9282c37c0c42"
+	url := "https://opendata.eawag.ch/dataset/d/resource/" + resID + "/download/readme.md"
+
+	t.Run("missing file yields resource_unreadable sentinel", func(t *testing.T) {
+		got, err := resolveLocalResource(url, "readme.md", root)
+		if err == nil {
+			t.Fatalf("expected an error for a missing file, got nil (path=%q)", got)
+		}
+		if !errors.Is(err, ErrResourceUnreadable) {
+			t.Errorf("expected error wrapping ErrResourceUnreadable, got %v", err)
+		}
+		if !strings.Contains(err.Error(), "readme.md") {
+			t.Errorf("error %q does not name the resource", err.Error())
+		}
+	})
+
+	t.Run("present file resolves cleanly", func(t *testing.T) {
+		dir := filepath.Join(root, "resources", "f46", "e74")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("failed to create dirs: %v", err)
+		}
+		fpath := filepath.Join(dir, "be-1c61-4866-81da-9282c37c0c42")
+		if err := os.WriteFile(fpath, []byte("hello"), 0o644); err != nil {
+			t.Fatalf("failed to write file: %v", err)
+		}
+
+		got, err := resolveLocalResource(url, "readme.md", root)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != filepath.Clean(fpath) {
+			t.Errorf("expected resolved path %q, got %q", filepath.Clean(fpath), got)
+		}
+	})
 }

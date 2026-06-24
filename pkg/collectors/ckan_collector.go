@@ -3,16 +3,26 @@ package collectors
 import (
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/eawag-rdm/pc/pkg/config"
 	"github.com/eawag-rdm/pc/pkg/output"
 	"github.com/eawag-rdm/pc/pkg/structs"
 )
+
+// ErrResourceUnreadable is a sentinel carried (via errors.Is) when a
+// url_type=="upload" resource's file cannot be located/read under the
+// configured ckan_storage_path: either it escaped the storage root, or it is
+// missing on disk. The server maps this to the "resource_unreadable" error
+// code (spec §3); the CLI surfaces it as a plain collector error.
+var ErrResourceUnreadable = errors.New("resource file is unreadable")
 
 func Request(url, ckanToken string, verifyTLS bool) (string, error) {
 
@@ -170,24 +180,32 @@ func GetCKANResources(jsonMap map[string]interface{}) ([]structs.File, error) {
 	return files, nil
 }
 
-// getLocalResourcePath translates your Python logic to Go.
-func getLocalResourcePath(resourceURL string, ckanStoragePath string) string {
+// getLocalResourcePath translates a CKAN resource download URL into the local
+// FileStore path under ckanStoragePath, following CKAN's id-sharding layout
+// (resources/<id[:3]>/<id[3:6]>/<id[6:]>).
+//
+// It returns "" with a nil error when the URL is malformed (caller treats this
+// as "not resolvable, skip"), preserving the previous best-effort behaviour.
+// It returns a non-nil error wrapping ErrResourceUnreadable when the resolved
+// path escapes the configured storage root (path containment, spec §5) so the
+// caller cannot read a file outside the mounted share.
+func getLocalResourcePath(resourceURL string, ckanStoragePath string) (string, error) {
 
 	parsedURL, err := url.Parse(resourceURL)
 	if err != nil {
-		return ""
+		return "", nil
 	}
 	parts := strings.Split(parsedURL.Path, "/")
 	if len(parts) <= 4 {
 		output.GlobalLogger.Warning("Error: resource URL has invalid format '%s' - are the resources restricted?", resourceURL)
-		return "" // Return empty string instead of panicking
+		return "", nil // Return empty string instead of panicking
 	}
 	resourceID := parts[4]
 
 	// Validate resourceID has at least 6 characters
 	if len(resourceID) < 6 {
 		output.GlobalLogger.Warning("Error: resource ID '%s' is too short (needs at least 6 characters)", resourceID)
-		return "" // Return empty string instead of panicking
+		return "", nil // Return empty string instead of panicking
 	}
 
 	// Slice out parts: rsc_1, rsc_2, rsc_3
@@ -208,7 +226,74 @@ func getLocalResourcePath(resourceURL string, ckanStoragePath string) string {
 		ckanStoragePath += "/"
 	}
 
-	return ckanStoragePath + localResourcePath
+	resolved := ckanStoragePath + localResourcePath
+
+	// Path containment (spec §5): when a storage root is configured, clean the
+	// resolved path and verify it stays under that root. The resource id is
+	// attacker-influenceable (it comes from the CKAN response), so a crafted id
+	// containing "../" or an absolute injection must never let us read outside
+	// the mounted share.
+	if ckanStoragePath != "" {
+		clean, ok := containWithinRoot(ckanStoragePath, resolved)
+		if !ok {
+			//lint:ignore ST1005 user-facing message shown verbatim to the end user
+			return "", fmt.Errorf(
+				"Resource path '%s' escapes the configured storage root '%s' and was rejected: %w",
+				filepath.Clean(resolved), filepath.Clean(ckanStoragePath), ErrResourceUnreadable,
+			)
+		}
+		return clean, nil
+	}
+
+	return resolved, nil
+}
+
+// containWithinRoot cleans resolved and reports whether it stays inside root
+// (root itself, or a path under root). It returns the cleaned path so callers
+// use the normalized form. The root is resolved/cleaned once here so a resolved
+// path that escapes via "../" or absolute injection is rejected.
+func containWithinRoot(root, resolved string) (string, bool) {
+	cleanRoot := filepath.Clean(root)
+	clean := filepath.Clean(resolved)
+	if clean == cleanRoot {
+		return clean, true
+	}
+	if strings.HasPrefix(clean, cleanRoot+string(os.PathSeparator)) {
+		return clean, true
+	}
+	return clean, false
+}
+
+// resolveLocalResource resolves an upload resource's local path and confirms the
+// file exists on disk. A missing file (spec §5) yields an error wrapping
+// ErrResourceUnreadable so the caller can map it to "resource_unreadable"
+// instead of silently skipping or panicking.
+func resolveLocalResource(resourceURL, displayLabel, ckanStoragePath string) (string, error) {
+	path, err := getLocalResourcePath(resourceURL, ckanStoragePath)
+	if err != nil {
+		return "", err
+	}
+	// An unresolvable URL (empty path) is left as-is: there is no local file to
+	// stat and the previous behaviour kept the original URL in File.Path.
+	if path == "" {
+		return resourceURL, nil
+	}
+	if _, statErr := os.Stat(path); statErr != nil {
+		if errors.Is(statErr, os.ErrNotExist) {
+			//lint:ignore ST1005 user-facing message shown verbatim to the end user
+			return "", fmt.Errorf(
+				"The file for resource '%s' is missing from storage and can not be read: %w",
+				displayLabel, ErrResourceUnreadable,
+			)
+		}
+		// Other stat errors (e.g. permission) are equally "unreadable".
+		//lint:ignore ST1005 user-facing message shown verbatim to the end user
+		return "", fmt.Errorf(
+			"The file for resource '%s' could not be read from storage (%v): %w",
+			displayLabel, statErr, ErrResourceUnreadable,
+		)
+	}
+	return path, nil
 }
 
 func CkanCollector(package_id string, config config.Config) ([]structs.File, error) {
@@ -249,9 +334,15 @@ func CkanCollector(package_id string, config config.Config) ([]structs.File, err
 	if !ok {
 		return nil, fmt.Errorf("ckan_storage_path attribute not found or not a string")
 	}
-	// Iterate files and apply getLocalResourcePath to each file to change the path in place
+	// Iterate files and resolve each upload to its local FileStore path. Path
+	// containment and the missing-on-disk check (spec §5) live in
+	// resolveLocalResource; a failure there carries ErrResourceUnreadable.
 	for i, file := range files {
-		files[i].Path = getLocalResourcePath(file.Path, localStoragePath)
+		localPath, err := resolveLocalResource(file.Path, file.GetDisplayName(), localStoragePath)
+		if err != nil {
+			return nil, err
+		}
+		files[i].Path = localPath
 	}
 
 	return files, nil
