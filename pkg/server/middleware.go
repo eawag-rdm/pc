@@ -79,7 +79,13 @@ func GetTokenFromContext(r *http.Request) string {
 
 // GetRequestID retrieves the per-request ULID from the request context.
 func GetRequestID(r *http.Request) string {
-	if id, ok := r.Context().Value(requestIDKey).(string); ok {
+	return GetRequestIDFromContext(r.Context())
+}
+
+// GetRequestIDFromContext retrieves the per-request ULID from a context. It is
+// used by lifecycle logging that holds a context rather than the *http.Request.
+func GetRequestIDFromContext(ctx context.Context) string {
+	if id, ok := ctx.Value(requestIDKey).(string); ok {
 		return id
 	}
 	return ""

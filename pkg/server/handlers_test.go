@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/eawag-rdm/pc/pkg/config"
 )
@@ -329,10 +330,11 @@ func TestAnalyzeRequest_JSONParsing(t *testing.T) {
 
 // TestHandler_Analyze_NoToken_PublicPath drives Analyze end-to-end with NO
 // token (no Authorization header / empty token in context). The public path
-// must reach the collector and NOT 401: VerifyCKANAccess no longer short-
-// circuits on an empty token (§2). The fakeCKAN fixture serves only an
-// external-link resource, so zero files are collected and the result is
-// package_not_found (404) — the point is that it is NOT invalid_token (401).
+// must reach the collector and NOT 401: the single package_show drives the
+// outcome and an empty token is forwarded as an empty Authorization header
+// (§2, §5). The fakeCKAN fixture serves only an external-link resource, so zero
+// files are collected and the result is package_not_found (404) — the point is
+// that it is NOT invalid_token (401).
 func TestHandler_Analyze_NoToken_PublicPath(t *testing.T) {
 	var mu sync.Mutex
 	seen := make(map[string]string)
@@ -498,6 +500,330 @@ func TestHandler_Analyze_ConcurrentPDF_RaceClean(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
+}
+
+// analyzeWithToken drives the real Analyze handler with the given package id and
+// token through a request that carries a populated request context.
+func analyzeWithToken(handler *Handler, packageID, token string) *httptest.ResponseRecorder {
+	body := bytes.NewBufferString(`{"package_id":` + mustJSON(packageID) + `}`)
+	req := httptest.NewRequest("POST", "/api/v1/analyze", body)
+	req = withRequestContext(req, "REQ-"+packageID, DefaultContactMessage)
+	if token != "" {
+		req = req.WithContext(context.WithValue(req.Context(), CKANTokenKey, token))
+	}
+	rr := httptest.NewRecorder()
+	handler.Analyze(rr, req)
+	return rr
+}
+
+func mustJSON(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
+}
+
+// TestHandler_Analyze_ValidPackageNames asserts valid CKAN names and lowercase
+// UUIDs pass validation (and therefore reach the collector — here resulting in
+// package_not_found because the fixture serves no uploads, NOT
+// invalid_package_name).
+func TestHandler_Analyze_ValidPackageNames(t *testing.T) {
+	ckan := fakeCKAN(t, nil, nil)
+	defer ckan.Close()
+	handler := NewHandler(ckanPCConfig(ckan.URL), Config{}, discardLogger())
+
+	valid := []string{
+		"my-dataset",
+		"dataset_2024",
+		"ab",
+		"f46e74be-1c61-4866-81da-9282c37c0c42", // lowercase UUID
+		strings.Repeat("a", 100),
+	}
+	for _, name := range valid {
+		t.Run(name, func(t *testing.T) {
+			rr := analyzeWithToken(handler, name, "tok")
+			resp := decodeEnvelope(t, rr)
+			if resp.Error.Code == CodeInvalidPackageName {
+				t.Errorf("valid name %q rejected as invalid_package_name", name)
+			}
+		})
+	}
+}
+
+// TestHandler_Analyze_InvalidPackageNames asserts injection / illegal-char ids
+// are rejected as invalid_package_name (400) BEFORE any CKAN call. To prove no
+// CKAN call happens, the fixture counts requests and must stay at zero.
+func TestHandler_Analyze_InvalidPackageNames(t *testing.T) {
+	var calls int
+	var mu sync.Mutex
+	ckan := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+		io.WriteString(w, `{"success":true,"result":{"resources":[]}}`)
+	}))
+	defer ckan.Close()
+	handler := NewHandler(ckanPCConfig(ckan.URL), Config{}, discardLogger())
+
+	invalid := []string{
+		"Has-Uppercase",
+		"with space",
+		"semi;colon",
+		"slash/injection",
+		"../etc/passwd",
+		"name?id=other",
+		"name&q=1",
+		"a",                      // too short (1 char)
+		strings.Repeat("a", 101), // too long
+		`bad"quote`,
+		"unicode-é",
+	}
+	for _, name := range invalid {
+		t.Run(name, func(t *testing.T) {
+			rr := analyzeWithToken(handler, name, "tok")
+			if rr.Code != http.StatusBadRequest {
+				t.Errorf("name %q: expected 400, got %d", name, rr.Code)
+			}
+			resp := decodeEnvelope(t, rr)
+			if resp.Error.Code != CodeInvalidPackageName {
+				t.Errorf("name %q: expected %q, got %q", name, CodeInvalidPackageName, resp.Error.Code)
+			}
+		})
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 0 {
+		t.Errorf("invalid names must not reach CKAN, but %d call(s) were made", calls)
+	}
+}
+
+// statusCKAN returns a fake CKAN that answers package_show with a fixed HTTP
+// status and body, recording how many package_show calls it received.
+func statusCKAN(t *testing.T, status int, body string, calls *int, mu *sync.Mutex) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls != nil && mu != nil {
+			mu.Lock()
+			*calls++
+			mu.Unlock()
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		io.WriteString(w, body)
+	}))
+}
+
+// TestHandler_Analyze_CKANOutcomeMapping covers the §3/§5 status mapping for the
+// single package_show call.
+func TestHandler_Analyze_CKANOutcomeMapping(t *testing.T) {
+	tests := []struct {
+		name     string
+		status   int
+		body     string
+		wantHTTP int
+		wantCode string
+	}{
+		{"404 -> package_not_found", http.StatusNotFound, ``, http.StatusNotFound, CodePackageNotFound},
+		{"401 -> invalid_token", http.StatusUnauthorized, ``, http.StatusUnauthorized, CodeInvalidToken},
+		{"403 -> access_denied", http.StatusForbidden, ``, http.StatusForbidden, CodeAccessDenied},
+		{"500 -> ckan_unavailable", http.StatusInternalServerError, ``, http.StatusBadGateway, CodeCKANUnavailable},
+		{
+			name:     "200+success:false -> package_not_found",
+			status:   http.StatusOK,
+			body:     `{"success":false,"error":{"__type":"Authorization Error"}}`,
+			wantHTTP: http.StatusNotFound,
+			wantCode: CodePackageNotFound,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var calls int
+			var mu sync.Mutex
+			ckan := statusCKAN(t, tt.status, tt.body, &calls, &mu)
+			defer ckan.Close()
+			handler := NewHandler(ckanPCConfig(ckan.URL), Config{}, discardLogger())
+
+			rr := analyzeWithToken(handler, "some-pkg", "tok")
+			if rr.Code != tt.wantHTTP {
+				t.Errorf("expected HTTP %d, got %d (body: %s)", tt.wantHTTP, rr.Code, rr.Body.String())
+			}
+			resp := decodeEnvelope(t, rr)
+			if resp.Error.Code != tt.wantCode {
+				t.Errorf("expected code %q, got %q", tt.wantCode, resp.Error.Code)
+			}
+
+			// Exactly one package_show per analyze (single CKAN call, §5).
+			mu.Lock()
+			got := calls
+			mu.Unlock()
+			if got != 1 {
+				t.Errorf("expected exactly 1 package_show call, got %d", got)
+			}
+		})
+	}
+}
+
+// TestHandler_Analyze_TransportError asserts a CKAN connection failure maps to
+// ckan_unavailable (502).
+func TestHandler_Analyze_TransportError(t *testing.T) {
+	ckan := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	url := ckan.URL
+	ckan.Close() // refuse connections
+
+	cfg := ckanPCConfig(url)
+	handler := NewHandler(cfg, Config{}, discardLogger())
+
+	rr := analyzeWithToken(handler, "some-pkg", "tok")
+	if rr.Code != http.StatusBadGateway {
+		t.Errorf("expected 502, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+	resp := decodeEnvelope(t, rr)
+	if resp.Error.Code != CodeCKANUnavailable {
+		t.Errorf("expected %q, got %q", CodeCKANUnavailable, resp.Error.Code)
+	}
+}
+
+// TestHandler_Analyze_MissingUpload_ResourceUnreadable asserts a url_type=
+// "upload" resource whose backing file is absent on disk maps to
+// resource_unreadable (500), not a panic or silent skip (§5).
+func TestHandler_Analyze_MissingUpload_ResourceUnreadable(t *testing.T) {
+	const resID = "abcdef0123456789" // -> resources/abc/def/0123456789 (no file written)
+	resourceURL := fmt.Sprintf("https://ckan.example.org/dataset/x/resource/%s/download/data.csv", resID)
+	ckan := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, fmt.Sprintf(
+			`{"success":true,"result":{"name":"p","resources":[`+
+				`{"url_type":"upload","url":%q,"name":"data.csv","size":10}]}}`, resourceURL))
+	}))
+	defer ckan.Close()
+
+	cfg := ckanPCConfig(ckan.URL)
+	cfg.Collectors["CkanCollector"].Attrs["ckan_storage_path"] = t.TempDir()
+	handler := NewHandler(cfg, Config{}, discardLogger())
+
+	rr := analyzeWithToken(handler, "upload-pkg", "tok")
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+	resp := decodeEnvelope(t, rr)
+	if resp.Error.Code != CodeResourceUnreadable {
+		t.Errorf("expected %q, got %q", CodeResourceUnreadable, resp.Error.Code)
+	}
+}
+
+// TestHandler_Analyze_TokenForwardedRaw asserts the token reaches CKAN as a RAW
+// Authorization header (no "Bearer " prefix), and exactly one package_show call
+// happens per analyze (§2 token forwarding, §5 single call).
+func TestHandler_Analyze_TokenForwardedRaw(t *testing.T) {
+	var mu sync.Mutex
+	var calls int
+	var gotAuth string
+	ckan := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls++
+		gotAuth = r.Header.Get("Authorization")
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"success":true,"result":{"resources":[]}}`)
+	}))
+	defer ckan.Close()
+	handler := NewHandler(ckanPCConfig(ckan.URL), Config{}, discardLogger())
+
+	_ = analyzeWithToken(handler, "tok-pkg", "raw-ckan-token-123")
+
+	mu.Lock()
+	defer mu.Unlock()
+	if gotAuth != "raw-ckan-token-123" {
+		t.Errorf("expected raw token forwarded, got Authorization %q", gotAuth)
+	}
+	if strings.HasPrefix(gotAuth, "Bearer ") {
+		t.Errorf("token forwarded with Bearer prefix: %q", gotAuth)
+	}
+	if calls != 1 {
+		t.Errorf("expected exactly 1 package_show call, got %d", calls)
+	}
+}
+
+// TestHandler_Analyze_BodyTooLarge asserts an oversized body is rejected as
+// invalid_request (the MaxBytesReader cap, §2).
+func TestHandler_Analyze_BodyTooLarge(t *testing.T) {
+	handler := NewHandler(&config.Config{}, Config{}, discardLogger())
+
+	huge := `{"package_id":"` + strings.Repeat("a", 8000) + `"}`
+	req := httptest.NewRequest("POST", "/api/v1/analyze", bytes.NewBufferString(huge))
+	req = withRequestContext(req, "REQ-HUGE", DefaultContactMessage)
+	rr := httptest.NewRecorder()
+	handler.Analyze(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for oversized body, got %d", rr.Code)
+	}
+	resp := decodeEnvelope(t, rr)
+	if resp.Error.Code != CodeInvalidRequest {
+		t.Errorf("expected %q, got %q", CodeInvalidRequest, resp.Error.Code)
+	}
+}
+
+// TestHandler_Analyze_Timeout asserts a request whose hard timeout fires while
+// the analysis is still running returns a clean 504 envelope (spec §2). The
+// fake CKAN sleeps longer than the 1s configured requestTimeoutSeconds.
+func TestHandler_Analyze_Timeout(t *testing.T) {
+	ckan := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(1500 * time.Millisecond)
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"success":true,"result":{"resources":[]}}`)
+	}))
+	defer ckan.Close()
+
+	cfg := ckanPCConfig(ckan.URL)
+	cfg.Server.RequestTimeoutSeconds = 1
+	handler := NewHandler(cfg, Config{}, discardLogger())
+
+	rr := analyzeWithToken(handler, "slow-pkg", "tok")
+	if rr.Code != http.StatusGatewayTimeout {
+		t.Errorf("expected 504 on timeout, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+}
+
+// TestHandler_Analyze_Timeout_HungUpstream is the case the timeout exists for:
+// CKAN accepts the TCP connection but NEVER responds. The hard requestTimeout
+// must abort the in-flight call and return a clean 504 envelope within ~the
+// configured budget, rather than blocking until the server WriteTimeout (spec
+// §2). With the previous context-unaware collector this test would hang.
+func TestHandler_Analyze_Timeout_HungUpstream(t *testing.T) {
+	release := make(chan struct{})
+	ckan := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-release // never respond until released
+	}))
+	// Defers run LIFO: close(release) must happen BEFORE ckan.Close(), otherwise
+	// Close() blocks forever waiting on the still-parked handler goroutine.
+	defer ckan.Close()
+	defer close(release)
+
+	cfg := ckanPCConfig(ckan.URL)
+	cfg.Server.RequestTimeoutSeconds = 1
+	handler := NewHandler(cfg, Config{}, discardLogger())
+
+	done := make(chan *httptest.ResponseRecorder, 1)
+	start := time.Now()
+	go func() { done <- analyzeWithToken(handler, "hung-pkg", "tok") }()
+
+	select {
+	case rr := <-done:
+		elapsed := time.Since(start)
+		if rr.Code != http.StatusGatewayTimeout {
+			t.Errorf("expected 504 on hung upstream, got %d (body: %s)", rr.Code, rr.Body.String())
+		}
+		resp := decodeEnvelope(t, rr)
+		if resp.Error.Code != CodeCKANUnavailable {
+			t.Errorf("expected %q, got %q", CodeCKANUnavailable, resp.Error.Code)
+		}
+		// Must finish near the 1s budget, well before any 300s WriteTimeout.
+		if elapsed > 10*time.Second {
+			t.Errorf("handler did not honor the request timeout: took %v", elapsed)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("handler hung on a non-responding CKAN: request timeout was not enforced on the in-flight call")
+	}
 }
 
 func TestWithRequestID_Additive(t *testing.T) {

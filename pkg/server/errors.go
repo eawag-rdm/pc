@@ -71,6 +71,20 @@ func writeError(w http.ResponseWriter, r *http.Request, code string) {
 		code = CodeInternalError
 		entry = errorCatalogue[CodeInternalError]
 	}
+	writeErrorStatus(w, r, code, entry.Status)
+}
+
+// writeErrorStatus renders the same envelope as writeError but with an explicit
+// HTTP status, overriding the catalogue default. It exists for the request
+// timeout path (spec §2), which reuses the ckan_unavailable message but must
+// answer 504 Gateway Timeout rather than the catalogue's 502.
+func writeErrorStatus(w http.ResponseWriter, r *http.Request, code string, status int) {
+	entry, ok := errorCatalogue[code]
+	if !ok {
+		code = CodeInternalError
+		entry = errorCatalogue[CodeInternalError]
+		status = entry.Status
+	}
 
 	requestID := GetRequestID(r)
 
@@ -93,6 +107,6 @@ func writeError(w http.ResponseWriter, r *http.Request, code string) {
 		w.Header().Set("X-Request-Id", requestID)
 	}
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(entry.Status)
+	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(ErrorResponse{Error: body})
 }

@@ -1,9 +1,12 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"sync"
 	"time"
 
@@ -12,8 +15,22 @@ import (
 	"github.com/eawag-rdm/pc/pkg/helpers"
 	"github.com/eawag-rdm/pc/pkg/output"
 	jsonformatter "github.com/eawag-rdm/pc/pkg/output/json"
+	"github.com/eawag-rdm/pc/pkg/structs"
 	"github.com/eawag-rdm/pc/pkg/utils"
 )
+
+// maxAnalyzeBodyBytes caps the request body. The body is a tiny JSON object
+// ({"package_id":"..."}); 4 KiB is generous and bounds memory/abuse (spec §2).
+const maxAnalyzeBodyBytes = 4 << 10 // 4 KiB
+
+// defaultRequestTimeout is the fallback hard upper bound applied when no
+// [server] requestTimeoutSeconds is configured (spec §2).
+const defaultRequestTimeout = 300 * time.Second
+
+// packageIDPattern is CKAN's name grammar; it also matches lowercase UUIDs
+// (spec §2). A package_id that does not match is rejected as
+// invalid_package_name BEFORE any CKAN call.
+var packageIDPattern = regexp.MustCompile(`^[a-z0-9_-]{2,100}$`)
 
 // Handler processes HTTP requests for the PC server
 type Handler struct {
@@ -89,7 +106,10 @@ func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
 
 // Analyze handles POST /api/v1/analyze
 func (h *Handler) Analyze(w http.ResponseWriter, r *http.Request) {
-	// 1. Parse request body
+	// 1. Cap the request body (spec §2): the body is a tiny JSON object, so an
+	// oversized body is rejected as invalid_request rather than read into memory.
+	r.Body = http.MaxBytesReader(w, r.Body, maxAnalyzeBodyBytes)
+
 	var req AnalyzeRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, r, CodeInvalidRequest)
@@ -100,9 +120,15 @@ func (h *Handler) Analyze(w http.ResponseWriter, r *http.Request) {
 	// access-log middleware installed, so the emitted record carries it.
 	setPackageID(r, req.PackageID)
 
-	// 2. Validate request
+	// 2. Validate request (spec §2). Missing/empty -> missing_package; otherwise
+	// it must match CKAN's name grammar (which also matches lowercase UUIDs) or
+	// it is rejected as invalid_package_name BEFORE any CKAN call.
 	if req.PackageID == "" {
 		writeError(w, r, CodeMissingPackage)
+		return
+	}
+	if !packageIDPattern.MatchString(req.PackageID) {
+		writeError(w, r, CodeInvalidPackageName)
 		return
 	}
 
@@ -117,42 +143,62 @@ func (h *Handler) Analyze(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 5. Verify CKAN access with the user's token. This is a read-only CKAN call
-	// that does not touch process-global state, so it runs outside analysisMu.
-	verifyTLS := h.serverCfg.GetVerifyTLS(h.pcConfig)
-	if err := VerifyCKANAccess(ckanURL, req.PackageID, token, verifyTLS); err != nil {
-		if statusCode, isAuthErr := IsCKANAuthError(err); isAuthErr {
-			switch statusCode {
-			case http.StatusUnauthorized:
-				writeError(w, r, CodeInvalidToken)
-			case http.StatusForbidden:
-				writeError(w, r, CodeAccessDenied)
-			case http.StatusNotFound:
-				// Nonexistent and private-unauthorized both surface as 404 under
-				// CKAN's default reveal_private_datasets=false (§3).
-				writeError(w, r, CodePackageNotFound)
-			default:
-				writeError(w, r, CodeCKANUnavailable)
-			}
-			return
+	// 5. Apply the hard request timeout (spec §2) via a context deadline so a
+	// runaway analysis returns a clean envelope BEFORE the server WriteTimeout
+	// fires. Client disconnects propagate through the same context.
+	ctx, cancel := context.WithTimeout(r.Context(), h.requestTimeout())
+	defer cancel()
+
+	// 6-9. Run the single CKAN package_show + analysis under analysisMu: the
+	// per-request reset, the collect/check work that accumulates into the
+	// process-global GlobalLogger and PDFTracker, and the snapshot read used to
+	// build the body must be one serialized unit, or a concurrent request's
+	// reset bleeds into / races with this one (§6, §9). The double fetch is
+	// collapsed (spec §5): the collector's package_show is the only CKAN call.
+	requestID := GetRequestID(r)
+	start := time.Now()
+	h.logger.LogAttrs(ctx, slog.LevelInfo, "analysis_start",
+		slog.String("request_id", requestID),
+		slog.String("package_id", req.PackageID),
+	)
+
+	jsonResult, fileCount, skippedCount, errCode := h.runAnalysis(ctx, req.PackageID, token)
+
+	// A cancelled/expired context means the client went away or the hard
+	// timeout fired. Distinguish a deadline (504) from a cancellation (503) and
+	// emit the analysis_cancelled lifecycle event (spec §2, §8).
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		h.logger.LogAttrs(context.Background(), slog.LevelWarn, "analysis_cancelled",
+			slog.String("request_id", requestID),
+			slog.String("package_id", req.PackageID),
+			slog.Int64("duration_ms", time.Since(start).Milliseconds()),
+			slog.String("cause", ctxErr.Error()),
+		)
+		if errors.Is(ctxErr, context.DeadlineExceeded) {
+			// Past the hard upper bound: gateway timeout.
+			writeErrorStatus(w, r, CodeCKANUnavailable, http.StatusGatewayTimeout)
+		} else {
+			// Client cancelled / server draining: busy.
+			writeError(w, r, CodeServiceBusy)
 		}
-		writeError(w, r, CodeCKANUnavailable)
 		return
 	}
 
-	// 6-9. Run the analysis under analysisMu: the per-request reset, the
-	// collect/check work that accumulates into the process-global GlobalLogger
-	// and PDFTracker, and the snapshot read used to build the body must be one
-	// serialized unit, or a concurrent request's reset bleeds into / races with
-	// this one (§6, §9).
-	jsonResult, errCode := h.runAnalysis(req.PackageID, token)
 	if errCode != "" {
 		writeError(w, r, errCode)
 		return
 	}
 
+	h.logger.LogAttrs(ctx, slog.LevelInfo, "analysis_done",
+		slog.String("request_id", requestID),
+		slog.String("package_id", req.PackageID),
+		slog.Int64("duration_ms", time.Since(start).Milliseconds()),
+		slog.Int("file_count", fileCount),
+		slog.Int("skipped_count", skippedCount),
+	)
+
 	// 10. Add request_id to the response body (additive) and return.
-	body, err := withRequestID(jsonResult, GetRequestID(r))
+	body, err := withRequestID(jsonResult, requestID)
 	if err != nil {
 		writeError(w, r, CodeInternalError)
 		return
@@ -163,13 +209,24 @@ func (h *Handler) Analyze(w http.ResponseWriter, r *http.Request) {
 	w.Write(body)
 }
 
+// requestTimeout returns the configured hard request upper bound (spec §2),
+// falling back to defaultRequestTimeout when unset.
+func (h *Handler) requestTimeout() time.Duration {
+	if h.pcConfig != nil && h.pcConfig.Server != nil && h.pcConfig.Server.RequestTimeoutSeconds > 0 {
+		return time.Duration(h.pcConfig.Server.RequestTimeoutSeconds) * time.Second
+	}
+	return defaultRequestTimeout
+}
+
 // runAnalysis performs the global-state-touching part of an analysis under
-// analysisMu and returns the formatted JSON body. On failure it returns an empty
-// body and a non-empty error catalogue code for the caller to render. Holding
-// analysisMu across the reset, the collect/check work, and the PDFTracker
-// snapshot read keeps the process-global GlobalLogger/PDFTracker from leaking or
-// racing across concurrent requests (§6, §9).
-func (h *Handler) runAnalysis(packageID, token string) (string, string) {
+// analysisMu and returns the formatted JSON body plus the analyzed-file and
+// skipped counts. On failure it returns an empty body and a non-empty error
+// catalogue code for the caller to render. Holding analysisMu across the reset,
+// the collect/check work, and the PDFTracker snapshot read keeps the
+// process-global GlobalLogger/PDFTracker from leaking or racing across
+// concurrent requests (§6, §9). The collector's package_show is the single CKAN
+// call (spec §5); its outcome drives the error mapping here.
+func (h *Handler) runAnalysis(ctx context.Context, packageID, token string) (body string, fileCount, skippedCount int, errCode string) {
 	h.analysisMu.Lock()
 	defer h.analysisMu.Unlock()
 
@@ -183,13 +240,19 @@ func (h *Handler) runAnalysis(packageID, token string) (string, string) {
 	// one request's token can never bleed into another's analysis (§9).
 	pcConfigCopy := deepCopyConfigForRequest(h.pcConfig, token)
 
-	// Collect files from CKAN.
-	files, err := collectors.CkanCollector(packageID, pcConfigCopy)
+	// Single CKAN call: package_show via the collector. Its outcome (a
+	// structured collectors.CKANError, the ErrResourceUnreadable sentinel, or a
+	// transport error) maps to the catalogue (spec §5).
+	ckanStart := time.Now()
+	files, err := collectors.CkanCollector(ctx, packageID, pcConfigCopy)
+	h.logCKANOutcome(ctx, packageID, err, time.Since(ckanStart))
 	if err != nil {
-		return "", CodeCKANUnavailable
+		return "", 0, 0, mapCKANError(err)
 	}
 	if len(files) == 0 {
-		return "", CodePackageNotFound
+		// A package with zero analyzable upload resources is reported as
+		// not-found (the user gets the combined package_not_found message).
+		return "", 0, 0, CodePackageNotFound
 	}
 
 	// Run checks (accumulates into GlobalLogger / PDFTracker).
@@ -200,9 +263,85 @@ func (h *Handler) runAnalysis(packageID, token string) (string, string) {
 	formatter := jsonformatter.NewJSONFormatter()
 	jsonResult, err := formatter.FormatResults(packageID, "CkanCollector", messages, len(files), helpers.PDFTracker.SnapshotFiles())
 	if err != nil {
-		return "", CodeInternalError
+		return "", 0, 0, CodeInternalError
 	}
-	return jsonResult, ""
+	return jsonResult, len(files), countSkipped(messages), ""
+}
+
+// countSkipped counts the check Messages that report a size-skip (spec §6) so
+// the analysis_done lifecycle event can record how many files were skipped.
+func countSkipped(messages []structs.Message) int {
+	n := 0
+	for _, m := range messages {
+		if m.Skipped {
+			n++
+		}
+	}
+	return n
+}
+
+// mapCKANError maps the single package_show outcome to a catalogue code (§3, §5):
+//   - ErrResourceUnreadable (a url_type=="upload" file missing/escaping storage)
+//     -> resource_unreadable;
+//   - a transport/connection failure or a 5xx -> ckan_unavailable;
+//   - explicit 401 -> invalid_token, 403 -> access_denied;
+//   - 404 (nonexistent OR private-unauthorized under CKAN's default
+//     reveal_private_datasets=false), including a 200+success:false body that
+//     resolves to 404 -> package_not_found;
+//   - anything else -> internal_error.
+func mapCKANError(err error) string {
+	if errors.Is(err, collectors.ErrResourceUnreadable) {
+		return CodeResourceUnreadable
+	}
+	var ckanErr *collectors.CKANError
+	if errors.As(err, &ckanErr) {
+		if ckanErr.Transport {
+			return CodeCKANUnavailable
+		}
+		switch ckanErr.StatusCode {
+		case http.StatusUnauthorized:
+			return CodeInvalidToken
+		case http.StatusForbidden:
+			return CodeAccessDenied
+		case http.StatusNotFound:
+			return CodePackageNotFound
+		}
+		if ckanErr.StatusCode >= 500 {
+			return CodeCKANUnavailable
+		}
+		return CodeInternalError
+	}
+	// A malformed-metadata / non-CKAN collector error: treat as internal.
+	return CodeInternalError
+}
+
+// logCKANOutcome emits the CKAN-upstream-outcome slog event (spec §8): the HTTP
+// status (or the transport-error class) and the call latency, keyed by
+// request_id. It never logs the token or the package-id-carrying URL.
+func (h *Handler) logCKANOutcome(ctx context.Context, packageID string, err error, latency time.Duration) {
+	attrs := []slog.Attr{
+		slog.String("request_id", GetRequestIDFromContext(ctx)),
+		slog.String("package_id", packageID),
+		slog.Int64("latency_ms", latency.Milliseconds()),
+	}
+	switch {
+	case err == nil:
+		attrs = append(attrs, slog.Int("ckan_status", http.StatusOK))
+	case errors.Is(err, collectors.ErrResourceUnreadable):
+		attrs = append(attrs, slog.String("transport_error_class", "resource_unreadable"))
+	default:
+		var ckanErr *collectors.CKANError
+		if errors.As(err, &ckanErr) {
+			if ckanErr.Transport {
+				attrs = append(attrs, slog.String("transport_error_class", "transport"))
+			} else {
+				attrs = append(attrs, slog.Int("ckan_status", ckanErr.StatusCode))
+			}
+		} else {
+			attrs = append(attrs, slog.String("transport_error_class", "collector"))
+		}
+	}
+	h.logger.LogAttrs(ctx, slog.LevelInfo, "ckan_upstream_outcome", attrs...)
 }
 
 // deepCopyConfigForRequest returns a copy of pcConfig safe for concurrent use

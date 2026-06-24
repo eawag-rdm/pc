@@ -1,13 +1,14 @@
 package collectors
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
+	neturl "net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,7 +25,67 @@ import (
 // code (spec §3); the CLI surfaces it as a plain collector error.
 var ErrResourceUnreadable = errors.New("resource file is unreadable")
 
-func Request(url, ckanToken string, verifyTLS bool) (string, error) {
+// CKANError carries the outcome of the single CKAN package_show call so the
+// caller (the server) can map it to the fixed error catalogue (spec §3, §5)
+// WITHOUT re-fetching. It distinguishes:
+//   - a transport/connection failure (Transport == true, StatusCode == 0) →
+//     mapped to ckan_unavailable;
+//   - an HTTP status (StatusCode set), including a CKAN Action API body that
+//     reports success:false even on HTTP 200 (StatusFromBody == true) →
+//     mapped by status (404 → package_not_found, 401 → invalid_token,
+//     403 → access_denied, 5xx → ckan_unavailable).
+//
+// The error message is deliberately non-secret: it never embeds the token or
+// the package-id-carrying URL, only the status code.
+type CKANError struct {
+	StatusCode     int    // HTTP status; for a success:false body this is the effective status (e.g. 404)
+	ErrorType      string // CKAN error.__type from the response body, if present (diagnostic only)
+	Transport      bool   // true for a transport/connection error (no HTTP response)
+	StatusFromBody bool   // true when StatusCode was derived from a success:false body, not the HTTP status
+}
+
+func (e *CKANError) Error() string {
+	if e.Transport {
+		return "ckan request failed: transport error"
+	}
+	return fmt.Sprintf("ckan request failed with status %d", e.StatusCode)
+}
+
+// ckanActionErrorStatus inspects a parsed CKAN Action API body and, when it
+// reports success:false, returns the effective HTTP status implied by
+// error.__type plus that type string. CKAN may answer HTTP 200 with
+// success:false (spec §3), so the body must be parsed, not just the status.
+func ckanActionErrorStatus(body map[string]interface{}) (status int, errType string, isError bool) {
+	success, ok := body["success"].(bool)
+	if !ok || success {
+		return 0, "", false
+	}
+	if errObj, ok := body["error"].(map[string]interface{}); ok {
+		if t, ok := errObj["__type"].(string); ok {
+			errType = t
+		}
+	}
+	switch errType {
+	case "Authorization Error":
+		// CKAN uses this for both "not authorized" and "not found" under the
+		// default reveal_private_datasets=false; treat it as 404 so it maps to
+		// the combined package_not_found message (spec §3).
+		status = http.StatusNotFound
+	case "Not Found Error":
+		status = http.StatusNotFound
+	default:
+		status = http.StatusInternalServerError
+	}
+	return status, errType, true
+}
+
+// Request performs the single CKAN package_show GET. The supplied context bounds
+// the in-flight call: when its deadline fires (the server's hard requestTimeout,
+// spec §2) or it is cancelled (client disconnect), client.Do and the subsequent
+// body read are aborted instead of blocking on a slow/hung CKAN socket. A
+// cancelled/expired context surfaces as a transport *CKANError (mapped to
+// ckan_unavailable / 504 by the server).
+func Request(ctx context.Context, url, ckanToken string, verifyTLS bool) (string, error) {
 
 	transport := &http.Transport{
 		TLSClientConfig: &tls.Config{
@@ -37,7 +98,7 @@ func Request(url, ckanToken string, verifyTLS bool) (string, error) {
 		Transport: transport,
 	}
 
-	req, err := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return "", err
 	}
@@ -48,20 +109,44 @@ func Request(url, ckanToken string, verifyTLS bool) (string, error) {
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", err
+		// Transport/connection failure (including a context deadline/cancel
+		// aborting the in-flight call): no usable HTTP response. Never embed the
+		// underlying error (it can carry the package-id-carrying URL) nor the
+		// token; the server maps this to ckan_unavailable (and distinguishes a
+		// deadline as 504 via the request context).
+		output.GlobalLogger.Warning("CKAN request failed: transport error")
+		return "", &CKANError{Transport: true}
 	}
 	defer resp.Body.Close()
+
+	bodyBytes, readErr := io.ReadAll(resp.Body)
 
 	if resp.StatusCode != http.StatusOK {
 		// Log a non-secret diagnostic: status code only. Never log the URL (it
 		// carries the package id query) or the token (exfiltration vector).
 		output.GlobalLogger.Warning("CKAN request failed with status code %d", resp.StatusCode)
-		return "", fmt.Errorf("request failed with status code %d. This might indicate the package is private and needs to be set to public", resp.StatusCode)
+		errType := ""
+		if readErr == nil {
+			if parsed, perr := JSONToMap(string(bodyBytes)); perr == nil {
+				if _, t, isErr := ckanActionErrorStatus(parsed); isErr {
+					errType = t
+				}
+			}
+		}
+		return "", &CKANError{StatusCode: resp.StatusCode, ErrorType: errType}
 	}
 
-	bodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
+	if readErr != nil {
+		return "", readErr
+	}
+
+	// HTTP 200 may still carry a CKAN Action API failure (success:false). Parse
+	// the body and surface it as a structured CKANError so the server maps it.
+	if parsed, perr := JSONToMap(string(bodyBytes)); perr == nil {
+		if status, errType, isErr := ckanActionErrorStatus(parsed); isErr {
+			output.GlobalLogger.Warning("CKAN request succeeded (200) but body reports failure (__type=%q)", errType)
+			return "", &CKANError{StatusCode: status, ErrorType: errType, StatusFromBody: true}
+		}
 	}
 
 	return string(bodyBytes), nil
@@ -191,7 +276,7 @@ func GetCKANResources(jsonMap map[string]interface{}) ([]structs.File, error) {
 // caller cannot read a file outside the mounted share.
 func getLocalResourcePath(resourceURL string, ckanStoragePath string) (string, error) {
 
-	parsedURL, err := url.Parse(resourceURL)
+	parsedURL, err := neturl.Parse(resourceURL)
 	if err != nil {
 		return "", nil
 	}
@@ -296,7 +381,11 @@ func resolveLocalResource(resourceURL, displayLabel, ckanStoragePath string) (st
 	return path, nil
 }
 
-func CkanCollector(package_id string, config config.Config) ([]structs.File, error) {
+// CkanCollector performs the single CKAN package_show call (spec §5) and
+// resolves each upload resource to its local FileStore path. The context bounds
+// the upstream HTTP call so a slow/hung CKAN cannot outlive the caller's
+// deadline (spec §2). CLI callers with no deadline pass context.Background().
+func CkanCollector(ctx context.Context, package_id string, config config.Config) ([]structs.File, error) {
 
 	collectorName := "CkanCollector"
 
@@ -305,7 +394,10 @@ func CkanCollector(package_id string, config config.Config) ([]structs.File, err
 		return nil, fmt.Errorf("url attribute not found or not a string")
 	}
 
-	url := fmt.Sprintf("%s/api/3/action/package_show?id=%s", urlAttr, package_id)
+	// Always escape the package id when building the CKAN URL (spec §2): the id
+	// is validated upstream, but escaping is a defence-in-depth invariant of URL
+	// construction here.
+	url := fmt.Sprintf("%s/api/3/action/package_show?id=%s", urlAttr, neturl.QueryEscape(package_id))
 
 	token, ok := config.Collectors[collectorName].Attrs["token"].(string)
 	if !ok {
@@ -316,7 +408,7 @@ func CkanCollector(package_id string, config config.Config) ([]structs.File, err
 		return nil, fmt.Errorf("verify attribute not found or not a bool")
 	}
 
-	jsonStr, err := Request(url, token, verify)
+	jsonStr, err := Request(ctx, url, token, verify)
 	if err != nil {
 		return nil, err
 	}

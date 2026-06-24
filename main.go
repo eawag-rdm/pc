@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -54,7 +55,7 @@ func main() {
 
 	// Configure logger for JSON mode by default
 	output.GlobalLogger.SetJSONMode(true)
-	
+
 	// Enable CPU profiling if requested
 	if *cpuprofile != "" {
 		f, err := os.Create(*cpuprofile)
@@ -79,7 +80,7 @@ func main() {
 		errorResult := map[string]interface{}{
 			"timestamp": time.Now().UTC().Format(time.RFC3339),
 			"error": map[string]string{
-				"type": "config_error",
+				"type":    "config_error",
 				"message": fmt.Sprintf("Error loading config: %v", err),
 			},
 		}
@@ -125,7 +126,7 @@ func main() {
 			outputError("collector_error", "Please provide a CKAN package name (use the location flag '-location')")
 			return
 		}
-		files, filesErr = collectors.CkanCollector(*folder_or_url, *generalConfig)
+		files, filesErr = collectors.CkanCollector(context.Background(), *folder_or_url, *generalConfig)
 		if filesErr != nil {
 			outputError("collector_error", filesErr.Error())
 			return
@@ -141,7 +142,6 @@ func main() {
 		outputError("no_files", fmt.Sprintf("No files found in location: %s", *folder_or_url))
 		return
 	}
-	
 
 	// Determine output modes
 	generateHtml := *htmlOutput != ""
@@ -271,7 +271,7 @@ func main() {
 		}
 		// If only --no-tui (with or without --html), no stdout output beyond HTML message
 	}
-	
+
 	// Enable memory profiling if requested
 	if *memprofile != "" {
 		f, err := os.Create(*memprofile)

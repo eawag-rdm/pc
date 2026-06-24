@@ -1,6 +1,7 @@
 package collectors
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/eawag-rdm/pc/pkg/config"
 	"github.com/eawag-rdm/pc/pkg/output"
@@ -270,7 +272,7 @@ func TestRequestNeverLeaksToken(t *testing.T) {
 	}
 	os.Stdout = wPipe
 
-	_, reqErr := Request(reqURL, secretToken, true)
+	_, reqErr := Request(context.Background(), reqURL, secretToken, true)
 
 	wPipe.Close()
 	os.Stdout = origStdout
@@ -294,7 +296,7 @@ func TestRequestNeverLeaksToken(t *testing.T) {
 	// Repeat with the JSON-mode buffer to cover the structured-message path.
 	output.GlobalLogger.SetJSONMode(true)
 	output.GlobalLogger.ClearMessages()
-	_, _ = Request(reqURL, secretToken, true)
+	_, _ = Request(context.Background(), reqURL, secretToken, true)
 	for _, m := range output.GlobalLogger.GetMessages() {
 		if strings.Contains(m.Message, secretToken) || strings.Contains(m.Message, "secret-package") {
 			t.Errorf("JSON log message leaked a secret/URL: %q", m.Message)
@@ -335,7 +337,7 @@ func TestCkanCollectorMissingAttrsNoPanic(t *testing.T) {
 					"CkanCollector": {Attrs: tt.attrs},
 				},
 			}
-			_, err := CkanCollector("some-package", cfg)
+			_, err := CkanCollector(context.Background(), "some-package", cfg)
 			if err == nil {
 				t.Fatalf("expected an error, got nil")
 			}
@@ -517,4 +519,157 @@ func TestResolveLocalResourceMissingOnDisk(t *testing.T) {
 			t.Errorf("expected resolved path %q, got %q", filepath.Clean(fpath), got)
 		}
 	})
+}
+
+// TestRequestReturnsCKANError asserts the single package_show call surfaces a
+// structured *CKANError carrying the effective HTTP status, including the
+// HTTP-200-with-success:false case which CKAN uses for authorization/not-found
+// (spec §3, §5). The error message never leaks the token or the URL.
+func TestRequestReturnsCKANError(t *testing.T) {
+	tests := []struct {
+		name       string
+		status     int
+		body       string
+		wantStatus int
+		wantBody   bool // status derived from a success:false body
+	}{
+		{"http 401", http.StatusUnauthorized, ``, http.StatusUnauthorized, false},
+		{"http 403", http.StatusForbidden, ``, http.StatusForbidden, false},
+		{"http 404", http.StatusNotFound, ``, http.StatusNotFound, false},
+		{"http 500", http.StatusInternalServerError, ``, http.StatusInternalServerError, false},
+		{
+			name:       "200 with success:false authorization error -> 404",
+			status:     http.StatusOK,
+			body:       `{"success":false,"error":{"__type":"Authorization Error","message":"Access denied"}}`,
+			wantStatus: http.StatusNotFound,
+			wantBody:   true,
+		},
+		{
+			name:       "200 with success:false not found error -> 404",
+			status:     http.StatusOK,
+			body:       `{"success":false,"error":{"__type":"Not Found Error"}}`,
+			wantStatus: http.StatusNotFound,
+			wantBody:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tt.status)
+				if tt.body != "" {
+					io.WriteString(w, tt.body)
+				}
+			}))
+			defer srv.Close()
+
+			_, err := Request(context.Background(), srv.URL+"/api/3/action/package_show?id=secret-pkg", "secret-token", false)
+			if err == nil {
+				t.Fatalf("expected an error, got nil")
+			}
+			var ckanErr *CKANError
+			if !errors.As(err, &ckanErr) {
+				t.Fatalf("expected *CKANError, got %T (%v)", err, err)
+			}
+			if ckanErr.StatusCode != tt.wantStatus {
+				t.Errorf("StatusCode = %d, want %d", ckanErr.StatusCode, tt.wantStatus)
+			}
+			if ckanErr.StatusFromBody != tt.wantBody {
+				t.Errorf("StatusFromBody = %v, want %v", ckanErr.StatusFromBody, tt.wantBody)
+			}
+			if strings.Contains(err.Error(), "secret-token") || strings.Contains(err.Error(), "secret-pkg") {
+				t.Errorf("CKANError message leaked a secret/URL: %q", err.Error())
+			}
+		})
+	}
+}
+
+// TestRequestTransportError asserts a connection failure surfaces a transport
+// *CKANError (mapped to ckan_unavailable by the server), with no secret leak.
+func TestRequestTransportError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	url := srv.URL + "/api/3/action/package_show?id=secret-pkg"
+	srv.Close() // close so the connection is refused
+
+	_, err := Request(context.Background(), url, "secret-token", false)
+	if err == nil {
+		t.Fatalf("expected a transport error, got nil")
+	}
+	var ckanErr *CKANError
+	if !errors.As(err, &ckanErr) {
+		t.Fatalf("expected *CKANError, got %T (%v)", err, err)
+	}
+	if !ckanErr.Transport {
+		t.Errorf("expected Transport=true, got %+v", ckanErr)
+	}
+	if strings.Contains(err.Error(), "secret-token") || strings.Contains(err.Error(), "secret-pkg") {
+		t.Errorf("transport CKANError leaked a secret/URL: %q", err.Error())
+	}
+}
+
+// TestRequestContextDeadlineAborts asserts that an expired/cancelled context
+// aborts the in-flight CKAN call instead of blocking on a hung socket: against a
+// server that never responds, Request returns promptly (well before any
+// server-side WriteTimeout) with a transport *CKANError (spec §2). Without
+// http.NewRequestWithContext this test would hang.
+func TestRequestContextDeadlineAborts(t *testing.T) {
+	block := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-block // never respond until released
+	}))
+	// Defers run LIFO: close(block) must release the parked handler BEFORE
+	// srv.Close() waits on it, or Close() blocks forever.
+	defer srv.Close()
+	defer close(block)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	_, err := Request(ctx, srv.URL+"/api/3/action/package_show?id=hang-pkg", "secret-token", false)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatalf("expected a transport error from the cancelled context, got nil")
+	}
+	var ckanErr *CKANError
+	if !errors.As(err, &ckanErr) || !ckanErr.Transport {
+		t.Fatalf("expected a transport *CKANError, got %T (%v)", err, err)
+	}
+	// The deadline is 100ms; allow generous slack but prove it did not hang.
+	if elapsed > 5*time.Second {
+		t.Errorf("Request did not honor the context deadline: took %v", elapsed)
+	}
+	if strings.Contains(err.Error(), "secret-token") || strings.Contains(err.Error(), "hang-pkg") {
+		t.Errorf("error leaked a secret/URL: %q", err.Error())
+	}
+}
+
+// TestRequestEscapesPackageID asserts CkanCollector url.QueryEscapes the package
+// id when building the package_show URL (spec §2): a crafted id arrives at CKAN
+// escaped, not as raw query syntax.
+func TestRequestEscapesPackageID(t *testing.T) {
+	var gotRawQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotRawQuery = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"success":true,"result":{"resources":[]}}`)
+	}))
+	defer srv.Close()
+
+	cfg := config.Config{
+		Collectors: map[string]*config.CollectorConfig{
+			"CkanCollector": {Attrs: map[string]interface{}{
+				"url":               srv.URL,
+				"token":             "",
+				"verify":            false,
+				"ckan_storage_path": "",
+			}},
+		},
+	}
+	// A space must be percent-encoded by QueryEscape (+), proving escaping ran.
+	_, _ = CkanCollector(context.Background(), "a b", cfg)
+	if !strings.Contains(gotRawQuery, "id=a+b") {
+		t.Errorf("expected escaped query id=a+b, got raw query %q", gotRawQuery)
+	}
 }
