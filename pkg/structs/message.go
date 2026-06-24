@@ -1,16 +1,8 @@
 package structs
 
-type Source interface {
-	GetValue() []File
-}
-
-func (f File) GetValue() []File {
-	return []File{f}
-}
-
-func (r Repository) GetValue() []File {
-	return r.Files
-}
+// Source identifies what a Message refers to. Both File and Repository satisfy
+// it, and Message.Format() type-switches on the concrete type.
+type Source interface{}
 
 // a struct that defines the message structure, retuned by the failed checks
 type Message struct {

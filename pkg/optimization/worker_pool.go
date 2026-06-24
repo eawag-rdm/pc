@@ -6,7 +6,6 @@ import (
 	"runtime"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/eawag-rdm/pc/pkg/config"
 	"github.com/eawag-rdm/pc/pkg/structs"
@@ -14,13 +13,12 @@ import (
 
 // WorkerPool manages concurrent processing of files
 type WorkerPool struct {
-	numWorkers   int
-	workChan     chan WorkItem
-	resultChan   chan WorkResult
-	wg           sync.WaitGroup
-	ctx          context.Context
-	cancel       context.CancelFunc
-	maxQueueSize int
+	numWorkers int
+	workChan   chan WorkItem
+	resultChan chan WorkResult
+	wg         sync.WaitGroup
+	ctx        context.Context
+	cancel     context.CancelFunc
 }
 
 // WorkItem represents a unit of work to be processed
@@ -33,8 +31,6 @@ type WorkItem struct {
 // WorkResult represents the result of processing a work item
 type WorkResult struct {
 	Messages []structs.Message
-	Error    error
-	Duration time.Duration
 }
 
 // NewWorkerPool creates a new worker pool with the specified number of workers
@@ -46,12 +42,11 @@ func NewWorkerPool(numWorkers int) *WorkerPool {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	return &WorkerPool{
-		numWorkers:   numWorkers,
-		workChan:     make(chan WorkItem, numWorkers*2), // Buffer to prevent blocking
-		resultChan:   make(chan WorkResult, numWorkers*2),
-		ctx:          ctx,
-		cancel:       cancel,
-		maxQueueSize: numWorkers * 4,
+		numWorkers: numWorkers,
+		workChan:   make(chan WorkItem, numWorkers*2), // Buffer to prevent blocking
+		resultChan: make(chan WorkResult, numWorkers*2),
+		ctx:        ctx,
+		cancel:     cancel,
 	}
 }
 
@@ -76,14 +71,11 @@ func (wp *WorkerPool) worker(id int) {
 				return
 			}
 
-			start := time.Now()
 			messages := wp.processWorkItem(work)
-			duration := time.Since(start)
 
 			select {
 			case wp.resultChan <- WorkResult{
 				Messages: messages,
-				Duration: duration,
 			}:
 			case <-wp.ctx.Done():
 				return
@@ -149,28 +141,4 @@ func (wp *WorkerPool) Stop() {
 	close(wp.workChan)
 	wp.wg.Wait()
 	close(wp.resultChan)
-}
-
-// ArchiveWorkerPool specifically handles archive processing. It uses fewer
-// workers than a plain WorkerPool because archive extraction is memory-intensive.
-type ArchiveWorkerPool struct {
-	*WorkerPool
-}
-
-// NewArchiveWorkerPool creates a worker pool optimized for archive processing.
-// memoryLimitMB is accepted for call-site compatibility but is currently not
-// enforced by the pool.
-func NewArchiveWorkerPool(numWorkers int, memoryLimitMB int64) *ArchiveWorkerPool {
-	if numWorkers <= 0 {
-		numWorkers = runtime.NumCPU() / 2 // Use fewer workers for memory-intensive archive work
-		if numWorkers < 1 {
-			numWorkers = 1
-		}
-	}
-
-	basePool := NewWorkerPool(numWorkers)
-
-	return &ArchiveWorkerPool{
-		WorkerPool: basePool,
-	}
 }

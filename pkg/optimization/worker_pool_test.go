@@ -90,20 +90,12 @@ func TestWorkerPool_ProcessWork(t *testing.T) {
 	// Get result
 	select {
 	case result := <-pool.Results():
-		if result.Error != nil {
-			t.Errorf("Unexpected error: %v", result.Error)
-		}
-
 		if len(result.Messages) != 1 {
 			t.Errorf("Expected 1 message, got %d", len(result.Messages))
 		}
 
 		if result.Messages[0].Content != "Test message" {
 			t.Errorf("Expected 'Test message', got '%s'", result.Messages[0].Content)
-		}
-
-		if result.Duration <= 0 {
-			t.Error("Duration should be positive")
 		}
 
 	case <-time.After(5 * time.Second):
@@ -240,33 +232,4 @@ func TestGetFunctionName(t *testing.T) {
 	if name2 == "" {
 		t.Error("Mock check function name should not be empty")
 	}
-}
-
-func TestNewArchiveWorkerPool(t *testing.T) {
-	pool := NewArchiveWorkerPool(2, 100) // 100MB limit
-
-	if pool == nil {
-		t.Fatal("NewArchiveWorkerPool returned nil")
-	}
-
-	if pool.WorkerPool == nil {
-		t.Error("Base WorkerPool not initialized")
-	}
-
-	pool.Stop()
-}
-
-func TestNewArchiveWorkerPool_DefaultWorkers(t *testing.T) {
-	pool := NewArchiveWorkerPool(0, 100)
-
-	expectedWorkers := runtime.NumCPU() / 2
-	if expectedWorkers < 1 {
-		expectedWorkers = 1
-	}
-
-	if pool.numWorkers != expectedWorkers {
-		t.Errorf("Expected %d workers, got %d", expectedWorkers, pool.numWorkers)
-	}
-
-	pool.Stop()
 }

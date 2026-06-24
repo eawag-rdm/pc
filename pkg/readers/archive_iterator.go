@@ -52,11 +52,7 @@ type UnpackedFileIterator struct {
 	sevenZipReader *sevenzip.ReadCloser
 }
 
-func InitArchiveIterator(archivePath string, archiveName string, maxSize int, whitelist []string, blacklist []string) *UnpackedFileIterator {
-	return InitArchiveIteratorWithMemoryLimit(archivePath, archiveName, maxSize, whitelist, blacklist, 100*1024*1024) // Default 100MB
-}
-
-func InitArchiveIteratorWithMemoryLimit(archivePath string, archiveName string, maxSize int, whitelist []string, blacklist []string, maxTotalMemory int64) *UnpackedFileIterator {
+func InitArchiveIterator(archivePath string, archiveName string, maxSize int, whitelist []string, blacklist []string, maxTotalMemory int64) *UnpackedFileIterator {
 	return &UnpackedFileIterator{
 		ArchivePath:        archivePath,
 		ArchiveName:        archiveName,

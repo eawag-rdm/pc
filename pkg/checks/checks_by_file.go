@@ -270,7 +270,7 @@ func IsArchiveFreeOfKeywords(file structs.File, config config.Config) []structs.
 		maxTotalMemory = 100 * 1024 * 1024 // Default to 100MB if not configured
 	}
 
-	archiveIterator := readers.InitArchiveIteratorWithMemoryLimit(file.Path, file.Name, maxFileSize, whitelist, blacklist, maxTotalMemory)
+	archiveIterator := readers.InitArchiveIterator(file.Path, file.Name, maxFileSize, whitelist, blacklist, maxTotalMemory)
 	if !archiveIterator.HasFilesToUnpack() {
 		// Even with no scannable members, the iterator may have skipped members
 		// (too large / over memory budget). Surface those acknowledgements.

@@ -61,13 +61,13 @@ func matchPatterns(list []string, str string) bool {
 // the functiion will return true or false
 func skipFileCheck(config config.Config, fileCheck func(file structs.File, config config.Config) []structs.Message, file structs.File) bool {
 	checkName := getFunctionName(fileCheck)
-	
+
 	// Handle special case: IsArchiveFreeOfKeywords uses IsFreeOfKeywords config
 	configName := checkName
 	if checkName == "IsArchiveFreeOfKeywords" {
 		configName = "IsFreeOfKeywords"
 	}
-	
+
 	if _, exists := config.Tests[configName]; !exists {
 		return false
 	}
@@ -404,12 +404,9 @@ func applyArchiveChecksParallel(cfg config.Config, checks []func(file structs.Fi
 		numWorkers = len(files)
 	}
 
-	// Use ArchiveWorkerPool for memory management
-	memoryLimitMB := cfg.General.MaxTotalArchiveMemory / (1024 * 1024)
-	if memoryLimitMB <= 0 {
-		memoryLimitMB = 100
-	}
-	pool := optimization.NewArchiveWorkerPool(numWorkers, memoryLimitMB)
+	// Archive extraction is memory-intensive, so the caller already uses a
+	// reduced worker count (see numWorkers computation above).
+	pool := optimization.NewWorkerPool(numWorkers)
 	pool.Start()
 	defer pool.Stop()
 

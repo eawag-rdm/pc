@@ -43,12 +43,8 @@ func TestMessage_Format_RepositorySource(t *testing.T) {
 	}
 }
 
-// CustomSource is a test type that implements Source interface
+// CustomSource is a test type used as an unrecognized Message source.
 type CustomSource struct{}
-
-func (cs CustomSource) GetValue() []File {
-	return []File{}
-}
 
 func TestMessage_Format_UnknownSource(t *testing.T) {
 	// Create a custom source that implements the Source interface
@@ -99,66 +95,6 @@ func TestMessage_Format_SpecialCharacters(t *testing.T) {
 
 	if formatted != expected {
 		t.Errorf("Expected '%s', got '%s'", expected, formatted)
-	}
-}
-
-func TestFile_GetValue(t *testing.T) {
-	file := File{
-		Name: "test.txt",
-		Path: "/path/test.txt",
-	}
-
-	result := file.GetValue()
-
-	if len(result) != 1 {
-		t.Fatalf("Expected 1 file, got %d", len(result))
-	}
-
-	if result[0].Name != "test.txt" {
-		t.Errorf("Expected file name 'test.txt', got '%s'", result[0].Name)
-	}
-
-	if result[0].Path != "/path/test.txt" {
-		t.Errorf("Expected file path '/path/test.txt', got '%s'", result[0].Path)
-	}
-}
-
-func TestRepository_GetValue(t *testing.T) {
-	files := []File{
-		{Name: "file1.txt", Path: "/path/file1.txt"},
-		{Name: "file2.txt", Path: "/path/file2.txt"},
-	}
-
-	repo := Repository{
-		Files: files,
-	}
-
-	result := repo.GetValue()
-
-	if len(result) != 2 {
-		t.Fatalf("Expected 2 files, got %d", len(result))
-	}
-
-	for i, file := range files {
-		if result[i].Name != file.Name {
-			t.Errorf("File %d: expected name '%s', got '%s'", i, file.Name, result[i].Name)
-		}
-
-		if result[i].Path != file.Path {
-			t.Errorf("File %d: expected path '%s', got '%s'", i, file.Path, result[i].Path)
-		}
-	}
-}
-
-func TestRepository_GetValue_EmptyFiles(t *testing.T) {
-	repo := Repository{
-		Files: []File{},
-	}
-
-	result := repo.GetValue()
-
-	if len(result) != 0 {
-		t.Errorf("Expected 0 files for empty repository, got %d", len(result))
 	}
 }
 
@@ -215,23 +151,10 @@ func TestMessage_NonSkipDefaults(t *testing.T) {
 }
 
 func TestMessage_SourceInterface(t *testing.T) {
-	// Test that both File and Repository implement Source interface
-	// Compile-time check: these assignments verify interface implementation
+	// Test that both File and Repository are usable as a Message Source.
+	// Compile-time check: these assignments verify interface satisfaction.
 	var _ Source = File{Name: "test.txt"}
 	var _ Source = Repository{Files: []File{}}
-
-	// Runtime check: verify GetValue returns expected values
-	file := File{Name: "test.txt"}
-	files := file.GetValue()
-	if len(files) != 1 || files[0].Name != "test.txt" {
-		t.Errorf("File.GetValue() returned unexpected result")
-	}
-
-	repo := Repository{Files: []File{{Name: "a.txt"}, {Name: "b.txt"}}}
-	repoFiles := repo.GetValue()
-	if len(repoFiles) != 2 {
-		t.Errorf("Repository.GetValue() = %d files, want 2", len(repoFiles))
-	}
 }
 
 func TestMessage_ComplexScenarios(t *testing.T) {
