@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -313,4 +314,93 @@ func (h *Handler) logRateLimited(r *http.Request, scope rateScope, key string, c
 		slog.Int("limit", limit),
 		slog.Int("retry_after", int(retryAfter.Seconds())),
 	)
+}
+
+// Recover is the OUTERMOST middleware (§9). It turns a panic in any downstream
+// handler/middleware into a clean internal_error envelope instead of crashing
+// the process or leaking a stack trace to the client. The panic value and stack
+// are logged (keyed by request_id) but never sent to the client. If the
+// response was already partially written there is nothing safe to do but log;
+// writeError will then be a no-op on the headers it could not set.
+func (h *Handler) Recover(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if rec := recover(); rec != nil {
+				h.logger.LogAttrs(r.Context(), slog.LevelError, "panic_recovered",
+					slog.String("request_id", GetRequestID(r)),
+					slog.String("method", r.Method),
+					slog.String("path", r.URL.Path),
+					slog.Any("panic", rec),
+					slog.String("stack", string(debug.Stack())),
+				)
+				writeError(w, r, CodeInternalError)
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
+}
+
+// CORS applies the cross-origin policy (§9): it allows the configured
+// allowedOrigins (an allow-list of exact origin URLs), the methods GET/POST/
+// OPTIONS, and the Authorization (plus Content-Type) request headers. A request
+// whose Origin is in the allow-list receives the matching
+// Access-Control-Allow-Origin (echoing the request's origin, never "*", so
+// credentials are permitted) and Access-Control-Allow-Credentials: true. An
+// OPTIONS preflight short-circuits with 204 and the CORS headers. A request from
+// an unlisted origin is NOT blocked here (CORS is a browser-enforced policy); it
+// simply receives no allow headers, so the browser blocks the cross-origin read.
+func (h *Handler) CORS(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		if origin != "" && h.originAllowed(origin) {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			// Vary on Origin so caches don't serve one origin's CORS headers to
+			// another.
+			w.Header().Add("Vary", "Origin")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+			w.Header().Set("Access-Control-Max-Age", "600")
+		}
+
+		// Preflight: answer OPTIONS here without invoking the route handler.
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+// originAllowed reports whether origin is in the configured CORS allow-list.
+func (h *Handler) originAllowed(origin string) bool {
+	for _, allowed := range h.allowedOrigins {
+		if allowed == origin {
+			return true
+		}
+	}
+	return false
+}
+
+// Draining rejects new requests with server_restarting (503) once graceful
+// shutdown has begun (§9). It wraps the application routes so that, while the
+// server drains in-flight analyses, freshly arriving requests get a clean
+// envelope instead of being accepted into a shutting-down server. In-flight
+// requests are unaffected; they continue under the shutdown drain timeout.
+func (h *Handler) Draining(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if h.draining.Load() {
+			writeError(w, r, CodeServerRestarting)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// BeginDraining marks the server as draining so the Draining middleware starts
+// rejecting new requests with server_restarting (§9). Called from the graceful
+// shutdown path before httpServer.Shutdown.
+func (h *Handler) BeginDraining() {
+	h.draining.Store(true)
 }

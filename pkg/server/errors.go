@@ -17,6 +17,7 @@ const (
 	CodeRateLimited        = "rate_limited"
 	CodeServiceBusy        = "service_busy"
 	CodeServiceNotReady    = "service_not_ready"
+	CodeServerRestarting   = "server_restarting"
 	CodeCKANUnavailable    = "ckan_unavailable"
 	CodeResourceUnreadable = "resource_unreadable"
 	CodeInternalError      = "internal_error"
@@ -42,6 +43,7 @@ var errorCatalogue = map[string]catalogueEntry{
 	CodeRateLimited:        {http.StatusTooManyRequests, "You've reached the limit of analyses for this hour. Please try again later."},
 	CodeServiceBusy:        {http.StatusServiceUnavailable, "The analysis service is busy right now. Please try again in a minute. If this keeps happening, contact us."},
 	CodeServiceNotReady:    {http.StatusServiceUnavailable, "The service isn't ready yet (the data repository or storage is unavailable). Please try again shortly."},
+	CodeServerRestarting:   {http.StatusServiceUnavailable, "The service is restarting. Please try again in a moment."},
 	CodeCKANUnavailable:    {http.StatusBadGateway, "We can't reach the data repository right now. This is usually temporary — please try again shortly."},
 	CodeResourceUnreadable: {http.StatusInternalServerError, "A file in this dataset couldn't be read from storage."},
 	CodeInternalError:      {http.StatusInternalServerError, "Something went wrong on our side. Please quote reference {request_id} if you contact us."},
@@ -87,6 +89,16 @@ func writeErrorStatus(w http.ResponseWriter, r *http.Request, code string, statu
 	}
 
 	requestID := GetRequestID(r)
+	if requestID == "" {
+		// The Recover middleware is the OUTERMOST middleware (spec §9), so its
+		// deferred handler still holds the ORIGINAL request whose context predates
+		// RequestContext and therefore carries no request_id. RequestContext does,
+		// however, set the X-Request-Id response header on the shared
+		// ResponseWriter before calling downstream. Fall back to that header so the
+		// recovered internal_error envelope still cites a valid id (spec §3:
+		// request_id present and equals X-Request-Id).
+		requestID = w.Header().Get("X-Request-Id")
+	}
 
 	message := entry.Message
 	if code == CodeInternalError {

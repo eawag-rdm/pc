@@ -149,24 +149,33 @@ pc-server -config ./pc.toml -addr :8080
 **Flags:**
 - `-config` - Path to PC config file (required, or auto-detected from pc.toml)
 - `-addr` - Server listen address (default: `:8080`)
-- `-ckan-url` - Override CKAN base URL from config
 - `-help` - Show usage information
+
+The CKAN base URL is **not** a flag or a request field. It is read server-side
+from `[collector.CkanCollector.attrs] url` (the single source of truth). All
+other server tunables live in the `[server]` section of `pc.toml` (see below).
 
 ### API Endpoints
 
-#### Health Check
+#### Liveness
 ```
 GET /health
 ```
+A cheap, static `200` with no upstream I/O. Use it for liveness probes.
 
-Response:
 ```json
-{
-  "status": "ok",
-  "version": "1.0.0",
-  "timestamp": "2024-01-14T10:30:00Z"
-}
+{ "status": "ok", "version": "1.0.0", "timestamp": "2024-01-14T10:30:00Z" }
 ```
+
+#### Readiness
+```
+GET /ready
+```
+Verifies the CKAN Action API is reachable (result cached ~5s) **and** the
+storage mount is readable. Healthy → `200`; not ready → `503` with the
+`service_not_ready` error envelope. Use it for readiness probes / load-balancer
+health checks. Both `/health` and `/ready` are exempt from rate limiting and the
+concurrency semaphore.
 
 #### Analyze Package
 ```
@@ -174,22 +183,24 @@ POST /api/v1/analyze
 ```
 
 **Headers:**
-- `Authorization: Bearer <your-ckan-api-token>` (required)
+- `Authorization: Bearer <your-ckan-api-token>` (OPTIONAL — omit for public packages)
 - `Content-Type: application/json`
 
 **Request Body:**
 ```json
-{
-  "package_id": "my-ckan-package-id",
-  "ckan_url": "https://ckan.example.com"  // optional, overrides server config
-}
+{ "package_id": "my-ckan-package" }
 ```
 
-**Response:** Same JSON structure as `pc --json` output.
+There is no `ckan_url` field — it was removed as an SSRF / token-exfiltration
+vector. **Response:** the same JSON structure as `pc --json`, plus a
+`request_id` field (also returned in the `X-Request-Id` response header).
 
 ### Authentication
 
-The server uses pass-through CKAN token authentication. When you send your CKAN API token, the server verifies you have read access to the requested package by calling CKAN's `package_show` API. This ensures users can only check packages they have permission to view.
+The token is **optional**. If present, the server forwards it (raw) to CKAN's
+`package_show` so private packages you can read are analyzed; if absent, only
+public packages are accessible. A present-but-malformed `Authorization` header
+is rejected with `invalid_request` (400).
 
 ### Example Usage
 
@@ -197,10 +208,16 @@ The server uses pass-through CKAN token authentication. When you send your CKAN 
 # Start the server
 pc-server -config ./pc.toml
 
-# Health check
+# Liveness / readiness
 curl http://localhost:8080/health
+curl http://localhost:8080/ready
 
-# Analyze a package (use your CKAN API token)
+# Analyze a public package (no token)
+curl -X POST http://localhost:8080/api/v1/analyze \
+  -H "Content-Type: application/json" \
+  -d '{"package_id": "my-package"}'
+
+# Analyze a private package (with your CKAN API token)
 curl -X POST http://localhost:8080/api/v1/analyze \
   -H "Authorization: Bearer <your-ckan-api-token>" \
   -H "Content-Type: application/json" \
@@ -209,20 +226,52 @@ curl -X POST http://localhost:8080/api/v1/analyze \
 
 ### Error Responses
 
-| Status | Code | Description |
-|--------|------|-------------|
-| 400 | `invalid_json` | Malformed JSON in request body |
-| 400 | `missing_package_id` | No package_id provided |
-| 401 | `missing_token` | No Authorization header |
-| 401 | `invalid_token_format` | Invalid Bearer token format |
-| 403 | `access_denied` | No access to the requested package |
-| 404 | `package_not_found` | Package does not exist |
-| 500 | `no_ckan_url` | CKAN URL not configured |
-| 500 | `internal_error` | Server-side error during check |
+Every failure uses one envelope:
+
+```json
+{
+  "error": {
+    "code": "package_not_found",
+    "message": "<non-technical, English message>",
+    "contact": "If you can't resolve this yourself, please contact rdm@eawag.ch.",
+    "request_id": "<ULID; also in the X-Request-Id header>"
+  }
+}
+```
+
+| Status | Code | When |
+|--------|------|------|
+| 400 | `missing_package` | No `package_id` provided |
+| 400 | `invalid_package_name` | `package_id` violates CKAN's name grammar |
+| 400 | `invalid_request` | Malformed body or malformed `Authorization` header |
+| 401 | `invalid_token` | CKAN rejected the token |
+| 403 | `access_denied` | Token lacks permission for the package |
+| 404 | `package_not_found` | No such package (or private + unauthorized) |
+| 429 | `rate_limited` | Hourly request budget exceeded (with `Retry-After`) |
+| 503 | `service_busy` | Concurrency limit reached (no queueing) |
+| 503 | `service_not_ready` | CKAN or storage mount unavailable (`/ready`) |
+| 503 | `server_restarting` | Server is draining during a graceful shutdown |
+| 502 | `ckan_unavailable` | CKAN unreachable / 5xx (504 on request timeout) |
+| 500 | `resource_unreadable` | An upload file couldn't be read from storage |
+| 500 | `internal_error` | Unexpected server-side error (cites `request_id`) |
+
+### Server configuration (`[server]`)
+
+See the `[server]` section in `pc.toml` for the full, commented list. Key knobs:
+`listenAddress`, `trustProxyHeaders` / `trustedProxies` (proxy-aware client IP),
+`allowedOrigins` (CORS allow-list), `perIPRequestsPerHour` /
+`globalRequestsPerHour` / `burstFactor` (fixed-window rate limiting),
+`maxConcurrentAnalyses`, `maxTrackedRateKeys`, `contactMessage`, `logClientIP`,
+`requestTimeoutSeconds`.
 
 ### Production Deployment
 
-The server only supports HTTP. For production use with HTTPS, deploy behind a reverse proxy like nginx:
+The server speaks plain HTTP and is designed to run behind nginx with HTTPS
+termination. See **[docs/deploy.md](docs/deploy.md)** for the full deployment
+guide: Docker log retention, the storage-mount precondition, nginx
+`trustedProxies` guidance, and graceful-shutdown behaviour.
+
+Minimal nginx reverse proxy:
 
 ```nginx
 server {
@@ -235,12 +284,10 @@ server {
     location / {
         proxy_pass http://127.0.0.1:8080;
         proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Real-IP $remote_addr;          # rate-limit key source
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
-
-        # Longer timeout for package analysis
-        proxy_read_timeout 300s;
+        proxy_read_timeout 300s;                          # ≥ requestTimeoutSeconds
     }
 }
 ```

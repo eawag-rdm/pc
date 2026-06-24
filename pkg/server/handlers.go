@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"regexp"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/eawag-rdm/pc/pkg/collectors"
@@ -64,6 +65,19 @@ type Handler struct {
 	// maxConcurrentAnalyses tokens. A nil channel disables the gate (used by
 	// handler-isolation tests).
 	sem chan struct{}
+
+	// readiness computes and caches the /ready verdict (CKAN reachable AND
+	// storage mount readable), refreshed at most every readinessTTL (§1).
+	readiness *readinessChecker
+
+	// allowedOrigins is the CORS allow-list of origin URLs (§9). Empty means CORS
+	// is effectively disabled (no Access-Control-Allow-Origin is emitted).
+	allowedOrigins []string
+
+	// draining is set (atomically) when graceful shutdown begins. While set, new
+	// requests are rejected with server_restarting (503) so in-flight analyses
+	// can drain (§9).
+	draining atomic.Bool
 }
 
 // NewHandler creates a new handler with the given configuration. The slog
@@ -73,12 +87,14 @@ func NewHandler(pcConfig *config.Config, serverCfg Config, logger *slog.Logger) 
 	logClientIP := true
 	var limiter *rateLimiter
 	var sem chan struct{}
+	var allowedOrigins []string
 	if pcConfig != nil && pcConfig.Server != nil {
 		s := pcConfig.Server
 		if s.ContactMessage != "" {
 			contact = s.ContactMessage
 		}
 		logClientIP = s.LogClientIP
+		allowedOrigins = s.AllowedOrigins
 
 		limiter = newRateLimiter(
 			s.PerIPRequestsPerHour,
@@ -93,15 +109,18 @@ func NewHandler(pcConfig *config.Config, serverCfg Config, logger *slog.Logger) 
 		}
 	}
 
-	return &Handler{
-		pcConfig:    pcConfig,
-		serverCfg:   serverCfg,
-		logger:      logger,
-		contactMsg:  contact,
-		logClientIP: logClientIP,
-		limiter:     limiter,
-		sem:         sem,
+	h := &Handler{
+		pcConfig:       pcConfig,
+		serverCfg:      serverCfg,
+		logger:         logger,
+		contactMsg:     contact,
+		logClientIP:    logClientIP,
+		limiter:        limiter,
+		sem:            sem,
+		allowedOrigins: allowedOrigins,
 	}
+	h.readiness = newReadinessChecker(h)
+	return h
 }
 
 // DefaultContactMessage is used when no [server] contactMessage is configured.
@@ -121,10 +140,28 @@ type HealthResponse struct {
 	Timestamp string `json:"timestamp"`
 }
 
-// Health handles GET /health
+// Health handles GET /health. It is a liveness probe: a cheap, static 200 with
+// no upstream I/O (§1). It is exempt from the rate limiter and concurrency
+// semaphore so load balancers / Docker healthchecks can poll it freely.
 func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, HealthResponse{
 		Status:    "ok",
+		Version:   "1.0.0",
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+	})
+}
+
+// Ready handles GET /ready. It is a readiness probe: it verifies the CKAN API
+// is reachable (cached ~5s) AND the storage mount is readable (§1). Healthy ->
+// 200; not ready -> 503 with the service_not_ready envelope. Like /health it is
+// exempt from the rate limiter and concurrency semaphore.
+func (h *Handler) Ready(w http.ResponseWriter, r *http.Request) {
+	if h.readiness == nil || !h.readiness.isReady() {
+		writeError(w, r, CodeServiceNotReady)
+		return
+	}
+	respondJSON(w, http.StatusOK, HealthResponse{
+		Status:    "ready",
 		Version:   "1.0.0",
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
 	})

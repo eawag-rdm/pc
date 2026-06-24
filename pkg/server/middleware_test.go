@@ -204,3 +204,168 @@ func (s *syncWriter) Write(p []byte) (int, error) {
 	defer s.mu.Unlock()
 	return s.w.Write(p)
 }
+
+// corsHandler builds a handler whose CORS allow-list contains origin.
+func corsHandler(origin string) *Handler {
+	return NewHandler(&config.Config{
+		Server: &config.ServerConfig{AllowedOrigins: []string{origin}},
+	}, Config{}, discardLogger())
+}
+
+// TestCORS_PreflightAllowedOrigin asserts an OPTIONS preflight from an allowed
+// origin returns that origin, allows the Authorization header, and the GET/POST/
+// OPTIONS methods, and short-circuits (the inner handler is NOT invoked).
+func TestCORS_PreflightAllowedOrigin(t *testing.T) {
+	const origin = "https://frontend.example.org"
+	h := corsHandler(origin)
+
+	called := false
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	})
+
+	req := httptest.NewRequest("OPTIONS", "/api/v1/analyze", nil)
+	req.Header.Set("Origin", origin)
+	req.Header.Set("Access-Control-Request-Method", "POST")
+	req.Header.Set("Access-Control-Request-Headers", "Authorization")
+	rr := httptest.NewRecorder()
+
+	h.CORS(inner).ServeHTTP(rr, req)
+
+	if called {
+		t.Error("preflight must short-circuit; inner handler should not run")
+	}
+	if rr.Code != http.StatusNoContent {
+		t.Errorf("expected 204 for preflight, got %d", rr.Code)
+	}
+	if got := rr.Header().Get("Access-Control-Allow-Origin"); got != origin {
+		t.Errorf("Access-Control-Allow-Origin = %q, want %q", got, origin)
+	}
+	if got := rr.Header().Get("Access-Control-Allow-Headers"); !strings.Contains(got, "Authorization") {
+		t.Errorf("Allow-Headers %q must include Authorization", got)
+	}
+	methods := rr.Header().Get("Access-Control-Allow-Methods")
+	for _, m := range []string{"GET", "POST", "OPTIONS"} {
+		if !strings.Contains(methods, m) {
+			t.Errorf("Allow-Methods %q must include %s", methods, m)
+		}
+	}
+	if got := rr.Header().Get("Access-Control-Allow-Credentials"); got != "true" {
+		t.Errorf("Allow-Credentials = %q, want true", got)
+	}
+}
+
+// TestCORS_DisallowedOrigin asserts a request from an unlisted origin receives
+// no allow-origin header (the browser then blocks the cross-origin read).
+func TestCORS_DisallowedOrigin(t *testing.T) {
+	h := corsHandler("https://frontend.example.org")
+
+	req := httptest.NewRequest("POST", "/api/v1/analyze", nil)
+	req.Header.Set("Origin", "https://evil.example.com")
+	rr := httptest.NewRecorder()
+
+	h.CORS(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})).ServeHTTP(rr, req)
+
+	if got := rr.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Errorf("unlisted origin must not get an allow-origin header, got %q", got)
+	}
+	// A non-preflight request still reaches the handler.
+	if rr.Code != http.StatusOK {
+		t.Errorf("non-preflight request should pass through, got %d", rr.Code)
+	}
+}
+
+// TestRecover_PanicBecomesInternalError asserts a panic in a downstream handler
+// is turned into a clean internal_error envelope (500) by the Recover
+// middleware, and the process does not crash. It exercises the REAL production
+// chain order Recover(RequestContext(panicHandler)) (spec §9) rather than
+// injecting a request_id by hand: Recover is the outermost middleware, so its
+// deferred handler holds the original request whose context predates
+// RequestContext. The envelope must still cite the request_id (taken from the
+// X-Request-Id header RequestContext sets) and it must equal the header value
+// (spec §3).
+func TestRecover_PanicBecomesInternalError(t *testing.T) {
+	h := NewHandler(&config.Config{Server: &config.ServerConfig{}}, Config{}, discardLogger())
+
+	boom := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		panic("kaboom")
+	})
+
+	// Real chain order: Recover wraps RequestContext (which generates the id),
+	// matching production wiring in server.New.
+	chain := h.Recover(h.RequestContext(boom))
+
+	req := httptest.NewRequest("POST", "/api/v1/analyze", nil)
+	rr := httptest.NewRecorder()
+
+	chain.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 after recovered panic, got %d", rr.Code)
+	}
+	resp := decodeEnvelope(t, rr)
+	if resp.Error.Code != CodeInternalError {
+		t.Errorf("expected %q, got %q", CodeInternalError, resp.Error.Code)
+	}
+
+	headerID := rr.Header().Get("X-Request-Id")
+	if headerID == "" {
+		t.Fatal("expected a non-empty X-Request-Id header")
+	}
+	if resp.Error.RequestID == "" {
+		t.Error("internal_error envelope must carry a non-empty request_id")
+	}
+	if resp.Error.RequestID != headerID {
+		t.Errorf("envelope request_id %q must equal X-Request-Id header %q", resp.Error.RequestID, headerID)
+	}
+	// internal_error cites the request_id in its message and must not leave the
+	// reference blank.
+	if !strings.Contains(resp.Error.Message, headerID) {
+		t.Errorf("internal_error message must quote the request_id %q, got %q", headerID, resp.Error.Message)
+	}
+}
+
+// TestDraining_RejectsNewRequests asserts that once BeginDraining is called, the
+// Draining middleware rejects new requests with server_restarting (503) and the
+// inner handler is not invoked.
+func TestDraining_RejectsNewRequests(t *testing.T) {
+	h := NewHandler(&config.Config{Server: &config.ServerConfig{}}, Config{}, discardLogger())
+
+	called := false
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	})
+	guarded := h.Draining(inner)
+
+	// Before draining: request passes through.
+	req := httptest.NewRequest("POST", "/api/v1/analyze", nil)
+	req = withRequestContext(req, "REQ-OK", DefaultContactMessage)
+	rr := httptest.NewRecorder()
+	guarded.ServeHTTP(rr, req)
+	if !called || rr.Code != http.StatusOK {
+		t.Fatalf("pre-drain request should pass: called=%v code=%d", called, rr.Code)
+	}
+
+	// After BeginDraining: rejected with server_restarting.
+	h.BeginDraining()
+	called = false
+	req = httptest.NewRequest("POST", "/api/v1/analyze", nil)
+	req = withRequestContext(req, "REQ-DRAIN", DefaultContactMessage)
+	rr = httptest.NewRecorder()
+	guarded.ServeHTTP(rr, req)
+
+	if called {
+		t.Error("draining must not invoke the inner handler")
+	}
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 while draining, got %d", rr.Code)
+	}
+	resp := decodeEnvelope(t, rr)
+	if resp.Error.Code != CodeServerRestarting {
+		t.Errorf("expected %q, got %q", CodeServerRestarting, resp.Error.Code)
+	}
+}

@@ -47,31 +47,43 @@ func New(cfg Config) (*Server, error) {
 	// Set up routes
 	mux := http.NewServeMux()
 
-	// Health endpoint (no auth required, exempt from rate limiting and the
-	// concurrency semaphore, §1/§4).
+	// Liveness: cheap static 200, no auth, exempt from rate limiting and the
+	// concurrency semaphore (§1/§4).
 	mux.HandleFunc("GET /health", handler.Health)
 
-	// Analyze endpoint. The rate-limit and concurrency gates wrap THIS route
-	// only (§4/§9): outer -> inner the analyze chain is
-	// rate-limit(global) -> rate-limit(per-IP) -> concurrency-semaphore ->
-	// token extraction (optional, see ExtractToken) -> handler. /health (and a
-	// future /ready) bypass it entirely.
+	// Readiness: CKAN reachable (cached ~5s) AND storage mount readable (§1).
+	// Also exempt from the limiter and semaphore so health-check polling is free.
+	mux.HandleFunc("GET /ready", handler.Ready)
+
+	// Analyze endpoint. The draining, rate-limit and concurrency gates wrap THIS
+	// route only (§4/§9): outer -> inner the analyze chain is
+	// draining -> rate-limit(global) -> rate-limit(per-IP) ->
+	// concurrency-semaphore -> token extraction (optional) -> handler. /health
+	// and /ready bypass it entirely (a draining server must still answer
+	// healthchecks).
 	analyze := http.Handler(ExtractToken(handler.Analyze))
 	analyze = handler.Concurrency(analyze)
 	analyze = handler.RateLimitPerIP(analyze)
 	analyze = handler.RateLimitGlobal(analyze)
+	analyze = handler.Draining(analyze)
 	mux.Handle("POST /api/v1/analyze", analyze)
 
-	// Middleware chain (outer -> inner): request_id -> access-log -> routes.
-	loggedMux := handler.RequestContext(handler.AccessLog(mux))
+	// Full middleware chain (outer -> inner, §9):
+	//   recover -> request_id -> access-log -> CORS -> routes
+	// The per-analyze gates (draining/limiters/semaphore) are applied to the
+	// analyze route above, inside the mux.
+	chain := handler.RequestContext(handler.AccessLog(handler.CORS(mux)))
+	chain = handler.Recover(chain)
 
 	return &Server{
 		httpServer: &http.Server{
-			Addr:         cfg.Address,
-			Handler:      loggedMux,
-			ReadTimeout:  30 * time.Second,
-			WriteTimeout: 300 * time.Second, // Long timeout for analysis
-			IdleTimeout:  120 * time.Second,
+			Addr:              cfg.Address,
+			Handler:           chain,
+			ReadTimeout:       30 * time.Second,
+			ReadHeaderTimeout: 10 * time.Second,  // slowloris guard (§9)
+			WriteTimeout:      300 * time.Second, // long timeout for analysis
+			IdleTimeout:       120 * time.Second,
+			MaxHeaderBytes:    1 << 20, // 1 MiB header cap (§9)
 		},
 		pcConfig:  pcConfig,
 		serverCfg: cfg,
@@ -92,7 +104,12 @@ func (s *Server) ListenAndServe() error {
 	return s.httpServer.ListenAndServe()
 }
 
-// Shutdown gracefully shuts down the server
+// Shutdown gracefully shuts down the server (§9). It first flips the draining
+// flag so newly arriving /analyze requests are rejected with server_restarting
+// (503), then calls http.Server.Shutdown, which stops accepting new connections
+// and waits for in-flight requests to finish (bounded by the caller's ctx,
+// which should allow at least the analysis timeout to drain).
 func (s *Server) Shutdown(ctx context.Context) error {
+	s.handler.BeginDraining()
 	return s.httpServer.Shutdown(ctx)
 }

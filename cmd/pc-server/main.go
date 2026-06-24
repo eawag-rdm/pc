@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -47,8 +49,11 @@ func main() {
 		log.Fatalf("Failed to create server: %v", err)
 	}
 
-	// Set up graceful shutdown
-	done := make(chan bool, 1)
+	// Set up graceful shutdown (§9). A SIGINT/SIGTERM triggers Shutdown, which
+	// flips the draining flag (new requests get server_restarting) and drains
+	// in-flight analyses. The drain timeout is generously larger than the
+	// analysis request timeout so a running analysis can finish.
+	shutdownComplete := make(chan struct{})
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
@@ -56,23 +61,35 @@ func main() {
 		<-quit
 		log.Println("Server is shutting down...")
 
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), shutdownDrainTimeout)
 		defer cancel()
 
 		if err := srv.Shutdown(ctx); err != nil {
-			log.Fatalf("Could not gracefully shutdown the server: %v", err)
+			log.Printf("Could not gracefully shutdown the server: %v", err)
 		}
-		close(done)
+		close(shutdownComplete)
 	}()
 
-	// Start server
-	if err := srv.ListenAndServe(); err != nil {
-		log.Printf("Server stopped: %v", err)
+	// Start the server. ListenAndServe returns http.ErrServerClosed only on a
+	// graceful Shutdown; any OTHER error (e.g. a failed bind because the port is
+	// already in use or the address is invalid) is fatal and must exit non-zero
+	// instead of blocking on the shutdown channel forever (the previous bug).
+	err = srv.ListenAndServe()
+	if err != nil && !errors.Is(err, http.ErrServerClosed) {
+		log.Fatalf("Server failed to start: %v", err)
 	}
 
-	<-done
+	// Graceful path: ListenAndServe returned ErrServerClosed because Shutdown was
+	// called. Wait for the drain to finish before exiting.
+	<-shutdownComplete
 	log.Println("Server stopped")
 }
+
+// shutdownDrainTimeout bounds how long graceful shutdown waits for in-flight
+// analyses to finish. It is intentionally larger than the default analysis
+// request timeout (300s, spec §2) so a running analysis can complete during a
+// restart.
+const shutdownDrainTimeout = 330 * time.Second
 
 func printUsage() {
 	log.Println("PC Server - REST API for Package Checker")
@@ -91,7 +108,8 @@ func printUsage() {
 	log.Println("  pc-server -addr :9000 -config /etc/pc/pc.toml")
 	log.Println("")
 	log.Println("API Endpoints:")
-	log.Println("  GET  /health              - Health check")
+	log.Println("  GET  /health              - Liveness check (cheap static 200)")
+	log.Println("  GET  /ready               - Readiness check (CKAN + storage)")
 	log.Println("  POST /api/v1/analyze      - Analyze a CKAN package")
 	log.Println("")
 	log.Println("Authentication:")
