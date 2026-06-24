@@ -43,7 +43,9 @@ func Request(url, ckanToken string, verifyTLS bool) (string, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		fmt.Println("Request URL:", url, "token:", ckanToken)
+		// Log a non-secret diagnostic: status code only. Never log the URL (it
+		// carries the package id query) or the token (exfiltration vector).
+		output.GlobalLogger.Warning("CKAN request failed with status code %d", resp.StatusCode)
 		return "", fmt.Errorf("request failed with status code %d. This might indicate the package is private and needs to be set to public", resp.StatusCode)
 	}
 
@@ -70,28 +72,99 @@ func resourceIsFile(resource map[string]interface{}) bool {
 	return false
 }
 
+// isEmptyField reports whether a CKAN resource field is "empty": the key is
+// absent, the value is JSON null, or it is an empty string.
+func isEmptyField(resource map[string]interface{}, key string) bool {
+	v, ok := resource[key]
+	if !ok || v == nil {
+		return true
+	}
+	s, ok := v.(string)
+	return ok && s == ""
+}
+
+// resourceDisplayLabel returns a human-readable identifier for a resource,
+// preferring its name, then its id, for use in error messages.
+func resourceDisplayLabel(resource map[string]interface{}) string {
+	if name, ok := resource["name"].(string); ok && name != "" {
+		return name
+	}
+	if id, ok := resource["id"].(string); ok && id != "" {
+		return id
+	}
+	return "<unknown>"
+}
+
+// packageLabel returns a human-readable identifier for the package, preferring
+// its name (the slug the user requested), then its title.
+func packageLabel(result map[string]interface{}) string {
+	if name, ok := result["name"].(string); ok && name != "" {
+		return name
+	}
+	if title, ok := result["title"].(string); ok && title != "" {
+		return title
+	}
+	return "<unknown>"
+}
+
 // Expects parsed JSON and returns all resources of the CKAN package
 func GetCKANResources(jsonMap map[string]interface{}) ([]structs.File, error) {
 	files := []structs.File{}
-	if result, ok := jsonMap["result"].(map[string]interface{}); ok {
-		if resources, ok := result["resources"].([]interface{}); ok {
-			for _, resource := range resources {
-				if res, ok := resource.(map[string]interface{}); ok {
-					if resourceIsFile(res) {
-						resourceName := res["name"].(string)
-						// Use ToFileWithDisplay to preserve CKAN resource name as DisplayName
-						file := structs.ToFileWithDisplay(
-							res["url"].(string),  // path (will be converted to local path later)
-							resourceName,          // name
-							resourceName,          // displayName (CKAN resource name)
-							int64(res["size"].(float64)),
-							"",
-							"", // archiveName (not in archive)
-						)
-						files = append(files, file)
-					}
-				}
+	result, ok := jsonMap["result"].(map[string]interface{})
+	if !ok {
+		return files, nil
+	}
+	pkgName := packageLabel(result)
+
+	resources, ok := result["resources"].([]interface{})
+	if !ok {
+		return files, nil
+	}
+
+	for _, resource := range resources {
+		res, ok := resource.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		// A resource missing BOTH url_type and url is malformed: stop collection
+		// and tell the user exactly which resource so they can fix it.
+		if isEmptyField(res, "url_type") && isEmptyField(res, "url") {
+			//lint:ignore ST1005 user-facing message shown verbatim to the end user
+			return nil, fmt.Errorf(
+				"The resource '%s' in package '%s' is malformed and can not be processed. "+
+					"The url_type is missing. Files should have a URL type 'upload', "+
+					"external links should carry a URL, and DataStore resources use 'datastore'. "+
+					"Something must have gone wrong creating this resource. Please recreate/reupload it.",
+				resourceDisplayLabel(res), pkgName,
+			)
+		}
+
+		if resourceIsFile(res) {
+			// An "upload" resource must carry name, url and size. Guard the type
+			// assertions so malformed uploads return a clean error instead of panicking.
+			name, okName := res["name"].(string)
+			resURL, okURL := res["url"].(string)
+			size, okSize := res["size"].(float64)
+			if !okName || !okURL || !okSize {
+				//lint:ignore ST1005 user-facing message shown verbatim to the end user
+				return nil, fmt.Errorf(
+					"The resource '%s' in package '%s' is an upload but is missing required "+
+						"metadata (name, url or size) and can not be processed. "+
+						"Something must have gone wrong creating this resource. Please recreate/reupload it.",
+					resourceDisplayLabel(res), pkgName,
+				)
 			}
+			// Use ToFileWithDisplay to preserve CKAN resource name as DisplayName
+			file := structs.ToFileWithDisplay(
+				resURL, // path (will be converted to local path later)
+				name,   // name
+				name,   // displayName (CKAN resource name)
+				int64(size),
+				"",
+				"", // archiveName (not in archive)
+			)
+			files = append(files, file)
 		}
 	}
 	return files, nil
@@ -148,8 +221,15 @@ func CkanCollector(package_id string, config config.Config) ([]structs.File, err
 	}
 
 	url := fmt.Sprintf("%s/api/3/action/package_show?id=%s", urlAttr, package_id)
-	token := config.Collectors[collectorName].Attrs["token"].(string)
-	verify := config.Collectors[collectorName].Attrs["verify"].(bool)
+
+	token, ok := config.Collectors[collectorName].Attrs["token"].(string)
+	if !ok {
+		return nil, fmt.Errorf("token attribute not found or not a string")
+	}
+	verify, ok := config.Collectors[collectorName].Attrs["verify"].(bool)
+	if !ok {
+		return nil, fmt.Errorf("verify attribute not found or not a bool")
+	}
 
 	jsonStr, err := Request(url, token, verify)
 	if err != nil {
@@ -165,7 +245,10 @@ func CkanCollector(package_id string, config config.Config) ([]structs.File, err
 		return nil, err
 	}
 
-	localStoragePath := config.Collectors[collectorName].Attrs["ckan_storage_path"].(string)
+	localStoragePath, ok := config.Collectors[collectorName].Attrs["ckan_storage_path"].(string)
+	if !ok {
+		return nil, fmt.Errorf("ckan_storage_path attribute not found or not a string")
+	}
 	// Iterate files and apply getLocalResourcePath to each file to change the path in place
 	for i, file := range files {
 		files[i].Path = getLocalResourcePath(file.Path, localStoragePath)
