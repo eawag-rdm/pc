@@ -243,7 +243,15 @@ func IsArchiveFreeOfKeywords(file structs.File, config config.Config) []structs.
 	}
 
 	if fileInfo.Size() > config.General.MaxContentScanFileSize {
-		// Archive too large - already logged by IsFreeOfKeywords, skip silently here
+		// Archive too large for content scanning. Emit a skip acknowledgement so every
+		// output (CLI plain, TUI, JSON) surfaces that the archive was not scanned.
+		reason := fmt.Sprintf("Skipped content scan of archive: file size (%d bytes) exceeds maximum (%d bytes).", fileInfo.Size(), config.General.MaxContentScanFileSize)
+		messages = append(messages, structs.Message{
+			Content: reason,
+			Source:  file,
+			Skipped: true,
+			Reason:  reason,
+		})
 		return messages
 	}
 
@@ -264,6 +272,9 @@ func IsArchiveFreeOfKeywords(file structs.File, config config.Config) []structs.
 
 	archiveIterator := readers.InitArchiveIteratorWithMemoryLimit(file.Path, file.Name, maxFileSize, whitelist, blacklist, maxTotalMemory)
 	if !archiveIterator.HasFilesToUnpack() {
+		// Even with no scannable members, the iterator may have skipped members
+		// (too large / over memory budget). Surface those acknowledgements.
+		messages = append(messages, archiveIterator.SkipMessages()...)
 		return messages
 	}
 
@@ -283,11 +294,11 @@ func IsArchiveFreeOfKeywords(file structs.File, config config.Config) []structs.
 			if foundKeywordsStr != "" {
 				// Create a File struct for the archived file with proper archive reference
 				archivedFile := structs.ToFileWithDisplay(
-					file.Path,         // path stays as archive path
-					fileName,          // name is the path within archive
-					fileName,          // display name
-					int64(fileSize),   // size
-					"",                // suffix (auto-detected)
+					file.Path,          // path stays as archive path
+					fileName,           // name is the path within archive
+					fileName,           // display name
+					int64(fileSize),    // size
+					"",                 // suffix (auto-detected)
 					archiveDisplayName, // archive name reference
 				)
 				messages = append(messages, structs.Message{
@@ -298,6 +309,9 @@ func IsArchiveFreeOfKeywords(file structs.File, config config.Config) []structs.
 		}
 
 	}
+
+	// Thread out skip acknowledgements collected while iterating archive members.
+	messages = append(messages, archiveIterator.SkipMessages()...)
 	return messages
 }
 
@@ -313,10 +327,17 @@ func IsFreeOfKeywords(file structs.File, config config.Config) []structs.Message
 		return messages
 	}
 
-	// Check if file exceeds the configured maximum size for content scanning
+	// Check if file exceeds the configured maximum size for content scanning.
+	// Emit a skip acknowledgement Message so every output (CLI plain, TUI, JSON)
+	// surfaces that the file's content was not scanned.
 	if fileInfo.Size() > config.General.MaxContentScanFileSize {
-		output.GlobalLogger.Info("Skipping content scan of file: '%s' (path: '%s'). File size (%d bytes) exceeds maximum (%d bytes).",
-			file.Name, file.Path, fileInfo.Size(), config.General.MaxContentScanFileSize)
+		reason := fmt.Sprintf("Skipped content scan of file: file size (%d bytes) exceeds maximum (%d bytes).", fileInfo.Size(), config.General.MaxContentScanFileSize)
+		messages = append(messages, structs.Message{
+			Content: reason,
+			Source:  file,
+			Skipped: true,
+			Reason:  reason,
+		})
 		return messages
 	}
 
@@ -366,7 +387,10 @@ func IsFreeOfKeywords(file structs.File, config config.Config) []structs.Message
 		}
 	} else {
 		// Handle binary files
-		body := tryReadBinary(file)
+		body, skipMsg := tryReadBinary(file)
+		if skipMsg != nil {
+			messages = append(messages, *skipMsg)
+		}
 		for _, argumentSet := range config.Tests["IsFreeOfKeywords"].KeywordArguments {
 			var keywordList = argumentSet["keywords"].([]string)
 			var info = argumentSet["info"].(string)
@@ -433,25 +457,35 @@ func matchPatternsList(patternList []string, body []byte) string {
 	return ""
 }
 
-func tryReadBinary(file structs.File) [][]byte {
+// tryReadBinary extracts scannable text from known binary container formats
+// (xlsx/docx). For a genuine binary file (not a supported container or archive)
+// it returns a skip acknowledgement Message so every output surfaces that the
+// file's content was not scanned (spec §6); the returned Message is nil otherwise.
+func tryReadBinary(file structs.File) ([][]byte, *structs.Message) {
 	if strings.HasSuffix(file.Path, ".xlsx") {
 		content, err := readers.ReadXLSXFile(file)
 		if err != nil {
 			output.GlobalLogger.Warning("Error reading XLSX file '%s': %v", file.Path, err)
-			return [][]byte{} // Return empty instead of panicking
+			return [][]byte{}, nil // Return empty instead of panicking
 		}
-		return content
+		return content, nil
 	} else if strings.HasSuffix(file.Path, ".docx") {
 		content, err := readers.ReadDOCXFile(file)
 		if err != nil {
 			output.GlobalLogger.Warning("Error reading DOCX file '%s': %v", file.Path, err)
-			return [][]byte{} // Return empty instead of panicking
+			return [][]byte{}, nil // Return empty instead of panicking
 		}
-		return content
+		return content, nil
 	} else if !readers.IsSupportedArchive(file.Name) {
-		output.GlobalLogger.Info("Not checking contents of file: '%s' (path: '%s'). The file seems to be binary.", file.Name, file.Path)
+		skip := structs.Message{
+			Content: "Binary file detected",
+			Source:  file,
+			Skipped: true,
+			Reason:  "Binary file detected",
+		}
+		return [][]byte{}, &skip
 	}
-	return [][]byte{}
+	return [][]byte{}, nil
 }
 
 func IsValidName(file structs.File, config config.Config) []structs.Message {

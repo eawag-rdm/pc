@@ -583,27 +583,27 @@ func TestIsArchiveFreeOfKeywordsWithRealArchives(t *testing.T) {
 	}
 
 	tests := []struct {
-		name            string
-		file            structs.File
-		expectedCount   int
+		name                string
+		file                structs.File
+		expectedCount       int
 		archiveNameInSource string
 	}{
 		{
-			name:            "Complex zip archive",
-			file:            zipFile,
-			expectedCount:   6,
+			name:                "Complex zip archive",
+			file:                zipFile,
+			expectedCount:       6,
 			archiveNameInSource: "complex_archive.zip",
 		},
 		{
-			name:            "Complex 7z archive",
-			file:            sevenZipFile,
-			expectedCount:   6,
+			name:                "Complex 7z archive",
+			file:                sevenZipFile,
+			expectedCount:       6,
 			archiveNameInSource: "complex_archive.7z",
 		},
 		{
-			name:            "Complex tar archive",
-			file:            tarFile,
-			expectedCount:   6,
+			name:                "Complex tar archive",
+			file:                tarFile,
+			expectedCount:       6,
 			archiveNameInSource: "complex_archive.tar",
 		},
 	}
@@ -641,5 +641,157 @@ func TestIsArchiveFreeOfKeywordsWithRealArchives(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// newKeywordConfig returns a minimal config with an IsFreeOfKeywords test
+// configured so content scanning is actually attempted (when not size-skipped).
+func newKeywordConfig(maxContentScan, maxArchiveFile, maxTotalArchiveMem int64) config.Config {
+	return config.Config{
+		General: &config.GeneralConfig{
+			MaxContentScanFileSize: maxContentScan,
+			MaxArchiveFileSize:     maxArchiveFile,
+			MaxTotalArchiveMemory:  maxTotalArchiveMem,
+		},
+		Tests: map[string]*config.TestConfig{
+			"IsFreeOfKeywords": {
+				KeywordArguments: []map[string]interface{}{
+					{
+						"keywords": []string{"password"},
+						"info":     "Possible credentials in file",
+					},
+				},
+			},
+		},
+	}
+}
+
+func TestIsFreeOfKeywords_OversizedFileEmitsSkipMessage(t *testing.T) {
+	path := tempFile([]byte("password is hunter2 and more text"))
+	defer os.Remove(path)
+
+	file := structs.File{Path: path, Name: "big.txt", DisplayName: "big.txt"}
+
+	// MaxContentScanFileSize of 1 byte forces the size-skip branch.
+	cfg := newKeywordConfig(1, 10*1024*1024, 100*1024*1024)
+
+	messages := IsFreeOfKeywords(file, cfg)
+
+	if len(messages) != 1 {
+		t.Fatalf("expected exactly 1 skip message, got %d: %+v", len(messages), messages)
+	}
+	m := messages[0]
+	if !m.Skipped {
+		t.Errorf("expected Skipped=true")
+	}
+	if m.Reason == "" {
+		t.Errorf("expected non-empty Reason")
+	}
+	if !strings.Contains(m.Content, "exceeds maximum") {
+		t.Errorf("unexpected skip content: %q", m.Content)
+	}
+	if src, ok := m.Source.(structs.File); !ok || src.Path != path {
+		t.Errorf("expected File source with path %q, got %+v", path, m.Source)
+	}
+}
+
+func TestIsFreeOfKeywords_NormalFileNotSkipped(t *testing.T) {
+	path := tempFile([]byte("password is hunter2"))
+	defer os.Remove(path)
+
+	file := structs.File{Path: path, Name: "ok.txt", DisplayName: "ok.txt"}
+
+	// Generous limit: content scan proceeds, no skip message expected.
+	cfg := newKeywordConfig(1024*1024*1024, 10*1024*1024, 100*1024*1024)
+
+	messages := IsFreeOfKeywords(file, cfg)
+	for _, m := range messages {
+		if m.Skipped {
+			t.Errorf("did not expect any skip message for a normally-sized file, got %q", m.Content)
+		}
+	}
+}
+
+func TestIsArchiveFreeOfKeywords_OversizedArchiveEmitsSkipMessage(t *testing.T) {
+	// Use a real archive but set MaxContentScanFileSize below its size so the
+	// archive-too-large branch fires.
+	archivePath := "../../testdata/archives/complex_archive.zip"
+	info, err := os.Stat(archivePath)
+	if err != nil {
+		t.Skipf("test archive not available: %v", err)
+	}
+
+	file := structs.File{Path: archivePath, Name: "complex_archive.zip", DisplayName: "complex_archive.zip", IsArchive: true}
+
+	cfg := newKeywordConfig(info.Size()-1, 10*1024*1024, 100*1024*1024)
+
+	messages := IsArchiveFreeOfKeywords(file, cfg)
+
+	if len(messages) != 1 {
+		t.Fatalf("expected exactly 1 archive skip message, got %d: %+v", len(messages), messages)
+	}
+	if !messages[0].Skipped {
+		t.Errorf("expected Skipped=true for oversized archive")
+	}
+	if !strings.Contains(messages[0].Content, "archive") {
+		t.Errorf("unexpected archive skip content: %q", messages[0].Content)
+	}
+}
+
+func TestIsArchiveFreeOfKeywords_MemberSkipsEmitMessages(t *testing.T) {
+	archivePath := "../../testdata/archives/complex_archive.zip"
+	if _, err := os.Stat(archivePath); err != nil {
+		t.Skipf("test archive not available: %v", err)
+	}
+
+	file := structs.File{Path: archivePath, Name: "complex_archive.zip", DisplayName: "complex_archive.zip", IsArchive: true}
+
+	// Tiny per-member size limit and tiny total-memory budget force member skips
+	// while the archive itself is still under MaxContentScanFileSize.
+	cfg := newKeywordConfig(1024*1024*1024, 4, 16)
+
+	messages := IsArchiveFreeOfKeywords(file, cfg)
+
+	skipCount := 0
+	for _, m := range messages {
+		if m.Skipped {
+			skipCount++
+			if src, ok := m.Source.(structs.File); !ok || src.ArchiveName != "complex_archive.zip" {
+				t.Errorf("expected member skip Source to reference archive, got %+v", m.Source)
+			}
+		}
+	}
+	if skipCount == 0 {
+		t.Errorf("expected at least one archive-member skip message, got none (messages: %+v)", messages)
+	}
+}
+
+func TestIsFreeOfKeywords_BinaryFileEmitsSkipMessage(t *testing.T) {
+	// Null bytes make isTextFile report a binary file; the filename has no
+	// supported-archive extension, so the binary-skip branch fires.
+	path := tempFile([]byte{0x00, 0x01, 0x02, 0x00, 0xff, 0xfe})
+	defer os.Remove(path)
+
+	file := structs.File{Path: path, Name: "blob.bin", DisplayName: "blob.bin"}
+
+	// Generous size limit so the size-skip branch does not fire.
+	cfg := newKeywordConfig(1024*1024*1024, 10*1024*1024, 100*1024*1024)
+
+	messages := IsFreeOfKeywords(file, cfg)
+
+	skipCount := 0
+	for _, m := range messages {
+		if m.Skipped {
+			skipCount++
+			if m.Reason != "Binary file detected" {
+				t.Errorf("expected reason 'Binary file detected', got %q", m.Reason)
+			}
+			if src, ok := m.Source.(structs.File); !ok || src.Path != path {
+				t.Errorf("expected File source with path %q, got %+v", path, m.Source)
+			}
+		}
+	}
+	if skipCount != 1 {
+		t.Errorf("expected exactly 1 binary skip message, got %d (messages: %+v)", skipCount, messages)
 	}
 }

@@ -184,6 +184,45 @@ func TestMessage_TestNameField(t *testing.T) {
 	}
 }
 
+func TestMessage_SkippedFields(t *testing.T) {
+	file := File{Name: "big.bin", Path: "/path/to/big.bin"}
+
+	reason := "Skipped content scan of file: file size (5 bytes) exceeds maximum (1 bytes)."
+	message := Message{
+		Content:  reason,
+		Source:   file,
+		TestName: "IsFreeOfKeywords",
+		Skipped:  true,
+		Reason:   reason,
+	}
+
+	if !message.Skipped {
+		t.Error("Expected Skipped to be true")
+	}
+	if message.Reason != reason {
+		t.Errorf("Expected Reason '%s', got '%s'", reason, message.Reason)
+	}
+
+	// Format() must still behave like any other File-sourced message; the skip
+	// flag does not change the rendered text.
+	formatted := message.Format()
+	expected := "- File issue in 'big.bin': " + reason
+	if formatted != expected {
+		t.Errorf("Expected '%s', got '%s'", expected, formatted)
+	}
+}
+
+func TestMessage_NonSkipDefaults(t *testing.T) {
+	// Zero-value Message must default to a non-skip message with empty Reason.
+	message := Message{Content: "x", Source: File{Name: "a.txt"}}
+	if message.Skipped {
+		t.Error("Expected Skipped to default to false")
+	}
+	if message.Reason != "" {
+		t.Errorf("Expected empty Reason by default, got '%s'", message.Reason)
+	}
+}
+
 func TestMessage_SourceInterface(t *testing.T) {
 	// Test that both File and Repository implement Source interface
 	// Compile-time check: these assignments verify interface implementation

@@ -3,29 +3,28 @@ package json
 import (
 	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 
-	"github.com/eawag-rdm/pc/pkg/structs"
 	"github.com/eawag-rdm/pc/pkg/output"
+	"github.com/eawag-rdm/pc/pkg/structs"
 )
 
 // ScanResult represents the complete output of a package check scan
 type ScanResult struct {
-	Timestamp              string           `json:"timestamp"`
-	Scanned                []ScannedFile    `json:"scanned"`
-	Skipped                []SkippedFile    `json:"skipped"`
-	DetailsSubjectFocused  []SubjectDetails `json:"details_subject_focused"`
-	DetailsCheckFocused    []CheckDetails   `json:"details_check_focused"`
-	PDFFiles               []string         `json:"pdf_files"`
-	Errors                 []output.LogMessage     `json:"errors"`
-	Warnings               []output.LogMessage     `json:"warnings"`
+	Timestamp             string              `json:"timestamp"`
+	Scanned               []ScannedFile       `json:"scanned"`
+	Skipped               []SkippedFile       `json:"skipped"`
+	DetailsSubjectFocused []SubjectDetails    `json:"details_subject_focused"`
+	DetailsCheckFocused   []CheckDetails      `json:"details_check_focused"`
+	PDFFiles              []string            `json:"pdf_files"`
+	Errors                []output.LogMessage `json:"errors"`
+	Warnings              []output.LogMessage `json:"warnings"`
 }
 
 // ScannedFile represents a file that was scanned with summary of issues
 type ScannedFile struct {
-	Filename string              `json:"filename"`
-	Issues   []CheckSummary      `json:"issues"`
+	Filename string         `json:"filename"`
+	Issues   []CheckSummary `json:"issues"`
 }
 
 // SkippedFile represents a file that was skipped during scanning
@@ -72,13 +71,12 @@ type SubjectIssue struct {
 // Using LogMessage from output package
 
 // JSONFormatter handles conversion of results to JSON
-type JSONFormatter struct {}
+type JSONFormatter struct{}
 
 // NewJSONFormatter creates a new JSON formatter
 func NewJSONFormatter() *JSONFormatter {
 	return &JSONFormatter{}
 }
-
 
 // FormatResults converts messages to structured JSON output
 func (jf *JSONFormatter) FormatResults(location, collector string, messages []structs.Message, totalFiles int, pdfFiles []string) (string, error) {
@@ -93,10 +91,12 @@ func (jf *JSONFormatter) FormatResults(location, collector string, messages []st
 		Warnings:              make([]output.LogMessage, 0),
 	}
 
-	// Process messages into the new structured format
+	// Process messages into the new structured format. Skip-flagged Messages are
+	// routed into result.Skipped and excluded from the issue maps.
 	result.processMessages(messages)
 
-	// Separate logger messages by level and extract skipped files
+	// Separate logger messages by level. Skipped files are now sourced from
+	// skip-flagged structs.Messages (see processMessages), not scraped from logs.
 	logMessages := output.GlobalLogger.GetMessages()
 	for _, msg := range logMessages {
 		switch msg.Level {
@@ -104,76 +104,6 @@ func (jf *JSONFormatter) FormatResults(location, collector string, messages []st
 			result.Errors = append(result.Errors, msg)
 		case "warning":
 			result.Warnings = append(result.Warnings, msg)
-		case "info":
-			// Check if this is a binary file skip message
-			if strings.Contains(msg.Message, "Not checking contents of file") && strings.Contains(msg.Message, "binary") {
-				// Extract filename and path from message like "Not checking contents of file: 'filename' (path: 'filepath'). The file seems to be binary."
-				
-				// Extract filename (first quoted string)
-				start := strings.Index(msg.Message, "'")
-				if start != -1 {
-					end := strings.Index(msg.Message[start+1:], "'")
-					if end != -1 {
-						filename := msg.Message[start+1 : start+1+end]
-						
-						// Extract path (second quoted string after "path: '")
-						pathStart := strings.Index(msg.Message, "(path: '")
-						var path string
-						if pathStart != -1 {
-							pathStart += len("(path: '")
-							pathEnd := strings.Index(msg.Message[pathStart:], "'")
-							if pathEnd != -1 {
-								path = msg.Message[pathStart : pathStart+pathEnd]
-							}
-						}
-						
-						// Fallback to filename if path not found
-						if path == "" {
-							path = filename
-						}
-						
-						result.Skipped = append(result.Skipped, SkippedFile{
-							Filename: filename,
-							Path:     path,
-							Reason:   "Binary file detected",
-						})
-					}
-				}
-			} else if strings.Contains(msg.Message, "Skipping content scan of file") && strings.Contains(msg.Message, "exceeds maximum") {
-				// Check if this is a file size limit skip message
-				// Extract filename and path from message like "Skipping content scan of file: 'filename' (path: 'filepath'). File size (X bytes) exceeds maximum (Y bytes)."
-				
-				// Extract filename (first quoted string)
-				start := strings.Index(msg.Message, "'")
-				if start != -1 {
-					end := strings.Index(msg.Message[start+1:], "'")
-					if end != -1 {
-						filename := msg.Message[start+1 : start+1+end]
-						
-						// Extract path (second quoted string after "path: '")
-						pathStart := strings.Index(msg.Message, "(path: '")
-						var path string
-						if pathStart != -1 {
-							pathStart += len("(path: '")
-							pathEnd := strings.Index(msg.Message[pathStart:], "'")
-							if pathEnd != -1 {
-								path = msg.Message[pathStart : pathStart+pathEnd]
-							}
-						}
-						
-						// Fallback to filename if path not found
-						if path == "" {
-							path = filename
-						}
-						
-						result.Skipped = append(result.Skipped, SkippedFile{
-							Filename: filename,
-							Path:     path,
-							Reason:   "File too large for content scanning",
-						})
-					}
-				}
-			}
 		}
 	}
 
@@ -200,14 +130,21 @@ func subjectKey(displayName, archiveName string) string {
 // processMessages analyzes messages and creates the new structured output
 func (result *ScanResult) processMessages(messages []structs.Message) {
 	// Maps to organize data
-	fileIssueMap := make(map[string]map[string]int)         // subject_key -> checkname -> count (only for files)
-	subjectDetailMap := make(map[string][]CheckIssue)       // subject_key -> []CheckIssue
-	checkDetailMap := make(map[string][]SubjectIssue)       // checkname -> []SubjectIssue
-	subjectPathMap := make(map[string]string)               // subject_key -> path
-	subjectArchiveMap := make(map[string]string)            // subject_key -> archive_name
-	subjectDisplayMap := make(map[string]string)            // subject_key -> display_name
+	fileIssueMap := make(map[string]map[string]int)   // subject_key -> checkname -> count (only for files)
+	subjectDetailMap := make(map[string][]CheckIssue) // subject_key -> []CheckIssue
+	checkDetailMap := make(map[string][]SubjectIssue) // checkname -> []SubjectIssue
+	subjectPathMap := make(map[string]string)         // subject_key -> path
+	subjectArchiveMap := make(map[string]string)      // subject_key -> archive_name
+	subjectDisplayMap := make(map[string]string)      // subject_key -> display_name
 
 	for _, msg := range messages {
+		// Skip acknowledgements are not issues: route them into the Skipped slice
+		// and keep them out of the Scanned/Details issue maps.
+		if msg.Skipped {
+			result.appendSkipped(msg)
+			continue
+		}
+
 		testName := msg.TestName
 		if testName == "" {
 			testName = "Unknown"
@@ -296,3 +233,23 @@ func (result *ScanResult) processMessages(messages []structs.Message) {
 	}
 }
 
+// appendSkipped converts a skip-flagged Message into a SkippedFile entry. The
+// reason prefers the explicit Reason field, falling back to the Content.
+func (result *ScanResult) appendSkipped(msg structs.Message) {
+	reason := msg.Reason
+	if reason == "" {
+		reason = msg.Content
+	}
+
+	skipped := SkippedFile{Reason: reason}
+	if file, isFile := msg.Source.(structs.File); isFile {
+		displayName := file.GetDisplayName()
+		filename := displayName
+		if file.ArchiveName != "" {
+			filename = file.ArchiveName + " > " + displayName
+		}
+		skipped.Filename = filename
+		skipped.Path = file.Path
+	}
+	result.Skipped = append(result.Skipped, skipped)
+}

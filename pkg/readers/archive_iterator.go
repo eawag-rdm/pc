@@ -14,6 +14,7 @@ import (
 	"github.com/bodgit/sevenzip"
 	"github.com/eawag-rdm/pc/pkg/optimization"
 	"github.com/eawag-rdm/pc/pkg/output"
+	"github.com/eawag-rdm/pc/pkg/structs"
 )
 
 type UnpackedFileIterator struct {
@@ -38,6 +39,11 @@ type UnpackedFileIterator struct {
 	totalMemoryUsed    int64
 	maxTotalMemory     int64
 	processedFileCount int
+
+	// skipMessages accumulates skip acknowledgements for archive members that were
+	// not content-scanned (per-member size limit or total-memory limit). Callers
+	// drain these via SkipMessages() and thread them into their returned []Message.
+	skipMessages []structs.Message
 
 	tarFile        *os.File
 	tarReader      *tar.Reader
@@ -94,19 +100,58 @@ func (u *UnpackedFileIterator) checkMemoryLimit(additionalBytes int64) bool {
 func (u *UnpackedFileIterator) updateMemoryUsage(fileSize int) {
 	u.totalMemoryUsed += int64(fileSize)
 	u.processedFileCount++
-	
+
 	// Log memory usage every 10 files
 	if u.processedFileCount%10 == 0 {
-		output.GlobalLogger.Info("Archive memory usage: %d/%d bytes (%d files processed)", 
+		output.GlobalLogger.Info("Archive memory usage: %d/%d bytes (%d files processed)",
 			u.totalMemoryUsed, u.maxTotalMemory, u.processedFileCount)
 	}
+}
+
+// recordSkip appends a skip acknowledgement Message for an archive member that
+// was not content-scanned. The member is represented as a structs.File whose
+// ArchiveName points back to the containing archive so every output can attribute
+// the skip correctly. The caller assigns TestName.
+func (u *UnpackedFileIterator) recordSkip(memberName, reason string, memberSize int64) {
+	member := structs.ToFileWithDisplay(
+		u.ArchivePath, // path stays as the archive path (member has no standalone path)
+		memberName,    // name is the path within the archive
+		memberName,    // display name
+		memberSize,    // size
+		"",            // suffix (auto-detected)
+		u.ArchiveName, // archive name reference
+	)
+	u.skipMessages = append(u.skipMessages, structs.Message{
+		Content: reason,
+		Source:  member,
+		Skipped: true,
+		Reason:  reason,
+	})
+}
+
+// SkipMessages returns the skip acknowledgements collected so far for archive
+// members that were not content-scanned (per-member size or total-memory limit).
+func (u *UnpackedFileIterator) SkipMessages() []structs.Message {
+	return u.skipMessages
+}
+
+// memberSizeSkipReason builds the reason string for an archive member skipped
+// because it exceeds the per-member size limit.
+func (u *UnpackedFileIterator) memberSizeSkipReason(size int64) string {
+	return fmt.Sprintf("Skipped content scan of archive member: size (%d bytes) exceeds maximum archive member size (%d bytes).", size, u.MaxSize)
+}
+
+// memberMemorySkipReason builds the reason string for an archive member skipped
+// because scanning it would exceed the total archive memory budget.
+func (u *UnpackedFileIterator) memberMemorySkipReason() string {
+	return fmt.Sprintf("Skipped content scan of archive member: would exceed total archive memory limit (%d bytes).", u.maxTotalMemory)
 }
 
 func matchPatterns(list []string, str string) bool {
 	if len(list) == 0 || str == "" {
 		return true // Empty patterns match everything
 	}
-	
+
 	// Use fast matcher for pattern detection
 	matcher := optimization.GetMatcher(list)
 	return matcher.HasAnyMatch([]byte(str))
@@ -121,10 +166,6 @@ func fileGoodToUnpack(whitelist []string, blacklist []string, filename string) b
 	}
 	return true
 }
-
-
-
-
 
 func (u *UnpackedFileIterator) findFirstTar() bool {
 	if u.tarReader == nil {
@@ -153,9 +194,17 @@ func (u *UnpackedFileIterator) findFirstTar() bool {
 
 		// Check memory limits
 		if !u.checkMemoryLimit(header.Size) {
+			if isFile && isGreaterZero {
+				u.recordSkip(header.Name, u.memberMemorySkipReason(), header.Size)
+			}
 			// Skip remaining bytes
 			_, _ = io.CopyN(io.Discard, u.tarReader, header.Size)
 			continue
+		}
+
+		// Acknowledge members skipped purely because they exceed the size limit.
+		if isFile && isGreaterZero && !isBelowMaxSize {
+			u.recordSkip(header.Name, u.memberSizeSkipReason(header.Size), header.Size)
 		}
 
 		var isGoodToUnpack bool
@@ -194,7 +243,7 @@ func (u *UnpackedFileIterator) findFirstTarGz() bool {
 			return false
 		}
 		u.tarFile = file
-		
+
 		gzipReader, err := gzip.NewReader(file)
 		if err != nil {
 			output.GlobalLogger.Warning("Error (archive content checks) creating gzip reader for '%s' -> %v", u.ArchiveName, err)
@@ -220,9 +269,17 @@ func (u *UnpackedFileIterator) findFirstTarGz() bool {
 
 		// Check memory limits
 		if !u.checkMemoryLimit(header.Size) {
+			if isFile && isGreaterZero {
+				u.recordSkip(header.Name, u.memberMemorySkipReason(), header.Size)
+			}
 			// Skip remaining bytes
 			_, _ = io.CopyN(io.Discard, u.tarReader, header.Size)
 			continue
+		}
+
+		// Acknowledge members skipped purely because they exceed the size limit.
+		if isFile && isGreaterZero && !isBelowMaxSize {
+			u.recordSkip(header.Name, u.memberSizeSkipReason(header.Size), header.Size)
 		}
 
 		var isGoodToUnpack bool
@@ -317,9 +374,17 @@ func unpackTar(u *UnpackedFileIterator) (bool, error) {
 
 		// Check memory limits
 		if !u.checkMemoryLimit(header.Size) {
+			if isFile && isGreaterZero {
+				u.recordSkip(header.Name, u.memberMemorySkipReason(), header.Size)
+			}
 			// Skip remaining bytes
 			_, _ = io.CopyN(io.Discard, u.tarReader, header.Size)
 			continue
+		}
+
+		// Acknowledge members skipped purely because they exceed the size limit.
+		if isFile && isGreaterZero && !isBelowMaxSize {
+			u.recordSkip(header.Name, u.memberSizeSkipReason(header.Size), header.Size)
 		}
 
 		var isGoodToUnpack bool
@@ -351,10 +416,6 @@ func unpackTar(u *UnpackedFileIterator) (bool, error) {
 
 	return true, nil
 }
-
-
-
-
 
 // Optimized 7z file processing that eliminates double reading
 func (u *UnpackedFileIterator) is7zTextFileWithContent(index int) (bool, []byte, error) {
@@ -448,14 +509,22 @@ func unpackZip(u *UnpackedFileIterator) (bool, error) {
 			isBelowMaxSize := f.UncompressedSize64 <= maxSize
 
 			if !u.checkMemoryLimit(int64(f.UncompressedSize64)) {
+				if isFile && isGreaterZero {
+					u.recordSkip(f.Name, u.memberMemorySkipReason(), int64(f.UncompressedSize64))
+				}
 				continue
+			}
+
+			// Acknowledge members skipped purely because they exceed the size limit.
+			if isFile && isGreaterZero && !isBelowMaxSize {
+				u.recordSkip(f.Name, u.memberSizeSkipReason(int64(f.UncompressedSize64)), int64(f.UncompressedSize64))
 			}
 
 			var isGoodToUnpack bool
 			if isFile && isGreaterZero && isBelowMaxSize {
 				isGoodToUnpack = fileGoodToUnpack(u.Whitelist, u.Blacklist, f.Name)
 			}
-			
+
 			if isGoodToUnpack {
 				isText, content, err := u.isZippedTextWithContent(i)
 				if err != nil {
@@ -472,7 +541,7 @@ func unpackZip(u *UnpackedFileIterator) (bool, error) {
 				}
 			}
 		}
-		
+
 		if !found {
 			u.iterationEnded = true
 			return false, nil
@@ -495,14 +564,22 @@ func unpackZip(u *UnpackedFileIterator) (bool, error) {
 		isBelowMaxSize := f.UncompressedSize64 <= maxSize
 
 		if !u.checkMemoryLimit(int64(f.UncompressedSize64)) {
+			if isFile && isGreaterZero {
+				u.recordSkip(f.Name, u.memberMemorySkipReason(), int64(f.UncompressedSize64))
+			}
 			continue
+		}
+
+		// Acknowledge members skipped purely because they exceed the size limit.
+		if isFile && isGreaterZero && !isBelowMaxSize {
+			u.recordSkip(f.Name, u.memberSizeSkipReason(int64(f.UncompressedSize64)), int64(f.UncompressedSize64))
 		}
 
 		var isGoodToUnpack bool
 		if isFile && isGreaterZero && isBelowMaxSize {
 			isGoodToUnpack = fileGoodToUnpack(u.Whitelist, u.Blacklist, f.Name)
 		}
-		
+
 		if isGoodToUnpack {
 			isText, content, err := u.isZippedTextWithContent(i)
 			if err != nil {
@@ -519,7 +596,7 @@ func unpackZip(u *UnpackedFileIterator) (bool, error) {
 			}
 		}
 	}
-	
+
 	if !found {
 		u.iterationEnded = true
 	}
@@ -537,15 +614,15 @@ func (u *UnpackedFileIterator) findFirst7z() bool {
 		}
 		u.sevenZipReader = reader
 	}
-	
+
 	files := u.sevenZipReader.File
 	maxSize := uint64(u.MaxSize)
-	
+
 	startIndex := u.fileIndex
 	if startIndex < 0 {
 		startIndex = 0
 	}
-	
+
 	for i := startIndex; i < len(files); i++ {
 		f := files[i]
 		isFile := !f.FileInfo().IsDir()
@@ -555,14 +632,22 @@ func (u *UnpackedFileIterator) findFirst7z() bool {
 		// Check memory limits
 		if !u.checkMemoryLimit(int64(f.UncompressedSize)) {
 			output.GlobalLogger.Warning("Skipping file %s: would exceed memory limit", f.Name)
+			if isFile && isGreaterZero {
+				u.recordSkip(f.Name, u.memberMemorySkipReason(), int64(f.UncompressedSize))
+			}
 			continue
+		}
+
+		// Acknowledge members skipped purely because they exceed the size limit.
+		if isFile && isGreaterZero && !isBelowMaxSize {
+			u.recordSkip(f.Name, u.memberSizeSkipReason(int64(f.UncompressedSize)), int64(f.UncompressedSize))
 		}
 
 		var isGoodToUnpack bool
 		if isFile && isGreaterZero && isBelowMaxSize {
 			isGoodToUnpack = fileGoodToUnpack(u.Whitelist, u.Blacklist, files[i].Name)
 		}
-		
+
 		if isGoodToUnpack {
 			// Use optimized function that reads content only once
 			isText, content, err := u.is7zTextFileWithContent(i)
@@ -579,7 +664,7 @@ func (u *UnpackedFileIterator) findFirst7z() bool {
 			}
 		}
 	}
-	
+
 	u.iterationEnded = true
 	return false
 }
@@ -611,14 +696,22 @@ func unpack7z(u *UnpackedFileIterator) (bool, error) {
 			isBelowMaxSize := f.UncompressedSize <= maxSize
 
 			if !u.checkMemoryLimit(int64(f.UncompressedSize)) {
+				if isFile && isGreaterZero {
+					u.recordSkip(f.Name, u.memberMemorySkipReason(), int64(f.UncompressedSize))
+				}
 				continue
+			}
+
+			// Acknowledge members skipped purely because they exceed the size limit.
+			if isFile && isGreaterZero && !isBelowMaxSize {
+				u.recordSkip(f.Name, u.memberSizeSkipReason(int64(f.UncompressedSize)), int64(f.UncompressedSize))
 			}
 
 			var isGoodToUnpack bool
 			if isFile && isGreaterZero && isBelowMaxSize {
 				isGoodToUnpack = fileGoodToUnpack(u.Whitelist, u.Blacklist, f.Name)
 			}
-			
+
 			if isGoodToUnpack {
 				isText, content, err := u.is7zTextFileWithContent(i)
 				if err != nil {
@@ -635,7 +728,7 @@ func unpack7z(u *UnpackedFileIterator) (bool, error) {
 				}
 			}
 		}
-		
+
 		if !found {
 			u.iterationEnded = true
 			return false, nil
@@ -658,14 +751,22 @@ func unpack7z(u *UnpackedFileIterator) (bool, error) {
 		isBelowMaxSize := f.UncompressedSize <= maxSize
 
 		if !u.checkMemoryLimit(int64(f.UncompressedSize)) {
+			if isFile && isGreaterZero {
+				u.recordSkip(f.Name, u.memberMemorySkipReason(), int64(f.UncompressedSize))
+			}
 			continue
+		}
+
+		// Acknowledge members skipped purely because they exceed the size limit.
+		if isFile && isGreaterZero && !isBelowMaxSize {
+			u.recordSkip(f.Name, u.memberSizeSkipReason(int64(f.UncompressedSize)), int64(f.UncompressedSize))
 		}
 
 		var isGoodToUnpack bool
 		if isFile && isGreaterZero && isBelowMaxSize {
 			isGoodToUnpack = fileGoodToUnpack(u.Whitelist, u.Blacklist, f.Name)
 		}
-		
+
 		if isGoodToUnpack {
 			isText, content, err := u.is7zTextFileWithContent(i)
 			if err != nil {
@@ -682,7 +783,7 @@ func unpack7z(u *UnpackedFileIterator) (bool, error) {
 			}
 		}
 	}
-	
+
 	if !found {
 		u.iterationEnded = true
 	}
@@ -701,15 +802,15 @@ func (u *UnpackedFileIterator) findFirstZip() bool {
 		}
 		u.zipReader = reader
 	}
-	
+
 	files := u.zipReader.File
 	maxSize := uint64(u.MaxSize)
-	
+
 	startIndex := u.fileIndex
 	if startIndex < 0 {
 		startIndex = 0
 	}
-	
+
 	for i := startIndex; i < len(files); i++ {
 		f := files[i]
 		isFile := !f.FileInfo().IsDir()
@@ -719,14 +820,22 @@ func (u *UnpackedFileIterator) findFirstZip() bool {
 		// Check memory limits
 		if !u.checkMemoryLimit(int64(f.UncompressedSize64)) {
 			output.GlobalLogger.Warning("Skipping file %s: would exceed memory limit", f.Name)
+			if isFile && isGreaterZero {
+				u.recordSkip(f.Name, u.memberMemorySkipReason(), int64(f.UncompressedSize64))
+			}
 			continue
+		}
+
+		// Acknowledge members skipped purely because they exceed the size limit.
+		if isFile && isGreaterZero && !isBelowMaxSize {
+			u.recordSkip(f.Name, u.memberSizeSkipReason(int64(f.UncompressedSize64)), int64(f.UncompressedSize64))
 		}
 
 		var isGoodToUnpack bool
 		if isFile && isGreaterZero && isBelowMaxSize {
 			isGoodToUnpack = fileGoodToUnpack(u.Whitelist, u.Blacklist, f.Name)
 		}
-		
+
 		if isGoodToUnpack {
 			// Use optimized function that reads content only once
 			isText, content, err := u.isZippedTextWithContent(i)
@@ -743,7 +852,7 @@ func (u *UnpackedFileIterator) findFirstZip() bool {
 			}
 		}
 	}
-	
+
 	u.iterationEnded = true
 	return false
 }
@@ -783,7 +892,7 @@ func (u *UnpackedFileIterator) HasFilesToUnpack() bool {
 	if strings.HasSuffix(u.ArchiveName, ".tar.gz") {
 		return u.findFirstTarGz()
 	}
-	
+
 	switch filepath.Ext(u.ArchiveName) {
 	case ".zip":
 		return u.findFirstZip()

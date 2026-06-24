@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/eawag-rdm/pc/pkg/structs"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -298,6 +299,82 @@ func TestALotOfBinaryFiles(t *testing.T) {
 			nfi := InitArchiveIterator(test.filepath, filename, 1024, []string{}, []string{})
 			assert.False(t, nfi.HasFilesToUnpack(), "Expected only binary files in archive, so nothing to read")
 			assert.False(t, nfi.HasNext())
+		})
+	}
+}
+
+// drainIterator fully iterates an archive and returns the skip acknowledgements
+// emitted for members that were not content-scanned.
+func drainIterator(nfi *UnpackedFileIterator) []structs.Message {
+	if nfi.HasFilesToUnpack() {
+		for nfi.HasNext() {
+			nfi.Next()
+		}
+	}
+	return nfi.SkipMessages()
+}
+
+func TestArchiveIterator_MemberSizeSkipEmitsMessages(t *testing.T) {
+	formats := []string{".zip", ".tar", ".7z"}
+	for _, ext := range formats {
+		t.Run("size skip "+ext, func(t *testing.T) {
+			path := "../../testdata/archives/one_of_each" + ext
+			filename := "one_of_each" + ext
+
+			// maxLen 0.5MB excludes the 1.2MB and 2.3MB members by size while the
+			// total-memory budget (generous) is not the cause.
+			nfi := InitArchiveIteratorWithMemoryLimit(path, filename, int(0.5*1024*1024), []string{}, []string{}, 100*1024*1024)
+			skips := drainIterator(nfi)
+
+			if len(skips) == 0 {
+				t.Fatalf("expected at least one member size-skip message for %s", ext)
+			}
+			for _, m := range skips {
+				if !m.Skipped {
+					t.Errorf("expected Skipped=true, got %+v", m)
+				}
+				if m.Reason == "" {
+					t.Errorf("expected non-empty Reason, got %+v", m)
+				}
+				src, ok := m.Source.(structs.File)
+				if !ok {
+					t.Fatalf("expected File source, got %T", m.Source)
+				}
+				if src.ArchiveName != filename {
+					t.Errorf("expected ArchiveName=%q, got %q", filename, src.ArchiveName)
+				}
+				if !strings.Contains(m.Content, "exceeds maximum archive member size") {
+					t.Errorf("unexpected size-skip content: %q", m.Content)
+				}
+			}
+		})
+	}
+}
+
+func TestArchiveIterator_TotalMemorySkipEmitsMessages(t *testing.T) {
+	formats := []string{".zip", ".tar", ".7z"}
+	for _, ext := range formats {
+		t.Run("memory skip "+ext, func(t *testing.T) {
+			path := "../../testdata/archives/one_of_each" + ext
+			filename := "one_of_each" + ext
+
+			// Large per-member size limit but a tiny total-memory budget: members
+			// are rejected by the memory budget rather than their individual size.
+			nfi := InitArchiveIteratorWithMemoryLimit(path, filename, 10*1024*1024, []string{}, []string{}, 1024)
+			skips := drainIterator(nfi)
+
+			foundMemorySkip := false
+			for _, m := range skips {
+				if !m.Skipped {
+					t.Errorf("expected Skipped=true, got %+v", m)
+				}
+				if strings.Contains(m.Content, "total archive memory limit") {
+					foundMemorySkip = true
+				}
+			}
+			if !foundMemorySkip {
+				t.Errorf("expected at least one total-memory skip message for %s, got %+v", ext, skips)
+			}
 		})
 	}
 }
