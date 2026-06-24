@@ -705,10 +705,27 @@ func TestIsFreeOfKeywords_NormalFileNotSkipped(t *testing.T) {
 	cfg := newKeywordConfig(1024*1024*1024, 10*1024*1024, 100*1024*1024)
 
 	messages := IsFreeOfKeywords(file, cfg)
+
+	// The scan must NOT have been skipped...
 	for _, m := range messages {
 		if m.Skipped {
 			t.Errorf("did not expect any skip message for a normally-sized file, got %q", m.Content)
 		}
+	}
+
+	// ...and it must have actually RUN: the planted "password" keyword
+	// (configured in newKeywordConfig) must be reported. Asserting the positive
+	// finding catches a regression where the file is silently not scanned (no
+	// skip message, but also no findings — which the old test would have passed).
+	var found bool
+	for _, m := range messages {
+		if !m.Skipped && strings.Contains(m.Content, "password") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected the planted keyword 'password' to be reported, proving the content scan ran; got messages: %+v", messages)
 	}
 }
 

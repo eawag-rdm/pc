@@ -205,6 +205,32 @@ func fakeCKAN(t *testing.T, mu *sync.Mutex, seen map[string]string) *httptest.Se
 	}))
 }
 
+// ckanObservation records, per requested package id, the raw Authorization
+// header CKAN received for that id. It is keyed by the unique package id (which
+// is itself derived from the request index), so no two concurrent requests
+// alias the same slot.
+type ckanObservation struct {
+	mu   sync.Mutex
+	seen map[string]string
+}
+
+// observingCKAN returns a fake CKAN that records the Authorization header per
+// requested package id into obs. Unlike fakeCKAN's plain map, the caller owns
+// obs and can assert per-request isolation after the run.
+func observingCKAN(t *testing.T, obs *ckanObservation) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id := r.URL.Query().Get("id")
+		obs.mu.Lock()
+		obs.seen[id] = r.Header.Get("Authorization")
+		obs.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"success":true,"result":{"resources":[`+
+			`{"url_type":"link","url":"https://example.org/external.csv","name":"external.csv","size":10}`+
+			`]}}`)
+	}))
+}
+
 func ckanPCConfig(ckanURL string) *config.Config {
 	return &config.Config{
 		Server: &config.ServerConfig{ContactMessage: DefaultContactMessage, LogClientIP: true},
@@ -252,42 +278,61 @@ func TestHandler_Analyze_NoFiles_PackageNotFound(t *testing.T) {
 }
 
 // TestHandler_Analyze_NoTokenBleed proves concurrent requests with different
-// tokens never cross: each request's token must reach CKAN as-is. Run under
-// -race to also catch shared-map mutation.
+// tokens never cross: each request's token must reach CKAN as-is. Every request
+// is verified INDIVIDUALLY by its own index — each goroutine uses a UNIQUE
+// package id ("pkg-<i>") and a UNIQUE token ("token-for-<i>"), and we assert
+// that all N requests were observed and each one carried its own token (no slot
+// is aliased/overwritten by another index). Run under -race to also catch
+// shared-map mutation of the per-request token context.
 func TestHandler_Analyze_NoTokenBleed(t *testing.T) {
-	var mu sync.Mutex
-	seen := make(map[string]string)
-	ckan := fakeCKAN(t, &mu, seen)
+	obs := &ckanObservation{seen: make(map[string]string)}
+	ckan := observingCKAN(t, obs)
 	defer ckan.Close()
 
 	pcConfig := ckanPCConfig(ckan.URL)
 	handler := NewHandler(pcConfig, Config{}, discardLogger())
 
 	const n = 25
+	// pkgs[i] is the unique package id for request i; tokens[i] its expected
+	// token. Indexing by i (not by name) guarantees no two requests collide.
+	pkgs := make([]string, n)
+	tokens := make([]string, n)
+	for i := range pkgs {
+		pkgs[i] = fmt.Sprintf("pkg-%d", i)
+		tokens[i] = fmt.Sprintf("token-for-%d", i)
+	}
+
 	var wg sync.WaitGroup
 	for i := 0; i < n; i++ {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			pkg := "pkg-" + string(rune('A'+i%26)) + strings.Repeat("x", i%5)
-			token := "token-for-" + pkg
-			body := bytes.NewBufferString(`{"package_id":"` + pkg + `"}`)
+			body := bytes.NewBufferString(`{"package_id":"` + pkgs[i] + `"}`)
 			req := httptest.NewRequest("POST", "/api/v1/analyze", body)
-			req = withRequestContext(req, "REQ-"+pkg, DefaultContactMessage)
-			req = req.WithContext(context.WithValue(req.Context(), CKANTokenKey, token))
+			req = withRequestContext(req, "REQ-"+pkgs[i], DefaultContactMessage)
+			req = req.WithContext(context.WithValue(req.Context(), CKANTokenKey, tokens[i]))
 			rr := httptest.NewRecorder()
 			handler.Analyze(rr, req)
 		}(i)
 	}
 	wg.Wait()
 
-	// Each package's CKAN call must have carried that package's own token.
-	mu.Lock()
-	defer mu.Unlock()
-	for pkg, gotToken := range seen {
-		want := "token-for-" + pkg
-		if gotToken != want {
-			t.Errorf("package %q saw token %q, want %q (token bleed)", pkg, gotToken, want)
+	obs.mu.Lock()
+	defer obs.mu.Unlock()
+	// Every request index must have been observed exactly once, carrying ITS OWN
+	// token. Verifying per-index (rather than ranging an aliasing map) catches a
+	// regression where one request's token bleeds into another's CKAN call.
+	if len(obs.seen) != n {
+		t.Fatalf("expected %d distinct package_show calls, observed %d: %v", n, len(obs.seen), obs.seen)
+	}
+	for i := 0; i < n; i++ {
+		gotToken, ok := obs.seen[pkgs[i]]
+		if !ok {
+			t.Errorf("request %d (%q) was never observed at CKAN", i, pkgs[i])
+			continue
+		}
+		if gotToken != tokens[i] {
+			t.Errorf("request %d (%q) saw token %q, want %q (token bleed)", i, pkgs[i], gotToken, tokens[i])
 		}
 	}
 }
@@ -317,14 +362,39 @@ func TestRespondJSON(t *testing.T) {
 	}
 }
 
+// TestAnalyzeRequest_JSONParsing enforces the real §2 contract: a client may
+// supply ONLY package_id. A client-supplied ckan_url / base_url field must be
+// IGNORED so a request can never redirect the server's CKAN base (the removed
+// SSRF + token-exfiltration vector). We decode a body that smuggles those
+// fields and assert (a) package_id is still parsed, and (b) the decoded struct
+// exposes no field that captured the attacker URL — proving AnalyzeRequest has
+// no CkanURL/BaseURL field for the server to honor.
 func TestAnalyzeRequest_JSONParsing(t *testing.T) {
-	// Only package_id is parsed; the client cannot supply a CKAN base URL.
+	const malicious = `{"package_id":"my-package","ckan_url":"https://evil.example.com","base_url":"https://evil.example.com"}`
+
 	var req AnalyzeRequest
-	if err := json.Unmarshal([]byte(`{"package_id":"my-package"}`), &req); err != nil {
+	if err := json.Unmarshal([]byte(malicious), &req); err != nil {
 		t.Fatalf("Failed to parse JSON: %v", err)
 	}
 	if req.PackageID != "my-package" {
 		t.Errorf("PackageID = %q, want %q", req.PackageID, "my-package")
+	}
+
+	// Re-marshal the decoded struct: the smuggled ckan_url/base_url must not
+	// survive the round-trip. If AnalyzeRequest ever regains a CkanURL/BaseURL
+	// field, the evil host reappears here and this test fails.
+	out, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("re-marshal: %v", err)
+	}
+	round := string(out)
+	if strings.Contains(round, "evil.example.com") {
+		t.Errorf("client-supplied CKAN URL leaked into AnalyzeRequest: %s", round)
+	}
+	for _, field := range []string{"ckan_url", "base_url", "CkanURL", "BaseURL"} {
+		if strings.Contains(round, field) {
+			t.Errorf("AnalyzeRequest exposes a client-controllable %q field (SSRF vector); round-trip=%s", field, round)
+		}
 	}
 }
 
@@ -541,8 +611,17 @@ func TestHandler_Analyze_ValidPackageNames(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			rr := analyzeWithToken(handler, name, "tok")
 			resp := decodeEnvelope(t, rr)
-			if resp.Error.Code == CodeInvalidPackageName {
-				t.Errorf("valid name %q rejected as invalid_package_name", name)
+			// Assert the POSITIVE outcome: the name passed validation, reached
+			// CKAN, and the fixture (which serves only an external-link resource,
+			// no uploads) drove a 404 package_not_found. Merely asserting "!=
+			// invalid_package_name" would also pass if the name were silently
+			// dropped before any CKAN call; requiring the package_not_found
+			// outcome proves the validated name actually reached the collector.
+			if rr.Code != http.StatusNotFound {
+				t.Fatalf("valid name %q: expected 404 (reached CKAN), got %d (body: %s)", name, rr.Code, rr.Body.String())
+			}
+			if resp.Error.Code != CodePackageNotFound {
+				t.Errorf("valid name %q: expected %q (proves the name reached CKAN), got %q", name, CodePackageNotFound, resp.Error.Code)
 			}
 		})
 	}
@@ -764,15 +843,21 @@ func TestHandler_Analyze_BodyTooLarge(t *testing.T) {
 }
 
 // TestHandler_Analyze_Timeout asserts a request whose hard timeout fires while
-// the analysis is still running returns a clean 504 envelope (spec §2). The
-// fake CKAN sleeps longer than the 1s configured requestTimeoutSeconds.
+// the analysis is still running returns a clean 504 envelope carrying the
+// ckan_unavailable code (spec §2). It uses a CKAN that parks until released
+// rather than a fixed wall-clock sleep, so the test does not burn real time and
+// the 504 is driven purely by the 1s requestTimeoutSeconds firing on the
+// in-flight call. (TestHandler_Analyze_Timeout_HungUpstream additionally bounds
+// the elapsed time.)
 func TestHandler_Analyze_Timeout(t *testing.T) {
+	release := make(chan struct{})
 	ckan := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(1500 * time.Millisecond)
-		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, `{"success":true,"result":{"resources":[]}}`)
+		<-release // park until released, well past the 1s timeout
 	}))
+	// LIFO defers: release the parked handler BEFORE Close() so Close does not
+	// block waiting on the still-parked goroutine.
 	defer ckan.Close()
+	defer close(release)
 
 	cfg := ckanPCConfig(ckan.URL)
 	cfg.Server.RequestTimeoutSeconds = 1
@@ -781,6 +866,10 @@ func TestHandler_Analyze_Timeout(t *testing.T) {
 	rr := analyzeWithToken(handler, "slow-pkg", "tok")
 	if rr.Code != http.StatusGatewayTimeout {
 		t.Errorf("expected 504 on timeout, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+	resp := decodeEnvelope(t, rr)
+	if resp.Error.Code != CodeCKANUnavailable {
+		t.Errorf("expected %q on timeout, got %q", CodeCKANUnavailable, resp.Error.Code)
 	}
 }
 
