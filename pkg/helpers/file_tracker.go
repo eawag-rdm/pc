@@ -30,6 +30,25 @@ func (ft *FileTracker) AddFileIfPDF(note string, file structs.File) {
 	}
 }
 
+// Reset clears the tracked files so the tracker can be reused. The server calls
+// this at the top of each request because PDFTracker is process-global and would
+// otherwise leak PDF notes across requests.
+func (ft *FileTracker) Reset() {
+	ft.mu.Lock()
+	defer ft.mu.Unlock()
+	ft.Files = make([]string, 0)
+}
+
+// SnapshotFiles returns a copy of the tracked files taken under the tracker's
+// lock. Callers (e.g. the server building a response body) must use this rather
+// than reading ft.Files directly: ft.Files is mutated under ft.mu by Reset and
+// AddFileIfPDF, so an unsynchronized field read would be a data race.
+func (ft *FileTracker) SnapshotFiles() []string {
+	ft.mu.Lock()
+	defer ft.mu.Unlock()
+	return append([]string(nil), ft.Files...)
+}
+
 func (ft *FileTracker) FormatFiles() string {
 	ft.mu.Lock()
 	defer ft.mu.Unlock()

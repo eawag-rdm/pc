@@ -26,12 +26,12 @@ func VerifyCKANAccess(ckanBaseURL, packageID, token string, verifyTLS bool) erro
 	if packageID == "" {
 		return fmt.Errorf("package ID is required")
 	}
-	if token == "" {
-		return &CKANAuthError{
-			StatusCode: http.StatusUnauthorized,
-			Message:    "CKAN API token is required",
-		}
-	}
+	// An empty token is valid: it follows the public-package path. We do NOT
+	// short-circuit with a 401 here — CKAN decides. Under its default
+	// reveal_private_datasets=false, an anonymous request for a private (or
+	// nonexistent) package returns 404, which the handler maps to
+	// package_not_found (§2, §3). Guarding on token=="" would 401 every
+	// anonymous request and the public path would never reach the collector.
 
 	// Build the package_show URL
 	url := fmt.Sprintf("%s/api/3/action/package_show?id=%s", ckanBaseURL, packageID)

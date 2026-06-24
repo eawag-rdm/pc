@@ -2,40 +2,73 @@ package server
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/eawag-rdm/pc/pkg/collectors"
 	"github.com/eawag-rdm/pc/pkg/config"
 	"github.com/eawag-rdm/pc/pkg/helpers"
+	"github.com/eawag-rdm/pc/pkg/output"
 	jsonformatter "github.com/eawag-rdm/pc/pkg/output/json"
 	"github.com/eawag-rdm/pc/pkg/utils"
 )
 
 // Handler processes HTTP requests for the PC server
 type Handler struct {
-	pcConfig    *config.Config
-	serverCfg   Config
+	pcConfig  *config.Config
+	serverCfg Config
+
+	// logger is the slog JSON handler used for request/access and lifecycle
+	// logging. It is never used for check Messages (those stay in GlobalLogger).
+	logger *slog.Logger
+	// contactMsg is the contact suffix shown in error envelopes, sourced once
+	// from the PC config's [server] section.
+	contactMsg string
+	// logClientIP gates whether the client IP is recorded in access logs.
+	logClientIP bool
+
+	// analysisMu serializes the part of Analyze that touches process-global
+	// state (output.GlobalLogger and helpers.PDFTracker): the per-request reset,
+	// the analysis that accumulates into those globals, and the snapshot read
+	// used to build the response. Without this, one request's reset can wipe (or
+	// race with) another in-flight request's accumulated Messages/PDF notes,
+	// bleeding data across responses (§6, §9). It is effectively a
+	// concurrency=1 gate; the configurable maxConcurrentAnalyses semaphore and
+	// per-request logger/tracker instances arrive in a later step.
+	analysisMu sync.Mutex
 }
 
-// NewHandler creates a new handler with the given configuration
-func NewHandler(pcConfig *config.Config, serverCfg Config) *Handler {
+// NewHandler creates a new handler with the given configuration. The slog
+// logger writes JSON access records to stdout.
+func NewHandler(pcConfig *config.Config, serverCfg Config, logger *slog.Logger) *Handler {
+	contact := DefaultContactMessage
+	logClientIP := true
+	if pcConfig != nil && pcConfig.Server != nil {
+		if pcConfig.Server.ContactMessage != "" {
+			contact = pcConfig.Server.ContactMessage
+		}
+		logClientIP = pcConfig.Server.LogClientIP
+	}
+
 	return &Handler{
-		pcConfig:  pcConfig,
-		serverCfg: serverCfg,
+		pcConfig:    pcConfig,
+		serverCfg:   serverCfg,
+		logger:      logger,
+		contactMsg:  contact,
+		logClientIP: logClientIP,
 	}
 }
 
-// AnalyzeRequest represents the request body for the analyze endpoint
+// DefaultContactMessage is used when no [server] contactMessage is configured.
+const DefaultContactMessage = "If you can't resolve this yourself, please contact rdm@eawag.ch."
+
+// AnalyzeRequest represents the request body for the analyze endpoint. The CKAN
+// base URL is intentionally server-side only and is not accepted from the client
+// (it was an SSRF + token-exfiltration vector; see §2).
 type AnalyzeRequest struct {
 	PackageID string `json:"package_id"`
-	CkanURL   string `json:"ckan_url,omitempty"` // Optional override for CKAN URL
-}
-
-// ErrorResponse represents an error response
-type ErrorResponse struct {
-	Error string `json:"error"`
-	Code  string `json:"code"`
 }
 
 // HealthResponse represents the health check response
@@ -59,109 +92,162 @@ func (h *Handler) Analyze(w http.ResponseWriter, r *http.Request) {
 	// 1. Parse request body
 	var req AnalyzeRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		respondError(w, http.StatusBadRequest, "invalid_json", "Invalid JSON body: "+err.Error())
+		writeError(w, r, CodeInvalidRequest)
 		return
 	}
+
+	// Record package_id for the access log. This writes through the holder the
+	// access-log middleware installed, so the emitted record carries it.
+	setPackageID(r, req.PackageID)
 
 	// 2. Validate request
 	if req.PackageID == "" {
-		respondError(w, http.StatusBadRequest, "missing_package_id", "package_id is required")
+		writeError(w, r, CodeMissingPackage)
 		return
 	}
 
-	// 3. Get CKAN token from context (set by middleware)
+	// 3. Get CKAN token from context (set by middleware). The token is OPTIONAL:
+	// an empty token follows the public-package path.
 	token := GetTokenFromContext(r)
-	if token == "" {
-		respondError(w, http.StatusUnauthorized, "no_token", "CKAN API token is required")
+
+	// 4. Determine CKAN URL (server-side only, single source = collector config).
+	ckanURL := h.serverCfg.GetCKANBaseURL(h.pcConfig)
+	if ckanURL == "" {
+		writeError(w, r, CodeInternalError)
 		return
 	}
 
-	// 4. Determine CKAN URL (request override > server config > pc config)
-	ckanURL := req.CkanURL
-	if ckanURL == "" {
-		ckanURL = h.serverCfg.GetCKANBaseURL(h.pcConfig)
-	}
-	if ckanURL == "" {
-		respondError(w, http.StatusInternalServerError, "no_ckan_url", "CKAN URL is not configured")
-		return
-	}
-
-	// 5. Verify CKAN access with the user's token
+	// 5. Verify CKAN access with the user's token. This is a read-only CKAN call
+	// that does not touch process-global state, so it runs outside analysisMu.
 	verifyTLS := h.serverCfg.GetVerifyTLS(h.pcConfig)
 	if err := VerifyCKANAccess(ckanURL, req.PackageID, token, verifyTLS); err != nil {
 		if statusCode, isAuthErr := IsCKANAuthError(err); isAuthErr {
 			switch statusCode {
 			case http.StatusUnauthorized:
-				respondError(w, http.StatusUnauthorized, "unauthorized", err.Error())
+				writeError(w, r, CodeInvalidToken)
 			case http.StatusForbidden:
-				respondError(w, http.StatusForbidden, "forbidden", err.Error())
+				writeError(w, r, CodeAccessDenied)
 			case http.StatusNotFound:
-				respondError(w, http.StatusNotFound, "not_found", err.Error())
+				// Nonexistent and private-unauthorized both surface as 404 under
+				// CKAN's default reveal_private_datasets=false (§3).
+				writeError(w, r, CodePackageNotFound)
 			default:
-				respondError(w, http.StatusBadGateway, "ckan_error", err.Error())
+				writeError(w, r, CodeCKANUnavailable)
 			}
 			return
 		}
-		respondError(w, http.StatusInternalServerError, "ckan_error", "Failed to verify CKAN access: "+err.Error())
+		writeError(w, r, CodeCKANUnavailable)
 		return
 	}
 
-	// 6. Create a copy of PC config with the user's token for collection
-	pcConfigCopy := *h.pcConfig
-	if ckanCollector, ok := pcConfigCopy.Collectors["CkanCollector"]; ok {
-		// Create a copy of attrs map
-		newAttrs := make(map[string]interface{})
-		for k, v := range ckanCollector.Attrs {
-			newAttrs[k] = v
-		}
-		// Override token and URL
-		newAttrs["token"] = token
-		if req.CkanURL != "" {
-			newAttrs["url"] = req.CkanURL
-		}
-		ckanCollector.Attrs = newAttrs
-		pcConfigCopy.Collectors["CkanCollector"] = ckanCollector
+	// 6-9. Run the analysis under analysisMu: the per-request reset, the
+	// collect/check work that accumulates into the process-global GlobalLogger
+	// and PDFTracker, and the snapshot read used to build the body must be one
+	// serialized unit, or a concurrent request's reset bleeds into / races with
+	// this one (§6, §9).
+	jsonResult, errCode := h.runAnalysis(req.PackageID, token)
+	if errCode != "" {
+		writeError(w, r, errCode)
+		return
 	}
 
-	// 7. Collect files from CKAN
-	files, err := collectors.CkanCollector(req.PackageID, pcConfigCopy)
+	// 10. Add request_id to the response body (additive) and return.
+	body, err := withRequestID(jsonResult, GetRequestID(r))
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, "collector_error", "Failed to collect files: "+err.Error())
+		writeError(w, r, CodeInternalError)
 		return
 	}
 
-	if len(files) == 0 {
-		respondError(w, http.StatusNotFound, "no_files", "No files found in package '"+req.PackageID+"'")
-		return
-	}
-
-	// 8. Run checks
-	messages := utils.ApplyAllChecks(pcConfigCopy, files, true)
-
-	// 9. Format results as JSON
-	formatter := jsonformatter.NewJSONFormatter()
-	jsonResult, err := formatter.FormatResults(req.PackageID, "CkanCollector", messages, len(files), helpers.PDFTracker.Files)
-	if err != nil {
-		respondError(w, http.StatusInternalServerError, "format_error", "Failed to format results: "+err.Error())
-		return
-	}
-
-	// 10. Return JSON response directly (already formatted)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(jsonResult))
+	w.Write(body)
 }
 
-// Helper functions for JSON responses
+// runAnalysis performs the global-state-touching part of an analysis under
+// analysisMu and returns the formatted JSON body. On failure it returns an empty
+// body and a non-empty error catalogue code for the caller to render. Holding
+// analysisMu across the reset, the collect/check work, and the PDFTracker
+// snapshot read keeps the process-global GlobalLogger/PDFTracker from leaking or
+// racing across concurrent requests (§6, §9).
+func (h *Handler) runAnalysis(packageID, token string) (string, string) {
+	h.analysisMu.Lock()
+	defer h.analysisMu.Unlock()
+
+	// Per-request reset of process-global state. GlobalLogger buffers check
+	// Messages and PDFTracker accumulates PDF notes; both leak/race across
+	// requests if not cleared at the start of each analysis (§6, §9).
+	output.GlobalLogger.ClearMessages()
+	helpers.PDFTracker.Reset()
+
+	// Deep-copy the PC config (and the CkanCollector Attrs map) per request so
+	// one request's token can never bleed into another's analysis (§9).
+	pcConfigCopy := deepCopyConfigForRequest(h.pcConfig, token)
+
+	// Collect files from CKAN.
+	files, err := collectors.CkanCollector(packageID, pcConfigCopy)
+	if err != nil {
+		return "", CodeCKANUnavailable
+	}
+	if len(files) == 0 {
+		return "", CodePackageNotFound
+	}
+
+	// Run checks (accumulates into GlobalLogger / PDFTracker).
+	messages := utils.ApplyAllChecks(pcConfigCopy, files, true)
+
+	// Format results as JSON. PDFTracker.SnapshotFiles takes a locked copy; we
+	// also still hold analysisMu, so no concurrent reset/append can intervene.
+	formatter := jsonformatter.NewJSONFormatter()
+	jsonResult, err := formatter.FormatResults(packageID, "CkanCollector", messages, len(files), helpers.PDFTracker.SnapshotFiles())
+	if err != nil {
+		return "", CodeInternalError
+	}
+	return jsonResult, ""
+}
+
+// deepCopyConfigForRequest returns a copy of pcConfig safe for concurrent use
+// by a single request: the Collectors map and the CkanCollector Attrs map are
+// duplicated so the per-request token override never mutates shared state.
+func deepCopyConfigForRequest(pcConfig *config.Config, token string) config.Config {
+	cfgCopy := *pcConfig
+
+	// Deep-copy the Collectors map so we don't share it with other requests.
+	newCollectors := make(map[string]*config.CollectorConfig, len(pcConfig.Collectors))
+	for name, cc := range pcConfig.Collectors {
+		newAttrs := make(map[string]interface{}, len(cc.Attrs))
+		for k, v := range cc.Attrs {
+			newAttrs[k] = v
+		}
+		newCollectors[name] = &config.CollectorConfig{Attrs: newAttrs}
+	}
+	cfgCopy.Collectors = newCollectors
+
+	// Override the CkanCollector token for this request only.
+	if ckanCollector, ok := cfgCopy.Collectors["CkanCollector"]; ok {
+		ckanCollector.Attrs["token"] = token
+	}
+
+	return cfgCopy
+}
+
+// withRequestID injects request_id into an already-formatted JSON object,
+// preserving the existing shape (additive only).
+func withRequestID(jsonResult, requestID string) ([]byte, error) {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(jsonResult), &obj); err != nil {
+		return nil, err
+	}
+	idBytes, err := json.Marshal(requestID)
+	if err != nil {
+		return nil, err
+	}
+	obj["request_id"] = idBytes
+	return json.Marshal(obj)
+}
+
+// respondJSON writes a JSON body with the given status.
 func respondJSON(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(data)
-}
-
-func respondError(w http.ResponseWriter, status int, code, message string) {
-	respondJSON(w, status, ErrorResponse{
-		Error: message,
-		Code:  code,
-	})
 }

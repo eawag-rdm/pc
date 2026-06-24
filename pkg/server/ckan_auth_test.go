@@ -100,18 +100,31 @@ func TestVerifyCKANAccess_EmptyPackageID(t *testing.T) {
 	}
 }
 
-func TestVerifyCKANAccess_EmptyToken(t *testing.T) {
-	err := VerifyCKANAccess("https://ckan.example.com", "test-package", "", true)
-	if err == nil {
-		t.Error("Expected error for empty token")
-	}
+// TestVerifyCKANAccess_EmptyToken_PublicPath asserts the public-package path:
+// an empty token is NOT short-circuited with a 401. It is forwarded to CKAN
+// (here, an empty Authorization header), and a public package that CKAN serves
+// 200 verifies successfully. Guarding on token=="" would 401 every anonymous
+// request and the public path would never reach the collector (§2, §3).
+func TestVerifyCKANAccess_EmptyToken_PublicPath(t *testing.T) {
+	var gotAuth string
+	var sawCall bool
+	mockCKAN := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawCall = true
+		gotAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"success": true, "result": {}}`))
+	}))
+	defer mockCKAN.Close()
 
-	if statusCode, isAuthErr := IsCKANAuthError(err); isAuthErr {
-		if statusCode != http.StatusUnauthorized {
-			t.Errorf("Expected status 401, got %d", statusCode)
-		}
-	} else {
-		t.Error("Expected CKANAuthError for empty token")
+	err := VerifyCKANAccess(mockCKAN.URL, "public-package", "", false)
+	if err != nil {
+		t.Fatalf("empty token on public package must not error, got %v", err)
+	}
+	if !sawCall {
+		t.Error("expected the empty-token request to reach CKAN, but it short-circuited")
+	}
+	if gotAuth != "" {
+		t.Errorf("expected empty Authorization header forwarded to CKAN, got %q", gotAuth)
 	}
 }
 

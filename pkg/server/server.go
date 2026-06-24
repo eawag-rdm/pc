@@ -4,10 +4,13 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/eawag-rdm/pc/pkg/config"
+	"github.com/eawag-rdm/pc/pkg/output"
 )
 
 // Server wraps the HTTP server with PC functionality
@@ -31,8 +34,15 @@ func New(cfg Config) (*Server, error) {
 		return nil, fmt.Errorf("failed to load PC config: %w", err)
 	}
 
+	// slog JSON handler to stdout for request/access logging (§8). Check
+	// Messages are NOT routed through this; they stay in GlobalLogger, which is
+	// switched to JSON mode so per-request messages are buffered (and cleared at
+	// the top of each request) instead of printed to stdout.
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	output.GlobalLogger.SetJSONMode(true)
+
 	// Create handler
-	handler := NewHandler(pcConfig, cfg)
+	handler := NewHandler(pcConfig, cfg, logger)
 
 	// Set up routes
 	mux := http.NewServeMux()
@@ -40,11 +50,11 @@ func New(cfg Config) (*Server, error) {
 	// Health endpoint (no auth required)
 	mux.HandleFunc("GET /health", handler.Health)
 
-	// Analyze endpoint (auth required - token extraction middleware)
+	// Analyze endpoint (token extraction is optional - see ExtractToken).
 	mux.HandleFunc("POST /api/v1/analyze", ExtractToken(handler.Analyze))
 
-	// Wrap with logging middleware
-	loggedMux := LoggingMiddleware(mux)
+	// Middleware chain (outer -> inner): request_id -> access-log -> routes.
+	loggedMux := handler.RequestContext(handler.AccessLog(mux))
 
 	return &Server{
 		httpServer: &http.Server{
