@@ -30,6 +30,12 @@ type readinessChecker struct {
 	ready     bool
 	checkedAt time.Time
 	hasResult bool
+	// inFlight is set while a single goroutine is running the (unlocked) probe on
+	// behalf of all callers. It is the singleflight guard that prevents a
+	// lock-convoy / thundering herd on cache expiry: only the goroutine that flips
+	// it false->true probes; concurrent callers return the last known verdict
+	// instead of piling up behind the blocking probe.
+	inFlight bool
 
 	// ttl is the cache lifetime; now is the injectable clock.
 	ttl time.Duration
@@ -54,7 +60,12 @@ func newReadinessChecker(h *Handler) *readinessChecker {
 }
 
 // isReady returns the (possibly cached) readiness verdict. A fresh cached result
-// is returned without re-probing; otherwise it runs the probe and caches it.
+// is returned without re-probing. On expiry, exactly ONE caller runs the
+// (blocking) probe while holding NO lock; every other concurrent caller returns
+// the last known verdict immediately. The lock is held only for the brief
+// read-the-cache / publish-the-verdict windows, never across the probe — so a
+// burst of /ready polls hitting an expired cache cannot form a lock-convoy
+// behind the CKAN round-trip + storage stat.
 //
 // The probe deliberately runs under a fresh context.Background() rather than the
 // caller's request context: the readiness of the instance is a property of CKAN
@@ -66,17 +77,32 @@ func newReadinessChecker(h *Handler) *readinessChecker {
 // dropping the caller's deadline does not let a hung CKAN block indefinitely.
 func (rc *readinessChecker) isReady() bool {
 	rc.mu.Lock()
-	defer rc.mu.Unlock()
-
 	now := rc.now()
-	if rc.hasResult && now.Sub(rc.checkedAt) < rc.ttl {
-		return rc.ready
+	fresh := rc.hasResult && now.Sub(rc.checkedAt) < rc.ttl
+	if fresh || rc.inFlight {
+		// Either the cache is fresh, or another goroutine is already refreshing it.
+		// In both cases return the last known verdict without blocking. Before the
+		// very first probe completes (hasResult == false) this returns the zero
+		// value (not ready), which is the correct conservative default.
+		ready := rc.ready
+		rc.mu.Unlock()
+		return ready
 	}
 
-	rc.ready = rc.probe(context.Background())
-	rc.checkedAt = now
+	// We are the elected prober: run the probe with the lock released so other
+	// /ready callers are never serialized behind it.
+	rc.inFlight = true
+	rc.mu.Unlock()
+
+	verdict := rc.probe(context.Background())
+
+	rc.mu.Lock()
+	rc.ready = verdict
+	rc.checkedAt = rc.now()
 	rc.hasResult = true
-	return rc.ready
+	rc.inFlight = false
+	rc.mu.Unlock()
+	return verdict
 }
 
 // probeCKAN reports whether the CKAN Action API is reachable. It issues a short,

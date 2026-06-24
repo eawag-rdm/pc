@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -176,6 +177,92 @@ func TestReady_Caches(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&probes); got != 2 {
 		t.Fatalf("expected a re-probe after TTL, got %d probes", got)
+	}
+}
+
+// TestReady_ConcurrentNoConvoy is the regression guard for the lock-convoy bug:
+// when many /ready polls hit an expired cache at once, callers must NOT serialize
+// behind the blocking probe while holding the cache mutex. We use a probe that
+// blocks until released and asserts (a) at most ONE goroutine is ever inside the
+// probe at a time (singleflight), and (b) the flood of concurrent callers returns
+// promptly (no deadlock / convoy) — most of them without waiting for the probe.
+// Must be correct under -race.
+func TestReady_ConcurrentNoConvoy(t *testing.T) {
+	const callers = 64
+
+	var inProbe int32    // current goroutines inside the probe
+	var maxInProbe int32 // high-water mark of concurrent probers
+	var probeCount int32 // total probe invocations
+	probeEntered := make(chan struct{}, 1)
+	releaseProbe := make(chan struct{})
+
+	rc := &readinessChecker{
+		ttl: readinessTTL,
+		now: time.Now,
+		probe: func(ctx context.Context) bool {
+			atomic.AddInt32(&probeCount, 1)
+			n := atomic.AddInt32(&inProbe, 1)
+			for {
+				old := atomic.LoadInt32(&maxInProbe)
+				if n <= old || atomic.CompareAndSwapInt32(&maxInProbe, old, n) {
+					break
+				}
+			}
+			// Signal that a probe is in flight (non-blocking; only the first matters).
+			select {
+			case probeEntered <- struct{}{}:
+			default:
+			}
+			<-releaseProbe // hold the probe so concurrent callers must not block on it
+			atomic.AddInt32(&inProbe, -1)
+			return true
+		},
+	}
+
+	// Fire one caller first so a probe is guaranteed in flight, then flood the
+	// rest while it is still blocked. The cache is empty, so the first caller is
+	// the elected prober; the others must return immediately with the (zero,
+	// not-ready) last-known verdict rather than convoying.
+	results := make(chan bool, callers)
+	go func() { results <- rc.isReady() }()
+	<-probeEntered // the elected prober is now blocked inside probe()
+
+	done := make(chan struct{})
+	go func() {
+		var wg sync.WaitGroup
+		for i := 0; i < callers-1; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				results <- rc.isReady()
+			}()
+		}
+		wg.Wait()
+		close(done)
+	}()
+
+	// The flood of concurrent callers must finish WITHOUT the probe being
+	// released — proving they did not serialize behind it.
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		close(releaseProbe)
+		t.Fatal("lock-convoy: concurrent /ready callers blocked behind the in-flight probe")
+	}
+
+	// Only one probe should be in flight; release it and let the first caller
+	// return.
+	close(releaseProbe)
+	<-results
+	for i := 0; i < callers-1; i++ {
+		<-results
+	}
+
+	if got := atomic.LoadInt32(&maxInProbe); got > 1 {
+		t.Fatalf("singleflight violated: %d concurrent probes (want <= 1)", got)
+	}
+	if got := atomic.LoadInt32(&probeCount); got < 1 {
+		t.Fatalf("expected at least one probe, got %d", got)
 	}
 }
 

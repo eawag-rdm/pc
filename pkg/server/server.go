@@ -34,6 +34,14 @@ func New(cfg Config) (*Server, error) {
 		return nil, fmt.Errorf("failed to load PC config: %w", err)
 	}
 
+	// Fail fast at boot if the required CkanCollector attrs are missing or
+	// wrong-typed (spec §5): otherwise a bad/absent TOML key only surfaces as an
+	// opaque internal_error 500 on the FIRST /analyze request. Catching it here
+	// gives the operator a clear, actionable error before the server starts.
+	if err := validateCkanCollector(pcConfig); err != nil {
+		return nil, fmt.Errorf("invalid PC config: %w", err)
+	}
+
 	// slog JSON handler to stdout for request/access logging (§8). Check
 	// Messages are NOT routed through this; they stay in GlobalLogger, which is
 	// switched to JSON mode so per-request messages are buffered (and cleared at

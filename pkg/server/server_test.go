@@ -29,6 +29,31 @@ func newTestServerConfig(t *testing.T, addr, ckanURL, storagePath string) Config
 	return Config{Address: addr, ConfigPath: path}
 }
 
+// TestNew_MissingCkanAttr_FailsAtBoot asserts that an incomplete
+// [collector.CkanCollector] section makes server.New fail at startup with a clear
+// error, rather than booting and surfacing the problem as a per-request
+// internal_error 500 (spec §5 fail-fast).
+func TestNew_MissingCkanAttr_FailsAtBoot(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/pc.toml"
+	// A CkanCollector with url + token + verify but NO ckan_storage_path:
+	// previously this booted and only failed when /analyze called the collector.
+	contents := "" +
+		"[collector.CkanCollector]\n" +
+		"attrs = {url = \"http://127.0.0.1:1\", token = \"\", verify = false}\n"
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, err := New(Config{Address: "127.0.0.1:0", ConfigPath: path})
+	if err == nil {
+		t.Fatal("expected New to fail at boot for missing CkanCollector attrs")
+	}
+	if !strings.Contains(err.Error(), "ckan_storage_path") {
+		t.Errorf("startup error should name the missing attr, got: %v", err)
+	}
+}
+
 // TestServer_BindFailure_ReturnsError asserts that ListenAndServe returns a
 // non-ErrServerClosed error when the listen address cannot be bound (e.g. the
 // port is already in use), so main can exit non-zero instead of hanging on the
