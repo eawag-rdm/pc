@@ -186,40 +186,31 @@ func TestMessage_TestNameField(t *testing.T) {
 
 func TestMessage_SkippedFields(t *testing.T) {
 	file := File{Name: "big.bin", Path: "/path/to/big.bin"}
-
 	reason := "Skipped content scan of file: file size (5 bytes) exceeds maximum (1 bytes)."
-	message := Message{
-		Content:  reason,
-		Source:   file,
-		TestName: "IsFreeOfKeywords",
-		Skipped:  true,
-		Reason:   reason,
-	}
 
-	if !message.Skipped {
-		t.Error("Expected Skipped to be true")
-	}
-	if message.Reason != reason {
-		t.Errorf("Expected Reason '%s', got '%s'", reason, message.Reason)
-	}
+	skipped := Message{Content: reason, Source: file, TestName: "IsFreeOfKeywords", Skipped: true, Reason: reason}
+	plain := Message{Content: reason, Source: file, TestName: "IsFreeOfKeywords"}
 
-	// Format() must still behave like any other File-sourced message; the skip
-	// flag does not change the rendered text.
-	formatted := message.Format()
-	expected := "- File issue in 'big.bin': " + reason
-	if formatted != expected {
-		t.Errorf("Expected '%s', got '%s'", expected, formatted)
+	// The skip metadata is carried for downstream routing (the JSON skipped[]),
+	// but must NOT leak into the human-rendered text: a skipped message has to
+	// render identically to an ordinary file-sourced message.
+	if got, want := skipped.Format(), plain.Format(); got != want {
+		t.Errorf("skip flag changed Format() output: got %q, want %q", got, want)
+	}
+	if got, want := skipped.Format(), "- File issue in 'big.bin': "+reason; got != want {
+		t.Errorf("Format() = %q, want %q", got, want)
 	}
 }
 
 func TestMessage_NonSkipDefaults(t *testing.T) {
-	// Zero-value Message must default to a non-skip message with empty Reason.
-	message := Message{Content: "x", Source: File{Name: "a.txt"}}
+	// The zero value of Message must be a non-skip message (Skipped false, empty
+	// Reason) so ordinary check output is never mis-routed as a size-skip.
+	var message Message
 	if message.Skipped {
-		t.Error("Expected Skipped to default to false")
+		t.Error("zero-value Message.Skipped must be false")
 	}
 	if message.Reason != "" {
-		t.Errorf("Expected empty Reason by default, got '%s'", message.Reason)
+		t.Errorf("zero-value Message.Reason must be empty, got %q", message.Reason)
 	}
 }
 
