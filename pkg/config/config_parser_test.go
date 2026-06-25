@@ -361,4 +361,41 @@ func TestParseServerConfig(t *testing.T) {
 		assert.NoError(t, err)
 		assert.Equal(t, 2.0, config.Server.BurstFactor)
 	})
+
+	t.Run("SMTPDefaultsWhenAbsent", func(t *testing.T) {
+		tomlContent := `
+		[test.test1]
+		blacklist = []
+		`
+		configFile := createTempConfigFile(t, tomlContent)
+		defer os.Remove(configFile)
+
+		config, err := ParseConfig(configFile)
+		assert.NoError(t, err)
+		// SMTP defaults: port 25, no host/from/to (alerts disabled).
+		assert.NotNil(t, config.Server.SMTP)
+		assert.Equal(t, "", config.Server.SMTP.Host)
+		assert.Equal(t, DefaultServerSMTPPort, config.Server.SMTP.Port)
+		assert.Equal(t, "", config.Server.SMTP.From)
+		assert.Nil(t, config.Server.SMTP.To)
+	})
+
+	t.Run("SMTPOverriddenWhenPresent", func(t *testing.T) {
+		tomlContent := `
+		[server.smtp]
+		host = "smtp.example.org"
+		port = 587
+		from = "alerts@example.org"
+		to   = ["admin1@example.org", "admin2@example.org"]
+		`
+		configFile := createTempConfigFile(t, tomlContent)
+		defer os.Remove(configFile)
+
+		config, err := ParseConfig(configFile)
+		assert.NoError(t, err)
+		assert.Equal(t, "smtp.example.org", config.Server.SMTP.Host)
+		assert.Equal(t, 587, config.Server.SMTP.Port)
+		assert.Equal(t, "alerts@example.org", config.Server.SMTP.From)
+		assert.Equal(t, []string{"admin1@example.org", "admin2@example.org"}, config.Server.SMTP.To)
+	})
 }

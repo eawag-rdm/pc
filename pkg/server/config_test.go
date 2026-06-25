@@ -280,6 +280,34 @@ func TestValidateServerSettings(t *testing.T) {
 		{name: "valid CIDR list", addr: "127.0.0.1:8080", mutate: func(s *config.ServerConfig) { s.TrustedProxies = []string{"10.0.0.0/8", "::1/128"} }, wantErr: false},
 		{name: "invalid origin (no scheme)", addr: "127.0.0.1:8080", mutate: func(s *config.ServerConfig) { s.AllowedOrigins = []string{"app.example.org"} }, wantErr: true},
 		{name: "empty origins allowed", addr: "127.0.0.1:8080", mutate: func(s *config.ServerConfig) { s.AllowedOrigins = nil }, wantErr: false},
+		{name: "smtp nil (disabled) allowed", addr: "127.0.0.1:8080", mutate: func(s *config.ServerConfig) { s.SMTP = nil }, wantErr: false},
+		{name: "smtp disabled (empty host) allowed even with empty from/to", addr: "127.0.0.1:8080", mutate: func(s *config.ServerConfig) {
+			s.SMTP = &config.SMTPConfig{Host: "", Port: 0, From: "", To: nil}
+		}, wantErr: false},
+		{name: "smtp enabled valid", addr: "127.0.0.1:8080", mutate: func(s *config.ServerConfig) {
+			s.SMTP = &config.SMTPConfig{Host: "smtp.example.org", Port: 25, From: "alerts@example.org", To: []string{"admin@example.org"}}
+		}, wantErr: false},
+		{name: "smtp enabled multiple recipients valid", addr: "127.0.0.1:8080", mutate: func(s *config.ServerConfig) {
+			s.SMTP = &config.SMTPConfig{Host: "smtp.example.org", Port: 587, From: "alerts@example.org", To: []string{"a@example.org", "b@example.org"}}
+		}, wantErr: false},
+		{name: "smtp enabled port too low", addr: "127.0.0.1:8080", mutate: func(s *config.ServerConfig) {
+			s.SMTP = &config.SMTPConfig{Host: "smtp.example.org", Port: 0, From: "alerts@example.org", To: []string{"admin@example.org"}}
+		}, wantErr: true},
+		{name: "smtp enabled port too high", addr: "127.0.0.1:8080", mutate: func(s *config.ServerConfig) {
+			s.SMTP = &config.SMTPConfig{Host: "smtp.example.org", Port: 70000, From: "alerts@example.org", To: []string{"admin@example.org"}}
+		}, wantErr: true},
+		{name: "smtp enabled bad from", addr: "127.0.0.1:8080", mutate: func(s *config.ServerConfig) {
+			s.SMTP = &config.SMTPConfig{Host: "smtp.example.org", Port: 25, From: "not-an-email", To: []string{"admin@example.org"}}
+		}, wantErr: true},
+		{name: "smtp enabled empty from", addr: "127.0.0.1:8080", mutate: func(s *config.ServerConfig) {
+			s.SMTP = &config.SMTPConfig{Host: "smtp.example.org", Port: 25, From: "", To: []string{"admin@example.org"}}
+		}, wantErr: true},
+		{name: "smtp enabled empty to", addr: "127.0.0.1:8080", mutate: func(s *config.ServerConfig) {
+			s.SMTP = &config.SMTPConfig{Host: "smtp.example.org", Port: 25, From: "alerts@example.org", To: nil}
+		}, wantErr: true},
+		{name: "smtp enabled bad to entry", addr: "127.0.0.1:8080", mutate: func(s *config.ServerConfig) {
+			s.SMTP = &config.SMTPConfig{Host: "smtp.example.org", Port: 25, From: "alerts@example.org", To: []string{"admin@example.org", "broken"}}
+		}, wantErr: true},
 	}
 
 	for _, tt := range tests {

@@ -3,6 +3,7 @@ package server
 import (
 	"fmt"
 	"net"
+	"net/mail"
 	"net/url"
 	"strings"
 
@@ -105,6 +106,27 @@ func validateServerSettings(pcConfig *config.Config, addr string) error {
 		u, err := url.Parse(origin)
 		if err != nil || u.Scheme == "" || u.Host == "" {
 			return fmt.Errorf("server allowedOrigins entry %q is not a valid origin URL (e.g. https://app.example.org)", origin)
+		}
+	}
+
+	// SMTP admin alerts: validate only when ENABLED (host set). An empty host
+	// disables alerts, so from/to are not required and are not checked. When the
+	// host IS set, the relay must be fully usable so a fault always reaches the
+	// admins rather than silently failing at send time.
+	if s.SMTP != nil && strings.TrimSpace(s.SMTP.Host) != "" {
+		if s.SMTP.Port < 1 || s.SMTP.Port > 65535 {
+			return fmt.Errorf("server smtp port must be between 1 and 65535, got %d", s.SMTP.Port)
+		}
+		if _, err := mail.ParseAddress(s.SMTP.From); err != nil {
+			return fmt.Errorf("server smtp from %q is not a valid email address", s.SMTP.From)
+		}
+		if len(s.SMTP.To) == 0 {
+			return fmt.Errorf("server smtp to requires at least one recipient when smtp host is set")
+		}
+		for _, addr := range s.SMTP.To {
+			if _, err := mail.ParseAddress(addr); err != nil {
+				return fmt.Errorf("server smtp to entry %q is not a valid email address", addr)
+			}
 		}
 	}
 

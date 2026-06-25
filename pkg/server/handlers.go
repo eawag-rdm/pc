@@ -87,6 +87,12 @@ type Handler struct {
 	// requests are rejected with server_restarting (503) so in-flight analyses
 	// can drain (§9).
 	draining atomic.Bool
+
+	// alerter emails the admin list when the server returns a server-fault
+	// response (internal_error, a recovered panic, or resource_unreadable). It is
+	// nil when [server.smtp] is disabled (no host or no recipients); Notify/Close
+	// are nil-safe, so a nil alerter is simply a no-op.
+	alerter *alerter
 }
 
 // NewHandler creates a new handler with the given configuration. The slog
@@ -97,6 +103,7 @@ func NewHandler(pcConfig *config.Config, serverCfg Config, logger *slog.Logger) 
 	var limiter *rateLimiter
 	var sem chan struct{}
 	var allowedOrigins []string
+	var alerter *alerter
 	// The analysis gate is ALWAYS concurrency = 1 for race-safety: only one
 	// analysis may touch the process-global GlobalLogger/PDFTracker at a time
 	// (§4/§9). The busy-wait duration is configurable; the capacity is not.
@@ -121,6 +128,11 @@ func NewHandler(pcConfig *config.Config, serverCfg Config, logger *slog.Logger) 
 			busyWait = time.Duration(s.AnalysisBusyWaitSeconds) * time.Second
 		}
 		sem = make(chan struct{}, 1)
+
+		// Admin alerts: nil unless [server.smtp] is configured (host + recipients).
+		// newAlerter returns nil when disabled, so the alerter stays nil on the
+		// handler-isolation path (pcConfig/Server nil) as well.
+		alerter = newAlerter(s.SMTP, logger)
 	}
 
 	h := &Handler{
@@ -133,6 +145,7 @@ func NewHandler(pcConfig *config.Config, serverCfg Config, logger *slog.Logger) 
 		sem:              sem,
 		analysisBusyWait: busyWait,
 		allowedOrigins:   allowedOrigins,
+		alerter:          alerter,
 	}
 	h.readiness = newReadinessChecker(h)
 	return h

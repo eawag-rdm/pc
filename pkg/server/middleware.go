@@ -28,6 +28,11 @@ const (
 	// work: the handler's r.WithContext reassignment is local to the handler and
 	// never propagates up to the request the access-log middleware holds.
 	packageIDKey contextKey = "package_id"
+	// alerterKey is the context key for the handler's admin alerter. RequestContext
+	// stashes it so renderError can fire a server-fault alert without a reference
+	// to the Handler. The stored value may be a typed-nil *alerter (alerts
+	// disabled); the getter and Notify are both nil-safe.
+	alerterKey contextKey = "alerter"
 )
 
 // packageIDHolder is a mutable cell shared between the access-log middleware and
@@ -129,6 +134,21 @@ func getPackageID(r *http.Request) string {
 	return ""
 }
 
+// withAlerter returns a context carrying the handler's admin alerter so
+// renderError can fire a server-fault alert. The alerter may be nil (alerts
+// disabled); storing it anyway keeps alerterFromContext uniform.
+func withAlerter(ctx context.Context, a *alerter) context.Context {
+	return context.WithValue(ctx, alerterKey, a)
+}
+
+// alerterFromContext retrieves the admin alerter from the request context. It
+// tolerates both an absent value and a typed-nil *alerter; Notify is nil-safe,
+// so returning nil simply means "no alert".
+func alerterFromContext(ctx context.Context) *alerter {
+	a, _ := ctx.Value(alerterKey).(*alerter)
+	return a
+}
+
 // RequestContext generates a per-request ULID, propagates it (and the contact
 // suffix) through the request context, and echoes the id in the X-Request-Id
 // header. It is the outermost application middleware so downstream handlers and
@@ -140,6 +160,7 @@ func (h *Handler) RequestContext(next http.Handler) http.Handler {
 
 		ctx := context.WithValue(r.Context(), requestIDKey, requestID)
 		ctx = context.WithValue(ctx, contactKey, h.contactMsg)
+		ctx = withAlerter(ctx, h.alerter)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -365,6 +386,11 @@ func (h *Handler) Recover(next http.Handler) http.Handler {
 					slog.Any("panic", rec),
 					slog.String("stack", string(debug.Stack())),
 				)
+				// Recover is the OUTERMOST middleware, so r's context predates
+				// RequestContext and carries no alerter. Stash it here so renderError
+				// fires the internal_error alert exactly once (no second direct
+				// Notify, to avoid double-sending).
+				r = r.WithContext(withAlerter(r.Context(), h.alerter))
 				writeError(w, r, CodeInternalError)
 			}
 		}()

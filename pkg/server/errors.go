@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"time"
 )
 
 // Error codes for the fixed error catalogue (§3). Every failure rendered to a
@@ -143,4 +144,21 @@ func renderError(w http.ResponseWriter, r *http.Request, code string, status int
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(ErrorResponse{Error: body})
+
+	// After the response is written, email the admin list for server-fault
+	// responses ONLY (internal_error — including a recovered panic — and
+	// resource_unreadable). 4xx and the other 5xx codes (analysis_timeout,
+	// ckan_unavailable, service_busy, ...) are not server faults and never alert.
+	// Notify is non-blocking and nil-safe (a nil alerter = alerts disabled).
+	if code == CodeInternalError || code == CodeResourceUnreadable {
+		a := alerterFromContext(r.Context())
+		a.Notify(alertPayload{
+			RequestID: requestID,
+			Method:    r.Method,
+			Path:      r.URL.Path,
+			PackageID: getPackageID(r),
+			Code:      code,
+			Time:      time.Now(),
+		})
+	}
 }

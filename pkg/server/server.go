@@ -127,5 +127,10 @@ func (s *Server) ListenAndServe() error {
 // which should allow at least the analysis timeout to drain).
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.handler.BeginDraining()
-	return s.httpServer.Shutdown(ctx)
+	err := s.httpServer.Shutdown(ctx)
+	// Close the admin alerter only AFTER Shutdown returns, so in-flight requests
+	// that fault during the drain can still enqueue their alerts. Close is
+	// nil-safe (alerts disabled). The Shutdown error is what we return.
+	s.handler.alerter.Close()
+	return err
 }

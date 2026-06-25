@@ -54,20 +54,38 @@ const (
 	DefaultServerRequestTimeoutSeconds   = 300
 )
 
+// Default values for the [server.smtp] sub-section.
+const (
+	DefaultServerSMTPPort = 25
+)
+
+// SMTPConfig holds the [server.smtp] sub-section: a plain SMTP relay (no auth)
+// used to email admins when the server returns a server-fault response
+// (internal_error, recovered panic, or resource_unreadable). Every such fault
+// is reported — there is no cap. Alerts are DISABLED unless Host is set and To
+// is non-empty.
+type SMTPConfig struct {
+	Host string   // SMTP relay host; empty disables admin alerts
+	Port int      // SMTP relay port (default 25)
+	From string   // From / envelope-sender address for alert mails
+	To   []string // admin recipient addresses
+}
+
 // ServerConfig holds the configuration for the HTTP server (the [server] section).
 type ServerConfig struct {
-	ListenAddress           string   // Address the server listens on (host:port). The server takes no flags; this is the sole source.
-	TrustProxyHeaders       bool     // Whether to trust proxy-set client IP headers
-	TrustedProxies          []string // CIDRs allowed to set X-Real-IP
-	AllowedOrigins          []string // CORS allow-list of origin URLs
-	PerIPRequestsPerHour    int      // Per-IP hourly request budget
-	GlobalRequestsPerHour   int      // Global hourly request budget
-	BurstFactor             float64  // Additional headroom factor applied to budgets
-	AnalysisBusyWaitSeconds int      // Seconds a busy request waits for the analysis gate before 503
-	MaxTrackedRateKeys      int      // Limiter memory bound (max tracked rate keys)
-	ContactMessage          string   // Contact suffix shown in error envelopes
-	LogClientIP             bool     // Whether to log the client IP
-	RequestTimeoutSeconds   int      // Hard upper bound for a request, in seconds
+	ListenAddress           string      // Address the server listens on (host:port). The server takes no flags; this is the sole source.
+	TrustProxyHeaders       bool        // Whether to trust proxy-set client IP headers
+	TrustedProxies          []string    // CIDRs allowed to set X-Real-IP
+	AllowedOrigins          []string    // CORS allow-list of origin URLs
+	PerIPRequestsPerHour    int         // Per-IP hourly request budget
+	GlobalRequestsPerHour   int         // Global hourly request budget
+	BurstFactor             float64     // Additional headroom factor applied to budgets
+	AnalysisBusyWaitSeconds int         // Seconds a busy request waits for the analysis gate before 503
+	MaxTrackedRateKeys      int         // Limiter memory bound (max tracked rate keys)
+	ContactMessage          string      // Contact suffix shown in error envelopes
+	LogClientIP             bool        // Whether to log the client IP
+	RequestTimeoutSeconds   int         // Hard upper bound for a request, in seconds
+	SMTP                    *SMTPConfig // Optional [server.smtp] admin-alert relay (nil-safe; disabled unless Host+To set)
 }
 
 type Config struct {
@@ -107,6 +125,9 @@ func ParseConfig(filename string) (*Config, error) {
 			ContactMessage:          DefaultServerContactMessage,
 			LogClientIP:             DefaultServerLogClientIP,
 			RequestTimeoutSeconds:   DefaultServerRequestTimeoutSeconds,
+			SMTP: &SMTPConfig{
+				Port: DefaultServerSMTPPort,
+			},
 		},
 		Tests:      map[string]*TestConfig{},
 		Operation:  map[string]*OperationConfig{},
@@ -205,6 +226,21 @@ func ParseConfig(filename string) (*Config, error) {
 		}
 		if val, ok := serverData["requestTimeoutSeconds"].(int64); ok {
 			c.Server.RequestTimeoutSeconds = int(val)
+		}
+		// [server.smtp] sub-section: plain relay for admin alerts on server faults.
+		if smtpData, ok := serverData["smtp"].(map[string]interface{}); ok {
+			if host, ok := smtpData["host"].(string); ok {
+				c.Server.SMTP.Host = host
+			}
+			if val, ok := smtpData["port"].(int64); ok {
+				c.Server.SMTP.Port = int(val)
+			}
+			if from, ok := smtpData["from"].(string); ok {
+				c.Server.SMTP.From = from
+			}
+			if to, ok := smtpData["to"].([]interface{}); ok {
+				c.Server.SMTP.To = parseStringSlice(to)
+			}
 		}
 	}
 
