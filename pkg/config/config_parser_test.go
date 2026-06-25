@@ -399,3 +399,226 @@ func TestParseServerConfig(t *testing.T) {
 		assert.Equal(t, []string{"admin1@example.org", "admin2@example.org"}, config.Server.SMTP.To)
 	})
 }
+
+// TestParseServerConfigWrongType verifies that a [server] / [server.smtp] key that
+// is PRESENT but the wrong type fails fast (ParseConfig returns a non-nil error
+// naming the key) instead of being silently skipped and keeping the default.
+func TestParseServerConfigWrongType(t *testing.T) {
+	tests := []struct {
+		name      string
+		toml      string
+		errSubstr string // substring (the key name) the error must mention
+	}{
+		{
+			name: "PerIPRequestsPerHourString",
+			toml: `
+			[server]
+			perIPRequestsPerHour = "4"
+			`,
+			errSubstr: "perIPRequestsPerHour",
+		},
+		{
+			name: "RequestTimeoutSecondsBool",
+			toml: `
+			[server]
+			requestTimeoutSeconds = true
+			`,
+			errSubstr: "requestTimeoutSeconds",
+		},
+		{
+			name: "ListenAddressInt",
+			toml: `
+			[server]
+			listenAddress = 123
+			`,
+			errSubstr: "listenAddress",
+		},
+		{
+			name: "BurstFactorString",
+			toml: `
+			[server]
+			burstFactor = "x"
+			`,
+			errSubstr: "burstFactor",
+		},
+		{
+			name: "TrustProxyHeadersString",
+			toml: `
+			[server]
+			trustProxyHeaders = "yes"
+			`,
+			errSubstr: "trustProxyHeaders",
+		},
+		{
+			name: "GlobalRequestsPerHourString",
+			toml: `
+			[server]
+			globalRequestsPerHour = "20"
+			`,
+			errSubstr: "globalRequestsPerHour",
+		},
+		{
+			name: "AnalysisBusyWaitSecondsString",
+			toml: `
+			[server]
+			analysisBusyWaitSeconds = "2"
+			`,
+			errSubstr: "analysisBusyWaitSeconds",
+		},
+		{
+			name: "MaxTrackedRateKeysFloat",
+			toml: `
+			[server]
+			maxTrackedRateKeys = 1.5
+			`,
+			errSubstr: "maxTrackedRateKeys",
+		},
+		{
+			name: "ContactMessageInt",
+			toml: `
+			[server]
+			contactMessage = 7
+			`,
+			errSubstr: "contactMessage",
+		},
+		{
+			name: "LogClientIPString",
+			toml: `
+			[server]
+			logClientIP = "true"
+			`,
+			errSubstr: "logClientIP",
+		},
+		{
+			name: "TrustedProxiesString",
+			toml: `
+			[server]
+			trustedProxies = "10.0.0.0/8"
+			`,
+			errSubstr: "trustedProxies",
+		},
+		{
+			name: "AllowedOriginsString",
+			toml: `
+			[server]
+			allowedOrigins = "https://a.example.org"
+			`,
+			errSubstr: "allowedOrigins",
+		},
+		{
+			name: "SMTPPortString",
+			toml: `
+			[server.smtp]
+			port = "25"
+			`,
+			errSubstr: "port",
+		},
+		{
+			name: "SMTPHostInt",
+			toml: `
+			[server.smtp]
+			host = 25
+			`,
+			errSubstr: "host",
+		},
+		{
+			name: "SMTPFromInt",
+			toml: `
+			[server.smtp]
+			from = 1
+			`,
+			errSubstr: "from",
+		},
+		{
+			name: "SMTPToString",
+			toml: `
+			[server.smtp]
+			to = "admin@example.org"
+			`,
+			errSubstr: "to",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			configFile := createTempConfigFile(t, tt.toml)
+			defer os.Remove(configFile)
+
+			// ParseConfig must reject the wrong-typed key.
+			config, err := ParseConfig(configFile)
+			assert.Error(t, err)
+			assert.Nil(t, config)
+			if err != nil {
+				assert.Contains(t, err.Error(), tt.errSubstr)
+			}
+
+			// LoadConfig wraps ParseConfig; it must also fail.
+			cfg, lerr := LoadConfig(configFile)
+			assert.Error(t, lerr)
+			assert.Nil(t, cfg)
+		})
+	}
+}
+
+// TestParseServerConfigBurstFactorAcceptsIntAndFloat asserts burstFactor accepts
+// both a TOML float (0.5) and a bare int (1) without error.
+func TestParseServerConfigBurstFactorAcceptsIntAndFloat(t *testing.T) {
+	cases := []struct {
+		name string
+		toml string
+		want float64
+	}{
+		{"Float", "[server]\nburstFactor = 0.5\n", 0.5},
+		{"Int", "[server]\nburstFactor = 1\n", 1.0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			configFile := createTempConfigFile(t, tc.toml)
+			defer os.Remove(configFile)
+
+			config, err := ParseConfig(configFile)
+			assert.NoError(t, err)
+			assert.NotNil(t, config)
+			assert.Equal(t, tc.want, config.Server.BurstFactor)
+		})
+	}
+}
+
+// TestParseServerConfigMissingKeyKeepsDefault confirms a MISSING [server] key
+// still yields the built-in default with no error (only present-but-wrong-typed
+// keys are rejected).
+func TestParseServerConfigMissingKeyKeepsDefault(t *testing.T) {
+	// [server] present but with only one key set; the rest must keep defaults.
+	tomlContent := `
+	[server]
+	listenAddress = "0.0.0.0:9090"
+	`
+	configFile := createTempConfigFile(t, tomlContent)
+	defer os.Remove(configFile)
+
+	config, err := ParseConfig(configFile)
+	assert.NoError(t, err)
+	assert.NotNil(t, config)
+	// Overridden key took effect.
+	assert.Equal(t, "0.0.0.0:9090", config.Server.ListenAddress)
+	// Missing keys keep their defaults.
+	assert.Equal(t, DefaultServerPerIPRequestsPerHour, config.Server.PerIPRequestsPerHour)
+	assert.Equal(t, DefaultServerBurstFactor, config.Server.BurstFactor)
+	assert.Equal(t, DefaultServerRequestTimeoutSeconds, config.Server.RequestTimeoutSeconds)
+	assert.Equal(t, DefaultServerSMTPPort, config.Server.SMTP.Port)
+}
+
+// TestParseShippedConfigsLoad confirms the shipped, correctly-typed configs still
+// parse cleanly after the fail-fast change.
+func TestParseShippedConfigsLoad(t *testing.T) {
+	for _, path := range []string{
+		"../../pc.toml.example",
+		"../../testdata/test_config.toml",
+	} {
+		t.Run(path, func(t *testing.T) {
+			cfg, err := ParseConfig(path)
+			assert.NoError(t, err)
+			assert.NotNil(t, cfg)
+		})
+	}
+}

@@ -185,61 +185,67 @@ func ParseConfig(filename string) (*Config, error) {
 		}
 	}
 
-	// Parse server section
+	// Parse server section. Each [server] / [server.smtp] key is read through a
+	// typed getter that overrides the default only when the key is PRESENT and of
+	// the right type. A present-but-wrong-typed key returns an error (fail fast)
+	// rather than being silently skipped, so an operator who wrong-types a setting
+	// (e.g. perIPRequestsPerHour = "4") is told instead of silently keeping the
+	// default. A missing key leaves the struct-literal default untouched.
 	if serverData, ok := raw["server"].(map[string]interface{}); ok {
-		if listenAddress, ok := serverData["listenAddress"].(string); ok {
-			c.Server.ListenAddress = listenAddress
+		if err := serverString(serverData, "listenAddress", &c.Server.ListenAddress); err != nil {
+			return nil, err
 		}
-		if trustProxyHeaders, ok := serverData["trustProxyHeaders"].(bool); ok {
-			c.Server.TrustProxyHeaders = trustProxyHeaders
+		if err := serverBool(serverData, "trustProxyHeaders", &c.Server.TrustProxyHeaders); err != nil {
+			return nil, err
 		}
-		if trustedProxies, ok := serverData["trustedProxies"].([]interface{}); ok {
-			c.Server.TrustedProxies = parseStringSlice(trustedProxies)
+		if err := serverStringSlice(serverData, "trustedProxies", &c.Server.TrustedProxies, parseStringSlice); err != nil {
+			return nil, err
 		}
-		if allowedOrigins, ok := serverData["allowedOrigins"].([]interface{}); ok {
-			c.Server.AllowedOrigins = parseStringSlice(allowedOrigins)
+		if err := serverStringSlice(serverData, "allowedOrigins", &c.Server.AllowedOrigins, parseStringSlice); err != nil {
+			return nil, err
 		}
-		if val, ok := serverData["perIPRequestsPerHour"].(int64); ok {
-			c.Server.PerIPRequestsPerHour = int(val)
+		if err := serverInt(serverData, "perIPRequestsPerHour", &c.Server.PerIPRequestsPerHour); err != nil {
+			return nil, err
 		}
-		if val, ok := serverData["globalRequestsPerHour"].(int64); ok {
-			c.Server.GlobalRequestsPerHour = int(val)
+		if err := serverInt(serverData, "globalRequestsPerHour", &c.Server.GlobalRequestsPerHour); err != nil {
+			return nil, err
 		}
 		// burstFactor may be expressed as a TOML float (0.5) or a bare int (1, 2).
-		switch val := serverData["burstFactor"].(type) {
-		case float64:
-			c.Server.BurstFactor = val
-		case int64:
-			c.Server.BurstFactor = float64(val)
+		if err := serverFloat(serverData, "burstFactor", &c.Server.BurstFactor); err != nil {
+			return nil, err
 		}
-		if val, ok := serverData["analysisBusyWaitSeconds"].(int64); ok {
-			c.Server.AnalysisBusyWaitSeconds = int(val)
+		if err := serverInt(serverData, "analysisBusyWaitSeconds", &c.Server.AnalysisBusyWaitSeconds); err != nil {
+			return nil, err
 		}
-		if val, ok := serverData["maxTrackedRateKeys"].(int64); ok {
-			c.Server.MaxTrackedRateKeys = int(val)
+		if err := serverInt(serverData, "maxTrackedRateKeys", &c.Server.MaxTrackedRateKeys); err != nil {
+			return nil, err
 		}
-		if contactMessage, ok := serverData["contactMessage"].(string); ok {
-			c.Server.ContactMessage = contactMessage
+		if err := serverString(serverData, "contactMessage", &c.Server.ContactMessage); err != nil {
+			return nil, err
 		}
-		if logClientIP, ok := serverData["logClientIP"].(bool); ok {
-			c.Server.LogClientIP = logClientIP
+		if err := serverBool(serverData, "logClientIP", &c.Server.LogClientIP); err != nil {
+			return nil, err
 		}
-		if val, ok := serverData["requestTimeoutSeconds"].(int64); ok {
-			c.Server.RequestTimeoutSeconds = int(val)
+		if err := serverInt(serverData, "requestTimeoutSeconds", &c.Server.RequestTimeoutSeconds); err != nil {
+			return nil, err
 		}
 		// [server.smtp] sub-section: plain relay for admin alerts on server faults.
-		if smtpData, ok := serverData["smtp"].(map[string]interface{}); ok {
-			if host, ok := smtpData["host"].(string); ok {
-				c.Server.SMTP.Host = host
+		if smtpRaw, present := serverData["smtp"]; present {
+			smtpData, ok := smtpRaw.(map[string]interface{})
+			if !ok {
+				return nil, fmt.Errorf("[server.smtp] must be a table, got %T", smtpRaw)
 			}
-			if val, ok := smtpData["port"].(int64); ok {
-				c.Server.SMTP.Port = int(val)
+			if err := serverString(smtpData, "host", &c.Server.SMTP.Host); err != nil {
+				return nil, err
 			}
-			if from, ok := smtpData["from"].(string); ok {
-				c.Server.SMTP.From = from
+			if err := serverInt(smtpData, "port", &c.Server.SMTP.Port); err != nil {
+				return nil, err
 			}
-			if to, ok := smtpData["to"].([]interface{}); ok {
-				c.Server.SMTP.To = parseStringSlice(to)
+			if err := serverString(smtpData, "from", &c.Server.SMTP.From); err != nil {
+				return nil, err
+			}
+			if err := serverStringSlice(smtpData, "to", &c.Server.SMTP.To, parseStringSlice); err != nil {
+				return nil, err
 			}
 		}
 	}
@@ -295,6 +301,89 @@ func ParseConfig(filename string) (*Config, error) {
 		}
 	}
 	return c, nil
+}
+
+// The serverXxx helpers read a single [server] / [server.smtp] key from the
+// decoded TOML table. Each OVERRIDES *dst only when the key is PRESENT and of the
+// expected type; a missing key is a no-op (the struct-literal default stands). A
+// present-but-wrong-typed key returns a clear error naming the key and expected
+// type, so an operator who wrong-types a setting fails fast at config load rather
+// than silently keeping the default.
+
+// serverString sets *dst when key holds a string; errors if present but not a string.
+func serverString(m map[string]interface{}, key string, dst *string) error {
+	v, ok := m[key]
+	if !ok {
+		return nil
+	}
+	sv, ok := v.(string)
+	if !ok {
+		return fmt.Errorf("[server] %s must be a string, got %T", key, v)
+	}
+	*dst = sv
+	return nil
+}
+
+// serverInt sets *dst when key holds a TOML integer; errors if present but not an integer.
+func serverInt(m map[string]interface{}, key string, dst *int) error {
+	v, ok := m[key]
+	if !ok {
+		return nil
+	}
+	iv, ok := v.(int64)
+	if !ok {
+		return fmt.Errorf("[server] %s must be an integer, got %T", key, v)
+	}
+	*dst = int(iv)
+	return nil
+}
+
+// serverBool sets *dst when key holds a bool; errors if present but not a bool.
+func serverBool(m map[string]interface{}, key string, dst *bool) error {
+	v, ok := m[key]
+	if !ok {
+		return nil
+	}
+	bv, ok := v.(bool)
+	if !ok {
+		return fmt.Errorf("[server] %s must be a boolean, got %T", key, v)
+	}
+	*dst = bv
+	return nil
+}
+
+// serverFloat sets *dst when key holds a TOML float OR a bare integer (so a value
+// like 1 is accepted as 1.0); errors if present but neither.
+func serverFloat(m map[string]interface{}, key string, dst *float64) error {
+	v, ok := m[key]
+	if !ok {
+		return nil
+	}
+	switch fv := v.(type) {
+	case float64:
+		*dst = fv
+	case int64:
+		*dst = float64(fv)
+	default:
+		return fmt.Errorf("[server] %s must be a number, got %T", key, v)
+	}
+	return nil
+}
+
+// serverStringSlice sets *dst when key holds a TOML array; errors if present but
+// not an array. The provided parse func converts the array to []string (mirroring
+// the existing per-element string filtering).
+func serverStringSlice(m map[string]interface{}, key string, dst *[]string, parse func([]interface{}) []string) error {
+	v, ok := m[key]
+	if !ok {
+		return nil
+	}
+	av, ok := v.([]interface{})
+	if !ok {
+		return fmt.Errorf("[server] %s must be an array of strings, got %T", key, v)
+	}
+	*dst = parse(av)
+	return nil
 }
 
 // assesLists checks that there is no overlap between blacklist and whitelist
