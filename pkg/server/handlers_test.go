@@ -134,6 +134,31 @@ func TestHandler_Analyze_NoCKANURL(t *testing.T) {
 // TestErrorCatalogue_StatusAndMessage asserts every catalogue code maps to the
 // correct HTTP status and message, contact is present except for internal_error,
 // and the body request_id equals the X-Request-Id header.
+// allErrorCodes is every code the server can emit. It must stay in sync with the
+// Code* constants in errors.go; TestErrorCatalogue_Complete enforces that each
+// has a catalogue entry (and that the catalogue has no orphan entries), so a new
+// code can never silently render as a fallback internal_error.
+var allErrorCodes = []string{
+	CodeMissingPackage, CodeInvalidPackageName, CodeInvalidRequest,
+	CodeInvalidToken, CodeAccessDenied, CodePackageNotFound,
+	CodeRateLimited, CodeServiceBusy, CodeServiceNotReady, CodeServerRestarting,
+	CodeCKANUnavailable, CodeMalformedResource, CodeAnalysisTimeout,
+	CodeResourceUnreadable, CodeInternalError,
+}
+
+// TestErrorCatalogue_Complete guards the response model: every declared code has
+// exactly one catalogue entry and the catalogue carries no codes beyond those.
+func TestErrorCatalogue_Complete(t *testing.T) {
+	for _, c := range allErrorCodes {
+		if _, ok := errorCatalogue[c]; !ok {
+			t.Errorf("code %q has no errorCatalogue entry (it would render as a fallback internal_error)", c)
+		}
+	}
+	if len(errorCatalogue) != len(allErrorCodes) {
+		t.Errorf("errorCatalogue has %d entries but allErrorCodes lists %d; keep them in sync", len(errorCatalogue), len(allErrorCodes))
+	}
+}
+
 func TestErrorCatalogue_StatusAndMessage(t *testing.T) {
 	const contact = "Custom contact suffix."
 
@@ -275,10 +300,17 @@ func TestHandler_Analyze_NoUploadResources_OK(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected 200 for a package with no upload resources, got %d (body: %s)", rr.Code, rr.Body.String())
 	}
-	// The success body is the scan result with request_id injected.
+	// The success body is the scan result (typed ScanResult shape) with
+	// request_id injected. Assert the stable top-level keys are present so the
+	// success response model is pinned, not just that it's some JSON object.
 	var obj map[string]json.RawMessage
 	if err := json.NewDecoder(rr.Body).Decode(&obj); err != nil {
 		t.Fatalf("failed to decode success body: %v", err)
+	}
+	for _, key := range []string{"request_id", "timestamp", "scanned", "skipped"} {
+		if _, ok := obj[key]; !ok {
+			t.Errorf("success body missing expected key %q; got keys %v", key, mapKeys(obj))
+		}
 	}
 	var gotID string
 	if err := json.Unmarshal(obj["request_id"], &gotID); err != nil {
@@ -287,6 +319,15 @@ func TestHandler_Analyze_NoUploadResources_OK(t *testing.T) {
 	if gotID != "REQ-NOFILES" {
 		t.Errorf("expected request_id REQ-NOFILES, got %q", gotID)
 	}
+}
+
+// mapKeys returns the keys of a decoded JSON object, for test diagnostics.
+func mapKeys(m map[string]json.RawMessage) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
 }
 
 // TestHandler_Analyze_NoTokenBleed proves concurrent requests with different
