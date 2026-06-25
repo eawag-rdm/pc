@@ -34,7 +34,7 @@ func newRequestID() string {
 func encodeULID(buf [16]byte) string {
 	out := make([]byte, 26)
 
-	// The first character only encodes the top 2 bits of the 128-bit value.
+	// The first character only encodes the top 3 bits (so the first symbol is always 0-7).
 	out[0] = ulidAlphabet[(buf[0]&0xE0)>>5]
 	out[1] = ulidAlphabet[buf[0]&0x1F]
 	out[2] = ulidAlphabet[(buf[1]&0xF8)>>3]

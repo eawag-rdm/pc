@@ -122,6 +122,9 @@ func probeCKAN(ctx context.Context, ckanURL string, verifyTLS bool) bool {
 	transport := &http.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: !verifyTLS},
 	}
+	// The transport is local to this probe; close its idle keep-alive connection
+	// to CKAN when we return so it is not leaked until GC reclaims the transport.
+	defer transport.CloseIdleConnections()
 	client := &http.Client{Transport: transport}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ckanURL+"/api/3/action/status_show", nil)

@@ -259,11 +259,13 @@ var crlfStripper = strings.NewReplacer("\r", "", "\n", "")
 
 // buildMessage renders the RFC 5322 alert mail. It contains only non-secret
 // fields; the full cause/stack lives in the server logs, keyed by request_id.
-// Every interpolated field that is request-derived (method, path, package_id)
-// or otherwise dynamic is CR/LF-stripped first: although the routing pins the
-// only fault-producing path to a CRLF-free constant today, sanitising here
-// keeps a future route or input change from turning this into a live
-// header-injection sink.
+// Every interpolated field is CR/LF-stripped first — both the request-derived
+// fields (method, path, package_id) and the operator-config From/To addresses
+// (already validated by mail.ParseAddress at boot, but stripped here for
+// consistency and defence-in-depth). Although the routing pins the only
+// fault-producing path to a CRLF-free constant today, sanitising here keeps a
+// future route or input change from turning this into a live header-injection
+// sink.
 func (a *alerter) buildMessage(p alertPayload) string {
 	code := crlfStripper.Replace(p.Code)
 	requestID := crlfStripper.Replace(p.RequestID)
@@ -274,8 +276,8 @@ func (a *alerter) buildMessage(p alertPayload) string {
 	var b strings.Builder
 	crlf := func(line string) { b.WriteString(line); b.WriteString("\r\n") }
 
-	crlf("From: " + a.from)
-	crlf("To: " + strings.Join(a.to, ", "))
+	crlf("From: " + crlfStripper.Replace(a.from))
+	crlf("To: " + crlfStripper.Replace(strings.Join(a.to, ", ")))
 	crlf(fmt.Sprintf("Subject: [pc-server] %s (request %s)", code, requestID))
 	crlf("Date: " + p.Time.Format(time.RFC1123Z))
 	crlf("Content-Type: text/plain; charset=utf-8")

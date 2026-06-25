@@ -261,7 +261,11 @@ func (h *Handler) RateLimitGlobal(next http.Handler) http.Handler {
 		}
 		ok, count, limit, retryAfter := h.limiter.allow(globalKey, scopeGlobal)
 		if !ok {
-			h.logRateLimited(r, scopeGlobal, hashIPKey(h.limiter.clientIPKey(r)), count, limit, retryAfter)
+			// Log the GLOBAL bucket key (the key the limiter actually counts on for
+			// this scope), not the per-IP key — a scope=global event carrying a
+			// per-IP key is misleading. The per-IP path (RateLimitPerIP) logs its
+			// own clientIPKey.
+			h.logRateLimited(r, scopeGlobal, hashIPKey(globalKey), count, limit, retryAfter)
 			writeRateLimited(w, r, retryAfter)
 			return
 		}
@@ -424,11 +428,15 @@ func (h *Handler) Recover(next http.Handler) http.Handler {
 func (h *Handler) CORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
+		// Vary on Origin UNCONDITIONALLY so a shared cache keys on the request
+		// Origin for every CORS-handled request. Setting it only for allowed
+		// origins would let a cache store a header-less response for a disallowed
+		// origin and replay it to an allowed one (or vice-versa) — a
+		// cache-poisoning vector. It must be set whether or not the origin passes
+		// the allow-list check below.
+		w.Header().Add("Vary", "Origin")
 		if origin != "" && h.originAllowed(origin) {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
-			// Vary on Origin so caches don't serve one origin's CORS headers to
-			// another.
-			w.Header().Add("Vary", "Origin")
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
 			w.Header().Set("Access-Control-Allow-Credentials", "true")
