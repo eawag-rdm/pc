@@ -230,7 +230,7 @@ func TestHTMLOutput(t *testing.T) {
 	}
 
 	htmlStr := string(htmlContent)
-	
+
 	// Verify basic HTML structure
 	if !strings.Contains(htmlStr, "<!DOCTYPE html>") {
 		t.Error("HTML file is missing DOCTYPE declaration")

@@ -4,12 +4,12 @@ import "github.com/eawag-rdm/pc/pkg/output"
 
 // ScanResult represents the JSON structure from PC scanner
 type ScanResult struct {
-	Timestamp             string           `json:"timestamp"`
-	Scanned               []ScannedFile    `json:"scanned"`
-	Skipped               []SkippedFile    `json:"skipped"`
-	DetailsSubjectFocused []SubjectDetails `json:"details_subject_focused"`
-	DetailsCheckFocused   []CheckDetails   `json:"details_check_focused"`
-	PDFFiles              []string         `json:"pdf_files"`
+	Timestamp             string              `json:"timestamp"`
+	Scanned               []ScannedFile       `json:"scanned"`
+	Skipped               []SkippedFile       `json:"skipped"`
+	DetailsSubjectFocused []SubjectDetails    `json:"details_subject_focused"`
+	DetailsCheckFocused   []CheckDetails      `json:"details_check_focused"`
+	PDFFiles              []string            `json:"pdf_files"`
 	Errors                []output.LogMessage `json:"errors"`
 	Warnings              []output.LogMessage `json:"warnings"`
 

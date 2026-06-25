@@ -10,8 +10,8 @@ import (
 // FastMatcher provides high-performance string matching using multiple algorithms
 type FastMatcher struct {
 	patterns      []string
-	lowerPatterns []string   // pre-computed lowercased patterns
-	patternBytes  [][]byte   // pre-computed pattern byte slices for large text search
+	lowerPatterns []string // pre-computed lowercased patterns
+	patternBytes  [][]byte // pre-computed pattern byte slices for large text search
 	maxLen        int
 	minLen        int
 	caseMap       map[string]string // lowercase pattern -> original pattern
@@ -130,7 +130,7 @@ func (fm *FastMatcher) findOriginalCase(text []byte, lowerText []byte, lowerPatt
 		}
 		return lowerPattern
 	}
-	
+
 	// Extract the original case from the text
 	// Ensure we don't go out of bounds
 	endIdx := idx + len(pattern)
@@ -212,7 +212,7 @@ func GetMatcher(patterns []string) *FastMatcher {
 
 	// Create a cache key from patterns
 	key := strings.Join(patterns, "|")
-	
+
 	globalMatcherCache.mutex.RLock()
 	if matcher, exists := globalMatcherCache.cache[key]; exists {
 		globalMatcherCache.mutex.RUnlock()
@@ -222,11 +222,11 @@ func GetMatcher(patterns []string) *FastMatcher {
 
 	// Create new matcher
 	matcher := NewFastMatcher(patterns)
-	
+
 	globalMatcherCache.mutex.Lock()
 	globalMatcherCache.cache[key] = matcher
 	globalMatcherCache.mutex.Unlock()
-	
+
 	return matcher
 }
 
@@ -238,7 +238,7 @@ func FastStringSearch(text []byte, pattern []byte) bool {
 	if len(text) < len(pattern) {
 		return false
 	}
-	
+
 	// Use Go's optimized bytes.Contains for most cases
 	// Go's implementation uses a combination of algorithms including
 	// a form of Boyer-Moore for larger patterns

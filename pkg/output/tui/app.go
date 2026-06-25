@@ -8,9 +8,9 @@ import (
 	"time"
 
 	"github.com/atotto/clipboard"
+	"github.com/eawag-rdm/pc/pkg/output"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
-	"github.com/eawag-rdm/pc/pkg/output"
 )
 
 // copyToClipboardOSC52 uses OSC 52 escape sequence to copy to clipboard.
@@ -30,26 +30,26 @@ func copyToClipboardOSC52(text string) error {
 }
 
 type App struct {
-	app               *tview.Application
-	data              *ScanResult
-	subjectsList      *tview.List
-	checksList        *tview.List
-	leftSections      *tview.TextView // Header bar for Subjects/Checks switching
-	leftContent       *tview.Flex     // Content area for subjects or checks list
-	detailsContent    *tview.TextView // Content for selected section
-	info              *tview.TextView
-	controls          *tview.TextView
-	progressBar       *tview.TextView // Progress bar for scanning
-	flex              *tview.Flex
-	leftPanel         *tview.Flex // Store reference to left panel for dynamic content
-	rightPanel        *tview.Flex // Store reference to right panel for dynamic height
-	currentView       string      // "subjects", "checks", or "details"
-	currentSubject    string // Currently selected subject/check
-	selectedSection   int    // Currently selected details section (0-3)
-	selectedLeftPanel int    // Currently selected left panel (0=subjects, 1=checks)
-	isScanning        bool   // Whether we're currently scanning
-	startupCallback   func() // Called when TUI starts running
-	location          string // Location/path being scanned (for summary)
+	app                              *tview.Application
+	data                             *ScanResult
+	subjectsList                     *tview.List
+	checksList                       *tview.List
+	leftSections                     *tview.TextView // Header bar for Subjects/Checks switching
+	leftContent                      *tview.Flex     // Content area for subjects or checks list
+	detailsContent                   *tview.TextView // Content for selected section
+	info                             *tview.TextView
+	controls                         *tview.TextView
+	progressBar                      *tview.TextView // Progress bar for scanning
+	flex                             *tview.Flex
+	leftPanel                        *tview.Flex     // Store reference to left panel for dynamic content
+	rightPanel                       *tview.Flex     // Store reference to right panel for dynamic height
+	currentView                      string          // "subjects", "checks", or "details"
+	currentSubject                   string          // Currently selected subject/check
+	selectedSection                  int             // Currently selected details section (0-3)
+	selectedLeftPanel                int             // Currently selected left panel (0=subjects, 1=checks)
+	isScanning                       bool            // Whether we're currently scanning
+	startupCallback                  func()          // Called when TUI starts running
+	location                         string          // Location/path being scanned (for summary)
 	summaryModal                     *tview.Flex     // Modal overlay for summary
 	summaryTextView                  *tview.TextView // Scrollable summary content
 	summaryVisible                   bool            // Track modal visibility
@@ -67,7 +67,7 @@ func NewApp(data *ScanResult) *App {
 		data:              data,
 		currentView:       "subjects",
 		selectedSection:   0,
-		selectedLeftPanel: 0, // Start with subjects selected
+		selectedLeftPanel: 0,     // Start with subjects selected
 		isScanning:        false, // Not scanning for regular TUI
 	}
 	app.setupUI()
@@ -87,21 +87,21 @@ func NewScanningApp() *App {
 		Errors:                []output.LogMessage{},
 		Warnings:              []output.LogMessage{},
 	}
-	
+
 	app := &App{
 		app:               tview.NewApplication(),
 		data:              emptyData,
 		currentView:       "subjects",
 		selectedSection:   0,
-		selectedLeftPanel: 0, // Start with subjects selected
+		selectedLeftPanel: 0,    // Start with subjects selected
 		isScanning:        true, // Start in scanning mode
 	}
 	app.setupUI()
-	
+
 	// Set initial scanning message
 	app.updateInfo()
 	app.progressBar.SetText("Preparing to scan...")
-	
+
 	return app
 }
 
@@ -112,7 +112,7 @@ func (a *App) setupUI() {
 	a.leftSections = tview.NewTextView().SetDynamicColors(true).SetWrap(true)
 	a.leftContent = tview.NewFlex().SetDirection(tview.FlexRow)
 	a.detailsContent = tview.NewTextView().SetDynamicColors(true).SetScrollable(true).SetWrap(true)
-	
+
 	// Set up faster scrolling for details content
 	a.detailsContent.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		switch event.Key() {
@@ -144,7 +144,7 @@ func (a *App) setupUI() {
 
 	// Create left panel with all categories (subjects, checks, skipped, warnings, errors)
 	a.leftPanel = tview.NewFlex().SetDirection(tview.FlexRow).
-		AddItem(a.leftSections, 6, 0, false).  // Increased height to accommodate all categories
+		AddItem(a.leftSections, 6, 0, false). // Increased height to accommodate all categories
 		AddItem(a.leftContent, 0, 1, true)
 
 	a.rightPanel = tview.NewFlex().SetDirection(tview.FlexRow).
@@ -153,14 +153,14 @@ func (a *App) setupUI() {
 
 	mainContent := tview.NewFlex().
 		AddItem(a.leftPanel, 0, 1, true).
-		AddItem(a.rightPanel, 0, 1, false)  // Changed ratio to give more space to left panel
+		AddItem(a.rightPanel, 0, 1, false) // Changed ratio to give more space to left panel
 
 	// Main layout - always include progress bar (hidden when not scanning)
 	a.flex = tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(a.controls, 3, 0, false).
 		AddItem(mainContent, 0, 1, false).
 		AddItem(a.progressBar, 3, 0, false)
-	
+
 	// Hide progress bar initially unless scanning
 	if !a.isScanning {
 		a.progressBar.SetText("")
@@ -233,19 +233,19 @@ func (a *App) populateSubjectsList() {
 
 func (a *App) populateChecksList() {
 	a.checksList.Clear()
-	
+
 	// Store check names for selection change handler
 	var checkNames []string
-	
+
 	for _, check := range a.data.DetailsCheckFocused {
 		issueCount := len(check.Issues)
-		
+
 		mainText := fmt.Sprintf("%s (%d)", check.Checkname, issueCount)
-		
+
 		a.checksList.AddItem(mainText, "", 0, nil)
 		checkNames = append(checkNames, check.Checkname)
 	}
-	
+
 	// Set up selection change handler for automatic details update
 	a.checksList.SetChangedFunc(func(index int, mainText, secondaryText string, shortcut rune) {
 		if index >= 0 && index < len(checkNames) {
@@ -308,7 +308,6 @@ func (a *App) updateControls() {
 
 	a.controls.SetText(controls)
 }
-
 
 func (a *App) setupResizeHandler() {
 	// Set up a periodic refresh to check for size changes
@@ -450,14 +449,14 @@ func (a *App) formatSectionsResponsive(sectionTexts []string) (string, int) {
 	// Get the terminal width for the sections area
 	// Use a reasonable default width since detailsSections is removed
 	width := 80
-	
+
 	availableWidth := width - 4 // Account for borders and padding
-	
+
 	// Ensure minimum width
 	if availableWidth < 20 {
 		availableWidth = 60 // Fallback for initialization phase
 	}
-	
+
 	// Remove color codes to calculate actual text length
 	stripColors := func(text string) string {
 		// Simple color stripping - remove [color] and [-:-] patterns
@@ -475,24 +474,24 @@ func (a *App) formatSectionsResponsive(sectionTexts []string) (string, int) {
 		}
 		return result
 	}
-	
+
 	// Try to fit all sections on one line first
 	singleLine := strings.Join(sectionTexts, "  ")
 	if len(stripColors(singleLine)) <= availableWidth {
 		return singleLine, 1
 	}
-	
+
 	// If too wide, wrap to multiple lines
 	lines := []string{}
 	currentLine := ""
-	
+
 	for _, section := range sectionTexts {
 		testLine := currentLine
 		if testLine != "" {
 			testLine += "  "
 		}
 		testLine += section
-		
+
 		if len(stripColors(testLine)) <= availableWidth {
 			currentLine = testLine
 		} else {
@@ -503,16 +502,14 @@ func (a *App) formatSectionsResponsive(sectionTexts []string) (string, int) {
 			currentLine = section
 		}
 	}
-	
+
 	// Add the last line
 	if currentLine != "" {
 		lines = append(lines, currentLine)
 	}
-	
+
 	return strings.Join(lines, "\n"), len(lines)
 }
-
-
 
 func (a *App) populateLeftSections() {
 	sections := []string{"Subjects", "Checks", "PDFs", "Skipped", "Warnings", "Errors"}
@@ -704,7 +701,7 @@ func (a *App) navigateLeftPanelLeft() {
 }
 
 func (a *App) navigateLeftPanelRight() {
-	if a.selectedLeftPanel < 5 {  // Now we have 6 categories (0-5)
+	if a.selectedLeftPanel < 5 { // Now we have 6 categories (0-5)
 		a.selectedLeftPanel++
 		a.populateLeftSections()
 		a.switchToSelectedLeftPanel()
@@ -717,10 +714,10 @@ func (a *App) switchToSelectedLeftPanel() {
 	a.subjectsList.SetBorderColor(tcell.ColorWhite)
 	a.checksList.SetBorderColor(tcell.ColorWhite)
 	a.detailsContent.SetBorderColor(tcell.ColorWhite)
-	
+
 	// Set navigation header to yellow
 	a.leftSections.SetBorderColor(tcell.ColorYellow)
-	
+
 	switch a.selectedLeftPanel {
 	case 0: // Subjects
 		a.currentView = "subjects"
@@ -728,35 +725,35 @@ func (a *App) switchToSelectedLeftPanel() {
 		a.app.SetFocus(a.subjectsList)
 		a.subjectsList.SetBorderColor(tcell.ColorGreen)
 		a.updateDetailsForCurrentSelection()
-		
+
 	case 1: // Checks
 		a.currentView = "checks"
 		a.showChecksPanel()
 		a.app.SetFocus(a.checksList)
 		a.checksList.SetBorderColor(tcell.ColorGreen)
 		a.updateDetailsForCurrentSelection()
-		
+
 	case 2: // PDFs
 		a.currentView = "pdfs"
 		a.showEmptyLeftPanel("PDF Files")
 		a.showPDFsDetails()
 		a.app.SetFocus(a.detailsContent)
 		a.detailsContent.SetBorderColor(tcell.ColorGreen)
-		
+
 	case 3: // Skipped
 		a.currentView = "skipped"
 		a.showEmptyLeftPanel("Skipped Files")
 		a.showSkippedDetails()
 		a.app.SetFocus(a.detailsContent)
 		a.detailsContent.SetBorderColor(tcell.ColorGreen)
-		
+
 	case 4: // Warnings
 		a.currentView = "warnings"
 		a.showEmptyLeftPanel("Warnings")
 		a.showWarningsDetails()
 		a.app.SetFocus(a.detailsContent)
 		a.detailsContent.SetBorderColor(tcell.ColorGreen)
-		
+
 	case 5: // Errors
 		a.currentView = "errors"
 		a.showEmptyLeftPanel("Errors")
@@ -844,8 +841,6 @@ func (a *App) getErrorsContent() string {
 	return sb.String()
 }
 
-
-
 func (a *App) ShowProgressBar() {
 	if !a.isScanning {
 		a.isScanning = true
@@ -869,16 +864,16 @@ func (a *App) UpdateProgress(current, total int, message string) {
 		a.app.QueueUpdateDraw(func() {})
 		return
 	}
-	
+
 	// Ensure current doesn't exceed total
 	if current > total {
 		current = total
 	}
-	
+
 	percentage := float64(current) / float64(total) * 100
 	barWidth := 40 // Width of the progress bar (shorter to fit more text)
 	filledWidth := int(float64(barWidth) * float64(current) / float64(total))
-	
+
 	// Create progress bar visual
 	bar := ""
 	for i := 0; i < barWidth; i++ {
@@ -888,19 +883,19 @@ func (a *App) UpdateProgress(current, total int, message string) {
 			bar += "░"
 		}
 	}
-	
+
 	// Use different colors for completed vs in-progress
 	var progressText string
 	if current == total && current > 0 {
 		// Scan completed - show green
-		progressText = fmt.Sprintf("[yellow]Progress:[white] %d/%d (%.1f%%) [green]%s[white] [green]%s[white]", 
+		progressText = fmt.Sprintf("[yellow]Progress:[white] %d/%d (%.1f%%) [green]%s[white] [green]%s[white]",
 			current, total, percentage, bar, message)
 	} else {
 		// Scan in progress - normal colors
-		progressText = fmt.Sprintf("[yellow]Progress:[white] %d/%d (%.1f%%) [green]%s[white] %s", 
+		progressText = fmt.Sprintf("[yellow]Progress:[white] %d/%d (%.1f%%) [green]%s[white] %s",
 			current, total, percentage, bar, message)
 	}
-	
+
 	a.progressBar.SetText(progressText)
 	a.app.QueueUpdateDraw(func() {})
 }
@@ -1001,13 +996,13 @@ func (a *App) setupSummaryModal() {
 
 	// Create centered modal with padding
 	a.summaryModal = tview.NewFlex().SetDirection(tview.FlexRow).
-		AddItem(nil, 2, 0, false).  // Top padding
+		AddItem(nil, 2, 0, false). // Top padding
 		AddItem(tview.NewFlex().
-			AddItem(nil, 4, 0, false).  // Left padding
+			AddItem(nil, 4, 0, false). // Left padding
 			AddItem(innerFlex, 0, 1, true).
-			AddItem(nil, 4, 0, false),  // Right padding
-		0, 1, true).
-		AddItem(nil, 2, 0, false)  // Bottom padding
+			AddItem(nil, 4, 0, false), // Right padding
+						0, 1, true).
+		AddItem(nil, 2, 0, false) // Bottom padding
 }
 
 // showSummaryModal generates the summary, copies to clipboard, and shows the modal

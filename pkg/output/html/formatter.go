@@ -25,7 +25,6 @@ func (h *HTMLFormatter) GenerateReport(jsonData string, outputPath string) error
 		return fmt.Errorf("failed to parse JSON data: %w", err)
 	}
 
-
 	// Prepare template data - we need to pass the parsed JSON object, not the string
 	templateData := struct {
 		JSONData    template.JS
