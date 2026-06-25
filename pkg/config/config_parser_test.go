@@ -560,6 +560,117 @@ func TestParseServerConfigWrongType(t *testing.T) {
 	}
 }
 
+// TestParseServerConfigSliceElementType verifies that a [server] / [server.smtp]
+// slice key whose CONTAINER is a TOML array but whose ELEMENTS are not all strings
+// fails fast (instead of silently dropping the non-string elements). It also
+// confirms an all-string slice still parses and a missing key keeps the default.
+func TestParseServerConfigSliceElementType(t *testing.T) {
+	t.Run("TrustedProxiesNonStringElement", func(t *testing.T) {
+		tomlContent := `
+		[server]
+		trustedProxies = [1, 2]
+		`
+		configFile := createTempConfigFile(t, tomlContent)
+		defer os.Remove(configFile)
+
+		config, err := ParseConfig(configFile)
+		assert.Error(t, err)
+		assert.Nil(t, config)
+		if err != nil {
+			assert.Contains(t, err.Error(), "trustedProxies")
+		}
+
+		cfg, lerr := LoadConfig(configFile)
+		assert.Error(t, lerr)
+		assert.Nil(t, cfg)
+		if lerr != nil {
+			assert.Contains(t, lerr.Error(), "trustedProxies")
+		}
+	})
+
+	t.Run("AllowedOriginsMixedElement", func(t *testing.T) {
+		tomlContent := `
+		[server]
+		allowedOrigins = ["ok", 5]
+		`
+		configFile := createTempConfigFile(t, tomlContent)
+		defer os.Remove(configFile)
+
+		config, err := ParseConfig(configFile)
+		assert.Error(t, err)
+		assert.Nil(t, config)
+		if err != nil {
+			assert.Contains(t, err.Error(), "allowedOrigins")
+		}
+
+		cfg, lerr := LoadConfig(configFile)
+		assert.Error(t, lerr)
+		assert.Nil(t, cfg)
+		if lerr != nil {
+			assert.Contains(t, lerr.Error(), "allowedOrigins")
+		}
+	})
+
+	t.Run("SMTPToMixedElement", func(t *testing.T) {
+		tomlContent := `
+		[server.smtp]
+		to = ["a@b.c", 7]
+		`
+		configFile := createTempConfigFile(t, tomlContent)
+		defer os.Remove(configFile)
+
+		config, err := ParseConfig(configFile)
+		assert.Error(t, err)
+		assert.Nil(t, config)
+		if err != nil {
+			assert.Contains(t, err.Error(), "to")
+		}
+
+		cfg, lerr := LoadConfig(configFile)
+		assert.Error(t, lerr)
+		assert.Nil(t, cfg)
+		if lerr != nil {
+			assert.Contains(t, lerr.Error(), "to")
+		}
+	})
+
+	t.Run("AllStringSliceParses", func(t *testing.T) {
+		tomlContent := `
+		[server]
+		trustedProxies = ["10.0.0.0/8", "192.168.0.0/16"]
+		allowedOrigins = ["https://a.example.org"]
+
+		[server.smtp]
+		to = ["admin1@example.org", "admin2@example.org"]
+		`
+		configFile := createTempConfigFile(t, tomlContent)
+		defer os.Remove(configFile)
+
+		config, err := ParseConfig(configFile)
+		assert.NoError(t, err)
+		assert.NotNil(t, config)
+		assert.Equal(t, []string{"10.0.0.0/8", "192.168.0.0/16"}, config.Server.TrustedProxies)
+		assert.Equal(t, []string{"https://a.example.org"}, config.Server.AllowedOrigins)
+		assert.Equal(t, []string{"admin1@example.org", "admin2@example.org"}, config.Server.SMTP.To)
+	})
+
+	t.Run("MissingSliceKeyKeepsDefault", func(t *testing.T) {
+		tomlContent := `
+		[server]
+		listenAddress = "0.0.0.0:9090"
+		`
+		configFile := createTempConfigFile(t, tomlContent)
+		defer os.Remove(configFile)
+
+		config, err := ParseConfig(configFile)
+		assert.NoError(t, err)
+		assert.NotNil(t, config)
+		assert.Nil(t, config.Server.TrustedProxies)
+		assert.Nil(t, config.Server.AllowedOrigins)
+		assert.Nil(t, config.Server.SMTP.To)
+	})
+}
+
 // TestParseServerConfigBurstFactorAcceptsIntAndFloat asserts burstFactor accepts
 // both a TOML float (0.5) and a bare int (1) without error.
 func TestParseServerConfigBurstFactorAcceptsIntAndFloat(t *testing.T) {

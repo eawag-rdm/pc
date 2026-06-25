@@ -198,10 +198,10 @@ func ParseConfig(filename string) (*Config, error) {
 		if err := serverBool(serverData, "trustProxyHeaders", &c.Server.TrustProxyHeaders); err != nil {
 			return nil, err
 		}
-		if err := serverStringSlice(serverData, "trustedProxies", &c.Server.TrustedProxies, parseStringSlice); err != nil {
+		if err := serverStringSlice(serverData, "trustedProxies", &c.Server.TrustedProxies); err != nil {
 			return nil, err
 		}
-		if err := serverStringSlice(serverData, "allowedOrigins", &c.Server.AllowedOrigins, parseStringSlice); err != nil {
+		if err := serverStringSlice(serverData, "allowedOrigins", &c.Server.AllowedOrigins); err != nil {
 			return nil, err
 		}
 		if err := serverInt(serverData, "perIPRequestsPerHour", &c.Server.PerIPRequestsPerHour); err != nil {
@@ -244,7 +244,7 @@ func ParseConfig(filename string) (*Config, error) {
 			if err := serverString(smtpData, "from", &c.Server.SMTP.From); err != nil {
 				return nil, err
 			}
-			if err := serverStringSlice(smtpData, "to", &c.Server.SMTP.To, parseStringSlice); err != nil {
+			if err := serverStringSlice(smtpData, "to", &c.Server.SMTP.To); err != nil {
 				return nil, err
 			}
 		}
@@ -370,10 +370,13 @@ func serverFloat(m map[string]interface{}, key string, dst *float64) error {
 	return nil
 }
 
-// serverStringSlice sets *dst when key holds a TOML array; errors if present but
-// not an array. The provided parse func converts the array to []string (mirroring
-// the existing per-element string filtering).
-func serverStringSlice(m map[string]interface{}, key string, dst *[]string, parse func([]interface{}) []string) error {
+// serverStringSlice sets *dst when key holds a TOML array of strings. It errors if
+// the key is present but not an array, OR if any element is not a string. Unlike
+// the lenient shared parseStringSlice (which silently drops non-string elements),
+// this validates every element so an operator typo like trustedProxies = [1, 2]
+// fails fast at config load instead of yielding a silently empty/partial slice. A
+// missing key is a no-op (the struct-literal default stands).
+func serverStringSlice(m map[string]interface{}, key string, dst *[]string) error {
 	v, ok := m[key]
 	if !ok {
 		return nil
@@ -382,7 +385,15 @@ func serverStringSlice(m map[string]interface{}, key string, dst *[]string, pars
 	if !ok {
 		return fmt.Errorf("[server] %s must be an array of strings, got %T", key, v)
 	}
-	*dst = parse(av)
+	result := make([]string, 0, len(av))
+	for _, item := range av {
+		s, ok := item.(string)
+		if !ok {
+			return fmt.Errorf("[server] %s must be an array of strings, got a %T element", key, item)
+		}
+		result = append(result, s)
+	}
+	*dst = result
 	return nil
 }
 
