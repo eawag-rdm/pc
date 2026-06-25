@@ -21,16 +21,24 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" \
 # ---- runtime stage ----
 FROM alpine:3.20
 
+# The non-root user is created with a configurable uid:gid (build args) so it can
+# match the OWNER of the CKAN storage share — set these in docker-compose so the
+# read-only mount is readable. They must not collide with an existing id in the
+# base image (share-owner ids are typically > 1000, which is fine).
+ARG PC_UID=10001
+ARG PC_GID=10001
+
 # ca-certificates: the server calls the CKAN API over HTTPS.
 # (busybox wget, already in alpine, is used by the compose healthcheck.)
-RUN apk add --no-cache ca-certificates && adduser -D -u 10001 pc
+RUN apk add --no-cache ca-certificates && \
+    addgroup -g "${PC_GID}" pc && \
+    adduser -D -u "${PC_UID}" -G pc pc
 
 COPY --from=build /out/pc-server /usr/local/bin/pc-server
 
-# Runs unprivileged. The mounted pc.toml and the CKAN storage share must be
-# READABLE by this user (uid 10001) — or override `user:` in compose to match
-# the share's owner. The listen address comes from [server] listenAddress in the
-# TOML and must bind 0.0.0.0 (not 127.0.0.1) to be reachable from outside.
+# Runs unprivileged as the pc user built above. The listen address comes from
+# [server] listenAddress in the TOML and must bind 0.0.0.0 (not 127.0.0.1) to be
+# reachable from outside the container.
 USER pc
 EXPOSE 8080
 

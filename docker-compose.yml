@@ -13,6 +13,9 @@
 # │                                                                           │
 # │ 3. SMTP — if [server.smtp] is enabled, its host must be reachable from    │
 # │    inside this container's network.                                       │
+# │                                                                           │
+# │ 4. USER — the PC_UID / PC_GID build args (below) bake the server's user;  │
+# │    set them to the CKAN storage share's owner uid:gid so it is readable.   │
 # └─────────────────────────────────────────────────────────────────────────┘
 
 services:
@@ -20,6 +23,13 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        # uid:gid the server runs as. Set these to the OWNER of the CKAN storage
+        # share so the read-only mount is readable. Baked into the image's `pc`
+        # user at build time, so change them here and rebuild (docker compose
+        # build / up --build).
+        PC_UID: "10001"
+        PC_GID: "10001"
     image: pc-server:latest
     restart: unless-stopped
 
@@ -37,9 +47,6 @@ services:
       #    Left side: where the network share is mounted on the host.
       - /mnt/ckan-storage:/nfsmount/ckan/default:ro
 
-    # The server only READS resource files. If the share is not world-readable,
-    # override the user to match the share's owner uid:gid on the host:
-    # user: "1000:1000"
 
     healthcheck:
       # /health is a cheap liveness probe (static 200, no upstream I/O). The URL
