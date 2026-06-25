@@ -36,24 +36,80 @@ service_not_ready`.
 
 | Endpoint | Meaning | Use for |
 |----------|---------|---------|
-| `GET /health` | Cheap static `200`, no I/O | Liveness probe |
-| `GET /ready` | CKAN reachable (cached ~5s) **and** storage mount readable | Readiness probe / LB health check |
+| `GET /health` | Cheap static `200`, no I/O | **Container liveness** (Docker `HEALTHCHECK`) |
+| `GET /ready` | CKAN reachable (cached ~5s) **and** storage mount readable | **Load-balancer / orchestrator readiness gate** |
 
 Both are exempt from rate limiting and the concurrency semaphore, so they are
 safe to poll frequently. `/ready` returns `503` with the `service_not_ready`
 envelope when CKAN or the mount is unavailable; the result is cached for ~5
 seconds to bound upstream load.
 
-Example Docker healthcheck:
+Use the two probes for **different** purposes:
+
+- **`/health` is the container liveness/restart check.** It does no upstream
+  I/O, so a container is never restarted just because CKAN or the storage mount
+  is transiently down. The committed `docker-compose.yml` HEALTHCHECK uses
+  `/health` for exactly this reason.
+- **`/ready` is the readiness gate** consulted by a load balancer or
+  orchestrator to decide whether to *route traffic* to the instance. It returns
+  `503 service_not_ready` while CKAN or the mount is unavailable, so traffic is
+  withheld — but the container is left running, so it recovers on its own once
+  the dependency returns. Do **not** wire `/ready` to a container restart.
+
+Example Docker `HEALTHCHECK` (liveness — matches the committed compose):
 
 ```dockerfile
-HEALTHCHECK --interval=15s --timeout=5s --retries=3 \
-  CMD wget -qO- http://127.0.0.1:8080/ready || exit 1
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 --start-period=5s \
+  CMD wget -qO- http://127.0.0.1:8080/health || exit 1
 ```
+
+The URL port must match the `[server] listenAddress` port in `pc.toml`.
 
 ---
 
-## 3. Logging & retention (Docker log driver)
+## 3. Docker image & compose
+
+A **`Dockerfile`** and a **`docker-compose.yml`** ship in the repository root —
+use them rather than copying the inline snippets here. The `Dockerfile` is a
+minimal multi-stage build (static CGO-off binary on `alpine`) running
+unprivileged; the server is configured **entirely from `pc.toml`** (no flags)
+and the entrypoint reads it from `/etc/pc/pc.toml`.
+
+**Non-root user (`PC_UID` / `PC_GID` build args).** The container runs as a
+non-root `pc` user whose uid:gid is set by the `PC_UID` / `PC_GID` build args
+(default `10001:10001`). Set these to the **owner of the CKAN storage share** so
+the read-only storage mount is readable from inside the container. They are
+baked into the image at build time, so change them in `docker-compose.yml` and
+rebuild (`docker compose build` / `up --build`):
+
+```yaml
+services:
+  pc-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        PC_UID: "10001"   # uid:gid the server runs as — set to the
+        PC_GID: "10001"   # CKAN storage share's owner so the mount is readable
+```
+
+**Listen address must bind `0.0.0.0`.** Inside the container the server is only
+reachable if `[server] listenAddress` binds all interfaces, e.g.
+`listenAddress = "0.0.0.0:8080"` (the default `127.0.0.1:8080` is reachable only
+from inside the container). The **published port must match that port**: the
+container side of `ports:` must equal the `listenAddress` port. Bind on host
+localhost when nginx terminates in front of it (`"127.0.0.1:8080:8080"`, as the
+committed compose does), or use `"8080:8080"` to expose it directly.
+
+**Mounts** (both read-only): `pc.toml` at `/etc/pc/pc.toml`, and the CKAN
+storage share at the path that **equals** `[collector.CkanCollector.attrs]
+ckan_storage_path` in `pc.toml`. The committed compose also sets
+`restart: unless-stopped`, the `/health` healthcheck (§2), the log rotation
+(§4) and `stop_grace_period: 330s` (§7).
+
+---
+
+## 4. Logging & retention (Docker log driver)
 
 `pc-server` writes **structured JSON logs to stdout** (`log/slog`) and does
 **not** write or rotate log files itself. Rotation and retention are the
@@ -69,7 +125,8 @@ docker run \
   ... pc-server
 ```
 
-`docker-compose.yml`:
+`docker-compose.yml` (the committed compose already sets this `logging:`
+block — rotate at 10 MiB, keep 5 files):
 
 ```yaml
 services:
@@ -92,7 +149,7 @@ Notes:
 
 ---
 
-## 4. Reverse proxy (nginx) and `trustedProxies`
+## 5. Reverse proxy (nginx) and `trustedProxies`
 
 The rate limiter keys on the **client IP**. Behind nginx the real client IP
 arrives in a header, so the server reads `X-Real-IP` — but **only** when the
@@ -136,7 +193,45 @@ allowed origin with credentials enabled.
 
 ---
 
-## 5. Graceful shutdown
+## 6. Admin alerts (`[server.smtp]`)
+
+When the server returns a **server-fault** response it can email an admin list.
+This is configured in an optional `[server.smtp]` sub-section:
+
+```toml
+[server.smtp]
+host = "smtp.example.org"        # SMTP relay host; empty/unset disables alerts
+port = 25                        # default 25
+from = "pc-server@example.org"   # From / envelope-sender address
+to   = ["rdm@example.org"]       # admin recipients (>= 1 required when enabled)
+```
+
+It is a **plain SMTP relay with NO authentication** — point it at a relay that
+accepts mail from the container's network.
+
+- **Disabled** unless `host` is set **and** `to` has at least one recipient.
+  With either missing, no alerter is created and faults are only logged.
+- **Validated at boot when enabled** (fail fast): `port` must be `1–65535`, and
+  `from` and every `to` entry must be valid email addresses. A bad value stops
+  the server from starting rather than failing silently at the first fault.
+- **Which responses trigger mail:** only `internal_error` (including a recovered
+  panic) and `resource_unreadable`. 4xx responses and the other 5xx codes
+  (`analysis_timeout`, `ckan_unavailable`, `service_busy`, `service_not_ready`,
+  `server_restarting`) are **not** server faults and never alert. **Every** such
+  fault is reported — there is no rate cap or dedup.
+- **The mail carries no secrets.** It contains only the `request_id`, the error
+  `code`, and the request `method`, `path` and `package_id` — never the token,
+  CKAN URL, raw upstream body, internal file paths or a stack trace. The full
+  cause and stack stay in the server logs, keyed by the same `request_id`.
+
+Delivery is asynchronous (a single background worker, so at most one SMTP
+connection is open at a time) and bounded by a 10s timeout, so a slow or broken
+relay never blocks request handling or shutdown; delivery failures are logged
+(`admin_alert_failed`) but never affect the client response.
+
+---
+
+## 7. Graceful shutdown
 
 On `SIGTERM` / `SIGINT` the server:
 1. flips into **draining** mode — new `POST /api/v1/analyze` requests are
@@ -156,10 +251,21 @@ the process **exits non-zero immediately** rather than hanging.
 
 ---
 
-## 6. HTTP hardening (built in)
+## 8. HTTP hardening (built in)
 
-- `ReadHeaderTimeout` (slowloris guard) and `MaxHeaderBytes` are set.
-- `ReadTimeout` 30s, `WriteTimeout` 300s.
+- `ReadHeaderTimeout` (10s, slowloris guard) and `MaxHeaderBytes` (1 MiB) are
+  set.
+- `ReadTimeout` is 30s.
+- `WriteTimeout` is **not** a fixed value: it is derived from the configured
+  request timeout as `requestTimeoutSeconds + 30s` (a fixed 30s margin). With
+  the default `requestTimeoutSeconds = 300` this is **330s**. It scales with
+  `requestTimeoutSeconds` on purpose, so the socket always outlives the
+  analysis deadline: when the analysis hits its hard timeout the handler writes
+  a clean `analysis_timeout` (504) envelope, and the longer `WriteTimeout`
+  guarantees that 504 can be fully flushed before the socket's write deadline
+  tears the connection down. Raising `requestTimeoutSeconds` automatically
+  raises `WriteTimeout` with it.
 - Request bodies are capped (the analyze body is a tiny JSON object).
 - A panic in any handler is recovered and returned as `internal_error` (500)
-  without crashing the process or leaking a stack trace to the client.
+  without crashing the process or leaking a stack trace to the client (this
+  also fires an admin alert — see §6).
