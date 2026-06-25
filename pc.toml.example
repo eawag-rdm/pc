@@ -102,12 +102,12 @@ to = ["rdm@eawag.ch"]
 collector = "LocalCollector"
 
 [test.HasOnlyASCII]
-# Checking for white spaces in folder and file names.
+# Checking for Non-ASCII characters in folder and file names.
 blacklist = []
 whitelist = []
 
 [test.HasNoWhiteSpace]
-# Checking for Non-ASCII characters in folder and file names.
+# Checking for white spaces in folder and file names.
 blacklist = []
 whitelist = []
 

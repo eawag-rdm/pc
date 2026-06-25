@@ -44,7 +44,8 @@ summaryMaxIssuesBeforeTruncation = 5
 summaryMinGroupSizeForTruncation = 3
 
 [server]
-# pc-server HTTP API settings (values mirror the built-in defaults).
+# pc-server HTTP API settings. Most values mirror the built-in defaults;
+# allowedOrigins is illustrative (the built-in default is empty/nil).
 listenAddress           = "127.0.0.1:8080"
 trustProxyHeaders       = true
 trustedProxies          = ["127.0.0.1/32"]
@@ -70,7 +71,7 @@ to   = ["rdm@eawag.ch"]
 collector = "LocalCollector"
 
 [test.HasOnlyASCII]
-# Checking for white spaces in folder and file names.
+# Checking for Non-ASCII characters in folder and file names.
 blacklist = ["test.txt"]
 whitelist = []
 
@@ -104,7 +105,7 @@ keywordArguments = [
 ]
 
 [collector.CkanCollector]
-attrs = {url = "https://example.com", token = "", ckan_storage_path = "/nfsmount/ckan/default"}
+attrs = {url = "https://example.com", token = "", verify = true, ckan_storage_path = "/nfsmount/ckan/default"}
 
 [collector.LocalCollector]
-attr = {includeFolders = true}
+attrs = {includeFolders = true}
