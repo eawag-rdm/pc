@@ -53,9 +53,28 @@ type alerter struct {
 	// production uses smtpSend (a plain relay, no auth).
 	send func(alertPayload) error
 
-	queue     chan alertPayload
+	// queue holds pending alerts for the worker. It is NEVER closed: shutdown is
+	// signalled by closing stop instead, so a Notify that races a Close can never
+	// "send on a closed channel".
+	queue chan alertPayload
+	// stop is closed by Close to tell the worker to drain and exit. Closing stop
+	// (rather than queue) is what makes a post-Close Notify panic-free.
+	stop      chan struct{}
 	done      chan struct{}
 	closeOnce sync.Once
+
+	// mu guards stopped and makes "observe not-stopped" and "enqueue" a single
+	// atomic step w.r.t. Close flipping stopped. Without it, a Notify that saw
+	// stop open could still win its enqueue AFTER the worker had drained and
+	// exited, stranding the alert in the buffered queue forever (a lost fault).
+	//
+	// Invariant: every enqueue happens under mu while !stopped, hence strictly
+	// before Close sets stopped=true (also under mu) and closes stop. The worker's
+	// drain runs after stop is closed and empties the queue, so no enqueued alert
+	// is ever missed. Once stopped is true, Notify delivers out-of-band instead of
+	// enqueuing. The queue is still never closed, so sending to it never panics.
+	mu      sync.Mutex
+	stopped bool
 }
 
 // newAlerter builds an alerter from the [server.smtp] config, or returns nil
@@ -75,6 +94,7 @@ func newAlerter(cfg *config.SMTPConfig, logger *slog.Logger) *alerter {
 		addr:   net.JoinHostPort(cfg.Host, strconv.Itoa(port)),
 		logger: logger,
 		queue:  make(chan alertPayload, alertQueueSize),
+		stop:   make(chan struct{}),
 		done:   make(chan struct{}),
 	}
 	a.send = a.smtpSend
@@ -82,11 +102,29 @@ func newAlerter(cfg *config.SMTPConfig, logger *slog.Logger) *alerter {
 	return a
 }
 
-// worker delivers queued alerts one at a time until the queue is closed.
+// worker delivers queued alerts one at a time until Close signals stop. It reads
+// from queue (which is NEVER closed) and watches stop; on stop it drains any
+// already-queued alerts without blocking, then exits. Because shutdown is a
+// closed stop channel rather than a closed queue, a Notify racing Close can never
+// send on a closed channel.
 func (a *alerter) worker() {
 	defer close(a.done)
-	for p := range a.queue {
-		a.deliver(p)
+	for {
+		select {
+		case p := <-a.queue:
+			a.deliver(p)
+		case <-a.stop:
+			// Stop requested: drain whatever is already queued, then exit. The
+			// default case guarantees this never blocks.
+			for {
+				select {
+				case p := <-a.queue:
+					a.deliver(p)
+				default:
+					return
+				}
+			}
+		}
 	}
 }
 
@@ -108,16 +146,34 @@ func (a *alerter) deliver(p alertPayload) {
 }
 
 // Notify enqueues an alert without blocking the caller (the request goroutine).
-// If the worker queue is momentarily full it spills to a detached send rather
-// than dropping the alert, because every fault must be reported. Safe to call on
-// a nil *alerter (alerts disabled).
+// It is non-blocking, nil-safe (alerts disabled), and never drops a fault.
+//
+// The "observe not-stopped" and "enqueue" steps are taken together under mu, so
+// they are atomic w.r.t. Close flipping stopped (see the alerter.mu invariant).
+// While !stopped, the enqueue is guaranteed to land strictly before Close closes
+// stop, so the worker's post-stop drain will deliver it; no enqueued alert can be
+// stranded in the queue. Once stopped is true, a post-Close Notify (e.g. an
+// in-flight request faulting during a graceful-shutdown drain deadline) delivers
+// the alert out-of-band on a detached goroutine instead, so nothing is lost. The
+// queue is never closed, so the send under mu can never panic. The send is the
+// non-blocking form of select, so mu is held only for an instant.
 func (a *alerter) Notify(p alertPayload) {
 	if a == nil {
 		return
 	}
+	a.mu.Lock()
+	if a.stopped {
+		a.mu.Unlock()
+		// Shutting down: deliver out-of-band so nothing is lost and we never hand
+		// work to a worker that may have already stopped reading the queue.
+		go a.deliver(p)
+		return
+	}
 	select {
 	case a.queue <- p:
+		a.mu.Unlock()
 	default:
+		a.mu.Unlock()
 		// Backlog full (pathological): deliver out-of-band so nothing is lost.
 		a.logger.LogAttrs(context.Background(), slog.LevelWarn, "admin_alert_queue_full",
 			slog.String("request_id", p.RequestID),
@@ -127,13 +183,25 @@ func (a *alerter) Notify(p alertPayload) {
 	}
 }
 
-// Close stops the worker and waits briefly for it to drain. Safe to call on a
-// nil *alerter and idempotent.
+// Close signals the worker to drain and exit, then waits briefly for it. Under
+// closeOnce it first sets stopped=true under mu and THEN closes stop: setting the
+// flag before closing stop is what makes any concurrent Notify either enqueue
+// strictly before shutdown (and be drained by the worker) or, once it observes
+// stopped, deliver out-of-band — so no alert is ever lost (see the alerter.mu
+// invariant). It closes stop (NOT queue), so a Notify that races Close can never
+// send on a closed channel. Safe to call on a nil *alerter and idempotent:
+// closeOnce guards the flag-set and close, and the bounded wait keeps shutdown
+// from blocking on a slow relay.
 func (a *alerter) Close() {
 	if a == nil {
 		return
 	}
-	a.closeOnce.Do(func() { close(a.queue) })
+	a.closeOnce.Do(func() {
+		a.mu.Lock()
+		a.stopped = true
+		a.mu.Unlock()
+		close(a.stop)
+	})
 	select {
 	case <-a.done:
 	case <-time.After(alertDialTimeout):

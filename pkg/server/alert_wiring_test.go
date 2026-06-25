@@ -24,6 +24,7 @@ func recordingAlerter(t *testing.T) (*alerter, <-chan alertPayload) {
 			return nil
 		},
 		queue: make(chan alertPayload, alertQueueSize),
+		stop:  make(chan struct{}),
 		done:  make(chan struct{}),
 	}
 	go a.worker()

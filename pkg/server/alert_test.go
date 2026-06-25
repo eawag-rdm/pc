@@ -2,6 +2,7 @@ package server
 
 import (
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -21,6 +22,7 @@ func newTestAlerter(t *testing.T, send func(alertPayload) error) *alerter {
 		logger: discardLogger(),
 		send:   send,
 		queue:  make(chan alertPayload, alertQueueSize),
+		stop:   make(chan struct{}),
 		done:   make(chan struct{}),
 	}
 	go a.worker()
@@ -153,6 +155,46 @@ func TestAlerter_NilSafe(t *testing.T) {
 	// Must not panic.
 	a.Notify(alertPayload{RequestID: "REQ-NIL", Code: CodeInternalError})
 	a.Close()
+}
+
+// TestAlerter_NotifyAfterCloseNoPanic asserts the shutdown-safety contract: a
+// Notify that lands AFTER Close (e.g. an in-flight request faulting during a
+// graceful-shutdown drain deadline) must never panic with "send on closed
+// channel", and must still deliver the fault out-of-band (every fault is
+// reported). The queue is never closed; Close only closes stop.
+func TestAlerter_NotifyAfterCloseNoPanic(t *testing.T) {
+	var mu sync.Mutex
+	var got []alertPayload
+	delivered := make(chan struct{}, 1)
+	a := newTestAlerter(t, func(p alertPayload) error {
+		mu.Lock()
+		got = append(got, p)
+		mu.Unlock()
+		select {
+		case delivered <- struct{}{}:
+		default:
+		}
+		return nil
+	})
+
+	// Close first; then Notify must not panic on the (now-stopped) worker.
+	a.Close()
+
+	want := alertPayload{RequestID: "REQ-AFTER-CLOSE", Code: CodeInternalError, Time: time.Now()}
+	a.Notify(want) // must not panic
+
+	// The fault must still be reported via the out-of-band (detached) path.
+	select {
+	case <-delivered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("post-Close Notify did not deliver the fault out-of-band")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) != 1 || got[0].RequestID != want.RequestID {
+		t.Errorf("out-of-band delivery mismatch: got %+v, want one %q", got, want.RequestID)
+	}
 }
 
 // TestAlerter_BuildMessage asserts the rendered mail carries the documented
