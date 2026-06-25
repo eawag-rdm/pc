@@ -391,7 +391,16 @@ func CkanCollector(ctx context.Context, package_id string, config config.Config)
 
 	collectorName := "CkanCollector"
 
-	urlAttr, ok := config.Collectors[collectorName].Attrs["url"].(string)
+	// Guard the lookup once: a missing [collector.CkanCollector] section leaves a
+	// nil *CollectorConfig in the map, so dereferencing .Attrs would panic. The
+	// server validates this at boot (validateCkanCollector); this defence-in-depth
+	// guard protects the CLI path too without changing server behaviour.
+	cc, ok := config.Collectors[collectorName]
+	if !ok || cc == nil {
+		return nil, fmt.Errorf("CkanCollector configuration is missing: add a [collector.CkanCollector] section")
+	}
+
+	urlAttr, ok := cc.Attrs["url"].(string)
 	if !ok {
 		return nil, fmt.Errorf("url attribute not found or not a string")
 	}
@@ -401,11 +410,11 @@ func CkanCollector(ctx context.Context, package_id string, config config.Config)
 	// construction here.
 	url := fmt.Sprintf("%s/api/3/action/package_show?id=%s", urlAttr, neturl.QueryEscape(package_id))
 
-	token, ok := config.Collectors[collectorName].Attrs["token"].(string)
+	token, ok := cc.Attrs["token"].(string)
 	if !ok {
 		return nil, fmt.Errorf("token attribute not found or not a string")
 	}
-	verify, ok := config.Collectors[collectorName].Attrs["verify"].(bool)
+	verify, ok := cc.Attrs["verify"].(bool)
 	if !ok {
 		return nil, fmt.Errorf("verify attribute not found or not a bool")
 	}
@@ -424,7 +433,7 @@ func CkanCollector(ctx context.Context, package_id string, config config.Config)
 		return nil, err
 	}
 
-	localStoragePath, ok := config.Collectors[collectorName].Attrs["ckan_storage_path"].(string)
+	localStoragePath, ok := cc.Attrs["ckan_storage_path"].(string)
 	if !ok {
 		return nil, fmt.Errorf("ckan_storage_path attribute not found or not a string")
 	}

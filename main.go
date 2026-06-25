@@ -113,15 +113,23 @@ func main() {
 		}
 	}
 
+	// A missing [operation.main] section leaves a nil *OperationConfig in the
+	// map; dereferencing .Collector would panic. Fail cleanly instead.
+	op, ok := generalConfig.Operation["main"]
+	if !ok || op == nil {
+		outputError("collector_error", "No [operation.main] collector configured in the config file.")
+		return
+	}
+
 	// Decide which collector to use
-	if generalConfig.Operation["main"].Collector == "LocalCollector" {
+	if op.Collector == "LocalCollector" {
 		files, filesErr = collectors.LocalCollector(*folder_or_url, *generalConfig)
 		if filesErr != nil {
 			outputError("collector_error", filesErr.Error())
 			return
 		}
 
-	} else if generalConfig.Operation["main"].Collector == "CkanCollector" {
+	} else if op.Collector == "CkanCollector" {
 		if *folder_or_url == "." {
 			outputError("collector_error", "Please provide a CKAN package name (use the location flag '-location')")
 			return

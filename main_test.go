@@ -704,6 +704,64 @@ whitelist = []
 	}
 }
 
+// TestMissingOperationMain asserts that a config lacking an [operation.main]
+// section fails cleanly with a collector_error envelope instead of panicking on
+// a nil-map dereference of generalConfig.Operation["main"].
+func TestMissingOperationMain(t *testing.T) {
+	if os.Getenv("CI") != "" {
+		t.Skip("Skipping missing operation.main test in CI environment")
+	}
+
+	tempDir := t.TempDir()
+	binaryPath := filepath.Join(tempDir, "pc")
+
+	// Build the binary
+	cmd := exec.Command("go", "build", "-o", binaryPath, ".")
+	_, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("Failed to build binary: %v", err)
+	}
+
+	// Config without an [operation.main] section.
+	noOpConfigContent := `[test.IsValidName]
+blacklist = []
+whitelist = []
+keywordArguments = [
+    { disallowed_names = [".DS_Store"] }
+]
+`
+	configPath := filepath.Join(tempDir, "no_operation.toml")
+	err = os.WriteFile(configPath, []byte(noOpConfigContent), 0644)
+	if err != nil {
+		t.Fatalf("Failed to create config file: %v", err)
+	}
+
+	// Run scanner: must emit a JSON error envelope, not panic.
+	cmd = exec.Command(binaryPath, "-config", configPath, "-location", ".")
+	output, _ := cmd.CombinedOutput()
+
+	var errorResult map[string]interface{}
+	err = json.Unmarshal(output, &errorResult)
+	if err != nil {
+		t.Fatalf("Output is not valid JSON: %v\nOutput: %s", err, string(output))
+	}
+
+	errorField, exists := errorResult["error"]
+	if !exists {
+		t.Fatalf("Expected an error envelope for a config missing [operation.main]. Output: %s", string(output))
+	}
+	errorMap, ok := errorField.(map[string]interface{})
+	if !ok {
+		t.Fatalf("Error field is not a map. Output: %s", string(output))
+	}
+	if errorType, _ := errorMap["type"].(string); errorType != "collector_error" {
+		t.Errorf("Error type should be 'collector_error', got %q", errorType)
+	}
+	if message, _ := errorMap["message"].(string); !strings.Contains(message, "operation.main") {
+		t.Errorf("Error message should mention [operation.main], got %q", message)
+	}
+}
+
 func TestJSONAndPlainConflict(t *testing.T) {
 	if os.Getenv("CI") != "" {
 		t.Skip("Skipping JSON/plain conflict test in CI environment")

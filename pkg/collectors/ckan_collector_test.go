@@ -348,6 +348,48 @@ func TestCkanCollectorMissingAttrsNoPanic(t *testing.T) {
 	}
 }
 
+// TestCkanCollectorMissingSectionNoPanic asserts that a config whose Collectors
+// map has NO "CkanCollector" entry (the [collector.CkanCollector] section is
+// absent) yields a clean error instead of panicking on a nil-map dereference.
+func TestCkanCollectorMissingSectionNoPanic(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  config.Config
+	}{
+		{
+			name: "nil Collectors map",
+			cfg:  config.Config{},
+		},
+		{
+			name: "Collectors map without CkanCollector entry",
+			cfg: config.Config{
+				Collectors: map[string]*config.CollectorConfig{},
+			},
+		},
+		{
+			name: "CkanCollector entry is a nil pointer",
+			cfg: config.Config{
+				Collectors: map[string]*config.CollectorConfig{
+					"CkanCollector": nil,
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// CkanCollector must return an error, not panic.
+			_, err := CkanCollector(context.Background(), "pkg", tt.cfg)
+			if err == nil {
+				t.Fatalf("expected an error for a missing CkanCollector section, got nil")
+			}
+			if !strings.Contains(err.Error(), "CkanCollector configuration is missing") {
+				t.Errorf("error %q does not mention the missing configuration", err.Error())
+			}
+		})
+	}
+}
+
 func TestGetLocalResourcePath(t *testing.T) {
 	tests := []struct {
 		name            string

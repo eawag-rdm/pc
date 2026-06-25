@@ -55,12 +55,14 @@ func LocalCollector(path string, config config.Config) ([]structs.File, error) {
 
 	// Check if folders should be included recursively
 	includeFolders := false
-	if attrs, ok := config.Collectors[collectorName].Attrs["includeFolders"]; ok {
-		switch v := attrs.(type) {
-		case bool:
-			includeFolders = v
-		case string:
-			includeFolders = v == "true"
+	if cc, ok := config.Collectors[collectorName]; ok && cc != nil {
+		if attrs, ok := cc.Attrs["includeFolders"]; ok {
+			switch v := attrs.(type) {
+			case bool:
+				includeFolders = v
+			case string:
+				includeFolders = v == "true"
+			}
 		}
 	}
 
