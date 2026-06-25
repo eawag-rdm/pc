@@ -978,9 +978,11 @@ func TestHandler_Analyze_Timeout_HungUpstream(t *testing.T) {
 		if resp.Error.Code != CodeAnalysisTimeout {
 			t.Errorf("expected %q, got %q", CodeAnalysisTimeout, resp.Error.Code)
 		}
-		// Must finish near the 1s budget, well before any 300s WriteTimeout.
-		if elapsed > 10*time.Second {
-			t.Errorf("handler did not honor the request timeout: took %v", elapsed)
+		// Must finish near the 1s budget. A 5s ceiling is generous for CI
+		// scheduling jitter yet tight enough to catch a regression that waited on
+		// a longer timeout (e.g. a 5s/300s WriteTimeout) instead of the 1s one.
+		if elapsed > 5*time.Second {
+			t.Errorf("handler did not honor the 1s request timeout: took %v", elapsed)
 		}
 	case <-time.After(15 * time.Second):
 		t.Fatal("handler hung on a non-responding CKAN: request timeout was not enforced on the in-flight call")

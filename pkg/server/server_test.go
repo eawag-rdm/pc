@@ -29,6 +29,25 @@ func newTestServerConfig(t *testing.T, addr, ckanURL, storagePath string) Config
 	return Config{Address: addr, ConfigPath: path}
 }
 
+// waitListening blocks until addr accepts a TCP connection, giving tests a
+// deterministic "the server is serving" signal instead of a fixed sleep that is
+// CI-flaky (too short races the accept loop, too long wastes wall-clock).
+func waitListening(t *testing.T, addr string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		conn, err := net.DialTimeout("tcp", addr, 100*time.Millisecond)
+		if err == nil {
+			conn.Close()
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("server did not start listening on %s within deadline: %v", addr, err)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
 // TestNew_MissingCkanAttr_FailsAtBoot asserts that an incomplete
 // [collector.CkanCollector] section makes server.New fail at startup with a clear
 // error, rather than booting and surfacing the problem as a per-request
@@ -155,8 +174,9 @@ func TestServer_CleanShutdown_ReturnsErrServerClosed(t *testing.T) {
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.httpServer.Serve(ln) }()
 
-	// Give Serve a moment to enter its accept loop, then shut down.
-	time.Sleep(50 * time.Millisecond)
+	// Wait deterministically until Serve is accepting connections, then shut
+	// down — polling the bound address beats a fixed sleep (CI-flaky).
+	waitListening(t, ln.Addr().String())
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(ctx); err != nil {

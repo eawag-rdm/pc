@@ -261,8 +261,12 @@ func TestReady_ConcurrentNoConvoy(t *testing.T) {
 	if got := atomic.LoadInt32(&maxInProbe); got > 1 {
 		t.Fatalf("singleflight violated: %d concurrent probes (want <= 1)", got)
 	}
-	if got := atomic.LoadInt32(&probeCount); got < 1 {
-		t.Fatalf("expected at least one probe, got %d", got)
+	// No-convoy: the flood of concurrent callers must collapse onto the single
+	// in-flight probe rather than each electing their own. With callers=64 a
+	// convoy regression would push probeCount toward N; singleflight keeps it at
+	// ~1 (allow a small slack for a benign re-probe after the cache fills).
+	if got := atomic.LoadInt32(&probeCount); got > 2 {
+		t.Fatalf("convoy: %d probes for %d concurrent callers (want <= 2)", got, callers)
 	}
 }
 
