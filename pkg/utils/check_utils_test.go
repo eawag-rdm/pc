@@ -153,7 +153,7 @@ func TestSkipFileCheck(t *testing.T) {
 			expectedSkip: true,
 		},
 		{
-			name: "File matches blacklist regex",
+			name: "File with space matches blacklist regex",
 			config: config.Config{
 				Tests: map[string]*config.TestConfig{
 					"mockCheck": {
@@ -220,19 +220,19 @@ func TestMatchPatterns(t *testing.T) {
 			expectedMatch: false,
 		},
 		{
-			name:          "Regex pattern match",
+			name:          "Regex wildcard dot pattern match",
 			list:          []string{".txt"},
 			str:           "testfile.txt",
 			expectedMatch: true,
 		},
 		{
-			name:          "Regex pattern match",
+			name:          "Regex character class pattern match",
 			list:          []string{"t[a-z]t"},
 			str:           "testfile.txt",
 			expectedMatch: true,
 		},
 		{
-			name:          "Regex pattern no match",
+			name:          "Regex character class pattern no match",
 			list:          []string{"t[d-z]t"},
 			str:           "abc",
 			expectedMatch: false,

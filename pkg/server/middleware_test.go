@@ -95,13 +95,18 @@ func TestExtractToken_CaseInsensitiveBearer(t *testing.T) {
 		req.Header.Set("Authorization", prefix+" my-token")
 		rr := httptest.NewRecorder()
 
+		called := false
 		ExtractToken(func(w http.ResponseWriter, r *http.Request) {
+			called = true
 			if GetTokenFromContext(r) != "my-token" {
 				t.Errorf("Expected token 'my-token', got '%s'", GetTokenFromContext(r))
 			}
 			w.WriteHeader(http.StatusOK)
 		}).ServeHTTP(rr, req)
 
+		if !called {
+			t.Errorf("handler must run for %q bearer (a short-circuit would hide the token assertion)", prefix)
+		}
 		if rr.Code != http.StatusOK {
 			t.Errorf("Expected status 200 for %q bearer, got %d", prefix, rr.Code)
 		}
