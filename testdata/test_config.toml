@@ -43,6 +43,21 @@ summaryIntroText = "Test config intro text."
 summaryMaxIssuesBeforeTruncation = 5
 summaryMinGroupSizeForTruncation = 3
 
+[server]
+# pc-server HTTP API settings (values mirror the built-in defaults).
+listenAddress           = "127.0.0.1:8080"
+trustProxyHeaders       = true
+trustedProxies          = ["127.0.0.1/32"]
+allowedOrigins          = ["http://localhost:3000"]
+perIPRequestsPerHour    = 4
+globalRequestsPerHour   = 20
+burstFactor             = 0.5
+analysisBusyWaitSeconds = 2
+maxTrackedRateKeys      = 10000
+contactMessage          = "If you can't resolve this yourself, please contact rdm@eawag.ch."
+logClientIP             = true
+requestTimeoutSeconds   = 300
+
 [operation.main]
 collector = "LocalCollector"
 

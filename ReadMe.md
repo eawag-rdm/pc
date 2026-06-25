@@ -143,17 +143,19 @@ go build -o pc-server ./cmd/pc-server
 ### Running the Server
 
 ```bash
-pc-server -config ./pc.toml -addr :8080
+pc-server -config ./pc.toml
 ```
 
 **Flags:**
-- `-config` - Path to PC config file (required, or auto-detected from pc.toml)
-- `-addr` - Server listen address (default: `:8080`)
+- `-config` - Path to PC config file (optional; standard locations are searched if omitted)
 - `-help` - Show usage information
 
-The CKAN base URL is **not** a flag or a request field. It is read server-side
-from `[collector.CkanCollector.attrs] url` (the single source of truth). All
-other server tunables live in the `[server]` section of `pc.toml` (see below).
+The server takes **no tunable flags** — every setting is read from the config
+file. The listen address is `[server] listenAddress`, and the CKAN base URL is
+`[collector.CkanCollector.attrs] url` (the single source of truth); all other
+server tunables live in the `[server]` section of `pc.toml` (see below). All
+`[server]` settings are validated at startup, so a bad value fails fast with a
+clear error instead of misbehaving at runtime.
 
 ### API Endpoints
 
@@ -292,9 +294,10 @@ server {
 }
 ```
 
-Then run the server bound to localhost only:
+Then run the server — it binds to `[server] listenAddress`, so set that to
+`127.0.0.1:8080` in `pc.toml` to accept only proxied traffic:
 ```bash
-pc-server -addr 127.0.0.1:8080 -config ./pc.toml
+pc-server -config ./pc.toml
 ```
 
 ### Running TUI over SSH

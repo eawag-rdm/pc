@@ -53,10 +53,11 @@ summaryMaxIssuesBeforeTruncation = 5
 summaryMinGroupSizeForTruncation = 3
 
 [server]
-# Settings for the pc-server HTTP API. The CKAN URL is NOT configured here;
-# it is read from [collector.CkanCollector.attrs] url (the single source).
-# The listen address is set with the pc-server -addr flag (default :8080),
-# not in this file.
+# Settings for the pc-server HTTP API. The server takes NO command-line flags;
+# every setting (including the listen address) lives here. The CKAN URL is NOT
+# configured here — it is read from [collector.CkanCollector.attrs] url.
+# Address the server listens on (host:port)
+listenAddress      = "127.0.0.1:8080"
 # Whether to trust proxy-set client IP headers (X-Real-IP)
 trustProxyHeaders  = true
 # CIDRs allowed to set X-Real-IP (only these connections are trusted as proxies)

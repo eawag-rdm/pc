@@ -94,12 +94,12 @@ func TestConfig_Validate(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "missing address",
+			name: "address optional (comes from TOML)",
 			config: Config{
 				Address:    "",
 				ConfigPath: "/path/to/pc.toml",
 			},
-			wantErr: true,
+			wantErr: false,
 		},
 		{
 			name: "missing config path",
@@ -110,7 +110,7 @@ func TestConfig_Validate(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "both missing",
+			name: "config path required even with address",
 			config: Config{
 				Address:    "",
 				ConfigPath: "",
@@ -222,6 +222,82 @@ func TestConfig_GetVerifyTLS(t *testing.T) {
 		result := cfg.GetVerifyTLS(pcConfig)
 		if !result {
 			t.Error("Expected default true")
+		}
+	})
+}
+
+// validServerConfig returns a [server] config with all-valid defaults that
+// validateServerSettings must accept; tests mutate one field to assert rejection.
+func validServerConfig() *config.ServerConfig {
+	return &config.ServerConfig{
+		ListenAddress:           config.DefaultServerListenAddress,
+		TrustProxyHeaders:       true,
+		TrustedProxies:          []string{"127.0.0.1/32"},
+		AllowedOrigins:          []string{"https://app.example.org"},
+		PerIPRequestsPerHour:    config.DefaultServerPerIPRequestsPerHour,
+		GlobalRequestsPerHour:   config.DefaultServerGlobalRequestsPerHour,
+		BurstFactor:             config.DefaultServerBurstFactor,
+		AnalysisBusyWaitSeconds: config.DefaultServerAnalysisBusyWaitSeconds,
+		MaxTrackedRateKeys:      config.DefaultServerMaxTrackedRateKeys,
+		ContactMessage:          config.DefaultServerContactMessage,
+		LogClientIP:             true,
+		RequestTimeoutSeconds:   config.DefaultServerRequestTimeoutSeconds,
+	}
+}
+
+func TestConfig_ListenAddress(t *testing.T) {
+	pc := &config.Config{Server: &config.ServerConfig{ListenAddress: "0.0.0.0:9000"}}
+
+	// Override wins when set (test injection).
+	if got := (Config{Address: "127.0.0.1:1234"}).ListenAddress(pc); got != "127.0.0.1:1234" {
+		t.Errorf("override not honored: got %q", got)
+	}
+	// Falls back to the TOML value when no override (production).
+	if got := (Config{}).ListenAddress(pc); got != "0.0.0.0:9000" {
+		t.Errorf("TOML fallback not used: got %q", got)
+	}
+}
+
+func TestValidateServerSettings(t *testing.T) {
+	tests := []struct {
+		name    string
+		addr    string
+		mutate  func(s *config.ServerConfig)
+		wantErr bool
+	}{
+		{name: "all valid", addr: "127.0.0.1:8080", wantErr: false},
+		{name: "bind-all address valid", addr: ":8080", wantErr: false},
+		{name: "empty address", addr: "", wantErr: true},
+		{name: "address without port", addr: "127.0.0.1", wantErr: true},
+		{name: "garbage address", addr: "not an address", wantErr: true},
+		{name: "negative perIP", addr: "127.0.0.1:8080", mutate: func(s *config.ServerConfig) { s.PerIPRequestsPerHour = -1 }, wantErr: true},
+		{name: "negative global", addr: "127.0.0.1:8080", mutate: func(s *config.ServerConfig) { s.GlobalRequestsPerHour = -5 }, wantErr: true},
+		{name: "zero budgets allowed (unlimited)", addr: "127.0.0.1:8080", mutate: func(s *config.ServerConfig) { s.PerIPRequestsPerHour = 0; s.GlobalRequestsPerHour = 0 }, wantErr: false},
+		{name: "negative burst", addr: "127.0.0.1:8080", mutate: func(s *config.ServerConfig) { s.BurstFactor = -0.5 }, wantErr: true},
+		{name: "zero maxTrackedRateKeys", addr: "127.0.0.1:8080", mutate: func(s *config.ServerConfig) { s.MaxTrackedRateKeys = 0 }, wantErr: true},
+		{name: "zero requestTimeout", addr: "127.0.0.1:8080", mutate: func(s *config.ServerConfig) { s.RequestTimeoutSeconds = 0 }, wantErr: true},
+		{name: "invalid CIDR in trustedProxies", addr: "127.0.0.1:8080", mutate: func(s *config.ServerConfig) { s.TrustedProxies = []string{"127.0.0.1"} }, wantErr: true},
+		{name: "valid CIDR list", addr: "127.0.0.1:8080", mutate: func(s *config.ServerConfig) { s.TrustedProxies = []string{"10.0.0.0/8", "::1/128"} }, wantErr: false},
+		{name: "invalid origin (no scheme)", addr: "127.0.0.1:8080", mutate: func(s *config.ServerConfig) { s.AllowedOrigins = []string{"app.example.org"} }, wantErr: true},
+		{name: "empty origins allowed", addr: "127.0.0.1:8080", mutate: func(s *config.ServerConfig) { s.AllowedOrigins = nil }, wantErr: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := validServerConfig()
+			if tt.mutate != nil {
+				tt.mutate(s)
+			}
+			err := validateServerSettings(&config.Config{Server: s}, tt.addr)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateServerSettings() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+
+	t.Run("nil server config", func(t *testing.T) {
+		if err := validateServerSettings(&config.Config{}, "127.0.0.1:8080"); err == nil {
+			t.Error("expected error for nil Server config")
 		}
 	})
 }

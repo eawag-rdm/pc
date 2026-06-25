@@ -42,6 +42,14 @@ func New(cfg Config) (*Server, error) {
 		return nil, fmt.Errorf("invalid PC config: %w", err)
 	}
 
+	// Resolve the listen address from the [server] config (the server takes no
+	// flags) and fail fast if it — or any other [server] setting — is invalid,
+	// so a bad value is caught at boot rather than at bind time or per request.
+	listenAddr := cfg.ListenAddress(pcConfig)
+	if err := validateServerSettings(pcConfig, listenAddr); err != nil {
+		return nil, fmt.Errorf("invalid PC config: %w", err)
+	}
+
 	// slog JSON handler to stdout for request/access logging (§8). Check
 	// Messages are NOT routed through this; they stay in GlobalLogger, which is
 	// switched to JSON mode so per-request messages are buffered (and cleared at
@@ -85,7 +93,7 @@ func New(cfg Config) (*Server, error) {
 
 	return &Server{
 		httpServer: &http.Server{
-			Addr:              cfg.Address,
+			Addr:              listenAddr,
 			Handler:           chain,
 			ReadTimeout:       30 * time.Second,
 			ReadHeaderTimeout: 10 * time.Second,  // slowloris guard (§9)
@@ -101,7 +109,7 @@ func New(cfg Config) (*Server, error) {
 
 // ListenAndServe starts the HTTP server
 func (s *Server) ListenAndServe() error {
-	log.Printf("PC Server starting on %s", s.serverCfg.Address)
+	log.Printf("PC Server starting on %s", s.httpServer.Addr)
 	log.Printf("PC Config loaded from: %s", s.serverCfg.ConfigPath)
 
 	ckanURL := s.serverCfg.GetCKANBaseURL(s.pcConfig)

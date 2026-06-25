@@ -2,6 +2,8 @@ package server
 
 import (
 	"fmt"
+	"net"
+	"net/url"
 	"strings"
 
 	"github.com/eawag-rdm/pc/pkg/config"
@@ -9,7 +11,11 @@ import (
 
 // Config holds server configuration
 type Config struct {
-	// Address is the server listen address (e.g., ":8080")
+	// Address optionally overrides the listen address. Production runs the
+	// server with NO flags and reads the address from the [server] listenAddress
+	// TOML key; this field is left empty there. It exists mainly so tests can
+	// inject a specific (e.g. ephemeral) address. When empty, ListenAddress()
+	// falls back to the TOML value.
 	Address string
 
 	// ConfigPath is the path to the PC config file (pc.toml)
@@ -22,14 +28,86 @@ type Config struct {
 	VerifyTLS *bool
 }
 
-// Validate ensures configuration is valid
+// Validate ensures the bootstrap configuration is valid. The listen address is
+// NOT checked here: it lives in the [server] TOML section and is validated by
+// validateServerSettings once the PC config is loaded. Address is an optional
+// override (mainly for tests), so its absence is fine.
 func (c Config) Validate() error {
-	if c.Address == "" {
-		return fmt.Errorf("server address is required")
-	}
 	if c.ConfigPath == "" {
 		return fmt.Errorf("PC config path is required")
 	}
+	return nil
+}
+
+// ListenAddress resolves the effective listen address: the optional server.Config
+// override if set (tests), otherwise the [server] listenAddress TOML value.
+func (c Config) ListenAddress(pcConfig *config.Config) string {
+	if c.Address != "" {
+		return c.Address
+	}
+	if pcConfig != nil && pcConfig.Server != nil {
+		return pcConfig.Server.ListenAddress
+	}
+	return ""
+}
+
+// validateServerSettings fails fast at boot if any [server] value is invalid, so
+// a bad TOML setting is caught before the server starts rather than surfacing as
+// a runtime failure (or a silent mis-binding). It validates the effective listen
+// address plus the rate-limit / proxy / origin settings.
+func validateServerSettings(pcConfig *config.Config, addr string) error {
+	if pcConfig == nil || pcConfig.Server == nil {
+		return fmt.Errorf("server configuration is missing")
+	}
+	s := pcConfig.Server
+
+	// Listen address: required, must be a valid host:port (an empty host like
+	// ":8080" is allowed and means all interfaces; the port is mandatory).
+	if strings.TrimSpace(addr) == "" {
+		return fmt.Errorf("server listenAddress is required (set [server] listenAddress in the config)")
+	}
+	if _, _, err := net.SplitHostPort(addr); err != nil {
+		return fmt.Errorf("server listenAddress %q is not a valid host:port: %w", addr, err)
+	}
+
+	// Rate-limit budgets: a value of 0 means "no limit for this scope"; negative
+	// is nonsensical.
+	if s.PerIPRequestsPerHour < 0 {
+		return fmt.Errorf("server perIPRequestsPerHour must be >= 0, got %d", s.PerIPRequestsPerHour)
+	}
+	if s.GlobalRequestsPerHour < 0 {
+		return fmt.Errorf("server globalRequestsPerHour must be >= 0, got %d", s.GlobalRequestsPerHour)
+	}
+	if s.BurstFactor < 0 {
+		return fmt.Errorf("server burstFactor must be >= 0, got %v", s.BurstFactor)
+	}
+	if s.AnalysisBusyWaitSeconds < 0 {
+		return fmt.Errorf("server analysisBusyWaitSeconds must be >= 0, got %d", s.AnalysisBusyWaitSeconds)
+	}
+	if s.MaxTrackedRateKeys <= 0 {
+		return fmt.Errorf("server maxTrackedRateKeys must be > 0, got %d", s.MaxTrackedRateKeys)
+	}
+	if s.RequestTimeoutSeconds <= 0 {
+		return fmt.Errorf("server requestTimeoutSeconds must be > 0, got %d", s.RequestTimeoutSeconds)
+	}
+
+	// Trusted proxies must be valid CIDRs (only consulted when trustProxyHeaders
+	// is on, but validate regardless so a typo is caught at boot).
+	for _, cidr := range s.TrustedProxies {
+		if _, _, err := net.ParseCIDR(cidr); err != nil {
+			return fmt.Errorf("server trustedProxies entry %q is not a valid CIDR: %w", cidr, err)
+		}
+	}
+
+	// Allowed origins must be absolute URLs (scheme + host) so CORS matching is
+	// well-defined.
+	for _, origin := range s.AllowedOrigins {
+		u, err := url.Parse(origin)
+		if err != nil || u.Scheme == "" || u.Host == "" {
+			return fmt.Errorf("server allowedOrigins entry %q is not a valid origin URL (e.g. https://app.example.org)", origin)
+		}
+	}
+
 	return nil
 }
 

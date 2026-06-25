@@ -16,9 +16,11 @@ import (
 )
 
 func main() {
-	// Parse command line flags
-	addr := flag.String("addr", ":8080", "Server listen address (e.g., :8080 or 0.0.0.0:8080)")
-	configPath := flag.String("config", "", "Path to PC config file (pc.toml)")
+	// The server is configured entirely from the TOML file — no tunable flags.
+	// The only argument is the optional config-file location (with a sensible
+	// search fallback); everything else, including the listen address, lives in
+	// the [server] section of pc.toml.
+	configPath := flag.String("config", "", "Path to PC config file (pc.toml); if omitted, standard locations are searched")
 	help := flag.Bool("help", false, "Show usage information")
 	flag.Parse()
 
@@ -35,11 +37,11 @@ func main() {
 		}
 	}
 
-	// Create server configuration. VerifyTLS is left nil so it falls back to
-	// the PC config's CkanCollector "verify" attr (and finally the secure
-	// default of true).
+	// Create server configuration. The listen address comes from the TOML
+	// ([server] listenAddress), not a flag, so Address is left empty here.
+	// VerifyTLS is left nil so it falls back to the PC config's CkanCollector
+	// "verify" attr (and finally the secure default of true).
 	cfg := server.Config{
-		Address:    *addr,
 		ConfigPath: *configPath,
 	}
 
@@ -104,8 +106,11 @@ func printUsage() {
 	log.Println("  (none currently)")
 	log.Println("")
 	log.Println("Examples:")
-	log.Println("  pc-server -config ./pc.toml")
-	log.Println("  pc-server -addr :9000 -config /etc/pc/pc.toml")
+	log.Println("  pc-server                       # search standard locations for pc.toml")
+	log.Println("  pc-server -config /etc/pc/pc.toml")
+	log.Println("")
+	log.Println("The listen address and all other settings come from the [server]")
+	log.Println("section of the config file; the server takes no tunable flags.")
 	log.Println("")
 	log.Println("API Endpoints:")
 	log.Println("  GET  /health              - Liveness check (cheap static 200)")
