@@ -406,6 +406,67 @@ func TestRateLimitGlobal_429(t *testing.T) {
 	}
 }
 
+// TestRateLimitOrder_PerIPRejectionDoesNotConsumeGlobal pins the analyze chain
+// ordering: per-IP is the OUTER (primary) limit and global is the INNER
+// (backstop), so per-IP runs FIRST. Because the fixed-window limiter increments
+// its counter even when it rejects (allow() does e.count++ before the cap
+// check), a per-IP-over-cap request must NOT reach the global limiter — otherwise
+// a single abusive IP, already past its own cap, would burn the shared global
+// budget on every rejected request and lock everyone else out.
+//
+// It drives the two real middlewares wired in production order
+// (RateLimitPerIP wraps RateLimitGlobal, so per-IP is outer/first) and asserts
+// the global counter is untouched by the per-IP rejections.
+func TestRateLimitOrder_PerIPRejectionDoesNotConsumeGlobal(t *testing.T) {
+	srv := &config.ServerConfig{
+		PerIPRequestsPerHour:  1,  // per-IP cap = 1 (burst 0)
+		GlobalRequestsPerHour: 10, // generous global cap so it never trips here
+		BurstFactor:           0,
+		MaxTrackedRateKeys:    100,
+	}
+	h, _, _ := rateTestHandler(t, srv)
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
+	// Production order: ExtractToken/handler is innermost; global is the inner
+	// limiter, per-IP the outer. Per-IP is therefore checked first.
+	chain := h.RateLimitPerIP(h.RateLimitGlobal(inner))
+
+	do := func() int {
+		req := httptest.NewRequest("POST", "/api/v1/analyze", nil)
+		req.RemoteAddr = "192.0.2.77:3333"
+		req = withRequestContext(req, "REQ-ORDER", DefaultContactMessage)
+		rr := httptest.NewRecorder()
+		chain.ServeHTTP(rr, req)
+		return rr.Code
+	}
+
+	// First request from the IP is admitted and consumes 1 global slot.
+	if c := do(); c != http.StatusOK {
+		t.Fatalf("request 1: status %d, want 200", c)
+	}
+	// The next several requests from the SAME IP are over the per-IP cap and
+	// must be rejected by the OUTER per-IP gate, short-circuiting before global.
+	const overCap = 8
+	for i := 0; i < overCap; i++ {
+		if c := do(); c != http.StatusTooManyRequests {
+			t.Fatalf("over-cap request %d: status %d, want 429 (per-IP)", i+1, c)
+		}
+	}
+
+	// Only the single admitted request should have touched the global counter.
+	// Probe it directly: with global cap 10 and exactly 1 consumed, the next 9
+	// global allows must succeed; a 10th must fail. If the per-IP rejections had
+	// leaked into the global counter (old buggy order), fewer than 9 would remain.
+	for i := 0; i < 9; i++ {
+		if ok, _, _, _ := h.limiter.allow(globalKey, scopeGlobal); !ok {
+			t.Fatalf("global slot %d should remain (per-IP rejections must not consume global budget)", i+1)
+		}
+	}
+	if ok, _, _, _ := h.limiter.allow(globalKey, scopeGlobal); ok {
+		t.Fatal("global cap should now be exhausted after 10 total global allows")
+	}
+}
+
 // TestConcurrency_ServiceBusyNoQueueing exercises the single serialization gate
 // (concurrency = 1) and its bounded busy-wait (§4/§9):
 //

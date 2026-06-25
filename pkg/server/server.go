@@ -73,14 +73,22 @@ func New(cfg Config) (*Server, error) {
 
 	// Analyze endpoint. The draining, rate-limit and concurrency gates wrap THIS
 	// route only (§4/§9): outer -> inner the analyze chain is
-	// draining -> rate-limit(global) -> rate-limit(per-IP) ->
+	// draining -> rate-limit(per-IP) -> rate-limit(global) ->
 	// concurrency-gate (single slot, 2s busy-wait) -> token extraction
 	// (optional) -> handler. /health and /ready bypass it entirely (a draining
 	// server must still answer healthchecks).
+	//
+	// Per-IP is the OUTER (primary) limit and global is the INNER (backstop), so
+	// per-IP is checked FIRST. This ordering matters because the limiter uses a
+	// fixed window and allow() increments the counter even when it rejects: if
+	// global ran first, a single IP already over its per-IP cap would still
+	// consume (and exhaust) the shared global budget on every rejected request,
+	// locking out everyone else. Putting per-IP first means a per-IP rejection
+	// short-circuits before global is ever touched — IP-primary, global-backstop.
 	analyze := http.Handler(ExtractToken(handler.Analyze))
 	analyze = handler.Concurrency(analyze)
-	analyze = handler.RateLimitPerIP(analyze)
 	analyze = handler.RateLimitGlobal(analyze)
+	analyze = handler.RateLimitPerIP(analyze)
 	analyze = handler.Draining(analyze)
 	mux.Handle("POST /api/v1/analyze", analyze)
 

@@ -247,10 +247,12 @@ func clientIP(r *http.Request) string {
 }
 
 // RateLimitGlobal enforces the global (all-clients) fixed-hourly-window cap
-// (§4). It runs BEFORE any CKAN call and before the per-IP check; the token is
-// never consulted. On rejection it emits the rate_limited slog event and
-// renders the rate_limited envelope with a Retry-After header. It wraps
-// /analyze only — /health and /ready never see it.
+// (§4). It is the INNER limiter (backstop): it runs AFTER the per-IP check, so a
+// request already rejected by its per-IP cap never reaches — and never consumes
+// — the shared global counter. It runs before any CKAN call; the token is never
+// consulted. On rejection it emits the rate_limited slog event and renders the
+// rate_limited envelope with a Retry-After header. It wraps /analyze only —
+// /health and /ready never see it.
 func (h *Handler) RateLimitGlobal(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if h.limiter == nil {
@@ -269,8 +271,9 @@ func (h *Handler) RateLimitGlobal(next http.Handler) http.Handler {
 
 // RateLimitPerIP enforces the per-client-IP fixed-hourly-window cap (§4). The
 // key is the proxy-aware client IP (X-Real-IP only from trustedProxies; IPv6 on
-// the /64 prefix); the token is never a key. It runs after the global check and
-// before the concurrency semaphore.
+// the /64 prefix); the token is never a key. It is the OUTER (primary) limiter:
+// it runs BEFORE the global check, so a per-IP rejection short-circuits without
+// consuming the shared global budget. It runs before the concurrency semaphore.
 func (h *Handler) RateLimitPerIP(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if h.limiter == nil {
