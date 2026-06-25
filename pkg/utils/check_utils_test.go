@@ -9,6 +9,41 @@ import (
 	"github.com/eawag-rdm/pc/pkg/config"
 )
 
+// TestApplyAllChecks_NoFilesNotice verifies both engine entrypoints append a
+// single skip-style "no files to analyse" notice when the file set is empty, so
+// the CLI and server surface the same clear, non-issue acknowledgement.
+func TestApplyAllChecks_NoFilesNotice(t *testing.T) {
+	cases := map[string]func() []structs.Message{
+		"ApplyAllChecks": func() []structs.Message {
+			return ApplyAllChecks(config.Config{}, nil, false)
+		},
+		"ApplyAllChecksWithProgress": func() []structs.Message {
+			return ApplyAllChecksWithProgress(config.Config{}, nil, false, nil)
+		},
+	}
+	for name, run := range cases {
+		t.Run(name, func(t *testing.T) {
+			msgs := run()
+			if len(msgs) != 1 {
+				t.Fatalf("expected exactly the no-files notice for an empty set, got %d: %v", len(msgs), msgs)
+			}
+			notice := msgs[0]
+			if !notice.Skipped {
+				t.Error("no-files notice must be Skipped (a non-issue acknowledgement)")
+			}
+			if notice.TestName != "FilesPresent" {
+				t.Errorf("expected TestName FilesPresent, got %q", notice.TestName)
+			}
+			if notice.Reason == "" || notice.Content == "" {
+				t.Error("no-files notice must carry a reason and content")
+			}
+			if _, ok := notice.Source.(structs.Repository); !ok {
+				t.Errorf("no-files notice should be repository-scoped, got %T", notice.Source)
+			}
+		})
+	}
+}
+
 func TestGetFunctionName(t *testing.T) {
 	tests := []struct {
 		input    interface{}

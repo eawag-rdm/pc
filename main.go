@@ -137,11 +137,10 @@ func main() {
 		return
 	}
 
-	// Check if we found any files to process
-	if len(files) == 0 {
-		outputError("no_files", fmt.Sprintf("No files found in location: %s", *folder_or_url))
-		return
-	}
+	// Zero files is NOT an error: the analysis proceeds and the result carries a
+	// clear "no files to analyse" notice (added by ApplyAllChecks), surfaced the
+	// same way a skipped file is. This matches the server, which returns a normal
+	// result for a package with no analyzable resources.
 
 	// Determine output modes
 	generateHtml := *htmlOutput != ""

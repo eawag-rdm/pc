@@ -374,29 +374,37 @@ func TestEmptyDirectory(t *testing.T) {
 		t.Fatalf("Failed to create empty directory: %v", err)
 	}
 
-	// Run scanner with empty directory
-	cmd = exec.Command(binaryPath, "-config", configPath, "-location", emptyDir)
+	// Run scanner with empty directory. An empty location is NOT an error: it
+	// produces a normal result carrying a clear "no files to analyse" notice
+	// (surfaced like a skipped file). Use -json for deterministic, non-TUI output.
+	cmd = exec.Command(binaryPath, "-config", configPath, "-location", emptyDir, "-json")
 	output, _ := cmd.CombinedOutput()
 
-	// Check for error in JSON output (program doesn't exit with non-zero code)
-	var errorResult map[string]interface{}
-	err = json.Unmarshal(output, &errorResult)
-	if err != nil {
+	var result map[string]interface{}
+	if err := json.Unmarshal(output, &result); err != nil {
 		t.Fatalf("Output is not valid JSON: %v\nOutput: %s", err, string(output))
 	}
 
-	// Verify error is present in JSON output
-	if _, hasError := errorResult["error"]; !hasError {
-		t.Errorf("Expected error in JSON output for empty directory, but none found. Output: %s", string(output))
+	// No error envelope: an empty directory is no longer treated as an error.
+	if _, hasError := result["error"]; hasError {
+		t.Errorf("empty directory must not produce an error result anymore. Output: %s", string(output))
 	}
 
-	// Verify error indicates no files found
-	if errorField, exists := errorResult["error"]; exists {
-		if errorMap, ok := errorField.(map[string]interface{}); ok {
-			if errorType, exists := errorMap["type"]; !exists || errorType != "no_files" {
-				t.Error("Error type should be 'no_files'")
+	// It must clearly state there were no files to analyse, as a skip-style notice.
+	skipped, ok := result["skipped"].([]interface{})
+	if !ok || len(skipped) == 0 {
+		t.Fatalf("expected a 'skipped' notice for an empty directory. Output: %s", string(output))
+	}
+	found := false
+	for _, s := range skipped {
+		if m, ok := s.(map[string]interface{}); ok {
+			if reason, _ := m["reason"].(string); strings.Contains(reason, "No files were found to analyse") {
+				found = true
 			}
 		}
+	}
+	if !found {
+		t.Errorf("expected a 'no files were found to analyse' skip notice. Output: %s", string(output))
 	}
 }
 

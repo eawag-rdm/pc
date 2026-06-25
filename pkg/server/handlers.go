@@ -370,12 +370,17 @@ func (h *Handler) runAnalysis(ctx context.Context, packageID, token string) (bod
 	return jsonResult, len(files), countSkipped(messages), "", ""
 }
 
-// countSkipped counts the check Messages that report a size-skip (spec §6) so
-// the analysis_done lifecycle event can record how many files were skipped.
+// countSkipped counts the check Messages that report a per-FILE skip (spec §6)
+// so the analysis_done lifecycle event can record how many files were skipped.
+// The repository-scoped "no files to analyse" notice is also Skipped-flagged but
+// is not a file skip, so it is excluded from this count.
 func countSkipped(messages []structs.Message) int {
 	n := 0
 	for _, m := range messages {
-		if m.Skipped {
+		if !m.Skipped {
+			continue
+		}
+		if _, isFile := m.Source.(structs.File); isFile {
 			n++
 		}
 	}

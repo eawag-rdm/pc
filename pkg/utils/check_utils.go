@@ -478,6 +478,23 @@ func ApplyChecksFilteredByRepository(config config.Config, checks []func(reposit
 // ProgressCallback is called during scanning to report progress
 type ProgressCallback func(current, total int, message string)
 
+// noFilesNotice returns a skip-style acknowledgement that no files were found to
+// analyse. ApplyAllChecks(WithProgress) appends it whenever the collected file
+// set is empty, so every output (CLI plain/TUI/JSON and the server) surfaces the
+// same clear, non-issue message — rather than the CLI erroring or the server
+// returning a silent empty result. It is modelled on a per-file skip (Skipped =
+// true, with a Reason) but is repository-scoped.
+func noFilesNotice() structs.Message {
+	const reason = "No files were found to analyse."
+	return structs.Message{
+		Content:  reason,
+		Source:   structs.Repository{},
+		TestName: "FilesPresent",
+		Skipped:  true,
+		Reason:   reason,
+	}
+}
+
 func ApplyAllChecks(config config.Config, files []structs.File, checksAcrossFiles bool) []structs.Message {
 	var messages []structs.Message
 
@@ -490,6 +507,11 @@ func ApplyAllChecks(config config.Config, files []structs.File, checksAcrossFile
 
 	// Message truncation disabled to prevent archive messages from being lost
 	// messages = TruncateMessages(messages, config.General.MaxMessagesPerType)
+
+	// Surface a clear, non-issue notice when there was nothing to analyse.
+	if len(files) == 0 {
+		messages = append(messages, noFilesNotice())
+	}
 
 	return messages
 }
@@ -580,6 +602,11 @@ func ApplyAllChecksWithProgress(config config.Config, files []structs.File, chec
 	}
 	// Message truncation disabled to prevent archive messages from being lost
 	// messages = TruncateMessages(messages, config.General.MaxMessagesPerType)
+
+	// Surface a clear, non-issue notice when there was nothing to analyse.
+	if len(files) == 0 {
+		messages = append(messages, noFilesNotice())
+	}
 
 	return messages
 }

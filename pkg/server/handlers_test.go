@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/eawag-rdm/pc/pkg/config"
+	"github.com/eawag-rdm/pc/pkg/structs"
 )
 
 // discardLogger returns a slog logger that throws away output, for tests that
@@ -156,6 +157,20 @@ func TestErrorCatalogue_Complete(t *testing.T) {
 	}
 	if len(errorCatalogue) != len(allErrorCodes) {
 		t.Errorf("errorCatalogue has %d entries but allErrorCodes lists %d; keep them in sync", len(errorCatalogue), len(allErrorCodes))
+	}
+}
+
+// TestCountSkipped_ExcludesRepositoryNotice asserts skipped_count reflects only
+// per-file skips: the repository-scoped "no files to analyse" notice (also
+// Skipped-flagged) must not inflate the count.
+func TestCountSkipped_ExcludesRepositoryNotice(t *testing.T) {
+	msgs := []structs.Message{
+		{Skipped: true, Source: structs.File{Name: "big.csv"}}, // a real per-file skip
+		{Skipped: true, Source: structs.Repository{}},          // the no-files notice
+		{Skipped: false, Source: structs.File{Name: "ok.csv"}}, // not a skip
+	}
+	if got := countSkipped(msgs); got != 1 {
+		t.Errorf("countSkipped = %d, want 1 (only the file skip, not the repository notice)", got)
 	}
 }
 
@@ -318,6 +333,24 @@ func TestHandler_Analyze_NoUploadResources_OK(t *testing.T) {
 	}
 	if gotID != "REQ-NOFILES" {
 		t.Errorf("expected request_id REQ-NOFILES, got %q", gotID)
+	}
+
+	// The result must clearly state there were no files to analyse, surfaced as a
+	// skip-style notice (same treatment the CLI gives an empty location).
+	var skipped []struct {
+		Reason string `json:"reason"`
+	}
+	if err := json.Unmarshal(obj["skipped"], &skipped); err != nil {
+		t.Fatalf("skipped not decodable: %v", err)
+	}
+	found := false
+	for _, s := range skipped {
+		if strings.Contains(s.Reason, "No files were found to analyse") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected a 'no files to analyse' skip notice in the result, got skipped=%v", skipped)
 	}
 }
 
