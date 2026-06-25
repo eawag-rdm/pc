@@ -249,13 +249,28 @@ Every failure uses one envelope:
 | 401 | `invalid_token` | CKAN rejected the token |
 | 403 | `access_denied` | Token lacks permission for the package |
 | 404 | `package_not_found` | No such package (or private + unauthorized) |
+| 422 | `malformed_resource` | A resource is malformed — missing both `url_type` and `url`, or an upload missing `name`/`url`/`size`. The message names the exact resource + package to recreate/reupload. |
 | 429 | `rate_limited` | Hourly request budget exceeded (with `Retry-After`) |
+| 502 | `ckan_unavailable` | CKAN unreachable / transport-level 5xx |
 | 503 | `service_busy` | Concurrency limit reached (no queueing) |
 | 503 | `service_not_ready` | CKAN or storage mount unavailable (`/ready`) |
 | 503 | `server_restarting` | Server is draining during a graceful shutdown |
-| 502 | `ckan_unavailable` | CKAN unreachable / 5xx (504 on request timeout) |
+| 504 | `analysis_timeout` | The analysis exceeded `requestTimeoutSeconds` and was stopped |
 | 500 | `resource_unreadable` | An upload file couldn't be read from storage |
 | 500 | `internal_error` | Unexpected server-side error (cites `request_id`) |
+
+Notes:
+- **`malformed_resource` is the only code with a dynamic message** — it surfaces the
+  collector's user-facing text naming the exact resource and package to fix. Every
+  other code uses a fixed, non-technical message; raw errors, CKAN bodies, URLs and
+  file paths are never exposed (they're logged instead).
+- **A package that exists but has zero upload resources** (e.g. all external links)
+  is **not** an error: the analysis runs and returns `200` with a normal result and
+  no file issues. `package_not_found` is reserved for a genuine CKAN 404.
+- **Server-fault responses email the admins** when `[server.smtp]` is configured:
+  `internal_error` (including a recovered panic) and `resource_unreadable`. The mail
+  carries no secrets — only `request_id`, `code`, method, path and `package_id`; the
+  full cause/stack stays in the logs, keyed by `request_id`.
 
 ### Server configuration (`[server]`)
 
@@ -265,6 +280,26 @@ See the `[server]` section in `pc.toml` for the full, commented list. Key knobs:
 `globalRequestsPerHour` / `burstFactor` (fixed-window rate limiting),
 `analysisBusyWaitSeconds`, `maxTrackedRateKeys`, `contactMessage`, `logClientIP`,
 `requestTimeoutSeconds`.
+
+#### Admin alerts (`[server.smtp]`)
+
+An optional sub-section of `[server]`. When configured, the server emails an
+admin list on every server-fault response (`internal_error`, a recovered panic,
+or `resource_unreadable`) so operators learn about faults without scraping logs.
+It is a **plain SMTP relay with no authentication**; every fault is reported
+(there is no rate cap). Alerts are **disabled** unless `host` is set and `to` has
+at least one recipient.
+
+```toml
+[server.smtp]
+host = "smtp.internal.example.org"   # empty disables alerts
+port = 25
+from = "pc-server@eawag.ch"
+to   = ["rdm@eawag.ch"]
+```
+
+When `host` is set, the settings are validated at startup (valid `from`/`to`
+addresses, port 1–65535) and fail fast otherwise.
 
 ### Production Deployment
 

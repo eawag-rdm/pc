@@ -58,6 +58,14 @@ contactMessage          = "If you can't resolve this yourself, please contact rd
 logClientIP             = true
 requestTimeoutSeconds   = 300
 
+# Admin-alert relay (sub-section of [server]); host empty = disabled, mirroring
+# the built-in default. No mail is attempted in tests.
+[server.smtp]
+host = ""
+port = 25
+from = "pc-server@eawag.ch"
+to   = ["rdm@eawag.ch"]
+
 [operation.main]
 collector = "LocalCollector"
 
