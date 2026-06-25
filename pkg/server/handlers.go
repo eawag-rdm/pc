@@ -240,11 +240,11 @@ func (h *Handler) Analyze(w http.ResponseWriter, r *http.Request) {
 		slog.String("package_id", req.PackageID),
 	)
 
-	jsonResult, fileCount, skippedCount, errCode := h.runAnalysis(ctx, req.PackageID, token)
+	jsonResult, fileCount, skippedCount, errCode, errMsg := h.runAnalysis(ctx, req.PackageID, token)
 
 	// A cancelled/expired context means the client went away or the hard
-	// timeout fired. Distinguish a deadline (504) from a cancellation (503) and
-	// emit the analysis_cancelled lifecycle event (spec §2, §8).
+	// timeout fired. Distinguish a deadline (the whole-analysis timeout) from a
+	// cancellation and emit the analysis_cancelled lifecycle event (spec §2, §8).
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		h.logger.LogAttrs(context.Background(), slog.LevelWarn, "analysis_cancelled",
 			slog.String("request_id", requestID),
@@ -253,8 +253,11 @@ func (h *Handler) Analyze(w http.ResponseWriter, r *http.Request) {
 			slog.String("cause", ctxErr.Error()),
 		)
 		if errors.Is(ctxErr, context.DeadlineExceeded) {
-			// Past the hard upper bound: gateway timeout.
-			writeErrorStatus(w, r, CodeCKANUnavailable, http.StatusGatewayTimeout)
+			// Past the hard upper bound. The deadline bounds the WHOLE analysis
+			// (CKAN call + local file reads + checks), so this is an
+			// analysis_timeout (504) — NOT ckan_unavailable, which is reserved
+			// for CKAN genuinely being unreachable.
+			writeError(w, r, CodeAnalysisTimeout)
 		} else {
 			// Client cancelled / server draining: busy.
 			writeError(w, r, CodeServiceBusy)
@@ -263,7 +266,12 @@ func (h *Handler) Analyze(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if errCode != "" {
-		writeError(w, r, errCode)
+		if errMsg != "" {
+			// A dynamic, user-facing message (malformed_resource): surface it.
+			writeErrorMessage(w, r, errCode, errMsg)
+		} else {
+			writeError(w, r, errCode)
+		}
 		return
 	}
 
@@ -304,7 +312,7 @@ func (h *Handler) requestTimeout() time.Duration {
 // process-global GlobalLogger/PDFTracker from leaking or racing across
 // concurrent requests (§6, §9). The collector's package_show is the single CKAN
 // call (spec §5); its outcome drives the error mapping here.
-func (h *Handler) runAnalysis(ctx context.Context, packageID, token string) (body string, fileCount, skippedCount int, errCode string) {
+func (h *Handler) runAnalysis(ctx context.Context, packageID, token string) (body string, fileCount, skippedCount int, errCode, errMsg string) {
 	h.analysisMu.Lock()
 	defer h.analysisMu.Unlock()
 
@@ -319,19 +327,22 @@ func (h *Handler) runAnalysis(ctx context.Context, packageID, token string) (bod
 	pcConfigCopy := deepCopyConfigForRequest(h.pcConfig, token)
 
 	// Single CKAN call: package_show via the collector. Its outcome (a
-	// structured collectors.CKANError, the ErrResourceUnreadable sentinel, or a
-	// transport error) maps to the catalogue (spec §5).
+	// MalformedResourceError, a structured collectors.CKANError, the
+	// ErrResourceUnreadable sentinel, or a transport error) maps to the
+	// catalogue (spec §5). A genuinely absent / private-unauthorized package is a
+	// CKAN 404 surfaced here as package_not_found.
 	ckanStart := time.Now()
 	files, err := collectors.CkanCollector(ctx, packageID, pcConfigCopy)
 	h.logCKANOutcome(ctx, packageID, err, time.Since(ckanStart))
 	if err != nil {
-		return "", 0, 0, mapCKANError(err)
+		code, msg := mapCKANError(err)
+		return "", 0, 0, code, msg
 	}
-	if len(files) == 0 {
-		// A package with zero analyzable upload resources is reported as
-		// not-found (the user gets the combined package_not_found message).
-		return "", 0, 0, CodePackageNotFound
-	}
+
+	// A package that exists (package_show returned 200) but has zero analyzable
+	// upload resources — e.g. one whose resources are all external links — is NOT
+	// an error: run the checks (which yield no file issues) and return a normal
+	// result. package_not_found is reserved for the CKAN 404 above.
 
 	// Run checks (accumulates into GlobalLogger / PDFTracker).
 	messages := utils.ApplyAllChecks(pcConfigCopy, files, true)
@@ -341,9 +352,9 @@ func (h *Handler) runAnalysis(ctx context.Context, packageID, token string) (bod
 	formatter := jsonformatter.NewJSONFormatter()
 	jsonResult, err := formatter.FormatResults(packageID, "CkanCollector", messages, len(files), helpers.PDFTracker.SnapshotFiles())
 	if err != nil {
-		return "", 0, 0, CodeInternalError
+		return "", 0, 0, CodeInternalError, ""
 	}
-	return jsonResult, len(files), countSkipped(messages), ""
+	return jsonResult, len(files), countSkipped(messages), "", ""
 }
 
 // countSkipped counts the check Messages that report a size-skip (spec §6) so
@@ -358,7 +369,13 @@ func countSkipped(messages []structs.Message) int {
 	return n
 }
 
-// mapCKANError maps the single package_show outcome to a catalogue code (§3, §5):
+// mapCKANError maps the single package_show outcome to a catalogue code and an
+// optional dynamic, user-facing message (§3, §5). The message is non-empty only
+// for malformed_resource, where it is the collector's authored, safe-to-surface
+// text naming the exact resource + package; every other code uses its fixed
+// catalogue message (msg == ""). Mapping:
+//   - MalformedResourceError (resource missing url_type+url, or an upload
+//     missing name/url/size) -> malformed_resource (422) + its message;
 //   - ErrResourceUnreadable (a url_type=="upload" file missing/escaping storage)
 //     -> resource_unreadable;
 //   - a transport/connection failure or a transport-level HTTP 5xx ->
@@ -373,22 +390,28 @@ func countSkipped(messages []structs.Message) int {
 //     unexpected upstream condition mapped to internal_error so the verbose CKAN
 //     __type never leaks into the client envelope;
 //   - anything else -> internal_error.
-func mapCKANError(err error) string {
+func mapCKANError(err error) (code, msg string) {
+	var malformed *collectors.MalformedResourceError
+	if errors.As(err, &malformed) {
+		// The collector authored this message for the end user (resource +
+		// package name, no secrets); surface it verbatim.
+		return CodeMalformedResource, malformed.Error()
+	}
 	if errors.Is(err, collectors.ErrResourceUnreadable) {
-		return CodeResourceUnreadable
+		return CodeResourceUnreadable, ""
 	}
 	var ckanErr *collectors.CKANError
 	if errors.As(err, &ckanErr) {
 		if ckanErr.Transport {
-			return CodeCKANUnavailable
+			return CodeCKANUnavailable, ""
 		}
 		switch ckanErr.StatusCode {
 		case http.StatusUnauthorized:
-			return CodeInvalidToken
+			return CodeInvalidToken, ""
 		case http.StatusForbidden:
-			return CodeAccessDenied
+			return CodeAccessDenied, ""
 		case http.StatusNotFound:
-			return CodePackageNotFound
+			return CodePackageNotFound, ""
 		}
 		if ckanErr.StatusCode >= 500 {
 			// A status derived from a 200+success:false body (unrecognised
@@ -396,14 +419,14 @@ func mapCKANError(err error) string {
 			// CKAN was reachable. Only a genuine transport-level HTTP 5xx is
 			// ckan_unavailable.
 			if ckanErr.StatusFromBody {
-				return CodeInternalError
+				return CodeInternalError, ""
 			}
-			return CodeCKANUnavailable
+			return CodeCKANUnavailable, ""
 		}
-		return CodeInternalError
+		return CodeInternalError, ""
 	}
-	// A malformed-metadata / non-CKAN collector error: treat as internal.
-	return CodeInternalError
+	// An unrecognised non-CKAN collector error: treat as internal.
+	return CodeInternalError, ""
 }
 
 // logCKANOutcome emits the CKAN-upstream-outcome slog event (spec §8): the HTTP

@@ -19,6 +19,8 @@ const (
 	CodeServiceNotReady    = "service_not_ready"
 	CodeServerRestarting   = "server_restarting"
 	CodeCKANUnavailable    = "ckan_unavailable"
+	CodeMalformedResource  = "malformed_resource"
+	CodeAnalysisTimeout    = "analysis_timeout"
 	CodeResourceUnreadable = "resource_unreadable"
 	CodeInternalError      = "internal_error"
 )
@@ -45,6 +47,8 @@ var errorCatalogue = map[string]catalogueEntry{
 	CodeServiceNotReady:    {http.StatusServiceUnavailable, "The service isn't ready yet (the data repository or storage is unavailable). Please try again shortly."},
 	CodeServerRestarting:   {http.StatusServiceUnavailable, "The service is restarting. Please try again in a moment."},
 	CodeCKANUnavailable:    {http.StatusBadGateway, "We can't reach the data repository right now. This is usually temporary — please try again shortly."},
+	CodeMalformedResource:  {http.StatusUnprocessableEntity, "A resource in this dataset is malformed and can't be processed. Please check the dataset and try again."},
+	CodeAnalysisTimeout:    {http.StatusGatewayTimeout, "The analysis took too long and was stopped. Please try again; if it keeps happening, contact us."},
 	CodeResourceUnreadable: {http.StatusInternalServerError, "A file in this dataset couldn't be read from storage."},
 	CodeInternalError:      {http.StatusInternalServerError, "Something went wrong on our side. Please quote reference {request_id} if you contact us."},
 }
@@ -73,14 +77,29 @@ func writeError(w http.ResponseWriter, r *http.Request, code string) {
 		code = CodeInternalError
 		entry = errorCatalogue[CodeInternalError]
 	}
-	writeErrorStatus(w, r, code, entry.Status)
+	renderError(w, r, code, entry.Status, "")
 }
 
-// writeErrorStatus renders the same envelope as writeError but with an explicit
-// HTTP status, overriding the catalogue default. It exists for the request
-// timeout path (spec §2), which reuses the ckan_unavailable message but must
-// answer 504 Gateway Timeout rather than the catalogue's 502.
-func writeErrorStatus(w http.ResponseWriter, r *http.Request, code string, status int) {
+// writeErrorMessage renders the envelope for code but with a dynamic,
+// already-user-facing message in place of the catalogue default. It is used for
+// malformed_resource, whose message is authored by the collector and names the
+// exact resource + package the user must fix (spec §3). The override is safe to
+// surface verbatim: it carries no token, URL or internal path. The override is
+// ignored for internal_error, which always cites the request_id instead.
+func writeErrorMessage(w http.ResponseWriter, r *http.Request, code, message string) {
+	entry, ok := errorCatalogue[code]
+	if !ok {
+		code = CodeInternalError
+		entry = errorCatalogue[CodeInternalError]
+	}
+	renderError(w, r, code, entry.Status, message)
+}
+
+// renderError is the single envelope renderer shared by writeError and
+// writeErrorMessage. When messageOverride is non-empty it replaces the catalogue
+// message (except for internal_error, which always cites the request_id and
+// omits contact).
+func renderError(w http.ResponseWriter, r *http.Request, code string, status int, messageOverride string) {
 	entry, ok := errorCatalogue[code]
 	if !ok {
 		code = CodeInternalError
@@ -101,9 +120,12 @@ func writeErrorStatus(w http.ResponseWriter, r *http.Request, code string, statu
 	}
 
 	message := entry.Message
-	if code == CodeInternalError {
+	switch {
+	case code == CodeInternalError:
 		// internal_error cites the request_id in its message and omits contact.
 		message = "Something went wrong on our side. Please quote reference " + requestID + " if you contact us."
+	case messageOverride != "":
+		message = messageOverride
 	}
 
 	body := ErrorBody{

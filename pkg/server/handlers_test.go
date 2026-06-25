@@ -233,6 +233,11 @@ func observingCKAN(t *testing.T, obs *ckanObservation) *httptest.Server {
 
 func ckanPCConfig(ckanURL string) *config.Config {
 	return &config.Config{
+		General: &config.GeneralConfig{
+			MaxArchiveFileSize:     10 * 1024 * 1024,
+			MaxTotalArchiveMemory:  100 * 1024 * 1024,
+			MaxContentScanFileSize: 20 * 1024 * 1024,
+		},
 		Server: &config.ServerConfig{ContactMessage: DefaultContactMessage, LogClientIP: true},
 		Collectors: map[string]*config.CollectorConfig{
 			"CkanCollector": {
@@ -246,11 +251,13 @@ func ckanPCConfig(ckanURL string) *config.Config {
 	}
 }
 
-// TestHandler_Analyze_RequestIDInBody verifies a successful analysis includes
-// request_id in the body. (Zero upload resources -> package_not_found path is
-// exercised separately; here we use a package that yields no files but assert
-// the request_id appears in the error envelope too.)
-func TestHandler_Analyze_NoFiles_PackageNotFound(t *testing.T) {
+// TestHandler_Analyze_NoUploadResources_OK asserts that a package which EXISTS
+// (package_show 200) but has zero analyzable upload resources — here the fixture
+// serves only an external-link resource — is NOT an error. The analysis runs and
+// returns a normal 200 result (no file issues) carrying request_id. This is the
+// fixed behavior: package_not_found is reserved for a genuine CKAN 404, not for
+// a real package whose resources happen to be all links.
+func TestHandler_Analyze_NoUploadResources_OK(t *testing.T) {
 	ckan := fakeCKAN(t, nil, nil)
 	defer ckan.Close()
 
@@ -265,15 +272,20 @@ func TestHandler_Analyze_NoFiles_PackageNotFound(t *testing.T) {
 	rr := httptest.NewRecorder()
 	handler.Analyze(rr, req)
 
-	if rr.Code != http.StatusNotFound {
-		t.Fatalf("expected 404, got %d (body: %s)", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 for a package with no upload resources, got %d (body: %s)", rr.Code, rr.Body.String())
 	}
-	resp := decodeEnvelope(t, rr)
-	if resp.Error.Code != CodePackageNotFound {
-		t.Errorf("expected %q, got %q", CodePackageNotFound, resp.Error.Code)
+	// The success body is the scan result with request_id injected.
+	var obj map[string]json.RawMessage
+	if err := json.NewDecoder(rr.Body).Decode(&obj); err != nil {
+		t.Fatalf("failed to decode success body: %v", err)
 	}
-	if resp.Error.RequestID != "REQ-NOFILES" {
-		t.Errorf("expected request_id REQ-NOFILES, got %q", resp.Error.RequestID)
+	var gotID string
+	if err := json.Unmarshal(obj["request_id"], &gotID); err != nil {
+		t.Fatalf("request_id missing/invalid in success body: %v", err)
+	}
+	if gotID != "REQ-NOFILES" {
+		t.Errorf("expected request_id REQ-NOFILES, got %q", gotID)
 	}
 }
 
@@ -402,9 +414,9 @@ func TestAnalyzeRequest_JSONParsing(t *testing.T) {
 // token (no Authorization header / empty token in context). The public path
 // must reach the collector and NOT 401: the single package_show drives the
 // outcome and an empty token is forwarded as an empty Authorization header
-// (§2, §5). The fakeCKAN fixture serves only an external-link resource, so zero
-// files are collected and the result is package_not_found (404) — the point is
-// that it is NOT invalid_token (401).
+// (§2, §5). The fakeCKAN fixture serves only an external-link resource, so the
+// package exists with zero upload files and the analysis returns a normal 200 —
+// the point is that it is NOT invalid_token (401).
 func TestHandler_Analyze_NoToken_PublicPath(t *testing.T) {
 	var mu sync.Mutex
 	seen := make(map[string]string)
@@ -424,15 +436,8 @@ func TestHandler_Analyze_NoToken_PublicPath(t *testing.T) {
 	if rr.Code == http.StatusUnauthorized {
 		t.Fatalf("public path must not 401; got 401 (body: %s)", rr.Body.String())
 	}
-	if rr.Code != http.StatusNotFound {
-		t.Fatalf("expected 404 package_not_found on the no-files public path, got %d (body: %s)", rr.Code, rr.Body.String())
-	}
-	resp := decodeEnvelope(t, rr)
-	if resp.Error.Code == CodeInvalidToken {
-		t.Errorf("public path produced invalid_token; the empty-token guard is still present")
-	}
-	if resp.Error.Code != CodePackageNotFound {
-		t.Errorf("expected %q, got %q", CodePackageNotFound, resp.Error.Code)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 on the no-files public path, got %d (body: %s)", rr.Code, rr.Body.String())
 	}
 
 	// CKAN must have been called with an empty Authorization header.
@@ -592,9 +597,11 @@ func mustJSON(s string) string {
 }
 
 // TestHandler_Analyze_ValidPackageNames asserts valid CKAN names and lowercase
-// UUIDs pass validation (and therefore reach the collector — here resulting in
-// package_not_found because the fixture serves no uploads, NOT
-// invalid_package_name).
+// UUIDs pass validation and therefore reach the collector. The fixture serves a
+// package with only an external-link resource, so a validated name produces a
+// normal 200 result (no uploads to analyze) — NOT a 400 invalid_package_name.
+// Asserting the 200 outcome proves the validated name actually reached CKAN
+// (an invalid name would be rejected with 400 BEFORE any CKAN call).
 func TestHandler_Analyze_ValidPackageNames(t *testing.T) {
 	ckan := fakeCKAN(t, nil, nil)
 	defer ckan.Close()
@@ -610,18 +617,8 @@ func TestHandler_Analyze_ValidPackageNames(t *testing.T) {
 	for _, name := range valid {
 		t.Run(name, func(t *testing.T) {
 			rr := analyzeWithToken(handler, name, "tok")
-			resp := decodeEnvelope(t, rr)
-			// Assert the POSITIVE outcome: the name passed validation, reached
-			// CKAN, and the fixture (which serves only an external-link resource,
-			// no uploads) drove a 404 package_not_found. Merely asserting "!=
-			// invalid_package_name" would also pass if the name were silently
-			// dropped before any CKAN call; requiring the package_not_found
-			// outcome proves the validated name actually reached the collector.
-			if rr.Code != http.StatusNotFound {
-				t.Fatalf("valid name %q: expected 404 (reached CKAN), got %d (body: %s)", name, rr.Code, rr.Body.String())
-			}
-			if resp.Error.Code != CodePackageNotFound {
-				t.Errorf("valid name %q: expected %q (proves the name reached CKAN), got %q", name, CodePackageNotFound, resp.Error.Code)
+			if rr.Code != http.StatusOK {
+				t.Fatalf("valid name %q: expected 200 (reached CKAN), got %d (body: %s)", name, rr.Code, rr.Body.String())
 			}
 		})
 	}
@@ -844,11 +841,12 @@ func TestHandler_Analyze_BodyTooLarge(t *testing.T) {
 
 // TestHandler_Analyze_Timeout asserts a request whose hard timeout fires while
 // the analysis is still running returns a clean 504 envelope carrying the
-// ckan_unavailable code (spec §2). It uses a CKAN that parks until released
-// rather than a fixed wall-clock sleep, so the test does not burn real time and
-// the 504 is driven purely by the 1s requestTimeoutSeconds firing on the
-// in-flight call. (TestHandler_Analyze_Timeout_HungUpstream additionally bounds
-// the elapsed time.)
+// analysis_timeout code (spec §2) — NOT ckan_unavailable, since the deadline
+// bounds the whole analysis rather than indicating CKAN is unreachable. It uses
+// a CKAN that parks until released rather than a fixed wall-clock sleep, so the
+// test does not burn real time and the 504 is driven purely by the 1s
+// requestTimeoutSeconds firing on the in-flight call.
+// (TestHandler_Analyze_Timeout_HungUpstream additionally bounds the elapsed time.)
 func TestHandler_Analyze_Timeout(t *testing.T) {
 	release := make(chan struct{})
 	ckan := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -868,8 +866,8 @@ func TestHandler_Analyze_Timeout(t *testing.T) {
 		t.Errorf("expected 504 on timeout, got %d (body: %s)", rr.Code, rr.Body.String())
 	}
 	resp := decodeEnvelope(t, rr)
-	if resp.Error.Code != CodeCKANUnavailable {
-		t.Errorf("expected %q on timeout, got %q", CodeCKANUnavailable, resp.Error.Code)
+	if resp.Error.Code != CodeAnalysisTimeout {
+		t.Errorf("expected %q on timeout, got %q", CodeAnalysisTimeout, resp.Error.Code)
 	}
 }
 
@@ -903,8 +901,8 @@ func TestHandler_Analyze_Timeout_HungUpstream(t *testing.T) {
 			t.Errorf("expected 504 on hung upstream, got %d (body: %s)", rr.Code, rr.Body.String())
 		}
 		resp := decodeEnvelope(t, rr)
-		if resp.Error.Code != CodeCKANUnavailable {
-			t.Errorf("expected %q, got %q", CodeCKANUnavailable, resp.Error.Code)
+		if resp.Error.Code != CodeAnalysisTimeout {
+			t.Errorf("expected %q, got %q", CodeAnalysisTimeout, resp.Error.Code)
 		}
 		// Must finish near the 1s budget, well before any 300s WriteTimeout.
 		if elapsed > 10*time.Second {
@@ -984,38 +982,70 @@ func TestHandler_Analyze_UnknownCKANType_InternalNoLeak(t *testing.T) {
 	}
 }
 
-// TestHandler_Analyze_MalformedResource_InternalNoLeak: CKAN returns a package
-// whose single resource is missing BOTH url_type and url. The collector rejects
-// it with a verbose, user-facing fmt.Errorf (naming the resource/package). The
-// handler maps that non-CKANError collector error to internal_error (500), and
-// the verbose collector message must NOT be surfaced to the client — only the
-// fixed catalogue message (spec §3).
-func TestHandler_Analyze_MalformedResource_InternalNoLeak(t *testing.T) {
-	ckan := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		// One resource missing both url_type and url -> malformed.
-		io.WriteString(w, `{"success":true,"result":{"name":"malformed-pkg","resources":[`+
-			`{"name":"broken-resource","size":10}]}}`)
-	}))
-	defer ckan.Close()
-
-	handler := NewHandler(ckanPCConfig(ckan.URL), Config{}, discardLogger())
-
-	rr := analyzeWithToken(handler, "malformed-pkg", "tok")
-	if rr.Code != http.StatusInternalServerError {
-		t.Fatalf("expected 500 internal_error for malformed resource metadata, got %d (body: %s)", rr.Code, rr.Body.String())
+// TestHandler_Analyze_MalformedResource_Surfaced: a malformed resource is a
+// user-fixable data problem, not a server fault. CKAN returns a package with a
+// malformed resource (either missing BOTH url_type and url, or an upload missing
+// required metadata); the collector returns a MalformedResourceError and the
+// handler maps it to malformed_resource (422). Unlike a server-fault envelope,
+// the collector's authored, user-facing message IS surfaced verbatim so the user
+// learns the exact resource + package to fix (spec §3). The message names only
+// the resource and package — no token, URL or internal path.
+func TestHandler_Analyze_MalformedResource_Surfaced(t *testing.T) {
+	cases := []struct {
+		name      string
+		pkg       string
+		resources string
+		wantLabel string // resource label that must appear in the surfaced message
+		wantHints []string
+	}{
+		{
+			name:      "missing url_type and url",
+			pkg:       "malformed-pkg",
+			resources: `{"name":"broken-resource","size":10}`,
+			wantLabel: "broken-resource",
+			wantHints: []string{"url_type", "recreate", "reupload"},
+		},
+		{
+			name:      "upload missing required metadata",
+			pkg:       "malformed-upload-pkg",
+			resources: `{"url_type":"upload","name":"half-upload","size":10}`, // no url
+			wantLabel: "half-upload",
+			wantHints: []string{"missing required", "recreate", "reupload"},
+		},
 	}
-	resp := decodeEnvelope(t, rr)
-	if resp.Error.Code != CodeInternalError {
-		t.Errorf("expected %q for malformed resource metadata, got %q", CodeInternalError, resp.Error.Code)
-	}
-	// The verbose collector message (which names the resource/package and
-	// describes url_type) must NOT reach the client.
-	raw := rr.Body.String()
-	for _, leak := range []string{"broken-resource", "malformed-pkg", "url_type", "url type", "reupload", "recreate"} {
-		if strings.Contains(raw, leak) {
-			t.Errorf("verbose collector message leaked into the client envelope (found %q): %s", leak, raw)
-		}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ckan := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				io.WriteString(w, `{"success":true,"result":{"name":"`+tc.pkg+`","resources":[`+tc.resources+`]}}`)
+			}))
+			defer ckan.Close()
+
+			handler := NewHandler(ckanPCConfig(ckan.URL), Config{}, discardLogger())
+
+			rr := analyzeWithToken(handler, tc.pkg, "tok")
+			if rr.Code != http.StatusUnprocessableEntity {
+				t.Fatalf("expected 422 malformed_resource, got %d (body: %s)", rr.Code, rr.Body.String())
+			}
+			resp := decodeEnvelope(t, rr)
+			if resp.Error.Code != CodeMalformedResource {
+				t.Errorf("expected %q, got %q", CodeMalformedResource, resp.Error.Code)
+			}
+			// The authored message MUST be surfaced: it names the resource and
+			// package and tells the user what to do.
+			msg := resp.Error.Message
+			if !strings.Contains(msg, tc.wantLabel) {
+				t.Errorf("surfaced message must name the resource %q; got %q", tc.wantLabel, msg)
+			}
+			if !strings.Contains(msg, tc.pkg) {
+				t.Errorf("surfaced message must name the package %q; got %q", tc.pkg, msg)
+			}
+			for _, hint := range tc.wantHints {
+				if !strings.Contains(msg, hint) {
+					t.Errorf("surfaced message missing guidance %q; got %q", hint, msg)
+				}
+			}
+		})
 	}
 }
 

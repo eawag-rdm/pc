@@ -25,6 +25,19 @@ import (
 // code (spec §3); the CLI surfaces it as a plain collector error.
 var ErrResourceUnreadable = errors.New("resource file is unreadable")
 
+// MalformedResourceError carries a user-facing message describing a CKAN
+// resource that cannot be processed: either it is missing BOTH url_type and url,
+// or it is an upload missing required metadata (name/url/size). The message is
+// authored for the end user and is safe to surface verbatim — it names only the
+// resource and the package, never a token, URL or internal path. The server
+// maps it to the "malformed_resource" error code (422) and shows Msg directly;
+// the CLI surfaces it as a plain collector error.
+type MalformedResourceError struct {
+	Msg string
+}
+
+func (e *MalformedResourceError) Error() string { return e.Msg }
+
 // CKANError carries the outcome of the single CKAN package_show call so the
 // caller (the server) can map it to the fixed error catalogue (spec §3, §5)
 // WITHOUT re-fetching. It distinguishes:
@@ -216,14 +229,13 @@ func GetCKANResources(jsonMap map[string]interface{}) ([]structs.File, error) {
 		// A resource missing BOTH url_type and url is malformed: stop collection
 		// and tell the user exactly which resource so they can fix it.
 		if isEmptyField(res, "url_type") && isEmptyField(res, "url") {
-			//lint:ignore ST1005 user-facing message shown verbatim to the end user
-			return nil, fmt.Errorf(
+			return nil, &MalformedResourceError{Msg: fmt.Sprintf(
 				"The resource '%s' in package '%s' is malformed and can not be processed. "+
 					"The url_type is missing. Files should have a URL type 'upload', "+
 					"external links should carry a URL, and DataStore resources use 'datastore'. "+
 					"Something must have gone wrong creating this resource. Please recreate/reupload it.",
 				resourceDisplayLabel(res), pkgName,
-			)
+			)}
 		}
 
 		if resourceIsFile(res) {
@@ -233,13 +245,12 @@ func GetCKANResources(jsonMap map[string]interface{}) ([]structs.File, error) {
 			resURL, okURL := res["url"].(string)
 			size, okSize := res["size"].(float64)
 			if !okName || !okURL || !okSize {
-				//lint:ignore ST1005 user-facing message shown verbatim to the end user
-				return nil, fmt.Errorf(
+				return nil, &MalformedResourceError{Msg: fmt.Sprintf(
 					"The resource '%s' in package '%s' is an upload but is missing required "+
 						"metadata (name, url or size) and can not be processed. "+
 						"Something must have gone wrong creating this resource. Please recreate/reupload it.",
 					resourceDisplayLabel(res), pkgName,
-				)
+				)}
 			}
 			// Use ToFileWithDisplay to preserve CKAN resource name as DisplayName
 			file := structs.ToFileWithDisplay(
