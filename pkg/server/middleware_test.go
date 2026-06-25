@@ -379,6 +379,52 @@ func TestRecover_PanicBecomesInternalError(t *testing.T) {
 	}
 }
 
+// TestRecover_PanicLogCarriesRequestID locks in D1: the panic_recovered slog
+// event must be keyed by the SAME request_id the envelope and admin alert cite,
+// not an empty string. Recover is outermost (its r predates RequestContext), so
+// the id is only available via the X-Request-Id header fallback.
+func TestRecover_PanicLogCarriesRequestID(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, nil))
+	h := NewHandler(&config.Config{Server: &config.ServerConfig{}}, Config{}, logger)
+
+	boom := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		panic("kaboom")
+	})
+	chain := h.Recover(h.RequestContext(boom))
+
+	rr := httptest.NewRecorder()
+	chain.ServeHTTP(rr, httptest.NewRequest("POST", "/api/v1/analyze", nil))
+
+	headerID := rr.Header().Get("X-Request-Id")
+	if headerID == "" {
+		t.Fatal("expected a non-empty X-Request-Id header")
+	}
+
+	// Find the panic_recovered record in the captured log and assert its id.
+	var loggedID string
+	var found bool
+	for _, line := range bytes.Split(bytes.TrimSpace(buf.Bytes()), []byte("\n")) {
+		if len(line) == 0 {
+			continue
+		}
+		var rec map[string]any
+		if err := json.Unmarshal(line, &rec); err != nil {
+			t.Fatalf("log line is not JSON: %v (%s)", err, line)
+		}
+		if rec["msg"] == "panic_recovered" {
+			found = true
+			loggedID, _ = rec["request_id"].(string)
+		}
+	}
+	if !found {
+		t.Fatalf("expected a panic_recovered log record; got:\n%s", buf.String())
+	}
+	if loggedID != headerID {
+		t.Errorf("panic_recovered request_id %q must equal X-Request-Id %q (D1 correlation)", loggedID, headerID)
+	}
+}
+
 // TestDraining_RejectsNewRequests asserts that once BeginDraining is called, the
 // Draining middleware rejects new requests with server_restarting (503) and the
 // inner handler is not invoked.

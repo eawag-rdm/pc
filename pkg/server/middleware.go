@@ -379,8 +379,19 @@ func (h *Handler) Recover(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if rec := recover(); rec != nil {
+				// Recover is the OUTERMOST middleware, so r's context predates
+				// RequestContext and carries no request_id. Fall back to the
+				// X-Request-Id response header (set by RequestContext on the shared
+				// ResponseWriter) so the panic stack is keyed by the SAME id the
+				// client envelope and admin alert cite — the same fallback renderError
+				// uses. Without this the only record carrying the stack would have an
+				// empty request_id, breaking log correlation.
+				rid := GetRequestID(r)
+				if rid == "" {
+					rid = w.Header().Get("X-Request-Id")
+				}
 				h.logger.LogAttrs(r.Context(), slog.LevelError, "panic_recovered",
-					slog.String("request_id", GetRequestID(r)),
+					slog.String("request_id", rid),
 					slog.String("method", r.Method),
 					slog.String("path", r.URL.Path),
 					slog.Any("panic", rec),
