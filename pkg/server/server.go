@@ -13,6 +13,13 @@ import (
 	"github.com/eawag-rdm/pc/pkg/output"
 )
 
+// writeTimeoutMargin is added to the configured request timeout to derive the
+// http.Server WriteTimeout. It gives the handler enough slack to render and
+// fully flush its own analysis_timeout (504) envelope AFTER the analysis context
+// deadline fires but BEFORE the socket's write deadline tears the connection
+// down — so the client receives the clean 504 instead of a dropped connection.
+const writeTimeoutMargin = 30 * time.Second
+
 // Server wraps the HTTP server with PC functionality
 type Server struct {
 	httpServer *http.Server
@@ -99,13 +106,22 @@ func New(cfg Config) (*Server, error) {
 	chain := handler.RequestContext(handler.AccessLog(handler.CORS(mux)))
 	chain = handler.Recover(chain)
 
+	// Derive the socket WriteTimeout from the SAME request-timeout source the
+	// handler uses for its analysis context deadline, plus a margin. The handler
+	// caps the whole analysis at requestTimeout and writes a clean
+	// analysis_timeout (504) envelope when that fires; the WriteTimeout must be
+	// strictly longer so that 504 can be fully written before the socket deadline
+	// tears the connection down. A hardcoded value would break this invariant once
+	// an operator raises requestTimeoutSeconds above it.
+	writeTimeout := configuredRequestTimeout(pcConfig) + writeTimeoutMargin
+
 	return &Server{
 		httpServer: &http.Server{
 			Addr:              listenAddr,
 			Handler:           chain,
 			ReadTimeout:       30 * time.Second,
-			ReadHeaderTimeout: 10 * time.Second,  // slowloris guard (§9)
-			WriteTimeout:      300 * time.Second, // long timeout for analysis
+			ReadHeaderTimeout: 10 * time.Second, // slowloris guard (§9)
+			WriteTimeout:      writeTimeout,     // requestTimeout + margin: handler's 504 must flush before this fires
 			IdleTimeout:       120 * time.Second,
 			MaxHeaderBytes:    1 << 20, // 1 MiB header cap (§9)
 		},

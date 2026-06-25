@@ -311,8 +311,17 @@ func (h *Handler) Analyze(w http.ResponseWriter, r *http.Request) {
 // requestTimeout returns the configured hard request upper bound (spec §2),
 // falling back to defaultRequestTimeout when unset.
 func (h *Handler) requestTimeout() time.Duration {
-	if h.pcConfig != nil && h.pcConfig.Server != nil && h.pcConfig.Server.RequestTimeoutSeconds > 0 {
-		return time.Duration(h.pcConfig.Server.RequestTimeoutSeconds) * time.Second
+	return configuredRequestTimeout(h.pcConfig)
+}
+
+// configuredRequestTimeout derives the hard request upper bound (spec §2) from
+// the [server] requestTimeoutSeconds setting, falling back to
+// defaultRequestTimeout when the config (or its Server section) is nil/unset. It
+// is the single source of the request-timeout duration so the handler's context
+// deadline and the server's socket WriteTimeout stay in sync.
+func configuredRequestTimeout(pcConfig *config.Config) time.Duration {
+	if pcConfig != nil && pcConfig.Server != nil && pcConfig.Server.RequestTimeoutSeconds > 0 {
+		return time.Duration(pcConfig.Server.RequestTimeoutSeconds) * time.Second
 	}
 	return defaultRequestTimeout
 }

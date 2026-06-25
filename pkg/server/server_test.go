@@ -54,6 +54,54 @@ func TestNew_MissingCkanAttr_FailsAtBoot(t *testing.T) {
 	}
 }
 
+// TestNew_WriteTimeout_ExceedsRequestTimeout asserts that the constructed
+// http.Server's WriteTimeout is derived from the configured
+// requestTimeoutSeconds and is strictly LONGER than it (by writeTimeoutMargin).
+// This guards the D3 invariant: if the socket WriteTimeout fired at or before
+// the analysis hard timeout, the handler could not finish writing its clean
+// analysis_timeout (504) envelope and the client would see a dropped connection.
+func TestNew_WriteTimeout_ExceedsRequestTimeout(t *testing.T) {
+	const requestTimeoutSeconds = 600 // raised above the old hardcoded 300s
+	dir := t.TempDir()
+	path := dir + "/pc.toml"
+	contents := "" +
+		"[server]\n" +
+		"requestTimeoutSeconds = 600\n" +
+		"[collector.CkanCollector]\n" +
+		"attrs = {url = \"http://127.0.0.1:1\", token = \"\", verify = false, ckan_storage_path = \"" + t.TempDir() + "\"}\n"
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	srv, err := New(Config{Address: "127.0.0.1:0", ConfigPath: path})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	requestTimeout := time.Duration(requestTimeoutSeconds) * time.Second
+	got := srv.httpServer.WriteTimeout
+	if got <= requestTimeout {
+		t.Fatalf("WriteTimeout (%s) must exceed the analysis request timeout (%s) so the 504 envelope can flush", got, requestTimeout)
+	}
+	if want := requestTimeout + writeTimeoutMargin; got != want {
+		t.Errorf("WriteTimeout = %s, want requestTimeout+margin = %s", got, want)
+	}
+}
+
+// TestNew_WriteTimeout_DefaultRequestTimeout asserts that with no [server]
+// requestTimeoutSeconds set, the WriteTimeout falls back to the default request
+// timeout plus the margin (so the invariant holds for the default too).
+func TestNew_WriteTimeout_DefaultRequestTimeout(t *testing.T) {
+	cfg := newTestServerConfig(t, "127.0.0.1:0", "http://127.0.0.1:1", t.TempDir())
+	srv, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if want := defaultRequestTimeout + writeTimeoutMargin; srv.httpServer.WriteTimeout != want {
+		t.Errorf("WriteTimeout = %s, want default+margin = %s", srv.httpServer.WriteTimeout, want)
+	}
+}
+
 // TestServer_BindFailure_ReturnsError asserts that ListenAndServe returns a
 // non-ErrServerClosed error when the listen address cannot be bound (e.g. the
 // port is already in use), so main can exit non-zero instead of hanging on the
