@@ -80,7 +80,7 @@ type ServerConfig struct {
 	PerIPRequestsPerHour    int         // Per-IP hourly request budget
 	GlobalRequestsPerHour   int         // Global hourly request budget
 	BurstFactor             float64     // Additional headroom factor applied to budgets
-	AnalysisBusyWaitSeconds int         // Seconds a busy request waits for the analysis gate before 503
+	AnalysisBusyWaitSeconds int         // Seconds a busy request waits for the analysis gate before 503 (must be >= 1; default 2)
 	MaxTrackedRateKeys      int         // Limiter memory bound (max tracked rate keys)
 	ContactMessage          string      // Contact suffix shown in error envelopes
 	LogClientIP             bool        // Whether to log the client IP

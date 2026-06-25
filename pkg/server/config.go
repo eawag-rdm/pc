@@ -82,8 +82,8 @@ func validateServerSettings(pcConfig *config.Config, addr string) error {
 	if s.BurstFactor < 0 {
 		return fmt.Errorf("server burstFactor must be >= 0, got %v", s.BurstFactor)
 	}
-	if s.AnalysisBusyWaitSeconds < 0 {
-		return fmt.Errorf("server analysisBusyWaitSeconds must be >= 0, got %d", s.AnalysisBusyWaitSeconds)
+	if s.AnalysisBusyWaitSeconds < 1 {
+		return fmt.Errorf("server analysisBusyWaitSeconds must be >= 1, got %d", s.AnalysisBusyWaitSeconds)
 	}
 	if s.MaxTrackedRateKeys <= 0 {
 		return fmt.Errorf("server maxTrackedRateKeys must be > 0, got %d", s.MaxTrackedRateKeys)
