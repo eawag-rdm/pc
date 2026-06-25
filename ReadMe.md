@@ -304,7 +304,7 @@ addresses, port 1–65535) and fail fast otherwise.
 ### Production Deployment
 
 The server speaks plain HTTP and is designed to run behind nginx with HTTPS
-termination. See **[docs/deploy.md](docs/deploy.md)** for the full deployment
+termination. See **[docs/deploy-server.md](docs/deploy-server.md)** for the full deployment
 guide: Docker log retention, the storage-mount precondition, nginx
 `trustedProxies` guidance, and graceful-shutdown behaviour.
 
