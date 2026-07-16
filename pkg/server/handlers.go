@@ -24,9 +24,16 @@ import (
 // ({"package_id":"..."}); 4 KiB is generous and bounds memory/abuse (spec §2).
 const maxAnalyzeBodyBytes = 4 << 10 // 4 KiB
 
-// defaultRequestTimeout is the fallback hard upper bound applied when no
-// [server] requestTimeoutSeconds is configured (spec §2).
-const defaultRequestTimeout = 300 * time.Second
+// serverVersion is reported by /health and /ready.
+const serverVersion = "1.0.0"
+
+// The fallback timeouts (applied only when the config or its Server section is
+// nil, i.e. hand-built configs in tests — ParseConfig always sets both fields)
+// derive from the same config defaults, so there is one source of truth.
+const (
+	defaultRequestTimeout     = time.Duration(config.DefaultServerRequestTimeoutSeconds) * time.Second
+	defaultCkanRequestTimeout = time.Duration(config.DefaultServerCkanRequestTimeoutSeconds) * time.Second
+)
 
 // packageIDPattern is CKAN's name grammar; it also matches lowercase UUIDs
 // (spec §2). A package_id that does not match is rejected as
@@ -174,7 +181,7 @@ type HealthResponse struct {
 func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, HealthResponse{
 		Status:    "ok",
-		Version:   "1.0.0",
+		Version:   serverVersion,
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
 	})
 }
@@ -190,7 +197,7 @@ func (h *Handler) Ready(w http.ResponseWriter, r *http.Request) {
 	}
 	respondJSON(w, http.StatusOK, HealthResponse{
 		Status:    "ready",
-		Version:   "1.0.0",
+		Version:   serverVersion,
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
 	})
 }
@@ -237,7 +244,7 @@ func (h *Handler) Analyze(w http.ResponseWriter, r *http.Request) {
 	// 5. Apply the hard request timeout (spec §2) via a context deadline so a
 	// runaway analysis returns a clean envelope BEFORE the server WriteTimeout
 	// fires. Client disconnects propagate through the same context.
-	ctx, cancel := context.WithTimeout(r.Context(), h.requestTimeout())
+	ctx, cancel := context.WithTimeout(r.Context(), configuredRequestTimeout(h.pcConfig))
 	defer cancel()
 
 	// 6-9. Run the single CKAN package_show + analysis under analysisMu: the
@@ -308,12 +315,6 @@ func (h *Handler) Analyze(w http.ResponseWriter, r *http.Request) {
 	w.Write(body)
 }
 
-// requestTimeout returns the configured hard request upper bound (spec §2),
-// falling back to defaultRequestTimeout when unset.
-func (h *Handler) requestTimeout() time.Duration {
-	return configuredRequestTimeout(h.pcConfig)
-}
-
 // configuredRequestTimeout derives the hard request upper bound (spec §2) from
 // the [server] requestTimeoutSeconds setting, falling back to
 // defaultRequestTimeout when the config (or its Server section) is nil/unset. It
@@ -324,6 +325,16 @@ func configuredRequestTimeout(pcConfig *config.Config) time.Duration {
 		return time.Duration(pcConfig.Server.RequestTimeoutSeconds) * time.Second
 	}
 	return defaultRequestTimeout
+}
+
+// configuredCkanRequestTimeout derives the upper bound for the single CKAN
+// package_show call from [server] ckanRequestTimeoutSeconds. It is always at
+// most the whole-analysis timeout (enforced by validateServerSettings).
+func configuredCkanRequestTimeout(pcConfig *config.Config) time.Duration {
+	if pcConfig != nil && pcConfig.Server != nil && pcConfig.Server.CkanRequestTimeoutSeconds > 0 {
+		return time.Duration(pcConfig.Server.CkanRequestTimeoutSeconds) * time.Second
+	}
+	return defaultCkanRequestTimeout
 }
 
 // runAnalysis performs the global-state-touching part of an analysis under
@@ -352,9 +363,15 @@ func (h *Handler) runAnalysis(ctx context.Context, packageID, token string) (bod
 	// MalformedResourceError, a structured collectors.CKANError, the
 	// ErrResourceUnreadable sentinel, or a transport error) maps to the
 	// catalogue (spec §5). A genuinely absent / private-unauthorized package is a
-	// CKAN 404 surfaced here as package_not_found.
+	// CKAN 404 surfaced here as package_not_found. The call gets its own, much
+	// shorter deadline (ckanRequestTimeoutSeconds, default 10s) nested inside the
+	// whole-analysis deadline: a CKAN instance that cannot answer a metadata GET
+	// within that window is unavailable (mapped to ckan_unavailable), and must
+	// not eat the checks phase's time budget.
 	ckanStart := time.Now()
-	files, err := collectors.CkanCollector(ctx, packageID, pcConfigCopy)
+	ckanCtx, ckanCancel := context.WithTimeout(ctx, configuredCkanRequestTimeout(h.pcConfig))
+	files, err := collectors.CkanCollector(ckanCtx, packageID, pcConfigCopy)
+	ckanCancel()
 	h.logCKANOutcome(ctx, packageID, err, time.Since(ckanStart))
 	if err != nil {
 		code, msg := mapCKANError(err)
@@ -366,8 +383,23 @@ func (h *Handler) runAnalysis(ctx context.Context, packageID, token string) (bod
 	// an error: run the checks (which yield no file issues) and return a normal
 	// result. package_not_found is reserved for the CKAN 404 above.
 
-	// Run checks (accumulates into GlobalLogger / PDFTracker).
-	messages := utils.ApplyAllChecks(pcConfigCopy, files, true)
+	// Run checks (accumulates into GlobalLogger / PDFTracker). ctx carries the
+	// whole-analysis deadline: the checks loop stops between files once it fires,
+	// so the spec's hard upper bound holds over the checks phase too — the
+	// handler then maps the expired context to analysis_timeout (504).
+	messages := utils.ApplyAllChecks(ctx, pcConfigCopy, files, true)
+
+	// Server-mode response discipline (spec §3/§8: no internal paths, no raw
+	// diagnostics). The buffered GlobalLogger diagnostics are split by audience:
+	// the full raw detail (paths, causes) goes to the server log keyed by
+	// request_id, and the response instead gets ONE soft, path-free skip
+	// acknowledgement per affected file. The buffer is cleared, so the
+	// formatter's warnings[]/errors[] arrays are always empty in server
+	// responses. Then any remaining absolute FileStore paths are blanked from
+	// the outgoing messages. The CLI shares none of this — its formatters read
+	// the untouched GlobalLogger and full paths.
+	messages = append(messages, h.convertScanDiagnostics(ctx, packageID)...)
+	scrubMessagePaths(messages)
 
 	// Format results as JSON. PDFTracker.SnapshotFiles takes a locked copy; we
 	// also still hold analysisMu, so no concurrent reset/append can intervene.
@@ -377,6 +409,74 @@ func (h *Handler) runAnalysis(ctx context.Context, packageID, token string) (bod
 		return "", 0, 0, CodeInternalError, ""
 	}
 	return jsonResult, len(files), countSkipped(messages), "", ""
+}
+
+// unscannedReason is the soft, user-facing acknowledgement shown (as a skipped[]
+// entry) for a file whose content could not be fully scanned — read error,
+// unreadable archive, or an internal check failure. The technical cause stays in
+// the server log, keyed by request_id.
+const unscannedReason = "The file could not be fully scanned."
+
+// convertScanDiagnostics drains the buffered GlobalLogger diagnostics collected
+// during this analysis and splits them by audience: every raw message (which may
+// carry absolute paths and OS error text) is logged via slog keyed by
+// request_id, and each distinct affected file (identified by the diagnostic's
+// Subject display name) yields ONE soft, path-free skip acknowledgement for the
+// response. Subject-less diagnostics (CKAN/transport/config notes) are
+// log-only. Must be called under analysisMu, before FormatResults reads the
+// logger — clearing the buffer here is what keeps warnings[]/errors[] empty in
+// server responses.
+func (h *Handler) convertScanDiagnostics(ctx context.Context, packageID string) []structs.Message {
+	diags := output.GlobalLogger.GetMessages()
+	if len(diags) == 0 {
+		return nil
+	}
+	var soft []structs.Message
+	seen := make(map[string]struct{}, len(diags))
+	for _, d := range diags {
+		level := slog.LevelWarn
+		switch d.Level {
+		case "error":
+			level = slog.LevelError
+		case "info":
+			level = slog.LevelInfo
+		}
+		h.logger.LogAttrs(ctx, level, "scan_diagnostic",
+			slog.String("request_id", GetRequestIDFromContext(ctx)),
+			slog.String("package_id", packageID),
+			slog.String("subject", d.Subject),
+			slog.String("message", d.Message),
+		)
+		if d.Subject == "" {
+			continue
+		}
+		if _, dup := seen[d.Subject]; dup {
+			continue
+		}
+		seen[d.Subject] = struct{}{}
+		soft = append(soft, structs.Message{
+			Content:  unscannedReason,
+			Source:   structs.File{Name: d.Subject},
+			TestName: "Readability",
+			Skipped:  true,
+			Reason:   unscannedReason,
+		})
+	}
+	output.GlobalLogger.ClearMessages()
+	return soft
+}
+
+// scrubMessagePaths blanks the local FileStore path on every outgoing message's
+// File source. The response identifies files by display name; absolute
+// container paths are internal (spec §3). Message values are updated in place;
+// the CLI never calls this.
+func scrubMessagePaths(messages []structs.Message) {
+	for i := range messages {
+		if f, ok := messages[i].Source.(structs.File); ok && f.Path != "" {
+			f.Path = ""
+			messages[i].Source = f
+		}
+	}
 }
 
 // countSkipped counts the check Messages that report a per-FILE skip (spec §6)

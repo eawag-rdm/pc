@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"context"
 	"testing"
 
 	"github.com/eawag-rdm/pc/pkg/config"
@@ -54,7 +55,7 @@ func TestArchiveParallelProcessing(t *testing.T) {
 	}
 
 	// Test the function that specifically handles archives
-	messages := ApplyChecksFilteredByFileOnArchive(cfg, []func(structs.File, config.Config) []structs.Message{mockArchiveCheck}, files)
+	messages := ApplyChecksFilteredByFileOnArchive(context.Background(), cfg, []func(structs.File, config.Config) []structs.Message{mockArchiveCheck}, files)
 
 	// Verify that all archive files were processed
 	expectedArchiveCount := 6 // 6 archive files

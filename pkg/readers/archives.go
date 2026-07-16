@@ -14,11 +14,6 @@ import (
 	"github.com/bodgit/sevenzip"
 )
 
-// Read the filelist from a zip file
-func ReadZipFileList(filePath string) ([]structs.File, error) {
-	return ReadZipFileListWithDisplayName(filePath, "")
-}
-
 // ReadZipFileListWithDisplayName reads the file list with archive display name
 func ReadZipFileListWithDisplayName(filePath string, archiveDisplayName string) ([]structs.File, error) {
 	// Check if the file exists
@@ -43,11 +38,6 @@ func ReadZipFileListWithDisplayName(filePath string, archiveDisplayName string) 
 	}
 	return fileList, nil
 
-}
-
-// Read the filelist from a tar file
-func ReadTarFileList(filePath string) ([]structs.File, error) {
-	return ReadTarFileListWithDisplayName(filePath, "")
 }
 
 // ReadTarFileListWithDisplayName reads the file list with archive display name
@@ -76,11 +66,6 @@ func ReadTarFileListWithDisplayName(filePath string, archiveDisplayName string) 
 		fileList = append(fileList, f)
 	}
 	return fileList, nil
-}
-
-// Read the filelist from a tar.gz file
-func ReadTarGzFileList(filePath string) ([]structs.File, error) {
-	return ReadTarGzFileListWithDisplayName(filePath, "")
 }
 
 // ReadTarGzFileListWithDisplayName reads the file list with archive display name
@@ -115,10 +100,6 @@ func ReadTarGzFileListWithDisplayName(filePath string, archiveDisplayName string
 		fileList = append(fileList, f)
 	}
 	return fileList, nil
-}
-
-func Read7ZipFileList(filePath string) ([]structs.File, error) {
-	return Read7ZipFileListWithDisplayName(filePath, "")
 }
 
 // Read7ZipFileListWithDisplayName reads the file list with archive display name

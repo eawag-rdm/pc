@@ -230,18 +230,19 @@ func TestConfig_GetVerifyTLS(t *testing.T) {
 // validateServerSettings must accept; tests mutate one field to assert rejection.
 func validServerConfig() *config.ServerConfig {
 	return &config.ServerConfig{
-		ListenAddress:           config.DefaultServerListenAddress,
-		TrustProxyHeaders:       true,
-		TrustedProxies:          []string{"127.0.0.1/32"},
-		AllowedOrigins:          []string{"https://app.example.org"},
-		PerIPRequestsPerHour:    config.DefaultServerPerIPRequestsPerHour,
-		GlobalRequestsPerHour:   config.DefaultServerGlobalRequestsPerHour,
-		BurstFactor:             config.DefaultServerBurstFactor,
-		AnalysisBusyWaitSeconds: config.DefaultServerAnalysisBusyWaitSeconds,
-		MaxTrackedRateKeys:      config.DefaultServerMaxTrackedRateKeys,
-		ContactMessage:          config.DefaultServerContactMessage,
-		LogClientIP:             true,
-		RequestTimeoutSeconds:   config.DefaultServerRequestTimeoutSeconds,
+		ListenAddress:             config.DefaultServerListenAddress,
+		TrustProxyHeaders:         true,
+		TrustedProxies:            []string{"127.0.0.1/32"},
+		AllowedOrigins:            []string{"https://app.example.org"},
+		PerIPRequestsPerHour:      config.DefaultServerPerIPRequestsPerHour,
+		GlobalRequestsPerHour:     config.DefaultServerGlobalRequestsPerHour,
+		BurstFactor:               config.DefaultServerBurstFactor,
+		AnalysisBusyWaitSeconds:   config.DefaultServerAnalysisBusyWaitSeconds,
+		MaxTrackedRateKeys:        config.DefaultServerMaxTrackedRateKeys,
+		ContactMessage:            config.DefaultServerContactMessage,
+		LogClientIP:               true,
+		RequestTimeoutSeconds:     config.DefaultServerRequestTimeoutSeconds,
+		CkanRequestTimeoutSeconds: config.DefaultServerCkanRequestTimeoutSeconds,
 	}
 }
 
@@ -279,6 +280,9 @@ func TestValidateServerSettings(t *testing.T) {
 		{name: "analysisBusyWait of 1 valid", addr: "127.0.0.1:8080", mutate: func(s *config.ServerConfig) { s.AnalysisBusyWaitSeconds = 1 }, wantErr: false},
 		{name: "zero maxTrackedRateKeys", addr: "127.0.0.1:8080", mutate: func(s *config.ServerConfig) { s.MaxTrackedRateKeys = 0 }, wantErr: true},
 		{name: "zero requestTimeout", addr: "127.0.0.1:8080", mutate: func(s *config.ServerConfig) { s.RequestTimeoutSeconds = 0 }, wantErr: true},
+		{name: "zero ckanRequestTimeout", addr: "127.0.0.1:8080", mutate: func(s *config.ServerConfig) { s.CkanRequestTimeoutSeconds = 0 }, wantErr: true},
+		{name: "ckanRequestTimeout above requestTimeout", addr: "127.0.0.1:8080", mutate: func(s *config.ServerConfig) { s.CkanRequestTimeoutSeconds = s.RequestTimeoutSeconds + 1 }, wantErr: true},
+		{name: "ckanRequestTimeout equal to requestTimeout valid", addr: "127.0.0.1:8080", mutate: func(s *config.ServerConfig) { s.CkanRequestTimeoutSeconds = s.RequestTimeoutSeconds }, wantErr: false},
 		{name: "invalid CIDR in trustedProxies", addr: "127.0.0.1:8080", mutate: func(s *config.ServerConfig) { s.TrustedProxies = []string{"127.0.0.1"} }, wantErr: true},
 		{name: "valid CIDR list", addr: "127.0.0.1:8080", mutate: func(s *config.ServerConfig) { s.TrustedProxies = []string{"10.0.0.0/8", "::1/128"} }, wantErr: false},
 		{name: "invalid origin (no scheme)", addr: "127.0.0.1:8080", mutate: func(s *config.ServerConfig) { s.AllowedOrigins = []string{"app.example.org"} }, wantErr: true},

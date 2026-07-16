@@ -1,9 +1,11 @@
 package utils
 
 import (
+	"context"
 	"reflect"
 	"testing"
 
+	"github.com/eawag-rdm/pc/pkg/optimization"
 	"github.com/eawag-rdm/pc/pkg/structs"
 
 	"github.com/eawag-rdm/pc/pkg/config"
@@ -15,10 +17,10 @@ import (
 func TestApplyAllChecks_NoFilesNotice(t *testing.T) {
 	cases := map[string]func() []structs.Message{
 		"ApplyAllChecks": func() []structs.Message {
-			return ApplyAllChecks(config.Config{}, nil, false)
+			return ApplyAllChecks(context.Background(), config.Config{}, nil, false)
 		},
 		"ApplyAllChecksWithProgress": func() []structs.Message {
-			return ApplyAllChecksWithProgress(config.Config{}, nil, false, nil)
+			return ApplyAllChecksWithProgress(context.Background(), config.Config{}, nil, false, nil)
 		},
 	}
 	for name, run := range cases {
@@ -49,14 +51,14 @@ func TestGetFunctionName(t *testing.T) {
 		input    interface{}
 		expected string
 	}{
-		{input: getFunctionName, expected: "getFunctionName"},
+		{input: optimization.FunctionName, expected: "FunctionName"},
 		{input: reflect.ValueOf, expected: "ValueOf"},
 	}
 
 	for _, test := range tests {
-		result := getFunctionName(test.input)
+		result := optimization.FunctionName(test.input)
 		if result != test.expected {
-			t.Errorf("getFunctionName(%v) = %v; want %v", test.input, result, test.expected)
+			t.Errorf("FunctionName(%v) = %v; want %v", test.input, result, test.expected)
 		}
 	}
 }
@@ -241,9 +243,9 @@ func TestMatchPatterns(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			result := matchPatterns(test.list, test.str)
+			result := matchRegexPatterns(test.list, test.str)
 			if result != test.expectedMatch {
-				t.Errorf("%v: matchPatterns(%v, %v) = %v; want %v", test.name, test.list, test.str, result, test.expectedMatch)
+				t.Errorf("%v: matchRegexPatterns(%v, %v) = %v; want %v", test.name, test.list, test.str, result, test.expectedMatch)
 			}
 		})
 	}
@@ -333,7 +335,7 @@ func TestApplyChecksFilteredByFile(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			result := ApplyChecksFilteredByFile(test.config, test.checks, test.files)
+			result := ApplyChecksFilteredByFile(context.Background(), test.config, test.checks, test.files)
 			if !reflect.DeepEqual(result, test.expected) {
 				t.Errorf("%v: ApplyChecksFilteredByFile() = %v; want %v", test.name, result, test.expected)
 			}

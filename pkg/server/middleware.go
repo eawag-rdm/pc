@@ -187,8 +187,7 @@ func (sr *statusRecorder) Write(b []byte) (int, error) {
 // AccessLog emits exactly one structured (slog JSON) access record per request
 // at completion: ts, level, request_id, method, path, package_id, status,
 // latency_ms, and client_ip (gated by logClientIP). It never routes check
-// Messages and never logs the token. It replaces the previous LoggingMiddleware
-// stub.
+// Messages and never logs the token.
 func (h *Handler) AccessLog(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -207,7 +206,7 @@ func (h *Handler) AccessLog(next http.Handler) http.Handler {
 			status = http.StatusOK
 		}
 
-		attrs := []any{
+		attrs := []slog.Attr{
 			slog.String("request_id", GetRequestID(r)),
 			slog.String("method", r.Method),
 			slog.String("path", r.URL.Path),
@@ -219,20 +218,8 @@ func (h *Handler) AccessLog(next http.Handler) http.Handler {
 			attrs = append(attrs, slog.String("client_ip", clientIP(r)))
 		}
 
-		h.logger.LogAttrs(r.Context(), slog.LevelInfo, "access", toLogAttrs(attrs)...)
+		h.logger.LogAttrs(r.Context(), slog.LevelInfo, "access", attrs...)
 	})
-}
-
-// toLogAttrs converts the variadic []any (slog.Attr values) used above into the
-// []slog.Attr expected by LogAttrs.
-func toLogAttrs(attrs []any) []slog.Attr {
-	out := make([]slog.Attr, 0, len(attrs))
-	for _, a := range attrs {
-		if attr, ok := a.(slog.Attr); ok {
-			out = append(out, attr)
-		}
-	}
-	return out
 }
 
 // clientIP returns the connection's remote address (host portion), for access

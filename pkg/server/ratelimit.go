@@ -186,13 +186,6 @@ func (rl *rateLimiter) evictLocked(currentWindow time.Time) {
 	}
 }
 
-// trackedKeys returns the current number of tracked keys (test helper).
-func (rl *rateLimiter) trackedKeys() int {
-	rl.mu.Lock()
-	defer rl.mu.Unlock()
-	return len(rl.entries)
-}
-
 // clientIPKey returns the rate-limit key for a request: the /64 prefix for IPv6
 // or the full address for IPv4. The source address is X-Real-IP only when
 // trustProxyHeaders is set AND the connection's RemoteAddr is within a trusted

@@ -143,7 +143,7 @@ func (u *UnpackedFileIterator) memberMemorySkipReason() string {
 	return fmt.Sprintf("Skipped content scan of archive member: would exceed total archive memory limit (%d bytes).", u.maxTotalMemory)
 }
 
-func matchPatterns(list []string, str string) bool {
+func matchLiteralPatterns(list []string, str string) bool {
 	if len(list) == 0 || str == "" {
 		return true // Empty patterns match everything
 	}
@@ -155,10 +155,10 @@ func matchPatterns(list []string, str string) bool {
 
 func fileGoodToUnpack(whitelist []string, blacklist []string, filename string) bool {
 	if len(blacklist) > 0 {
-		return !matchPatterns(blacklist, filename)
+		return !matchLiteralPatterns(blacklist, filename)
 	}
 	if len(whitelist) > 0 {
-		return matchPatterns(whitelist, filename)
+		return matchLiteralPatterns(whitelist, filename)
 	}
 	return true
 }
@@ -167,7 +167,7 @@ func (u *UnpackedFileIterator) findFirstTar() bool {
 	if u.tarReader == nil {
 		file, err := os.Open(u.ArchivePath)
 		if err != nil {
-			output.GlobalLogger.Warning("Error (archive content checks) opening tar file '%s' -> %v", u.ArchiveName, err)
+			output.GlobalLogger.FileWarning(u.ArchiveName, "Error (archive content checks) opening tar file '%s' -> %v", u.ArchiveName, err)
 			u.iterationEnded = true
 			return false
 		}
@@ -234,7 +234,7 @@ func (u *UnpackedFileIterator) findFirstTarGz() bool {
 	if u.tarReader == nil {
 		file, err := os.Open(u.ArchivePath)
 		if err != nil {
-			output.GlobalLogger.Warning("Error (archive content checks) opening tar.gz file '%s' -> %v", u.ArchiveName, err)
+			output.GlobalLogger.FileWarning(u.ArchiveName, "Error (archive content checks) opening tar.gz file '%s' -> %v", u.ArchiveName, err)
 			u.iterationEnded = true
 			return false
 		}
@@ -242,7 +242,7 @@ func (u *UnpackedFileIterator) findFirstTarGz() bool {
 
 		gzipReader, err := gzip.NewReader(file)
 		if err != nil {
-			output.GlobalLogger.Warning("Error (archive content checks) creating gzip reader for '%s' -> %v", u.ArchiveName, err)
+			output.GlobalLogger.FileWarning(u.ArchiveName, "Error (archive content checks) creating gzip reader for '%s' -> %v", u.ArchiveName, err)
 			u.iterationEnded = true
 			return false
 		}
@@ -604,7 +604,7 @@ func (u *UnpackedFileIterator) findFirst7z() bool {
 	if u.sevenZipReader == nil {
 		reader, err := sevenzip.OpenReader(u.ArchivePath)
 		if err != nil {
-			output.GlobalLogger.Warning("Error (archive content checks) opening 7z file '%s' -> %v", u.ArchiveName, err)
+			output.GlobalLogger.FileWarning(u.ArchiveName, "Error (archive content checks) opening 7z file '%s' -> %v", u.ArchiveName, err)
 			u.iterationEnded = true
 			return false
 		}
@@ -792,7 +792,7 @@ func (u *UnpackedFileIterator) findFirstZip() bool {
 	if u.zipReader == nil {
 		reader, err := zip.OpenReader(u.ArchivePath)
 		if err != nil {
-			output.GlobalLogger.Warning("Error (archive content checks) opening zip file '%s' -> %v", u.ArchiveName, err)
+			output.GlobalLogger.FileWarning(u.ArchiveName, "Error (archive content checks) opening zip file '%s' -> %v", u.ArchiveName, err)
 			u.iterationEnded = true
 			return false
 		}
@@ -897,7 +897,7 @@ func (u *UnpackedFileIterator) HasFilesToUnpack() bool {
 	case ".7z":
 		return u.findFirst7z()
 	default:
-		output.GlobalLogger.Warning("Unsupported archive type '%s'", u.ArchiveName)
+		output.GlobalLogger.FileWarning(u.ArchiveName, "Unsupported archive type '%s'", u.ArchiveName)
 		u.iterationEnded = true
 		u.close()
 		return false

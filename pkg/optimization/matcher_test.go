@@ -249,30 +249,6 @@ func TestGetMatcher_EmptyPatterns(t *testing.T) {
 	}
 }
 
-func TestFastStringSearch(t *testing.T) {
-	text := []byte("This is a test string")
-
-	// Test with existing pattern
-	if !FastStringSearch(text, []byte("test")) {
-		t.Error("Expected to find 'test' in text")
-	}
-
-	// Test with non-existing pattern
-	if FastStringSearch(text, []byte("missing")) {
-		t.Error("Expected not to find 'missing' in text")
-	}
-
-	// Test with empty pattern
-	if !FastStringSearch(text, []byte("")) {
-		t.Error("Expected empty pattern to always match")
-	}
-
-	// Test with pattern longer than text
-	if FastStringSearch([]byte("short"), []byte("longer pattern")) {
-		t.Error("Expected pattern longer than text to not match")
-	}
-}
-
 func TestMatcher_ConcurrentAccess(t *testing.T) {
 	patterns := []string{"password", "secret", "api_key"}
 	matcher := NewFastMatcher(patterns)

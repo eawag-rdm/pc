@@ -51,7 +51,9 @@ var errorCatalogue = map[string]catalogueEntry{
 	CodeMalformedResource:  {http.StatusUnprocessableEntity, "A resource in this dataset is malformed and can't be processed. Please check the dataset and try again."},
 	CodeAnalysisTimeout:    {http.StatusGatewayTimeout, "The analysis took too long and was stopped. Please try again; if it keeps happening, contact us."},
 	CodeResourceUnreadable: {http.StatusInternalServerError, "A file in this dataset couldn't be read from storage."},
-	CodeInternalError:      {http.StatusInternalServerError, "Something went wrong on our side. Please quote reference {request_id} if you contact us."},
+	// internal_error's catalogue message is never rendered verbatim: renderError
+	// always rebuilds it with the live request_id. Only the Status is read.
+	CodeInternalError: {http.StatusInternalServerError, "Something went wrong on our side."},
 }
 
 // ErrorBody is the nested payload of the error envelope (§3).
@@ -73,12 +75,7 @@ type ErrorResponse struct {
 // included for every code except internal_error, which instead cites the
 // request_id in its message.
 func writeError(w http.ResponseWriter, r *http.Request, code string) {
-	entry, ok := errorCatalogue[code]
-	if !ok {
-		code = CodeInternalError
-		entry = errorCatalogue[CodeInternalError]
-	}
-	renderError(w, r, code, entry.Status, "")
+	renderError(w, r, code, "")
 }
 
 // writeErrorMessage renders the envelope for code but with a dynamic,
@@ -88,25 +85,21 @@ func writeError(w http.ResponseWriter, r *http.Request, code string) {
 // surface verbatim: it carries no token, URL or internal path. The override is
 // ignored for internal_error, which always cites the request_id instead.
 func writeErrorMessage(w http.ResponseWriter, r *http.Request, code, message string) {
-	entry, ok := errorCatalogue[code]
-	if !ok {
-		code = CodeInternalError
-		entry = errorCatalogue[CodeInternalError]
-	}
-	renderError(w, r, code, entry.Status, message)
+	renderError(w, r, code, message)
 }
 
 // renderError is the single envelope renderer shared by writeError and
-// writeErrorMessage. When messageOverride is non-empty it replaces the catalogue
-// message (except for internal_error, which always cites the request_id and
-// omits contact).
-func renderError(w http.ResponseWriter, r *http.Request, code string, status int, messageOverride string) {
+// writeErrorMessage: it resolves the catalogue entry (unknown codes fall back
+// to internal_error). When messageOverride is non-empty it replaces the
+// catalogue message (except for internal_error, which always cites the
+// request_id and omits contact).
+func renderError(w http.ResponseWriter, r *http.Request, code string, messageOverride string) {
 	entry, ok := errorCatalogue[code]
 	if !ok {
 		code = CodeInternalError
 		entry = errorCatalogue[CodeInternalError]
-		status = entry.Status
 	}
+	status := entry.Status
 
 	requestID := GetRequestID(r)
 	if requestID == "" {

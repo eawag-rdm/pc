@@ -218,7 +218,7 @@ func TestGetFunctionName(t *testing.T) {
 		return []structs.Message{}
 	}
 
-	name := getFunctionName(testFunc)
+	name := FunctionName(testFunc)
 
 	// Function name should contain something meaningful
 	if name == "" {
@@ -227,7 +227,7 @@ func TestGetFunctionName(t *testing.T) {
 
 	// Should work with actual check functions
 	mockCheck := func(structs.File, config.Config) []structs.Message { return nil }
-	name2 := getFunctionName(mockCheck)
+	name2 := FunctionName(mockCheck)
 
 	if name2 == "" {
 		t.Error("Mock check function name should not be empty")

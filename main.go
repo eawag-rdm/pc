@@ -24,11 +24,9 @@ import (
 
 func main() {
 
-	// implement small cli to call pc with config and a folder (both can have default args)
-	// then the files will be collected with the local_collector and the checks will be applied
-	// the results will be printed to the console
-	// the exit code will be 0 if no errors were found, otherwise 1
-	// the cli should have a help command to show the usage
+	// Small CLI: collect files via the configured collector, apply the checks,
+	// and render the results (TUI by default; -json/-plain/-html otherwise).
+	// Errors are reported as JSON error envelopes on stdout.
 
 	// Define default values for the config and folder arguments
 	defaultConfig := config.FindConfigFile()
@@ -74,29 +72,6 @@ func main() {
 		return
 	}
 
-	generalConfig, err := config.LoadConfig(*cfg)
-	if err != nil {
-		// Output config error in JSON format
-		errorResult := map[string]interface{}{
-			"timestamp": time.Now().UTC().Format(time.RFC3339),
-			"error": map[string]string{
-				"type":    "config_error",
-				"message": fmt.Sprintf("Error loading config: %v", err),
-			},
-		}
-		if jsonBytes, marshalErr := json.MarshalIndent(errorResult, "", "  "); marshalErr == nil {
-			fmt.Println(string(jsonBytes))
-		} else {
-			fmt.Printf("{\"error\": \"Error loading config: %v\"}\n", err)
-		}
-		return
-	}
-
-	var (
-		files    []structs.File
-		filesErr error
-	)
-
 	// Helper function to output error in JSON format
 	outputError := func(errorType, message string) {
 		errorResult := map[string]interface{}{
@@ -112,6 +87,24 @@ func main() {
 			fmt.Printf("{\"error\": \"%s\"}\n", message)
 		}
 	}
+
+	generalConfig, err := config.LoadConfig(*cfg)
+	if err != nil {
+		outputError("config_error", fmt.Sprintf("Error loading config: %v", err))
+		return
+	}
+
+	// Fail fast (like the server does at boot) when a [test.*] section the checks
+	// dereference at scan time is missing or wrong-typed.
+	if err := config.ValidateChecksConfig(generalConfig); err != nil {
+		outputError("config_error", fmt.Sprintf("Invalid config: %v", err))
+		return
+	}
+
+	var (
+		files    []structs.File
+		filesErr error
+	)
 
 	// A missing [operation.main] section leaves a nil *OperationConfig in the
 	// map; dereferencing .Collector would panic. Fail cleanly instead.
@@ -183,7 +176,7 @@ func main() {
 				app.UpdateProgress(0, 1, "Starting scan...")
 
 				// Run scanning with progress updates
-				messages := utils.ApplyAllChecksWithProgress(*generalConfig, files, true, func(current, total int, message string) {
+				messages := utils.ApplyAllChecksWithProgress(context.Background(), *generalConfig, files, true, func(current, total int, message string) {
 					app.UpdateProgress(current, total, message)
 				})
 
@@ -245,7 +238,7 @@ func main() {
 		}
 	} else {
 		// Non-TUI mode: run regular scan
-		messages := utils.ApplyAllChecks(*generalConfig, files, true)
+		messages := utils.ApplyAllChecks(context.Background(), *generalConfig, files, true)
 
 		// Get collector name from config
 		collectorName := generalConfig.Operation["main"].Collector

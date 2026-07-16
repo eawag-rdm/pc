@@ -266,6 +266,14 @@ the process **exits non-zero immediately** rather than hanging.
   tears the connection down. Raising `requestTimeoutSeconds` automatically
   raises `WriteTimeout` with it.
 - Request bodies are capped (the analyze body is a tiny JSON object).
+- Two nested timeouts bound an analysis: `ckanRequestTimeoutSeconds`
+  (default **10s**) caps the single CKAN `package_show` call — a CKAN that
+  cannot answer a metadata GET within it is reported as `ckan_unavailable`
+  (502) — and `requestTimeoutSeconds` (default **300s**) caps the whole
+  request including the checks phase; when it fires the checks stop between
+  files and the client receives `analysis_timeout` (504).
 - A panic in any handler is recovered and returned as `internal_error` (500)
   without crashing the process or leaking a stack trace to the client (this
-  also fires an admin alert — see §6).
+  also fires an admin alert — see §6). A panic inside a checks worker
+  goroutine is likewise converted into a logged failure instead of killing
+  the process.

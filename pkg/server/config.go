@@ -91,6 +91,12 @@ func validateServerSettings(pcConfig *config.Config, addr string) error {
 	if s.RequestTimeoutSeconds <= 0 {
 		return fmt.Errorf("server requestTimeoutSeconds must be > 0, got %d", s.RequestTimeoutSeconds)
 	}
+	if s.CkanRequestTimeoutSeconds <= 0 {
+		return fmt.Errorf("server ckanRequestTimeoutSeconds must be > 0, got %d", s.CkanRequestTimeoutSeconds)
+	}
+	if s.CkanRequestTimeoutSeconds > s.RequestTimeoutSeconds {
+		return fmt.Errorf("server ckanRequestTimeoutSeconds (%d) must not exceed requestTimeoutSeconds (%d): the CKAN call runs inside the whole-analysis deadline", s.CkanRequestTimeoutSeconds, s.RequestTimeoutSeconds)
+	}
 
 	// Trusted proxies must be valid CIDRs (only consulted when trustProxyHeaders
 	// is on, but validate regardless so a typo is caught at boot).

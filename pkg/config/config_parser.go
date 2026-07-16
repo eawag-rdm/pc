@@ -42,16 +42,17 @@ type GeneralConfig struct {
 
 // Default values for the [server] section.
 const (
-	DefaultServerListenAddress           = "127.0.0.1:8080"
-	DefaultServerPerIPRequestsPerHour    = 4
-	DefaultServerGlobalRequestsPerHour   = 20
-	DefaultServerBurstFactor             = 0.5
-	DefaultServerAnalysisBusyWaitSeconds = 2
-	DefaultServerMaxTrackedRateKeys      = 10000
-	DefaultServerContactMessage          = "If you can't resolve this yourself, please contact rdm@eawag.ch."
-	DefaultServerLogClientIP             = true
-	DefaultServerTrustProxyHeaders       = true
-	DefaultServerRequestTimeoutSeconds   = 300
+	DefaultServerListenAddress             = "127.0.0.1:8080"
+	DefaultServerPerIPRequestsPerHour      = 4
+	DefaultServerGlobalRequestsPerHour     = 20
+	DefaultServerBurstFactor               = 0.5
+	DefaultServerAnalysisBusyWaitSeconds   = 2
+	DefaultServerMaxTrackedRateKeys        = 10000
+	DefaultServerContactMessage            = "If you can't resolve this yourself, please contact rdm@eawag.ch."
+	DefaultServerLogClientIP               = true
+	DefaultServerTrustProxyHeaders         = true
+	DefaultServerRequestTimeoutSeconds     = 300
+	DefaultServerCkanRequestTimeoutSeconds = 10
 )
 
 // Default values for the [server.smtp] sub-section.
@@ -73,19 +74,20 @@ type SMTPConfig struct {
 
 // ServerConfig holds the configuration for the HTTP server (the [server] section).
 type ServerConfig struct {
-	ListenAddress           string      // Address the server listens on (host:port). The server takes no flags; this is the sole source.
-	TrustProxyHeaders       bool        // Whether to trust proxy-set client IP headers
-	TrustedProxies          []string    // CIDRs allowed to set X-Real-IP
-	AllowedOrigins          []string    // CORS allow-list of origin URLs
-	PerIPRequestsPerHour    int         // Per-IP hourly request budget
-	GlobalRequestsPerHour   int         // Global hourly request budget
-	BurstFactor             float64     // Additional headroom factor applied to budgets
-	AnalysisBusyWaitSeconds int         // Seconds a busy request waits for the analysis gate before 503 (must be >= 1; default 2)
-	MaxTrackedRateKeys      int         // Limiter memory bound (max tracked rate keys)
-	ContactMessage          string      // Contact suffix shown in error envelopes
-	LogClientIP             bool        // Whether to log the client IP
-	RequestTimeoutSeconds   int         // Hard upper bound for a request, in seconds
-	SMTP                    *SMTPConfig // Optional [server.smtp] admin-alert relay (nil-safe; disabled unless Host+To set)
+	ListenAddress             string      // Address the server listens on (host:port). The server takes no flags; this is the sole source.
+	TrustProxyHeaders         bool        // Whether to trust proxy-set client IP headers
+	TrustedProxies            []string    // CIDRs allowed to set X-Real-IP
+	AllowedOrigins            []string    // CORS allow-list of origin URLs
+	PerIPRequestsPerHour      int         // Per-IP hourly request budget
+	GlobalRequestsPerHour     int         // Global hourly request budget
+	BurstFactor               float64     // Additional headroom factor applied to budgets
+	AnalysisBusyWaitSeconds   int         // Seconds a busy request waits for the analysis gate before 503 (must be >= 1; default 2)
+	MaxTrackedRateKeys        int         // Limiter memory bound (max tracked rate keys)
+	ContactMessage            string      // Contact suffix shown in error envelopes
+	LogClientIP               bool        // Whether to log the client IP
+	RequestTimeoutSeconds     int         // Hard upper bound for a whole analysis request (CKAN call + checks), in seconds
+	CkanRequestTimeoutSeconds int         // Upper bound for the single CKAN package_show call, in seconds (must be <= RequestTimeoutSeconds)
+	SMTP                      *SMTPConfig // Optional [server.smtp] admin-alert relay (nil-safe; disabled unless Host+To set)
 }
 
 type Config struct {
@@ -113,18 +115,19 @@ func ParseConfig(filename string) (*Config, error) {
 			SummaryMinGroupSizeForTruncation: DefaultSummaryMinGroupSizeForTruncation,
 		},
 		Server: &ServerConfig{
-			ListenAddress:           DefaultServerListenAddress,
-			TrustProxyHeaders:       DefaultServerTrustProxyHeaders,
-			TrustedProxies:          nil,
-			AllowedOrigins:          nil,
-			PerIPRequestsPerHour:    DefaultServerPerIPRequestsPerHour,
-			GlobalRequestsPerHour:   DefaultServerGlobalRequestsPerHour,
-			BurstFactor:             DefaultServerBurstFactor,
-			AnalysisBusyWaitSeconds: DefaultServerAnalysisBusyWaitSeconds,
-			MaxTrackedRateKeys:      DefaultServerMaxTrackedRateKeys,
-			ContactMessage:          DefaultServerContactMessage,
-			LogClientIP:             DefaultServerLogClientIP,
-			RequestTimeoutSeconds:   DefaultServerRequestTimeoutSeconds,
+			ListenAddress:             DefaultServerListenAddress,
+			TrustProxyHeaders:         DefaultServerTrustProxyHeaders,
+			TrustedProxies:            nil,
+			AllowedOrigins:            nil,
+			PerIPRequestsPerHour:      DefaultServerPerIPRequestsPerHour,
+			GlobalRequestsPerHour:     DefaultServerGlobalRequestsPerHour,
+			BurstFactor:               DefaultServerBurstFactor,
+			AnalysisBusyWaitSeconds:   DefaultServerAnalysisBusyWaitSeconds,
+			MaxTrackedRateKeys:        DefaultServerMaxTrackedRateKeys,
+			ContactMessage:            DefaultServerContactMessage,
+			LogClientIP:               DefaultServerLogClientIP,
+			RequestTimeoutSeconds:     DefaultServerRequestTimeoutSeconds,
+			CkanRequestTimeoutSeconds: DefaultServerCkanRequestTimeoutSeconds,
 			SMTP: &SMTPConfig{
 				Port: DefaultServerSMTPPort,
 			},
@@ -227,6 +230,9 @@ func ParseConfig(filename string) (*Config, error) {
 			return nil, err
 		}
 		if err := serverInt(serverData, "requestTimeoutSeconds", &c.Server.RequestTimeoutSeconds); err != nil {
+			return nil, err
+		}
+		if err := serverInt(serverData, "ckanRequestTimeoutSeconds", &c.Server.CkanRequestTimeoutSeconds); err != nil {
 			return nil, err
 		}
 		// [server.smtp] sub-section: plain relay for admin alerts on server faults.
@@ -425,22 +431,12 @@ func LoadConfig(file string) (*Config, error) {
 	return config, nil
 }
 
-// check fore the default configurtion file 1. ~/.config/pc/config.toml 2. ./config.toml if exists return the path
+// FindConfigFile returns ./pc.toml if it exists, otherwise "". (Tilde-prefixed
+// home paths were listed here historically but never worked: os.Stat sees a
+// literal "~", so only the working-directory file could ever match.)
 func FindConfigFile() string {
-	// check for the default configuration file
-	// 1. ~/.config/pc/config.toml
-	// 2. ./config.toml
-	paths := []string{
-		"~/pc.toml",
-		"./pc.toml",
-		"~/.config/pc.toml",
-	}
-
-	for _, path := range paths {
-		if _, err := os.Stat(path); err == nil {
-			return path
-		}
+	if _, err := os.Stat("./pc.toml"); err == nil {
+		return "./pc.toml"
 	}
 	return ""
-
 }

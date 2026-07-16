@@ -13,6 +13,15 @@ import (
 	"time"
 )
 
+// testChecksTOML is the minimal [test.*] configuration boot validation
+// (config.ValidateChecksConfig) requires: the sections the checks dereference at
+// request time must exist and be well-typed.
+const testChecksTOML = "" +
+	"[test.IsFreeOfKeywords]\n" +
+	"keywordArguments = [{keywords = [\"password\"], info = \"Sensitive keyword found:\"}]\n" +
+	"[test.IsValidName]\n" +
+	"keywordArguments = [{disallowed_names = [\".DS_Store\"]}]\n"
+
 // newTestServerConfig writes a minimal valid PC config to a temp file and
 // returns a server.Config pointing at it, with the listen address overridden to
 // addr.
@@ -20,7 +29,7 @@ func newTestServerConfig(t *testing.T, addr, ckanURL, storagePath string) Config
 	t.Helper()
 	dir := t.TempDir()
 	path := dir + "/pc.toml"
-	contents := "" +
+	contents := testChecksTOML +
 		"[collector.CkanCollector]\n" +
 		"attrs = {url = \"" + ckanURL + "\", token = \"\", verify = false, ckan_storage_path = \"" + storagePath + "\"}\n"
 	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
@@ -73,6 +82,31 @@ func TestNew_MissingCkanAttr_FailsAtBoot(t *testing.T) {
 	}
 }
 
+// TestNew_MissingChecksConfig_FailsAtBoot asserts that a config lacking the
+// [test.*] sections the checks dereference at request time makes server.New
+// fail at startup with a clear error — instead of booting and panicking inside
+// a worker-pool goroutine on the first multi-file /analyze (which would kill
+// the process, not the request).
+func TestNew_MissingChecksConfig_FailsAtBoot(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/pc.toml"
+	// Valid CkanCollector, NO [test.*] sections.
+	contents := "" +
+		"[collector.CkanCollector]\n" +
+		"attrs = {url = \"http://127.0.0.1:1\", token = \"\", verify = false, ckan_storage_path = \"" + t.TempDir() + "\"}\n"
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, err := New(Config{Address: "127.0.0.1:0", ConfigPath: path})
+	if err == nil {
+		t.Fatal("expected New to fail at boot for missing [test.*] sections")
+	}
+	if !strings.Contains(err.Error(), "IsFreeOfKeywords") {
+		t.Errorf("startup error should name the missing section, got: %v", err)
+	}
+}
+
 // TestNew_WriteTimeout_ExceedsRequestTimeout asserts that the constructed
 // http.Server's WriteTimeout is derived from the configured
 // requestTimeoutSeconds and is strictly LONGER than it (by writeTimeoutMargin).
@@ -86,6 +120,7 @@ func TestNew_WriteTimeout_ExceedsRequestTimeout(t *testing.T) {
 	contents := "" +
 		"[server]\n" +
 		"requestTimeoutSeconds = 600\n" +
+		testChecksTOML +
 		"[collector.CkanCollector]\n" +
 		"attrs = {url = \"http://127.0.0.1:1\", token = \"\", verify = false, ckan_storage_path = \"" + t.TempDir() + "\"}\n"
 	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {

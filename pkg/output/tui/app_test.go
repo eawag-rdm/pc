@@ -27,12 +27,11 @@ func TestNewApp(t *testing.T) {
 	}
 
 	// Create app
-	app := NewApp(data)
-
-	// Test app initialization
+	app := NewScanningApp()
 	if app == nil {
-		t.Fatal("NewApp returned nil")
+		t.Fatal("NewScanningApp returned nil")
 	}
+	app.data = data
 
 	if app.app == nil {
 		t.Error("TView application not initialized")
@@ -83,12 +82,11 @@ func TestAppWithEmptyData(t *testing.T) {
 	}
 
 	// Create app
-	app := NewApp(data)
-
-	// Test app handles empty data gracefully
+	app := NewScanningApp()
 	if app == nil {
-		t.Fatal("NewApp returned nil with empty data")
+		t.Fatal("NewScanningApp returned nil with empty data")
 	}
+	app.data = data
 
 	if app.data != data {
 		t.Error("Data reference not preserved")
@@ -130,7 +128,8 @@ func TestAppDataCounting(t *testing.T) {
 		},
 	}
 
-	app := NewApp(data)
+	app := NewScanningApp()
+	app.data = data
 
 	// Verify data counts
 	if len(app.data.Scanned) != 2 {

@@ -58,22 +58,6 @@ type App struct {
 	summaryMinGroupSizeForTruncation int             // Minimum group size to trigger truncation
 }
 
-func NewApp(data *ScanResult) *App {
-	if data != nil {
-		data.BuildCache()
-	}
-	app := &App{
-		app:               tview.NewApplication(),
-		data:              data,
-		currentView:       "subjects",
-		selectedSection:   0,
-		selectedLeftPanel: 0,     // Start with subjects selected
-		isScanning:        false, // Not scanning for regular TUI
-	}
-	app.setupUI()
-	return app
-}
-
 // NewScanningApp creates a new TUI app for live scanning with progress bar
 func NewScanningApp() *App {
 	// Create empty initial data
@@ -839,23 +823,6 @@ func (a *App) getErrorsContent() string {
 		sb.WriteString(fmt.Sprintf("[red]%d.[white] [%s] %s\n", i+1, err.Timestamp, err.Message))
 	}
 	return sb.String()
-}
-
-func (a *App) ShowProgressBar() {
-	if !a.isScanning {
-		a.isScanning = true
-		a.progressBar.SetText("Initializing scan...")
-		// Progress bar is always part of layout, just show it
-		a.app.QueueUpdateDraw(func() {})
-	}
-}
-
-func (a *App) HideProgressBar() {
-	if a.isScanning {
-		a.isScanning = false
-		a.progressBar.SetText("")
-		a.app.QueueUpdateDraw(func() {})
-	}
 }
 
 func (a *App) UpdateProgress(current, total int, message string) {

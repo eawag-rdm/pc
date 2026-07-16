@@ -49,6 +49,12 @@ func New(cfg Config) (*Server, error) {
 		return nil, fmt.Errorf("invalid PC config: %w", err)
 	}
 
+	// Fail fast if a [test.*] section the checks dereference at request time is
+	// missing or wrong-typed (see config.ValidateChecksConfig).
+	if err := config.ValidateChecksConfig(pcConfig); err != nil {
+		return nil, fmt.Errorf("invalid PC config: %w", err)
+	}
+
 	// Resolve the listen address from the [server] config (the server takes no
 	// flags) and fail fast if it — or any other [server] setting — is invalid,
 	// so a bad value is caught at boot rather than at bind time or per request.

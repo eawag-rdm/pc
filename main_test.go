@@ -614,8 +614,15 @@ whitelist = []
 func TestMissingOperationMain(t *testing.T) {
 	tempDir := t.TempDir()
 
-	// Config without an [operation.main] section.
-	noOpConfigContent := `[test.IsValidName]
+	// Config without an [operation.main] section, but with the [test.*] sections
+	// the checks-config boot validation requires (so the failure under test is
+	// the missing operation, not the missing test sections).
+	noOpConfigContent := `[test.IsFreeOfKeywords]
+keywordArguments = [
+    { keywords = ["password"], info = "Sensitive keyword found:" }
+]
+
+[test.IsValidName]
 blacklist = []
 whitelist = []
 keywordArguments = [

@@ -633,3 +633,10 @@ func TestRateLimit_HealthAndReadyExempt(t *testing.T) {
 		}
 	}
 }
+
+// trackedKeys returns the current number of tracked keys (test helper).
+func (rl *rateLimiter) trackedKeys() int {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	return len(rl.entries)
+}

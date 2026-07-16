@@ -327,6 +327,17 @@ func TestHandler_Analyze_NoUploadResources_OK(t *testing.T) {
 			t.Errorf("success body missing expected key %q; got keys %v", key, mapKeys(obj))
 		}
 	}
+	// Server responses never carry raw scan diagnostics: warnings[]/errors[]
+	// must be present AND empty (raw detail goes to the server log instead).
+	for _, key := range []string{"warnings", "errors"} {
+		var arr []json.RawMessage
+		if err := json.Unmarshal(obj[key], &arr); err != nil {
+			t.Fatalf("%s not decodable: %v", key, err)
+		}
+		if len(arr) != 0 {
+			t.Errorf("server response %s must be empty, got %d entries", key, len(arr))
+		}
+	}
 	var gotID string
 	if err := json.Unmarshal(obj["request_id"], &gotID); err != nil {
 		t.Fatalf("request_id missing/invalid in success body: %v", err)
@@ -1144,5 +1155,47 @@ func TestWithRequestID_Additive(t *testing.T) {
 	var id string
 	if err := json.Unmarshal(obj["request_id"], &id); err != nil || id != "REQ-XYZ" {
 		t.Errorf("request_id = %q (err %v), want REQ-XYZ", id, err)
+	}
+}
+
+// TestHandler_Analyze_SlowCKAN_TimesOutAsUnavailable asserts the dedicated CKAN
+// call deadline ([server] ckanRequestTimeoutSeconds) is enforced: a CKAN that
+// does not answer package_show within it is treated as unavailable
+// (ckan_unavailable, 502) at ~the configured bound — it does not eat the
+// whole-analysis (requestTimeoutSeconds) budget.
+func TestHandler_Analyze_SlowCKAN_TimesOutAsUnavailable(t *testing.T) {
+	release := make(chan struct{})
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Hold the response until the test ends or the client gives up.
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	defer slow.Close()
+	defer close(release) // runs BEFORE slow.Close (LIFO), unblocking the stub
+
+	pcConfig := ckanPCConfig(slow.URL)
+	pcConfig.Server.CkanRequestTimeoutSeconds = 1
+	handler := NewHandler(pcConfig, Config{}, discardLogger())
+
+	body := bytes.NewBufferString(`{"package_id": "slow-pkg"}`)
+	req := httptest.NewRequest("POST", "/api/v1/analyze", body)
+	req = withRequestContext(req, "REQ-SLOWCKAN", DefaultContactMessage)
+
+	start := time.Now()
+	rr := httptest.NewRecorder()
+	handler.Analyze(rr, req)
+	elapsed := time.Since(start)
+
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502 ckan_unavailable, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+	resp := decodeEnvelope(t, rr)
+	if resp.Error.Code != CodeCKANUnavailable {
+		t.Errorf("expected code %q, got %q", CodeCKANUnavailable, resp.Error.Code)
+	}
+	if elapsed > 5*time.Second {
+		t.Errorf("handler took %s; the 1s CKAN deadline was not enforced", elapsed)
 	}
 }
