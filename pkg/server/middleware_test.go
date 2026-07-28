@@ -433,6 +433,76 @@ func TestRecover_PanicLogCarriesRequestID(t *testing.T) {
 // TestDraining_RejectsNewRequests asserts that once BeginDraining is called, the
 // Draining middleware rejects new requests with server_restarting (503) and the
 // inner handler is not invoked.
+// TestEnforceKnownRoutes_UnknownPath asserts an unregistered path yields the
+// not_found envelope instead of the mux's plain-text 404.
+func TestEnforceKnownRoutes_UnknownPath(t *testing.T) {
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("inner handler must not be called for an unknown path")
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/nope", nil)
+	req = withRequestContext(req, "REQ-404", DefaultContactMessage)
+	rr := httptest.NewRecorder()
+	EnforceKnownRoutes(inner).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", rr.Code)
+	}
+	resp := decodeEnvelope(t, rr)
+	if resp.Error.Code != CodeNotFound {
+		t.Errorf("expected code %q, got %q", CodeNotFound, resp.Error.Code)
+	}
+	if resp.Error.RequestID != "REQ-404" {
+		t.Errorf("expected request_id in envelope, got %q", resp.Error.RequestID)
+	}
+}
+
+// TestEnforceKnownRoutes_WrongMethod asserts a known path with an unsupported
+// method yields the method_not_allowed envelope plus the RFC 9110 Allow header.
+func TestEnforceKnownRoutes_WrongMethod(t *testing.T) {
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("inner handler must not be called for a wrong method")
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/analyze", nil)
+	req = withRequestContext(req, "REQ-405", DefaultContactMessage)
+	rr := httptest.NewRecorder()
+	EnforceKnownRoutes(inner).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405, got %d", rr.Code)
+	}
+	if allow := rr.Header().Get("Allow"); allow != "POST" {
+		t.Errorf("expected Allow: POST, got %q", allow)
+	}
+	resp := decodeEnvelope(t, rr)
+	if resp.Error.Code != CodeMethodNotAllowed {
+		t.Errorf("expected code %q, got %q", CodeMethodNotAllowed, resp.Error.Code)
+	}
+}
+
+// TestEnforceKnownRoutes_KnownRoutePassesThrough asserts registered
+// path+method pairs reach the inner handler untouched.
+func TestEnforceKnownRoutes_KnownRoutePassesThrough(t *testing.T) {
+	for path, methods := range knownRoutes {
+		for _, method := range methods {
+			called := false
+			inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				called = true
+				w.WriteHeader(http.StatusOK)
+			})
+
+			req := httptest.NewRequest(method, path, nil)
+			rr := httptest.NewRecorder()
+			EnforceKnownRoutes(inner).ServeHTTP(rr, req)
+
+			if !called {
+				t.Errorf("%s %s: inner handler not called", method, path)
+			}
+		}
+	}
+}
+
 func TestDraining_RejectsNewRequests(t *testing.T) {
 	h := NewHandler(&config.Config{Server: &config.ServerConfig{}}, Config{}, discardLogger())
 

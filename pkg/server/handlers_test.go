@@ -142,6 +142,7 @@ func TestHandler_Analyze_NoCKANURL(t *testing.T) {
 var allErrorCodes = []string{
 	CodeMissingPackage, CodeInvalidPackageName, CodeInvalidRequest,
 	CodeInvalidToken, CodeAccessDenied, CodePackageNotFound,
+	CodeNotFound, CodeMethodNotAllowed,
 	CodeRateLimited, CodeServiceBusy, CodeServiceNotReady, CodeServerRestarting,
 	CodeCKANUnavailable, CodeMalformedResource, CodeAnalysisTimeout,
 	CodeResourceUnreadable, CodeInternalError,

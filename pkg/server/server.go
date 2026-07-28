@@ -106,10 +106,11 @@ func New(cfg Config) (*Server, error) {
 	mux.Handle("POST /api/v1/analyze", analyze)
 
 	// Full middleware chain (outer -> inner, §9):
-	//   recover -> request_id -> access-log -> CORS -> routes
-	// The per-analyze gates (draining/limiters/semaphore) are applied to the
-	// analyze route above, inside the mux.
-	chain := handler.RequestContext(handler.AccessLog(handler.CORS(mux)))
+	//   recover -> request_id -> access-log -> CORS -> route-guard -> routes
+	// The route guard turns the mux's plain-text 404/405 defaults into
+	// catalogue envelopes (§3). The per-analyze gates (draining/limiters/
+	// semaphore) are applied to the analyze route above, inside the mux.
+	chain := handler.RequestContext(handler.AccessLog(handler.CORS(EnforceKnownRoutes(mux))))
 	chain = handler.Recover(chain)
 
 	// Derive the socket WriteTimeout from the SAME request-timeout source the

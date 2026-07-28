@@ -262,6 +262,8 @@ Every failure uses one envelope:
 | 401 | `invalid_token` | CKAN rejected the token |
 | 403 | `access_denied` | Token lacks permission for the package |
 | 404 | `package_not_found` | No such package (or private + unauthorized) |
+| 404 | `not_found` | No such endpoint path |
+| 405 | `method_not_allowed` | Endpoint exists but not for this HTTP method (with `Allow` header) |
 | 422 | `malformed_resource` | A resource is malformed — missing both `url_type` and `url`, or an upload missing `name`/`url`/`size`. The message names the exact resource + package. |
 | 429 | `rate_limited` | Hourly request budget exceeded (with `Retry-After`) |
 | 502 | `ckan_unavailable` | CKAN unreachable or unusable: transport failure, transport-level 5xx, CKAN throttling (429), oversized/truncated response, or no answer within `ckanRequestTimeoutSeconds` |

@@ -450,6 +450,50 @@ func (h *Handler) originAllowed(origin string) bool {
 	return false
 }
 
+// knownRoutes maps every path registered on the mux (server.go New) to the
+// methods it serves, so requests that match no route get catalogue envelopes —
+// not_found (404) / method_not_allowed (405) — instead of the mux's plain-text
+// defaults (§3: every failure uses the envelope). HEAD is listed alongside GET
+// because the mux serves it implicitly; OPTIONS never reaches this (the CORS
+// middleware answers preflights upstream). MUST be kept in sync with the mux
+// registrations in New.
+var knownRoutes = map[string][]string{
+	"/health":         {http.MethodGet, http.MethodHead},
+	"/ready":          {http.MethodGet, http.MethodHead},
+	"/api/v1/analyze": {http.MethodPost},
+}
+
+// EnforceKnownRoutes wraps the mux and replaces its plain-text 404/405
+// defaults with catalogue envelopes. It sits INSIDE the CORS middleware (so
+// preflights are already answered) and delegates every known path+method to
+// the mux untouched.
+func EnforceKnownRoutes(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		allowed, ok := knownRoutes[r.URL.Path]
+		if !ok {
+			writeError(w, r, CodeNotFound)
+			return
+		}
+		if !methodAllowed(allowed, r.Method) {
+			// RFC 9110: a 405 must carry Allow listing the supported methods.
+			w.Header().Set("Allow", strings.Join(allowed, ", "))
+			writeError(w, r, CodeMethodNotAllowed)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// methodAllowed reports whether method is in the route's allowed list.
+func methodAllowed(allowed []string, method string) bool {
+	for _, m := range allowed {
+		if m == method {
+			return true
+		}
+	}
+	return false
+}
+
 // Draining rejects new requests with server_restarting (503) once graceful
 // shutdown has begun (§9). It wraps the application routes so that, while the
 // server drains in-flight analyses, freshly arriving requests get a clean

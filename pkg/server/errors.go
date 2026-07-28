@@ -15,6 +15,8 @@ const (
 	CodeInvalidToken       = "invalid_token"
 	CodeAccessDenied       = "access_denied"
 	CodePackageNotFound    = "package_not_found"
+	CodeNotFound           = "not_found"
+	CodeMethodNotAllowed   = "method_not_allowed"
 	CodeRateLimited        = "rate_limited"
 	CodeServiceBusy        = "service_busy"
 	CodeServiceNotReady    = "service_not_ready"
@@ -43,6 +45,8 @@ var errorCatalogue = map[string]catalogueEntry{
 	CodeInvalidToken:       {http.StatusUnauthorized, "The access token wasn't accepted. Please check that it's correct and hasn't expired."},
 	CodeAccessDenied:       {http.StatusForbidden, "Your token doesn't have permission to read this dataset."},
 	CodePackageNotFound:    {http.StatusNotFound, "We couldn't find a dataset with that name. Either the name is misspelled, or it's private — make it public in CKAN, or provide your access token to that package."},
+	CodeNotFound:           {http.StatusNotFound, "There's nothing at this URL. Please check the endpoint path."},
+	CodeMethodNotAllowed:   {http.StatusMethodNotAllowed, "This endpoint doesn't support that HTTP method."},
 	CodeRateLimited:        {http.StatusTooManyRequests, "You've reached the limit of analyses for this hour. Please try again later."},
 	CodeServiceBusy:        {http.StatusServiceUnavailable, "The analysis service is busy right now. Please try again in a minute. If this keeps happening, contact us."},
 	CodeServiceNotReady:    {http.StatusServiceUnavailable, "The service isn't ready yet (the data repository or storage is unavailable). Please try again shortly."},
