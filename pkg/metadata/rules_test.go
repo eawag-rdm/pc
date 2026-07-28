@@ -1,6 +1,9 @@
 package metadata
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestRequired(t *testing.T) {
 	if Required().Fn(nil) == "" {
@@ -69,13 +72,21 @@ func TestDateExpired(t *testing.T) {
 	if msg := DateExpired().Fn([]string{"2000-01-01"}); msg != "" {
 		t.Errorf("a past date should pass, got %q", msg)
 	}
-	if DateExpired().Fn([]string{"2999-01-01"}) == "" {
-		t.Error("a future date should fail")
-	}
 	if msg := DateExpired().Fn(nil); msg != "" {
 		t.Errorf("an absent embargo should pass, got %q", msg)
 	}
-	if DateExpired().Fn([]string{"not-a-date"}) == "" {
-		t.Error("an unparseable date should fail")
+
+	// Future and unparseable values are distinct problems with distinct messages.
+	future := DateExpired().Fn([]string{"2999-01-01"})
+	if !strings.Contains(future, "not yet expired") {
+		t.Errorf("a future date should report 'not yet expired', got %q", future)
+	}
+	invalid := DateExpired().Fn([]string{"not-a-date"})
+	if !strings.Contains(invalid, "not a recognized date") {
+		t.Errorf("an unparseable date should report 'not a recognized date', got %q", invalid)
+	}
+	both := DateExpired().Fn([]string{"not-a-date", "2999-01-01"})
+	if !strings.Contains(both, "not a recognized date") || !strings.Contains(both, "not yet expired") {
+		t.Errorf("mixed values should report both problems, got %q", both)
 	}
 }

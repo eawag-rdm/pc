@@ -149,15 +149,28 @@ func parseDate(s string) (time.Time, bool) {
 
 // DateExpired checks that a date field, if set, is a valid date in the past —
 // e.g. an embargo that must already have ended. Absent fields pass: the rule
-// is conditional on the field being set.
+// is conditional on the field being set. Unparseable values and dates still in
+// the future are reported as distinct problems so the user knows whether to
+// fix the value or wait out the embargo.
 func DateExpired() Rule {
 	return Rule{Name: "DateExpired", Fn: func(values []string) string {
-		return checkEach(values, "must be a valid past date (embargo expired)", func(s string) bool {
-			t, ok := parseDate(s)
-			if !ok {
-				return false
+		var invalid, future []string
+		for _, v := range values {
+			t, ok := parseDate(v)
+			switch {
+			case !ok:
+				invalid = append(invalid, v)
+			case t.After(time.Now()):
+				future = append(future, v)
 			}
-			return !t.After(time.Now())
-		})
+		}
+		var problems []string
+		if len(invalid) > 0 {
+			problems = append(problems, "not a recognized date: "+strings.Join(invalid, "; "))
+		}
+		if len(future) > 0 {
+			problems = append(problems, "embargo not yet expired: "+strings.Join(future, "; "))
+		}
+		return strings.Join(problems, "; ")
 	}}
 }
