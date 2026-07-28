@@ -70,6 +70,12 @@ func New(cfg Config) (*Server, error) {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	output.GlobalLogger.SetJSONMode(true)
 
+	// The TOML collector token is CLI-only. Blank it so the server can never
+	// authenticate upstream with it: per-request Bearer tokens (or anonymous
+	// access) are the only auth paths (see scrubConfigToken).
+	scrubConfigToken(pcConfig)
+	logger.Info("ignoring [collector.CkanCollector] token: the server authenticates CKAN calls with per-request Bearer tokens only")
+
 	// Create handler
 	handler := NewHandler(pcConfig, cfg, logger)
 

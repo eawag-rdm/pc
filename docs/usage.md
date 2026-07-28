@@ -238,7 +238,9 @@ curl -X POST http://localhost:8080/api/v1/analyze \
 The server has no user accounts of its own — it delegates authorization to
 CKAN. If a Bearer token is present it is forwarded (raw) to CKAN's
 `package_show`, so private packages the token can read are analyzable; without
-a token only public packages are. A present-but-malformed `Authorization`
+a token only public packages are. The `token` in `[collector.CkanCollector]`
+is used by the **CLI only** — the server blanks it at startup and never
+authenticates upstream calls with it. A present-but-malformed `Authorization`
 header is rejected with `invalid_request` (400). The token is never logged,
 never used as a rate-limit key, and each request's token is isolated from
 concurrent requests.

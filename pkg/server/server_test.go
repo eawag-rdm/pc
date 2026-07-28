@@ -57,6 +57,33 @@ func waitListening(t *testing.T, addr string) {
 	}
 }
 
+// TestNew_ScrubsConfigToken asserts the server blanks the CLI-only TOML
+// collector token at boot, so no server code path can ever authenticate an
+// upstream CKAN call with the operator's token (per-request Bearer tokens or
+// anonymous access are the only auth paths).
+func TestNew_ScrubsConfigToken(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/pc.toml"
+	contents := testChecksTOML +
+		"[collector.CkanCollector]\n" +
+		"attrs = {url = \"http://127.0.0.1:1\", token = \"toml-secret\", verify = false, ckan_storage_path = \"" + dir + "\"}\n"
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	srv, err := New(Config{Address: "127.0.0.1:0", ConfigPath: path})
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+	got, ok := srv.pcConfig.Collectors["CkanCollector"].Attrs["token"].(string)
+	if !ok {
+		t.Fatal("token attr is no longer a string after boot")
+	}
+	if got != "" {
+		t.Errorf("config token survived boot as %q; the server must blank it", got)
+	}
+}
+
 // TestNew_MissingCkanAttr_FailsAtBoot asserts that an incomplete
 // [collector.CkanCollector] section makes server.New fail at startup with a clear
 // error, rather than booting and surfacing the problem as a per-request

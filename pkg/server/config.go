@@ -184,6 +184,22 @@ func validateCkanCollector(pcConfig *config.Config) error {
 	return nil
 }
 
+// scrubConfigToken blanks the CkanCollector token attr in the server's loaded
+// PC config. The TOML token exists for the CLI only: the server authenticates
+// every upstream CKAN call with the request's Bearer token (or anonymously
+// when none is sent) and must NEVER fall back to the operator token. The
+// analyze path already overrides the attr per request
+// (deepCopyConfigForRequest) and the readiness probe is deliberately
+// tokenless; blanking the value at boot makes the guarantee structural — no
+// present or future server code path can send a token that is no longer in
+// memory. Called by New after validateCkanCollector (which only requires the
+// key to EXIST as a string; "" stays valid).
+func scrubConfigToken(pcConfig *config.Config) {
+	if cc, ok := pcConfig.Collectors["CkanCollector"]; ok && cc != nil {
+		cc.Attrs["token"] = ""
+	}
+}
+
 // GetCKANBaseURL returns the CKAN base URL from the PC config. The collector
 // config (`[collector.CkanCollector.attrs] url`) is the single source of truth.
 func (c Config) GetCKANBaseURL(pcConfig *config.Config) string {
