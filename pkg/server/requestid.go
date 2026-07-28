@@ -20,12 +20,10 @@ func newRequestID() string {
 	// 48-bit timestamp in the first 6 bytes (big-endian).
 	binary.BigEndian.PutUint64(buf[:8], ms<<16)
 
-	// 80 bits of randomness in the last 10 bytes.
-	if _, err := rand.Read(buf[6:]); err != nil {
-		// crypto/rand should never fail; fall back to the timestamp-only
-		// encoding rather than panicking inside a request.
-		return encodeULID(buf)
-	}
+	// 80 bits of randomness in the last 10 bytes. crypto/rand should never
+	// fail; if it somehow does, buf keeps the timestamp with zeroed randomness
+	// rather than panicking inside a request.
+	_, _ = rand.Read(buf[6:])
 
 	return encodeULID(buf)
 }
