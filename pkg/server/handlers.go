@@ -2,7 +2,6 @@ package server
 
 import (
 	"encoding/json"
-	"log"
 	"net/http"
 	"time"
 
@@ -141,12 +140,7 @@ func (h *Handler) Analyze(w http.ResponseWriter, r *http.Request) {
 	// 8. Collect package metadata (best-effort) and run all checks (metadata first)
 	md, mdErr := collectors.CkanMetadataCollector(req.PackageID, pcConfigCopy)
 	if mdErr != nil {
-		// GlobalLogger warnings end up in the response body's warnings[] array;
-		// transport errors embed the full request URL (CKAN base + package id),
-		// so only a generic notice may go there. The detailed cause goes to the
-		// server log instead.
-		log.Printf("metadata collection failed for package %q: %v", req.PackageID, mdErr)
-		output.GlobalLogger.Warning("Could not collect package metadata; metadata checks were skipped.")
+		output.GlobalLogger.Warning("Could not collect package metadata: %v", mdErr)
 		md = nil
 	}
 	messages := append(metadata.RunChecks(md), utils.ApplyAllChecks(pcConfigCopy, files, true)...)
