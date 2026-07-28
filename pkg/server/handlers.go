@@ -14,6 +14,7 @@ import (
 	"github.com/eawag-rdm/pc/pkg/collectors"
 	"github.com/eawag-rdm/pc/pkg/config"
 	"github.com/eawag-rdm/pc/pkg/helpers"
+	"github.com/eawag-rdm/pc/pkg/metadata"
 	"github.com/eawag-rdm/pc/pkg/output"
 	jsonformatter "github.com/eawag-rdm/pc/pkg/output/json"
 	"github.com/eawag-rdm/pc/pkg/structs"
@@ -370,8 +371,15 @@ func (h *Handler) runAnalysis(ctx context.Context, packageID, token string) (bod
 	// not eat the checks phase's time budget.
 	ckanStart := time.Now()
 	ckanCtx, ckanCancel := context.WithTimeout(ctx, configuredCkanRequestTimeout(h.pcConfig))
-	files, err := collectors.CkanCollector(ckanCtx, packageID, pcConfigCopy)
+	result, err := collectors.CkanPackageShow(ckanCtx, packageID, pcConfigCopy)
 	ckanCancel()
+	var files []structs.File
+	if err == nil {
+		// File mapping + local path resolution works from the fetched document
+		// (no further CKAN calls); its Malformed/Unreadable failures share the
+		// same catalogue mapping as fetch failures.
+		files, err = collectors.CkanFilesFromResult(result, pcConfigCopy)
+	}
 	h.logCKANOutcome(ctx, packageID, err, time.Since(ckanStart))
 	if err != nil {
 		code, msg := mapCKANError(err)
@@ -383,11 +391,14 @@ func (h *Handler) runAnalysis(ctx context.Context, packageID, token string) (bod
 	// an error: run the checks (which yield no file issues) and return a normal
 	// result. package_not_found is reserved for the CKAN 404 above.
 
-	// Run checks (accumulates into GlobalLogger / PDFTracker). ctx carries the
-	// whole-analysis deadline: the checks loop stops between files once it fires,
-	// so the spec's hard upper bound holds over the checks phase too — the
-	// handler then maps the expired context to analysis_timeout (504).
-	messages := utils.ApplyAllChecks(ctx, pcConfigCopy, files, true)
+	// Run checks: metadata first (pure mapping over the already-fetched result,
+	// cannot fail), then the file checks (accumulate into GlobalLogger /
+	// PDFTracker). ctx carries the whole-analysis deadline: the checks loop stops
+	// between files once it fires, so the spec's hard upper bound holds over the
+	// checks phase too — the handler then maps the expired context to
+	// analysis_timeout (504).
+	md := metadata.CkanMetadataFromJSON(result)
+	messages := append(metadata.RunChecks(md), utils.ApplyAllChecks(ctx, pcConfigCopy, files, true)...)
 
 	// Server-mode response discipline (spec §3/§8: no internal paths, no raw
 	// diagnostics). The buffered GlobalLogger diagnostics are split by audience:

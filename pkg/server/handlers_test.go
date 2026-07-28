@@ -663,6 +663,62 @@ func TestHandler_Analyze_ConcurrentPDF_RaceClean(t *testing.T) {
 	wg.Wait()
 }
 
+// TestHandler_Analyze_MetadataInResponse asserts the analyze response carries
+// the details_metadata section, populated from the SAME package_show fetch the
+// file collection uses (no second CKAN call): a package with a non-conforming
+// title and missing review fields yields package-entity metadata findings.
+func TestHandler_Analyze_MetadataInResponse(t *testing.T) {
+	var calls int
+	var mu sync.Mutex
+	ckan := statusCKAN(t, http.StatusOK,
+		`{"success":true,"result":{"name":"meta-pkg","title":"No prefix here",`+
+			`"private":false,"status":"complete","resources":[]}}`,
+		&calls, &mu)
+	defer ckan.Close()
+	handler := NewHandler(ckanPCConfig(ckan.URL), Config{}, discardLogger())
+
+	rr := analyzeWithToken(handler, "meta-pkg", "tok")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+
+	var obj struct {
+		DetailsMetadata []struct {
+			Kind   string `json:"kind"`
+			Name   string `json:"name"`
+			Issues []struct {
+				Checkname string `json:"checkname"`
+			} `json:"issues"`
+		} `json:"details_metadata"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &obj); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if len(obj.DetailsMetadata) == 0 {
+		t.Fatal("expected details_metadata entries, got none")
+	}
+	ent := obj.DetailsMetadata[0]
+	if ent.Kind != "package" || ent.Name != "meta-pkg" {
+		t.Errorf("expected package entity 'meta-pkg', got %s %q", ent.Kind, ent.Name)
+	}
+	found := map[string]bool{}
+	for _, iss := range ent.Issues {
+		found[iss.Checkname] = true
+	}
+	if !found["TitleFormat"] || !found["Required"] {
+		t.Errorf("expected TitleFormat and Required findings, got %v", found)
+	}
+
+	// The metadata section must come from the single fetch: exactly one
+	// package_show call for the whole analysis.
+	mu.Lock()
+	got := calls
+	mu.Unlock()
+	if got != 1 {
+		t.Errorf("expected exactly 1 package_show call, got %d", got)
+	}
+}
+
 // analyzeWithToken drives the real Analyze handler with the given package id and
 // token through a request that carries a populated request context.
 func analyzeWithToken(handler *Handler, packageID, token string) *httptest.ResponseRecorder {

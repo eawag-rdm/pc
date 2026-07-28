@@ -215,6 +215,10 @@ probes are exempt from rate limiting and the analysis gate.
 There is no `ckan_url` field — the CKAN base URL is server-side only (it was
 an SSRF / token-exfiltration vector). The response is the same JSON structure
 as `pc -json`, plus a `request_id` field (also in the `X-Request-Id` header).
+It includes a `details_metadata` section with the Eawag publication-metadata
+findings (title/author format, status, review fields, embargo, resource
+restriction), derived from the same single `package_show` call as the file
+analysis.
 
 ```bash
 # public package
