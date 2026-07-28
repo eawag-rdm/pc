@@ -663,6 +663,57 @@ func TestHandler_Analyze_ConcurrentPDF_RaceClean(t *testing.T) {
 	wg.Wait()
 }
 
+// TestHandler_Analyze_TokenForwarding pins the server's CKAN auth contract
+// (spec §2): a request Bearer token is forwarded to CKAN verbatim; a request
+// WITHOUT a token produces an anonymous upstream call (no Authorization
+// header); and the operator token from the TOML config is NEVER sent by the
+// server under either path — it exists for the CLI only.
+func TestHandler_Analyze_TokenForwarding(t *testing.T) {
+	var mu sync.Mutex
+	var gotAuth []string
+	ckan := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		// Header.Get returns "" when the header is absent — exactly the
+		// "anonymous request" observation we want to record.
+		gotAuth = append(gotAuth, r.Header.Get("Authorization"))
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"success":true,"result":{"name":"pkg","resources":[]}}`)
+	}))
+	defer ckan.Close()
+
+	// Simulate an operator who put a real token in the TOML for CLI use.
+	cfg := ckanPCConfig(ckan.URL)
+	cfg.Collectors["CkanCollector"].Attrs["token"] = "toml-secret"
+	handler := NewHandler(cfg, Config{}, discardLogger())
+
+	// Path 1: Bearer token present -> forwarded verbatim.
+	if rr := analyzeWithToken(handler, "pkg-with-token", "user-token"); rr.Code != http.StatusOK {
+		t.Fatalf("with token: expected 200, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+	// Path 2: no token -> anonymous upstream request.
+	if rr := analyzeWithToken(handler, "pkg-anonymous", ""); rr.Code != http.StatusOK {
+		t.Fatalf("without token: expected 200, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(gotAuth) != 2 {
+		t.Fatalf("expected 2 upstream calls, got %d", len(gotAuth))
+	}
+	if gotAuth[0] != "user-token" {
+		t.Errorf("with token: CKAN saw Authorization %q, want %q", gotAuth[0], "user-token")
+	}
+	if gotAuth[1] != "" {
+		t.Errorf("without token: CKAN saw Authorization %q, want none", gotAuth[1])
+	}
+	for i, a := range gotAuth {
+		if a == "toml-secret" {
+			t.Errorf("call %d sent the TOML config token upstream; the server must never use it", i)
+		}
+	}
+}
+
 // TestHandler_Analyze_MetadataInResponse asserts the analyze response carries
 // the details_metadata section, populated from the SAME package_show fetch the
 // file collection uses (no second CKAN call): a package with a non-conforming
