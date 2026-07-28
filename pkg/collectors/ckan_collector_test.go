@@ -689,6 +689,36 @@ func TestRequestBodyReadFailure(t *testing.T) {
 	}
 }
 
+// TestRequestOversizedBody asserts that a response body exceeding
+// maxCKANResponseBytes is rejected as a transport *CKANError instead of being
+// read into memory unbounded.
+func TestRequestOversizedBody(t *testing.T) {
+	saved := maxCKANResponseBytes
+	maxCKANResponseBytes = 1024
+	defer func() { maxCKANResponseBytes = saved }()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write(make([]byte, 2048))
+	}))
+	defer srv.Close()
+
+	_, err := Request(context.Background(), srv.URL+"/api/3/action/package_show?id=secret-pkg", "secret-token", false)
+	if err == nil {
+		t.Fatalf("expected a transport error, got nil")
+	}
+	var ckanErr *CKANError
+	if !errors.As(err, &ckanErr) {
+		t.Fatalf("expected *CKANError, got %T (%v)", err, err)
+	}
+	if !ckanErr.Transport {
+		t.Errorf("expected Transport=true, got %+v", ckanErr)
+	}
+	if strings.Contains(err.Error(), "secret-token") || strings.Contains(err.Error(), "secret-pkg") {
+		t.Errorf("transport CKANError leaked a secret/URL: %q", err.Error())
+	}
+}
+
 // TestRequestContextDeadlineAborts asserts that an expired/cancelled context
 // aborts the in-flight CKAN call instead of blocking on a hung socket: against a
 // server that never responds, Request returns promptly (well before any

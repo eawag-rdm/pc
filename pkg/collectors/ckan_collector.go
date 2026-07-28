@@ -18,6 +18,14 @@ import (
 	"github.com/eawag-rdm/pc/pkg/structs"
 )
 
+// maxCKANResponseBytes caps how much of a CKAN package_show response is read.
+// Package metadata for even very large packages is a few MB of JSON; the cap
+// only guards against a misbehaving/compromised upstream streaming unbounded
+// data into memory. A response exceeding it is treated as a transport failure
+// (mapped to ckan_unavailable), like any other unusable reply. It is a var
+// (not a const) so tests can lower it without allocating the full default.
+var maxCKANResponseBytes int64 = 50 << 20 // 50 MiB
+
 // ErrResourceUnreadable is a sentinel carried (via errors.Is) when a
 // url_type=="upload" resource's file cannot be located/read under the
 // configured ckan_storage_path: either it escaped the storage root, or it is
@@ -131,7 +139,8 @@ func Request(ctx context.Context, url, ckanToken string, verifyTLS bool) (string
 	}
 	defer resp.Body.Close()
 
-	bodyBytes, readErr := io.ReadAll(resp.Body)
+	// Read one byte past the cap so an oversized response is detectable below.
+	bodyBytes, readErr := io.ReadAll(io.LimitReader(resp.Body, maxCKANResponseBytes+1))
 
 	if resp.StatusCode != http.StatusOK {
 		// Log a non-secret diagnostic: status code only. Never log the URL (it
@@ -145,6 +154,10 @@ func Request(ctx context.Context, url, ckanToken string, verifyTLS bool) (string
 		// usable response. Never embed the underlying error (URL/token hygiene,
 		// see above).
 		output.GlobalLogger.Warning("CKAN request failed: transport error reading response body")
+		return "", &CKANError{Transport: true}
+	}
+	if int64(len(bodyBytes)) > maxCKANResponseBytes {
+		output.GlobalLogger.Warning("CKAN response exceeded the %d byte limit and was rejected", maxCKANResponseBytes)
 		return "", &CKANError{Transport: true}
 	}
 
