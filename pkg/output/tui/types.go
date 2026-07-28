@@ -9,6 +9,7 @@ type ScanResult struct {
 	Skipped               []SkippedFile       `json:"skipped"`
 	DetailsSubjectFocused []SubjectDetails    `json:"details_subject_focused"`
 	DetailsCheckFocused   []CheckDetails      `json:"details_check_focused"`
+	DetailsMetadata       []MetadataDetails   `json:"details_metadata"`
 	PDFFiles              []string            `json:"pdf_files"`
 	Errors                []output.LogMessage `json:"errors"`
 	Warnings              []output.LogMessage `json:"warnings"`
@@ -62,6 +63,9 @@ func (sr *ScanResult) BuildCache() {
 	if repo, ok := sr.subjectIndex["repository"]; ok {
 		sr.cachedTotalIssues += len(repo.Issues)
 	}
+	for _, md := range sr.DetailsMetadata {
+		sr.cachedTotalIssues += len(md.Issues)
+	}
 
 	sr.cacheBuilt = true
 }
@@ -87,6 +91,14 @@ type SubjectDetails struct {
 type CheckDetails struct {
 	Checkname string         `json:"checkname"`
 	Issues    []SubjectIssue `json:"issues"`
+}
+
+// MetadataDetails holds the metadata-check findings for one entity
+// (a package or one of its resources).
+type MetadataDetails struct {
+	Kind   string       `json:"kind"`
+	Name   string       `json:"name"`
+	Issues []CheckIssue `json:"issues"`
 }
 
 type CheckSummary struct {

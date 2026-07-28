@@ -13,6 +13,7 @@ import (
 	"github.com/eawag-rdm/pc/pkg/collectors"
 	"github.com/eawag-rdm/pc/pkg/config"
 	"github.com/eawag-rdm/pc/pkg/helpers"
+	"github.com/eawag-rdm/pc/pkg/metadata"
 	"github.com/eawag-rdm/pc/pkg/output"
 	htmlformatter "github.com/eawag-rdm/pc/pkg/output/html"
 	jsonformatter "github.com/eawag-rdm/pc/pkg/output/json"
@@ -102,8 +103,9 @@ func main() {
 	}
 
 	var (
-		files    []structs.File
-		filesErr error
+		files          []structs.File
+		filesErr       error
+		metadataResult *metadata.Metadata
 	)
 
 	// A missing [operation.main] section leaves a nil *OperationConfig in the
@@ -127,11 +129,19 @@ func main() {
 			outputError("collector_error", "Please provide a CKAN package name (use the location flag '-location')")
 			return
 		}
-		files, filesErr = collectors.CkanCollector(context.Background(), *folder_or_url, *generalConfig)
+		// Single package_show call; files and metadata both derive from it. The
+		// CLI has no deadline of its own, so the call runs under Background.
+		result, err := collectors.CkanPackageShow(context.Background(), *folder_or_url, *generalConfig)
+		if err != nil {
+			outputError("collector_error", err.Error())
+			return
+		}
+		files, filesErr = collectors.CkanFilesFromResult(result, *generalConfig)
 		if filesErr != nil {
 			outputError("collector_error", filesErr.Error())
 			return
 		}
+		metadataResult = metadata.CkanMetadataFromJSON(result)
 
 	} else {
 		outputError("collector_error", "Unknown collector")
@@ -176,9 +186,9 @@ func main() {
 				app.UpdateProgress(0, 1, "Starting scan...")
 
 				// Run scanning with progress updates
-				messages := utils.ApplyAllChecksWithProgress(context.Background(), *generalConfig, files, true, func(current, total int, message string) {
+				messages := append(metadata.RunChecks(metadataResult), utils.ApplyAllChecksWithProgress(context.Background(), *generalConfig, files, true, func(current, total int, message string) {
 					app.UpdateProgress(current, total, message)
-				})
+				})...)
 
 				// Create JSON formatter and generate output
 				formatter := jsonformatter.NewJSONFormatter()
@@ -238,7 +248,7 @@ func main() {
 		}
 	} else {
 		// Non-TUI mode: run regular scan
-		messages := utils.ApplyAllChecks(context.Background(), *generalConfig, files, true)
+		messages := append(metadata.RunChecks(metadataResult), utils.ApplyAllChecks(context.Background(), *generalConfig, files, true)...)
 
 		// Get collector name from config
 		collectorName := generalConfig.Operation["main"].Collector

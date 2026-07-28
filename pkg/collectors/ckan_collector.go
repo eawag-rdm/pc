@@ -400,12 +400,16 @@ func resolveLocalResource(resourceURL, displayLabel, ckanStoragePath string) (st
 	return path, nil
 }
 
-// CkanCollector performs the single CKAN package_show call (spec §5) and
-// resolves each upload resource to its local FileStore path. The context bounds
-// the upstream HTTP call so a slow/hung CKAN cannot outlive the caller's
-// deadline (spec §2). CLI callers with no deadline pass context.Background().
-func CkanCollector(ctx context.Context, package_id string, config config.Config) ([]structs.File, error) {
-
+// CkanPackageShow performs THE single CKAN package_show call for a package
+// (spec §5) and returns the parsed "result" object. The context bounds the
+// upstream HTTP call so a slow/hung CKAN cannot outlive the caller's deadline
+// (spec §2); CLI callers with no deadline pass context.Background(). It is the
+// sole owner of the CKAN transport concerns (token, TLS verification, URL
+// construction): every consumer of package data — file collection
+// (CkanFilesFromResult) and the metadata checks (metadata.CkanMetadataFromJSON)
+// — works from the returned document, so one analysis costs exactly one CKAN
+// request.
+func CkanPackageShow(ctx context.Context, package_id string, config config.Config) (map[string]interface{}, error) {
 	collectorName := "CkanCollector"
 
 	// Guard the lookup once: a missing [collector.CkanCollector] section leaves a
@@ -421,12 +425,6 @@ func CkanCollector(ctx context.Context, package_id string, config config.Config)
 	if !ok {
 		return nil, fmt.Errorf("url attribute not found or not a string")
 	}
-
-	// Always escape the package id when building the CKAN URL (spec §2): the id
-	// is validated upstream, but escaping is a defence-in-depth invariant of URL
-	// construction here.
-	url := fmt.Sprintf("%s/api/3/action/package_show?id=%s", urlAttr, neturl.QueryEscape(package_id))
-
 	token, ok := cc.Attrs["token"].(string)
 	if !ok {
 		return nil, fmt.Errorf("token attribute not found or not a string")
@@ -436,27 +434,47 @@ func CkanCollector(ctx context.Context, package_id string, config config.Config)
 		return nil, fmt.Errorf("verify attribute not found or not a bool")
 	}
 
+	// Always escape the package id when building the CKAN URL (spec §2): the id
+	// is validated upstream, but escaping is a defence-in-depth invariant of URL
+	// construction here.
+	url := fmt.Sprintf("%s/api/3/action/package_show?id=%s", urlAttr, neturl.QueryEscape(package_id))
+
 	jsonStr, err := Request(ctx, url, token, verify)
 	if err != nil {
 		return nil, err
 	}
 	jsonMap, err := JSONToMap(jsonStr)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("could not parse CKAN response as JSON: %w", err)
 	}
-
-	files, err := GetCKANResources(jsonMap)
-	if err != nil {
-		return nil, err
+	result, ok := jsonMap["result"].(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("ckan response has no 'result' object")
 	}
+	return result, nil
+}
 
+// CkanFilesFromResult maps an already-fetched package_show result to the
+// package's upload files and resolves each to its local FileStore path. It
+// performs no network IO. Path containment and the missing-on-disk check
+// (spec §5) live in resolveLocalResource; a failure there carries
+// ErrResourceUnreadable.
+func CkanFilesFromResult(result map[string]interface{}, config config.Config) ([]structs.File, error) {
+	cc, ok := config.Collectors["CkanCollector"]
+	if !ok || cc == nil {
+		return nil, fmt.Errorf("CkanCollector configuration is missing: add a [collector.CkanCollector] section")
+	}
 	localStoragePath, ok := cc.Attrs["ckan_storage_path"].(string)
 	if !ok {
 		return nil, fmt.Errorf("ckan_storage_path attribute not found or not a string")
 	}
-	// Iterate files and resolve each upload to its local FileStore path. Path
-	// containment and the missing-on-disk check (spec §5) live in
-	// resolveLocalResource; a failure there carries ErrResourceUnreadable.
+
+	// GetCKANResources expects the full response shape, so re-wrap the result.
+	files, err := GetCKANResources(map[string]interface{}{"result": result})
+	if err != nil {
+		return nil, err
+	}
+
 	for i, file := range files {
 		localPath, err := resolveLocalResource(file.Path, file.GetDisplayName(), localStoragePath)
 		if err != nil {
@@ -466,4 +484,16 @@ func CkanCollector(ctx context.Context, package_id string, config config.Config)
 	}
 
 	return files, nil
+}
+
+// CkanCollector fetches a package's files in one step: the single package_show
+// call plus the file mapping. Callers that also need the metadata document
+// should call CkanPackageShow and CkanFilesFromResult separately to avoid a
+// second fetch.
+func CkanCollector(ctx context.Context, package_id string, config config.Config) ([]structs.File, error) {
+	result, err := CkanPackageShow(ctx, package_id, config)
+	if err != nil {
+		return nil, err
+	}
+	return CkanFilesFromResult(result, config)
 }

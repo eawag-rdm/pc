@@ -441,6 +441,13 @@ const htmlTemplate = `<!DOCTYPE html>
                 </div>
                 
                 <div class="nav-section">
+                    <div class="nav-section-header" onclick="showAllDetails('metadata')" id="metadata-header">
+                        <span>Metadata</span>
+                        <span class="nav-section-count" id="metadata-count">0</span>
+                    </div>
+                </div>
+
+                <div class="nav-section">
                     <div class="nav-section-header" onclick="showAllDetails('pdfs')" id="pdfs-header">
                         <span>PDF Files</span>
                         <span class="nav-section-count" id="pdfs-count">0</span>
@@ -703,6 +710,12 @@ const htmlTemplate = `<!DOCTYPE html>
             let subtitle = '';
             
             switch (sectionName) {
+                case 'metadata':
+                    title = 'Metadata';
+                    subtitle = getMetadataEntityCount() + ' entities, ' + getMetadataIssueCount() + ' issues';
+                    html = generateAllMetadataDetails();
+                    break;
+
                 case 'pdfs':
                     title = 'PDF Files';
                     subtitle = scanData.pdf_files ? scanData.pdf_files.length + ' files' : '0 files';
@@ -768,6 +781,11 @@ const htmlTemplate = `<!DOCTYPE html>
                     total += subject.issues ? subject.issues.length : 0;
                 });
             }
+            if (scanData.details_metadata) {
+                scanData.details_metadata.forEach(ent => {
+                    total += ent.issues ? ent.issues.length : 0;
+                });
+            }
             return total;
         }
 
@@ -775,6 +793,7 @@ const htmlTemplate = `<!DOCTYPE html>
         function populateNavigation() {
             populateSubjectsNav();
             populateChecksNav();
+            populateMetadataCount();
             populatePDFsCount();
             populateSkippedCount();
             populateWarningsCount();
@@ -973,6 +992,47 @@ const htmlTemplate = `<!DOCTYPE html>
                 });
             } else {
                 html = '<div class="detail-item"><div class="detail-content">No errors found.</div></div>';
+            }
+            return html;
+        }
+
+        // Metadata section
+        function populateMetadataCount() {
+            const countElement = document.getElementById('metadata-count');
+            countElement.textContent = scanData.details_metadata ? scanData.details_metadata.length : '0';
+        }
+
+        function getMetadataEntityCount() {
+            return scanData.details_metadata ? scanData.details_metadata.length : 0;
+        }
+
+        function getMetadataIssueCount() {
+            let total = 0;
+            if (scanData.details_metadata) {
+                scanData.details_metadata.forEach(ent => {
+                    total += ent.issues ? ent.issues.length : 0;
+                });
+            }
+            return total;
+        }
+
+        function generateAllMetadataDetails() {
+            let html = '';
+            if (scanData.details_metadata && scanData.details_metadata.length > 0) {
+                scanData.details_metadata.forEach(ent => {
+                    html += '<div class="detail-item">';
+                    html += '<div class="detail-header">' + escapeHtml(ent.kind + ': ' + ent.name) + '</div>';
+                    if (ent.issues && ent.issues.length > 0) {
+                        ent.issues.forEach(issue => {
+                            html += '<div class="detail-content"><strong>' + escapeHtml(issue.checkname) + ':</strong> ' + escapeHtml(issue.message) + '</div>';
+                        });
+                    } else {
+                        html += '<div class="detail-content">No issues.</div>';
+                    }
+                    html += '</div>';
+                });
+            } else {
+                html = '<div class="detail-item"><div class="detail-content">No metadata issues found.</div></div>';
             }
             return html;
         }

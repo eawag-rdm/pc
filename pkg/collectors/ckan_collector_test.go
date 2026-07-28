@@ -34,6 +34,91 @@ func buildCKANJSON(pkgName string, resources []map[string]interface{}) map[strin
 	}
 }
 
+// ckanTestConfig builds a minimal CkanCollector config pointing at srvURL.
+func ckanTestConfig(srvURL string) config.Config {
+	return config.Config{Collectors: map[string]*config.CollectorConfig{
+		"CkanCollector": {Attrs: map[string]interface{}{
+			"url": srvURL, "token": "", "verify": false, "ckan_storage_path": "",
+		}},
+	}}
+}
+
+// TestCkanPackageShow_MissingConfig asserts a missing or nil
+// [collector.CkanCollector] section yields a clean error, not a nil-map panic.
+func TestCkanPackageShow_MissingConfig(t *testing.T) {
+	_, err := CkanPackageShow(context.Background(), "some-pkg", config.Config{
+		Collectors: map[string]*config.CollectorConfig{},
+	})
+	if err == nil {
+		t.Fatal("expected an error for missing CkanCollector config, got nil")
+	}
+	_, err = CkanPackageShow(context.Background(), "some-pkg", config.Config{
+		Collectors: map[string]*config.CollectorConfig{"CkanCollector": nil},
+	})
+	if err == nil {
+		t.Fatal("expected an error for a nil CkanCollector config, got nil")
+	}
+}
+
+// TestCkanPackageShow_StatusError asserts a non-200 CKAN response surfaces a
+// typed *CKANStatusError carrying the upstream status.
+func TestCkanPackageShow_StatusError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	_, err := CkanPackageShow(context.Background(), "nope", ckanTestConfig(srv.URL))
+	var statusErr *CKANError
+	if !errors.As(err, &statusErr) {
+		t.Fatalf("expected *CKANError, got %T (%v)", err, err)
+	}
+	if statusErr.StatusCode != http.StatusNotFound {
+		t.Errorf("StatusCode = %d, want 404", statusErr.StatusCode)
+	}
+}
+
+// TestCkanPackageShow_BadBody asserts unusable 200 bodies (non-JSON, or JSON
+// without a result object) yield clean errors.
+func TestCkanPackageShow_BadBody(t *testing.T) {
+	for name, body := range map[string]string{
+		"not json":  "<html>oops</html>",
+		"no result": `{"success": true}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				io.WriteString(w, body)
+			}))
+			defer srv.Close()
+			if _, err := CkanPackageShow(context.Background(), "some-pkg", ckanTestConfig(srv.URL)); err == nil {
+				t.Fatal("expected an error, got nil")
+			}
+		})
+	}
+}
+
+// TestCkanPackageShow_SuccessAndEscaping asserts the happy path returns the
+// result object and query-escapes the package id.
+func TestCkanPackageShow_SuccessAndEscaping(t *testing.T) {
+	var gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.RawQuery
+		io.WriteString(w, `{"result":{"name":"my-pkg"}}`)
+	}))
+	defer srv.Close()
+
+	result, err := CkanPackageShow(context.Background(), "a&evil=1", ckanTestConfig(srv.URL))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result["name"] != "my-pkg" {
+		t.Errorf("result not returned, got %v", result)
+	}
+	if gotQuery != "id=a%26evil%3D1" {
+		t.Errorf("package id not escaped: got query %q", gotQuery)
+	}
+}
+
 func TestJSONToMap(t *testing.T) {
 	tests := []struct {
 		name      string

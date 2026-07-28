@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/eawag-rdm/pc/pkg/metadata"
 	"github.com/eawag-rdm/pc/pkg/structs"
 )
 
@@ -47,9 +48,12 @@ func (f *PlainFormatter) FormatResults(location string, collectorName string, me
 	// Group messages by source file (using display name with archive context)
 	fileIssues := make(map[string][]structs.Message)
 	repoIssues := []structs.Message{}
+	metaIssues := []structs.Message{}
 
 	for _, msg := range issueMessages {
 		switch source := msg.Source.(type) {
+		case *metadata.Entity:
+			metaIssues = append(metaIssues, msg)
 		case structs.File:
 			// Create a key that includes archive context for proper grouping
 			displayName := source.GetDisplayName()
@@ -69,8 +73,20 @@ func (f *PlainFormatter) FormatResults(location string, collectorName string, me
 	if len(repoIssues) > 0 {
 		filesWithIssues++ // Count repository as one more "file" with issues
 	}
+	if len(metaIssues) > 0 {
+		filesWithIssues++ // Count metadata as one more "subject" with issues
+	}
 
 	output.WriteString(fmt.Sprintf("\n❌ Found %d issues in %d files:\n\n", totalIssues, filesWithIssues))
+
+	// Metadata issues first (metadata checks run before file checks)
+	if len(metaIssues) > 0 {
+		output.WriteString("🏷  Metadata Issues:\n")
+		for _, msg := range metaIssues {
+			output.WriteString(fmt.Sprintf("  • %s\n", msg.Content))
+		}
+		output.WriteString("\n")
+	}
 
 	// Repository issues first
 	if len(repoIssues) > 0 {

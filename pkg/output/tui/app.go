@@ -58,6 +58,22 @@ type App struct {
 	summaryMinGroupSizeForTruncation int             // Minimum group size to trigger truncation
 }
 
+func NewApp(data *ScanResult) *App {
+	if data != nil {
+		data.BuildCache()
+	}
+	app := &App{
+		app:               tview.NewApplication(),
+		data:              data,
+		currentView:       "subjects",
+		selectedSection:   0,
+		selectedLeftPanel: 0,     // Start with subjects selected
+		isScanning:        false, // Not scanning for regular TUI
+	}
+	app.setupUI()
+	return app
+}
+
 // NewScanningApp creates a new TUI app for live scanning with progress bar
 func NewScanningApp() *App {
 	// Create empty initial data
@@ -67,6 +83,7 @@ func NewScanningApp() *App {
 		Skipped:               []SkippedFile{},
 		DetailsSubjectFocused: []SubjectDetails{},
 		DetailsCheckFocused:   []CheckDetails{},
+		DetailsMetadata:       []MetadataDetails{},
 		PDFFiles:              []string{},
 		Errors:                []output.LogMessage{},
 		Warnings:              []output.LogMessage{},
@@ -496,7 +513,7 @@ func (a *App) formatSectionsResponsive(sectionTexts []string) (string, int) {
 }
 
 func (a *App) populateLeftSections() {
-	sections := []string{"Subjects", "Checks", "PDFs", "Skipped", "Warnings", "Errors"}
+	sections := []string{"Subjects", "Checks", "PDFs", "Skipped", "Warnings", "Errors", "Metadata"}
 	var sectionTexts []string
 
 	for i, section := range sections {
@@ -518,6 +535,8 @@ func (a *App) populateLeftSections() {
 			count = len(a.data.Warnings)
 		case 5: // Errors
 			count = len(a.data.Errors)
+		case 6: // Metadata
+			count = len(a.data.DetailsMetadata)
 		}
 
 		var sectionText string
@@ -685,7 +704,7 @@ func (a *App) navigateLeftPanelLeft() {
 }
 
 func (a *App) navigateLeftPanelRight() {
-	if a.selectedLeftPanel < 5 { // Now we have 6 categories (0-5)
+	if a.selectedLeftPanel < 6 { // 7 categories (0-6)
 		a.selectedLeftPanel++
 		a.populateLeftSections()
 		a.switchToSelectedLeftPanel()
@@ -742,6 +761,13 @@ func (a *App) switchToSelectedLeftPanel() {
 		a.currentView = "errors"
 		a.showEmptyLeftPanel("Errors")
 		a.showErrorsDetails()
+		a.app.SetFocus(a.detailsContent)
+		a.detailsContent.SetBorderColor(tcell.ColorGreen)
+
+	case 6: // Metadata
+		a.currentView = "metadata"
+		a.showEmptyLeftPanel("Metadata")
+		a.showMetadataDetails()
 		a.app.SetFocus(a.detailsContent)
 		a.detailsContent.SetBorderColor(tcell.ColorGreen)
 	}
@@ -823,6 +849,53 @@ func (a *App) getErrorsContent() string {
 		sb.WriteString(fmt.Sprintf("[red]%d.[white] [%s] %s\n", i+1, err.Timestamp, err.Message))
 	}
 	return sb.String()
+}
+
+func (a *App) showMetadataDetails() {
+	a.detailsContent.SetText(a.getMetadataContent())
+}
+
+func (a *App) getMetadataContent() string {
+	if len(a.data.DetailsMetadata) == 0 {
+		return "[dim]No metadata issues[white]"
+	}
+
+	total := 0
+	for _, ent := range a.data.DetailsMetadata {
+		total += len(ent.Issues)
+	}
+
+	var sb strings.Builder
+	sb.Grow(64 + total*120)
+	sb.WriteString(fmt.Sprintf("[yellow]Metadata Issues (%d):[white]\n", total))
+
+	for _, ent := range a.data.DetailsMetadata {
+		sb.WriteString(fmt.Sprintf("\n[green]%s: %s[white]\n", ent.Kind, ent.Name))
+		for i, issue := range ent.Issues {
+			sb.WriteString(fmt.Sprintf("[cyan]%d. %s[white]\n", i+1, issue.Checkname))
+			sb.WriteString("   ")
+			sb.WriteString(issue.Message)
+			sb.WriteString("\n")
+		}
+	}
+	return sb.String()
+}
+
+func (a *App) ShowProgressBar() {
+	if !a.isScanning {
+		a.isScanning = true
+		a.progressBar.SetText("Initializing scan...")
+		// Progress bar is always part of layout, just show it
+		a.app.QueueUpdateDraw(func() {})
+	}
+}
+
+func (a *App) HideProgressBar() {
+	if a.isScanning {
+		a.isScanning = false
+		a.progressBar.SetText("")
+		a.app.QueueUpdateDraw(func() {})
+	}
 }
 
 func (a *App) UpdateProgress(current, total int, message string) {
