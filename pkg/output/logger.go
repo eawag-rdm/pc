@@ -46,7 +46,7 @@ func (l *Logger) log(level, subject, format string, args ...interface{}) {
 		})
 		l.mu.Unlock()
 	} else {
-		fmt.Printf(message + "\n")
+		fmt.Println(message)
 	}
 }
 
