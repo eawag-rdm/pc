@@ -18,7 +18,7 @@ func TestFindOriginalCase_BoundsProtection(t *testing.T) {
 
 	// This should not panic
 	original := matcher.findOriginalCase(text, lowerText, "test")
-	
+
 	if original != "TEST" {
 		t.Errorf("Expected 'TEST', got '%s'", original)
 	}
@@ -36,7 +36,7 @@ func TestFindOriginalCase_LargeText(t *testing.T) {
 
 	// This should not panic
 	original := matcher.findOriginalCase(text, lowerText, "password")
-	
+
 	if original != "PASSWORD" {
 		t.Errorf("Expected 'PASSWORD', got '%s'", original)
 	}
@@ -52,7 +52,7 @@ func TestFindOriginalCase_EdgeCaseBounds(t *testing.T) {
 
 	// This should not panic even if bounds calculation is wrong
 	original := matcher.findOriginalCase(text, lowerText, "end")
-	
+
 	// The function finds lowercase 'end' first, so it returns 'end', not 'END'
 	if original != "end" {
 		t.Errorf("Expected 'end', got '%s'", original)
@@ -68,7 +68,7 @@ func TestFindOriginalCase_PatternNotFound(t *testing.T) {
 
 	// Should fallback to original pattern when not found
 	original := matcher.findOriginalCase(text, lowerText, "missing")
-	
+
 	if original != "missing" {
 		t.Errorf("Expected fallback 'missing', got '%s'", original)
 	}
@@ -84,16 +84,16 @@ func TestFindMatchesWithOriginalCase_LargeFile(t *testing.T) {
 		strings.Repeat("more content ", 5000) +
 		" PASSWORD here " +
 		strings.Repeat("final content ", 10000)
-	
+
 	text := []byte(content)
-	
+
 	// This should not panic
 	matches := matcher.FindMatchesWithOriginalCase(text)
-	
+
 	if len(matches) != 2 {
 		t.Errorf("Expected 2 matches, got %d: %v", len(matches), matches)
 	}
-	
+
 	// Check that original case is preserved
 	expectedMatches := []string{"PASSWORD", "SECRET"}
 	for i, expected := range expectedMatches {

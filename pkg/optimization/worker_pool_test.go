@@ -176,7 +176,7 @@ func TestWorkerPool_ConcurrentProcessing(t *testing.T) {
 	// Collect results
 	results := 0
 	timeout := time.After(5 * time.Second)
-	
+
 	for results < submitted {
 		select {
 		case result := <-pool.Results():
@@ -228,7 +228,7 @@ func TestGetFunctionName(t *testing.T) {
 	}
 
 	name := getFunctionName(testFunc)
-	
+
 	// Function name should contain something meaningful
 	if name == "" {
 		t.Error("Function name should not be empty")
@@ -237,7 +237,7 @@ func TestGetFunctionName(t *testing.T) {
 	// Should work with actual check functions
 	mockCheck := func(structs.File, config.Config) []structs.Message { return nil }
 	name2 := getFunctionName(mockCheck)
-	
+
 	if name2 == "" {
 		t.Error("Mock check function name should not be empty")
 	}
@@ -350,4 +350,3 @@ func TestArchiveWorkerPool_ConcurrentMemoryAccess(t *testing.T) {
 
 	pool.Stop()
 }
-

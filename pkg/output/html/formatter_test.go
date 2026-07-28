@@ -14,14 +14,14 @@ import (
 
 // Test data structures that match the expected JSON format
 type TestScanResult struct {
-	Timestamp             string                `json:"timestamp"`
-	Scanned               []TestScannedFile     `json:"scanned"`
-	Skipped               []TestSkippedFile     `json:"skipped"`
-	DetailsSubjectFocused []TestSubjectDetails  `json:"details_subject_focused"`
-	DetailsCheckFocused   []TestCheckDetails    `json:"details_check_focused"`
-	PDFFiles              []string              `json:"pdf_files"`
-	Errors                []output.LogMessage   `json:"errors"`
-	Warnings              []output.LogMessage   `json:"warnings"`
+	Timestamp             string               `json:"timestamp"`
+	Scanned               []TestScannedFile    `json:"scanned"`
+	Skipped               []TestSkippedFile    `json:"skipped"`
+	DetailsSubjectFocused []TestSubjectDetails `json:"details_subject_focused"`
+	DetailsCheckFocused   []TestCheckDetails   `json:"details_check_focused"`
+	PDFFiles              []string             `json:"pdf_files"`
+	Errors                []output.LogMessage  `json:"errors"`
+	Warnings              []output.LogMessage  `json:"warnings"`
 }
 
 type TestScannedFile struct {
@@ -64,7 +64,7 @@ type TestSubjectIssue struct {
 
 func TestNewHTMLFormatter(t *testing.T) {
 	formatter := NewHTMLFormatter()
-	
+
 	if formatter == nil {
 		t.Fatal("NewHTMLFormatter returned nil")
 	}
@@ -231,13 +231,13 @@ func TestGenerateReport_EmptyData(t *testing.T) {
 
 func TestGenerateReport_InvalidJSON(t *testing.T) {
 	invalidJSON := `{"invalid": json}`
-	
+
 	tempDir := t.TempDir()
 	outputPath := filepath.Join(tempDir, "invalid_report.html")
 
 	formatter := NewHTMLFormatter()
 	err := formatter.GenerateReport(invalidJSON, outputPath)
-	
+
 	if err == nil {
 		t.Error("Expected error for invalid JSON, but got none")
 	}
@@ -353,7 +353,7 @@ func TestGenerateReport_SpecialCharacters(t *testing.T) {
 	}
 
 	htmlContent := string(content)
-	
+
 	// Verify basic HTML structure is intact
 	if !strings.Contains(htmlContent, "<!DOCTYPE html>") {
 		t.Error("HTML structure broken with special characters")
