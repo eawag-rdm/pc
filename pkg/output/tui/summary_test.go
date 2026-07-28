@@ -16,8 +16,8 @@ func TestSummaryGenerator_Generate_EmptyData(t *testing.T) {
 
 func TestSummaryGenerator_Generate_NoIssues(t *testing.T) {
 	data := &ScanResult{
-		Timestamp:             "2024-01-14T10:30:00Z",
-		DetailsCheckFocused:   []CheckDetails{},
+		Timestamp:           "2024-01-14T10:30:00Z",
+		DetailsCheckFocused: []CheckDetails{},
 	}
 
 	sg := NewSummaryGenerator(data, "test-package", "Test intro text.", 5, 3)

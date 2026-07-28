@@ -8,14 +8,16 @@ import (
 	"github.com/eawag-rdm/pc/pkg/collectors"
 	"github.com/eawag-rdm/pc/pkg/config"
 	"github.com/eawag-rdm/pc/pkg/helpers"
+	"github.com/eawag-rdm/pc/pkg/metadata"
+	"github.com/eawag-rdm/pc/pkg/output"
 	jsonformatter "github.com/eawag-rdm/pc/pkg/output/json"
 	"github.com/eawag-rdm/pc/pkg/utils"
 )
 
 // Handler processes HTTP requests for the PC server
 type Handler struct {
-	pcConfig    *config.Config
-	serverCfg   Config
+	pcConfig  *config.Config
+	serverCfg Config
 }
 
 // NewHandler creates a new handler with the given configuration
@@ -135,8 +137,13 @@ func (h *Handler) Analyze(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 8. Run checks
-	messages := utils.ApplyAllChecks(pcConfigCopy, files, true)
+	// 8. Collect package metadata (best-effort) and run all checks (metadata first)
+	md, mdErr := collectors.CkanMetadataCollector(req.PackageID, pcConfigCopy)
+	if mdErr != nil {
+		output.GlobalLogger.Warning("Could not collect package metadata: %v", mdErr)
+		md = nil
+	}
+	messages := append(metadata.RunChecks(md), utils.ApplyAllChecks(pcConfigCopy, files, true)...)
 
 	// 9. Format results as JSON
 	formatter := jsonformatter.NewJSONFormatter()

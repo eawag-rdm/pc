@@ -283,11 +283,11 @@ func IsArchiveFreeOfKeywords(file structs.File, config config.Config) []structs.
 			if foundKeywordsStr != "" {
 				// Create a File struct for the archived file with proper archive reference
 				archivedFile := structs.ToFileWithDisplay(
-					file.Path,         // path stays as archive path
-					fileName,          // name is the path within archive
-					fileName,          // display name
-					int64(fileSize),   // size
-					"",                // suffix (auto-detected)
+					file.Path,          // path stays as archive path
+					fileName,           // name is the path within archive
+					fileName,           // display name
+					int64(fileSize),    // size
+					"",                 // suffix (auto-detected)
 					archiveDisplayName, // archive name reference
 				)
 				messages = append(messages, structs.Message{

@@ -16,8 +16,6 @@ func TestNewJSONFormatter(t *testing.T) {
 	}
 }
 
-
-
 func TestFormatResults_EmptyMessages(t *testing.T) {
 	formatter := NewJSONFormatter()
 	messages := []structs.Message{}
@@ -52,7 +50,7 @@ func TestFormatResults_EmptyMessages(t *testing.T) {
 
 func TestFormatResults_WithMessages(t *testing.T) {
 	formatter := NewJSONFormatter()
-	
+
 	// Create test file
 	testFile := structs.File{
 		Name: "test.go",
@@ -120,7 +118,7 @@ func TestFormatResults_WithMessages(t *testing.T) {
 
 func TestFormatResults_RepositoryMessage(t *testing.T) {
 	formatter := NewJSONFormatter()
-	
+
 	// Create repository message (not associated with a file)
 	repo := structs.Repository{Files: []structs.File{}}
 	messages := []structs.Message{
@@ -160,7 +158,7 @@ func TestFormatResults_RepositoryMessage(t *testing.T) {
 
 func TestProcessMessages(t *testing.T) {
 	result := &ScanResult{}
-	
+
 	testFile := structs.File{
 		Name: "example.txt",
 		Path: "/path/to/example.txt",
@@ -211,7 +209,7 @@ func TestProcessMessages(t *testing.T) {
 
 func TestJSONStructureIntegrity(t *testing.T) {
 	formatter := NewJSONFormatter()
-	
+
 	testFile := structs.File{
 		Name: "integrity_test.go",
 		Path: "/test/integrity_test.go",

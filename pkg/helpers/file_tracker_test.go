@@ -269,4 +269,3 @@ func TestFileTracker_ConcurrentAccess(t *testing.T) {
 		t.Errorf("Expected %d files, got %d", numGoroutines, len(tracker.Files))
 	}
 }
-

@@ -94,10 +94,10 @@ func (u *UnpackedFileIterator) checkMemoryLimit(additionalBytes int64) bool {
 func (u *UnpackedFileIterator) updateMemoryUsage(fileSize int) {
 	u.totalMemoryUsed += int64(fileSize)
 	u.processedFileCount++
-	
+
 	// Log memory usage every 10 files
 	if u.processedFileCount%10 == 0 {
-		output.GlobalLogger.Info("Archive memory usage: %d/%d bytes (%d files processed)", 
+		output.GlobalLogger.Info("Archive memory usage: %d/%d bytes (%d files processed)",
 			u.totalMemoryUsed, u.maxTotalMemory, u.processedFileCount)
 	}
 }
@@ -106,7 +106,7 @@ func matchPatterns(list []string, str string) bool {
 	if len(list) == 0 || str == "" {
 		return true // Empty patterns match everything
 	}
-	
+
 	// Use fast matcher for pattern detection
 	matcher := optimization.GetMatcher(list)
 	return matcher.HasAnyMatch([]byte(str))
@@ -121,10 +121,6 @@ func fileGoodToUnpack(whitelist []string, blacklist []string, filename string) b
 	}
 	return true
 }
-
-
-
-
 
 func (u *UnpackedFileIterator) findFirstTar() bool {
 	if u.tarReader == nil {
@@ -194,7 +190,7 @@ func (u *UnpackedFileIterator) findFirstTarGz() bool {
 			return false
 		}
 		u.tarFile = file
-		
+
 		gzipReader, err := gzip.NewReader(file)
 		if err != nil {
 			output.GlobalLogger.Warning("Error (archive content checks) creating gzip reader for '%s' -> %v", u.ArchiveName, err)
@@ -352,10 +348,6 @@ func unpackTar(u *UnpackedFileIterator) (bool, error) {
 	return true, nil
 }
 
-
-
-
-
 // Optimized 7z file processing that eliminates double reading
 func (u *UnpackedFileIterator) is7zTextFileWithContent(index int) (bool, []byte, error) {
 	f := u.sevenZipReader.File[index]
@@ -455,7 +447,7 @@ func unpackZip(u *UnpackedFileIterator) (bool, error) {
 			if isFile && isGreaterZero && isBelowMaxSize {
 				isGoodToUnpack = fileGoodToUnpack(u.Whitelist, u.Blacklist, f.Name)
 			}
-			
+
 			if isGoodToUnpack {
 				isText, content, err := u.isZippedTextWithContent(i)
 				if err != nil {
@@ -472,7 +464,7 @@ func unpackZip(u *UnpackedFileIterator) (bool, error) {
 				}
 			}
 		}
-		
+
 		if !found {
 			u.iterationEnded = true
 			return false, nil
@@ -502,7 +494,7 @@ func unpackZip(u *UnpackedFileIterator) (bool, error) {
 		if isFile && isGreaterZero && isBelowMaxSize {
 			isGoodToUnpack = fileGoodToUnpack(u.Whitelist, u.Blacklist, f.Name)
 		}
-		
+
 		if isGoodToUnpack {
 			isText, content, err := u.isZippedTextWithContent(i)
 			if err != nil {
@@ -519,7 +511,7 @@ func unpackZip(u *UnpackedFileIterator) (bool, error) {
 			}
 		}
 	}
-	
+
 	if !found {
 		u.iterationEnded = true
 	}
@@ -537,15 +529,15 @@ func (u *UnpackedFileIterator) findFirst7z() bool {
 		}
 		u.sevenZipReader = reader
 	}
-	
+
 	files := u.sevenZipReader.File
 	maxSize := uint64(u.MaxSize)
-	
+
 	startIndex := u.fileIndex
 	if startIndex < 0 {
 		startIndex = 0
 	}
-	
+
 	for i := startIndex; i < len(files); i++ {
 		f := files[i]
 		isFile := !f.FileInfo().IsDir()
@@ -562,7 +554,7 @@ func (u *UnpackedFileIterator) findFirst7z() bool {
 		if isFile && isGreaterZero && isBelowMaxSize {
 			isGoodToUnpack = fileGoodToUnpack(u.Whitelist, u.Blacklist, files[i].Name)
 		}
-		
+
 		if isGoodToUnpack {
 			// Use optimized function that reads content only once
 			isText, content, err := u.is7zTextFileWithContent(i)
@@ -579,7 +571,7 @@ func (u *UnpackedFileIterator) findFirst7z() bool {
 			}
 		}
 	}
-	
+
 	u.iterationEnded = true
 	return false
 }
@@ -618,7 +610,7 @@ func unpack7z(u *UnpackedFileIterator) (bool, error) {
 			if isFile && isGreaterZero && isBelowMaxSize {
 				isGoodToUnpack = fileGoodToUnpack(u.Whitelist, u.Blacklist, f.Name)
 			}
-			
+
 			if isGoodToUnpack {
 				isText, content, err := u.is7zTextFileWithContent(i)
 				if err != nil {
@@ -635,7 +627,7 @@ func unpack7z(u *UnpackedFileIterator) (bool, error) {
 				}
 			}
 		}
-		
+
 		if !found {
 			u.iterationEnded = true
 			return false, nil
@@ -665,7 +657,7 @@ func unpack7z(u *UnpackedFileIterator) (bool, error) {
 		if isFile && isGreaterZero && isBelowMaxSize {
 			isGoodToUnpack = fileGoodToUnpack(u.Whitelist, u.Blacklist, f.Name)
 		}
-		
+
 		if isGoodToUnpack {
 			isText, content, err := u.is7zTextFileWithContent(i)
 			if err != nil {
@@ -682,7 +674,7 @@ func unpack7z(u *UnpackedFileIterator) (bool, error) {
 			}
 		}
 	}
-	
+
 	if !found {
 		u.iterationEnded = true
 	}
@@ -701,15 +693,15 @@ func (u *UnpackedFileIterator) findFirstZip() bool {
 		}
 		u.zipReader = reader
 	}
-	
+
 	files := u.zipReader.File
 	maxSize := uint64(u.MaxSize)
-	
+
 	startIndex := u.fileIndex
 	if startIndex < 0 {
 		startIndex = 0
 	}
-	
+
 	for i := startIndex; i < len(files); i++ {
 		f := files[i]
 		isFile := !f.FileInfo().IsDir()
@@ -726,7 +718,7 @@ func (u *UnpackedFileIterator) findFirstZip() bool {
 		if isFile && isGreaterZero && isBelowMaxSize {
 			isGoodToUnpack = fileGoodToUnpack(u.Whitelist, u.Blacklist, f.Name)
 		}
-		
+
 		if isGoodToUnpack {
 			// Use optimized function that reads content only once
 			isText, content, err := u.isZippedTextWithContent(i)
@@ -743,7 +735,7 @@ func (u *UnpackedFileIterator) findFirstZip() bool {
 			}
 		}
 	}
-	
+
 	u.iterationEnded = true
 	return false
 }
@@ -783,7 +775,7 @@ func (u *UnpackedFileIterator) HasFilesToUnpack() bool {
 	if strings.HasSuffix(u.ArchiveName, ".tar.gz") {
 		return u.findFirstTarGz()
 	}
-	
+
 	switch filepath.Ext(u.ArchiveName) {
 	case ".zip":
 		return u.findFirstZip()

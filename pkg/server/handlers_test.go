@@ -203,10 +203,10 @@ func TestRespondError(t *testing.T) {
 
 func TestAnalyzeRequest_JSONParsing(t *testing.T) {
 	tests := []struct {
-		name      string
-		input     string
-		wantID    string
-		wantURL   string
+		name    string
+		input   string
+		wantID  string
+		wantURL string
 	}{
 		{
 			name:    "basic package_id",

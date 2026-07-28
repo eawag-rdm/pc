@@ -61,13 +61,13 @@ func matchPatterns(list []string, str string) bool {
 // the functiion will return true or false
 func skipFileCheck(config config.Config, fileCheck func(file structs.File, config config.Config) []structs.Message, file structs.File) bool {
 	checkName := getFunctionName(fileCheck)
-	
+
 	// Handle special case: IsArchiveFreeOfKeywords uses IsFreeOfKeywords config
 	configName := checkName
 	if checkName == "IsArchiveFreeOfKeywords" {
 		configName = "IsFreeOfKeywords"
 	}
-	
+
 	if _, exists := config.Tests[configName]; !exists {
 		return false
 	}

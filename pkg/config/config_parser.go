@@ -56,9 +56,9 @@ func ParseConfig(filename string) (*Config, error) {
 
 	c := &Config{
 		General: &GeneralConfig{
-			MaxArchiveFileSize:               10 * 1024 * 1024,                    // 10MB default
-			MaxTotalArchiveMemory:            100 * 1024 * 1024,                   // 100MB default
-			MaxContentScanFileSize:           1024 * 1024 * 1024,                  // 1GB default for content scanning
+			MaxArchiveFileSize:               10 * 1024 * 1024,   // 10MB default
+			MaxTotalArchiveMemory:            100 * 1024 * 1024,  // 100MB default
+			MaxContentScanFileSize:           1024 * 1024 * 1024, // 1GB default for content scanning
 			SummaryIntroText:                 DefaultSummaryIntroText,
 			SummaryMaxIssuesBeforeTruncation: DefaultSummaryMaxIssuesBeforeTruncation,
 			SummaryMinGroupSizeForTruncation: DefaultSummaryMinGroupSizeForTruncation,

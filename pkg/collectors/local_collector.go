@@ -15,19 +15,19 @@ import (
 func validatePath(path string) error {
 	// Clean the path to resolve any ".." or "." components
 	cleanPath := filepath.Clean(path)
-	
+
 	// Check for directory traversal patterns
 	if strings.Contains(cleanPath, "..") {
 		return fmt.Errorf("path contains directory traversal patterns: %s", path)
 	}
-	
+
 	// Check for absolute paths outside of reasonable bounds (security consideration)
 	if filepath.IsAbs(cleanPath) {
 		// Allow absolute paths but warn about potential risks
 		// In a production environment, you might want to restrict this further
 		output.GlobalLogger.Warning("Warning: Using absolute path: %s", cleanPath)
 	}
-	
+
 	return nil
 }
 
@@ -42,7 +42,7 @@ func LocalCollector(path string, config config.Config) ([]structs.File, error) {
 
 	// Clean the path
 	cleanPath := filepath.Clean(path)
-	
+
 	// Check if the path exists before attempting to walk it
 	if _, err := os.Stat(cleanPath); err != nil {
 		if os.IsNotExist(err) {
@@ -50,9 +50,9 @@ func LocalCollector(path string, config config.Config) ([]structs.File, error) {
 		}
 		return nil, fmt.Errorf("cannot access path %s: %w", cleanPath, err)
 	}
-	
+
 	foundFiles := []structs.File{}
-	
+
 	// Check if folders should be included recursively
 	includeFolders := false
 	if attrs, ok := config.Collectors[collectorName].Attrs["includeFolders"]; ok {
@@ -63,19 +63,19 @@ func LocalCollector(path string, config config.Config) ([]structs.File, error) {
 			includeFolders = v == "true"
 		}
 	}
-	
+
 	// Use filepath.WalkDir for recursive traversal
 	err := filepath.WalkDir(cleanPath, func(currentPath string, d os.DirEntry, err error) error {
 		if err != nil {
 			output.GlobalLogger.Warning("Warning: error accessing %s: %v", currentPath, err)
 			return nil // Continue walking despite errors
 		}
-		
+
 		// Skip the root directory itself
 		if currentPath == cleanPath {
 			return nil
 		}
-		
+
 		if d.IsDir() {
 			// If includeFolders is false, skip traversing into subdirectories
 			if !includeFolders {
@@ -92,10 +92,10 @@ func LocalCollector(path string, config config.Config) ([]structs.File, error) {
 			}
 			foundFiles = append(foundFiles, structs.ToFile(currentPath, d.Name(), info.Size(), ""))
 		}
-		
+
 		return nil
 	})
-	
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to walk directory %s: %w", cleanPath, err)
 	}

@@ -251,7 +251,7 @@ func TestGetMatcher_EmptyPatterns(t *testing.T) {
 
 func TestFastStringSearch(t *testing.T) {
 	text := []byte("This is a test string")
-	
+
 	// Test with existing pattern
 	if !FastStringSearch(text, []byte("test")) {
 		t.Error("Expected to find 'test' in text")
@@ -279,7 +279,7 @@ func TestMatcher_ConcurrentAccess(t *testing.T) {
 
 	// Test concurrent access
 	done := make(chan bool, 10)
-	
+
 	for i := 0; i < 10; i++ {
 		go func() {
 			text := []byte("This contains password and secret")

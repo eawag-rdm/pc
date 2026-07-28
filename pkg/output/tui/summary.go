@@ -79,13 +79,33 @@ func (sg *SummaryGenerator) Generate() string {
 	totalIssues := 0
 	filesWithIssues := make(map[string]struct{})
 
-	// Group issues by check type (already available in DetailsCheckFocused)
-	if len(sg.data.DetailsCheckFocused) == 0 {
+	// Nothing found at all
+	if len(sg.data.DetailsCheckFocused) == 0 && len(sg.data.DetailsMetadata) == 0 {
 		sb.WriteString("No issues found.\n")
 		return sb.String()
 	}
 
-	sb.WriteString("## Issues by Type\n\n")
+	// Metadata issues first (metadata checks run before file checks)
+	if len(sg.data.DetailsMetadata) > 0 {
+		sb.WriteString("## Metadata Issues\n\n")
+		for _, ent := range sg.data.DetailsMetadata {
+			sb.WriteString(fmt.Sprintf("### %s: %s (%d issue", ent.Kind, ent.Name, len(ent.Issues)))
+			if len(ent.Issues) != 1 {
+				sb.WriteString("s")
+			}
+			sb.WriteString(")\n")
+			for _, issue := range ent.Issues {
+				sb.WriteString("  - " + issue.Message + "\n")
+			}
+			sb.WriteString("\n")
+			totalIssues += len(ent.Issues)
+		}
+	}
+
+	// Group file/repository issues by check type
+	if len(sg.data.DetailsCheckFocused) > 0 {
+		sb.WriteString("## Issues by Type\n\n")
+	}
 
 	// Sort check names for consistent output
 	checkNames := make([]string, 0, len(sg.data.DetailsCheckFocused))

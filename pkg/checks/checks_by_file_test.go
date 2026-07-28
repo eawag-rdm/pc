@@ -583,27 +583,27 @@ func TestIsArchiveFreeOfKeywordsWithRealArchives(t *testing.T) {
 	}
 
 	tests := []struct {
-		name            string
-		file            structs.File
-		expectedCount   int
+		name                string
+		file                structs.File
+		expectedCount       int
 		archiveNameInSource string
 	}{
 		{
-			name:            "Complex zip archive",
-			file:            zipFile,
-			expectedCount:   6,
+			name:                "Complex zip archive",
+			file:                zipFile,
+			expectedCount:       6,
 			archiveNameInSource: "complex_archive.zip",
 		},
 		{
-			name:            "Complex 7z archive",
-			file:            sevenZipFile,
-			expectedCount:   6,
+			name:                "Complex 7z archive",
+			file:                sevenZipFile,
+			expectedCount:       6,
 			archiveNameInSource: "complex_archive.7z",
 		},
 		{
-			name:            "Complex tar archive",
-			file:            tarFile,
-			expectedCount:   6,
+			name:                "Complex tar archive",
+			file:                tarFile,
+			expectedCount:       6,
 			archiveNameInSource: "complex_archive.tar",
 		},
 	}

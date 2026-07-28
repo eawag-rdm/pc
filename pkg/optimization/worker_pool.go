@@ -14,13 +14,13 @@ import (
 
 // WorkerPool manages concurrent processing of files
 type WorkerPool struct {
-	numWorkers    int
-	workChan      chan WorkItem
-	resultChan    chan WorkResult
-	wg            sync.WaitGroup
-	ctx           context.Context
-	cancel        context.CancelFunc
-	maxQueueSize  int
+	numWorkers   int
+	workChan     chan WorkItem
+	resultChan   chan WorkResult
+	wg           sync.WaitGroup
+	ctx          context.Context
+	cancel       context.CancelFunc
+	maxQueueSize int
 }
 
 // WorkItem represents a unit of work to be processed
@@ -42,9 +42,9 @@ func NewWorkerPool(numWorkers int) *WorkerPool {
 	if numWorkers <= 0 {
 		numWorkers = runtime.NumCPU()
 	}
-	
+
 	ctx, cancel := context.WithCancel(context.Background())
-	
+
 	return &WorkerPool{
 		numWorkers:   numWorkers,
 		workChan:     make(chan WorkItem, numWorkers*2), // Buffer to prevent blocking
@@ -66,7 +66,7 @@ func (wp *WorkerPool) Start() {
 // worker processes work items from the work channel
 func (wp *WorkerPool) worker(id int) {
 	defer wp.wg.Done()
-	
+
 	for {
 		select {
 		case <-wp.ctx.Done():
@@ -75,11 +75,11 @@ func (wp *WorkerPool) worker(id int) {
 			if !ok {
 				return
 			}
-			
+
 			start := time.Now()
 			messages := wp.processWorkItem(work)
 			duration := time.Since(start)
-			
+
 			select {
 			case wp.resultChan <- WorkResult{
 				Messages: messages,
@@ -103,7 +103,7 @@ func getFunctionName(i interface{}) string {
 // This ensures all checks for a single file run in the same worker to avoid IO conflicts
 func (wp *WorkerPool) processWorkItem(work WorkItem) []structs.Message {
 	var allMessages []structs.Message
-	
+
 	// Run all checks for this file sequentially in the same worker
 	// This avoids IO conflicts from multiple goroutines reading the same file
 	for _, check := range work.Checks {
@@ -117,7 +117,7 @@ func (wp *WorkerPool) processWorkItem(work WorkItem) []structs.Message {
 			allMessages = append(allMessages, messages...)
 		}
 	}
-	
+
 	return allMessages
 }
 
@@ -151,7 +151,6 @@ func (wp *WorkerPool) Stop() {
 	close(wp.resultChan)
 }
 
-
 // ArchiveWorkerPool specifically handles archive processing with better memory management
 type ArchiveWorkerPool struct {
 	*WorkerPool
@@ -168,9 +167,9 @@ func NewArchiveWorkerPool(numWorkers int, memoryLimitMB int64) *ArchiveWorkerPoo
 			numWorkers = 1
 		}
 	}
-	
+
 	basePool := NewWorkerPool(numWorkers)
-	
+
 	return &ArchiveWorkerPool{
 		WorkerPool:  basePool,
 		memoryLimit: memoryLimitMB * 1024 * 1024,
@@ -182,7 +181,7 @@ func NewArchiveWorkerPool(numWorkers int, memoryLimitMB int64) *ArchiveWorkerPoo
 func (awp *ArchiveWorkerPool) CanAllocate(bytes int64) bool {
 	awp.memMutex.RLock()
 	defer awp.memMutex.RUnlock()
-	
+
 	return awp.currentMem+bytes <= awp.memoryLimit
 }
 
@@ -190,7 +189,7 @@ func (awp *ArchiveWorkerPool) CanAllocate(bytes int64) bool {
 func (awp *ArchiveWorkerPool) AllocateMemory(bytes int64) bool {
 	awp.memMutex.Lock()
 	defer awp.memMutex.Unlock()
-	
+
 	if awp.currentMem+bytes <= awp.memoryLimit {
 		awp.currentMem += bytes
 		return true
@@ -202,7 +201,7 @@ func (awp *ArchiveWorkerPool) AllocateMemory(bytes int64) bool {
 func (awp *ArchiveWorkerPool) ReleaseMemory(bytes int64) {
 	awp.memMutex.Lock()
 	defer awp.memMutex.Unlock()
-	
+
 	awp.currentMem -= bytes
 	if awp.currentMem < 0 {
 		awp.currentMem = 0

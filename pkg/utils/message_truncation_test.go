@@ -87,7 +87,7 @@ func TestTruncateMessages(t *testing.T) {
 
 		result := TruncateMessages(messages, 3)
 		assert.Len(t, result, 3) // 2 original + 1 truncation message
-		
+
 		// Check that the last message is a truncation message
 		lastMsg := result[len(result)-1]
 		assert.Contains(t, lastMsg.Content, "and 3 more similar messages (truncated)")
@@ -105,7 +105,7 @@ func TestTruncateMessages(t *testing.T) {
 
 		result := TruncateMessages(messages, 5)
 		assert.Len(t, result, 5) // 4 original + 1 truncation message
-		
+
 		// Verify the truncation message
 		lastMsg := result[len(result)-1]
 		assert.Contains(t, lastMsg.Content, "and 11 more similar messages (truncated)")
@@ -145,7 +145,7 @@ func TestTruncateMessages(t *testing.T) {
 
 		result := TruncateMessages(messages, 3)
 		assert.Len(t, result, 3) // Exactly at limit, no truncation
-		
+
 		// Ensure no truncation message
 		for _, msg := range result {
 			assert.NotContains(t, msg.Content, "truncated")

@@ -1,9 +1,9 @@
 package tui
 
 import (
+	"github.com/eawag-rdm/pc/pkg/output"
 	"testing"
 	"time"
-	"github.com/eawag-rdm/pc/pkg/output"
 )
 
 func TestNewApp(t *testing.T) {
