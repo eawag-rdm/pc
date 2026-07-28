@@ -77,7 +77,7 @@ keywordArguments = [
 # filenames recognized as the repository readme (case-insensitive);
 # shared by HasReadme and ReadMeContainsTOC
 keywordArguments = [
-    { readme_names = ["readme.md", "readme.txt", "readme", "read me", "read me.txt", "read me.md"] }
+    { readme_names = ["readme.md", "readme.txt", "readme", "read me", "read me.txt", "read me.md", "read-me", "read-me.txt", "read-me.md", "read_me", "read_me.txt", "read_me.md"] }
 ]
 ```
 
