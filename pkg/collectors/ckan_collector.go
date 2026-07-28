@@ -193,22 +193,30 @@ func CkanCollector(package_id string, config config.Config) ([]structs.File, err
 func CkanMetadataCollector(package_id string, config config.Config) (*metadata.Metadata, error) {
 	collectorName := "CkanCollector"
 
-	urlAttr, ok := config.Collectors[collectorName].Attrs["url"].(string)
+	// A missing [collector.CkanCollector] section leaves a nil *CollectorConfig
+	// in the map; dereferencing .Attrs would panic.
+	cc, ok := config.Collectors[collectorName]
+	if !ok || cc == nil {
+		return nil, fmt.Errorf("CkanCollector configuration is missing")
+	}
+
+	urlAttr, ok := cc.Attrs["url"].(string)
 	if !ok {
 		return nil, fmt.Errorf("url attribute not found or not a string")
 	}
 
-	url := fmt.Sprintf("%s/api/3/action/package_show?id=%s", urlAttr, package_id)
-	token, ok := config.Collectors[collectorName].Attrs["token"].(string)
+	// Escape the package id so a crafted value cannot alter the query.
+	requestURL := fmt.Sprintf("%s/api/3/action/package_show?id=%s", urlAttr, url.QueryEscape(package_id))
+	token, ok := cc.Attrs["token"].(string)
 	if !ok {
 		return nil, fmt.Errorf("token attribute not found or not a string")
 	}
-	verify, ok := config.Collectors[collectorName].Attrs["verify"].(bool)
+	verify, ok := cc.Attrs["verify"].(bool)
 	if !ok {
 		return nil, fmt.Errorf("verify attribute not found or not a bool")
 	}
 
-	jsonStr, err := Request(url, token, verify)
+	jsonStr, err := Request(requestURL, token, verify)
 	if err != nil {
 		return nil, err
 	}

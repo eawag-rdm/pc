@@ -2,13 +2,57 @@ package collectors
 
 import (
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
 
+	"github.com/eawag-rdm/pc/pkg/config"
 	"github.com/eawag-rdm/pc/pkg/structs"
 )
+
+// TestCkanMetadataCollector_MissingConfig asserts a missing
+// [collector.CkanCollector] section yields a clean error, not a nil-map panic.
+func TestCkanMetadataCollector_MissingConfig(t *testing.T) {
+	_, err := CkanMetadataCollector("some-pkg", config.Config{
+		Collectors: map[string]*config.CollectorConfig{},
+	})
+	if err == nil {
+		t.Fatal("expected an error for missing CkanCollector config, got nil")
+	}
+	_, err = CkanMetadataCollector("some-pkg", config.Config{
+		Collectors: map[string]*config.CollectorConfig{"CkanCollector": nil},
+	})
+	if err == nil {
+		t.Fatal("expected an error for a nil CkanCollector config, got nil")
+	}
+}
+
+// TestCkanMetadataCollector_EscapesPackageID asserts the package id is
+// query-escaped when building the package_show URL.
+func TestCkanMetadataCollector_EscapesPackageID(t *testing.T) {
+	var gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.RawQuery
+		io.WriteString(w, `{"result":{"name":"x"}}`)
+	}))
+	defer srv.Close()
+
+	cfg := config.Config{Collectors: map[string]*config.CollectorConfig{
+		"CkanCollector": {Attrs: map[string]interface{}{
+			"url": srv.URL, "token": "", "verify": false,
+		}},
+	}}
+	if _, err := CkanMetadataCollector("a&evil=1", cfg); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotQuery != "id=a%26evil%3D1" {
+		t.Errorf("package id not escaped: got query %q", gotQuery)
+	}
+}
 
 func TestJSONToMap(t *testing.T) {
 	tests := []struct {
