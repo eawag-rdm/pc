@@ -54,7 +54,7 @@ const (
 	DefaultServerRequestTimeoutSeconds     = 300
 	DefaultServerCkanRequestTimeoutSeconds = 10
 	DefaultServerResultCacheMaxEntries     = 500
-	DefaultServerResultCacheMaxAgeHours    = 24
+	DefaultServerResultCacheMaxAgeHours    = 0 // no age limit: metadata_modified alone keys freshness
 )
 
 // Default values for the [server.smtp] sub-section.
@@ -91,7 +91,7 @@ type ServerConfig struct {
 	CkanRequestTimeoutSeconds int         // Upper bound for the single CKAN package_show call, in seconds (must be <= RequestTimeoutSeconds)
 	ResultCacheDir            string      // Directory for the per-package result cache; empty disables caching
 	ResultCacheMaxEntries     int         // Max cached packages before oldest-entry eviction (default 500)
-	ResultCacheMaxAgeHours    int         // TTL for cache entries in hours; 0 disables the TTL (default 24)
+	ResultCacheMaxAgeHours    int         // TTL for cache entries in hours; 0 (the default) disables the TTL
 	SMTP                      *SMTPConfig // Optional [server.smtp] admin-alert relay (nil-safe; disabled unless Host+To set)
 }
 

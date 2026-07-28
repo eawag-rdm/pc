@@ -94,9 +94,10 @@ ckanRequestTimeoutSeconds = 10
 resultCacheDir        = ""
 # Max cached packages; beyond this the oldest entries are evicted
 resultCacheMaxEntries = 500
-# Max age of a cache entry in hours (safety net for storage-mount edits CKAN
-# never sees); 0 disables the age limit
-resultCacheMaxAgeHours = 24
+# Max age of a cache entry in hours; 0 (the default) disables the age limit —
+# CKAN's metadata_modified alone decides freshness. Set only if files on the
+# storage mount can change behind CKAN's back.
+resultCacheMaxAgeHours = 0
 
 # [server.smtp] — optional admin-alert relay (a sub-section of [server], so it
 # MUST come after the [server] keys above). When enabled, the server emails this

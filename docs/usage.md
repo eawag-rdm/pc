@@ -318,7 +318,7 @@ See `pc.toml.example` for the full commented list.
 | `ckanRequestTimeoutSeconds` | 10 | bound for the single CKAN `package_show` call → `ckan_unavailable` (502); must be ≤ `requestTimeoutSeconds` |
 | `resultCacheDir` | — (disabled) | directory for the per-package result cache; empty disables caching |
 | `resultCacheMaxEntries` | 500 | max cached packages before oldest-entry eviction |
-| `resultCacheMaxAgeHours` | 24 | max age of a cache entry; 0 disables the age limit |
+| `resultCacheMaxAgeHours` | 0 (no limit) | max age of a cache entry; 0 disables the age limit |
 
 Only **one analysis runs at a time** (by design); a second request waits up to
 `analysisBusyWaitSeconds` for the slot and then receives `service_busy` (503)
@@ -333,11 +333,11 @@ package's CKAN `metadata_modified` timestamp — which the mandatory
 A repeat request for an unchanged package is served from the cache in a single
 CKAN round-trip (response header `X-PC-Cache: hit`/`miss`; the `package_show`
 still runs per request, so authorization is enforced exactly as without the
-cache). Entries self-invalidate when `pc.toml` or the server version changes,
-when the package changes in CKAN, or after `resultCacheMaxAgeHours` (safety
-net for files edited on the storage mount behind CKAN's back). Cached files
-can contain private-package findings — keep the directory readable by the
-server user only.
+cache). Entries self-invalidate when `pc.toml` or the server version changes
+or when the package changes in CKAN; `resultCacheMaxAgeHours` can additionally
+age entries out, but is off by default — CKAN's `metadata_modified` alone
+decides freshness. Cached files can contain private-package findings — keep
+the directory readable by the server user only.
 
 ### Admin email alerts (`[server.smtp]`)
 
