@@ -787,6 +787,7 @@ func TestHandler_Analyze_CKANOutcomeMapping(t *testing.T) {
 		{"401 -> invalid_token", http.StatusUnauthorized, ``, http.StatusUnauthorized, CodeInvalidToken},
 		{"403 -> access_denied", http.StatusForbidden, ``, http.StatusForbidden, CodeAccessDenied},
 		{"500 -> ckan_unavailable", http.StatusInternalServerError, ``, http.StatusBadGateway, CodeCKANUnavailable},
+		{"429 -> ckan_unavailable", http.StatusTooManyRequests, ``, http.StatusBadGateway, CodeCKANUnavailable},
 		{
 			name:     "200+success:false -> package_not_found",
 			status:   http.StatusOK,

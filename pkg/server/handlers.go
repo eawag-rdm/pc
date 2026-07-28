@@ -508,6 +508,9 @@ func countSkipped(messages []structs.Message) int {
 //   - a transport/connection failure or a transport-level HTTP 5xx ->
 //     ckan_unavailable (CKAN really is unreachable/erroring);
 //   - explicit 401 -> invalid_token, 403 -> access_denied;
+//   - 429 (CKAN throttling the server) -> ckan_unavailable: an upstream
+//     availability condition, not a server fault — no internal_error, no
+//     admin alert;
 //   - 404 (nonexistent OR private-unauthorized under CKAN's default
 //     reveal_private_datasets=false), including a 200+success:false body that
 //     resolves to 404 -> package_not_found;
@@ -539,6 +542,10 @@ func mapCKANError(err error) (code, msg string) {
 			return CodeAccessDenied, ""
 		case http.StatusNotFound:
 			return CodePackageNotFound, ""
+		case http.StatusTooManyRequests:
+			// CKAN throttling us is an upstream availability condition: the
+			// client should retry later, and no admin alert is warranted.
+			return CodeCKANUnavailable, ""
 		}
 		if ckanErr.StatusCode >= 500 {
 			// A status derived from a 200+success:false body (unrecognised
