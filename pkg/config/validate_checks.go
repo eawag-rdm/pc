@@ -36,5 +36,21 @@ func ValidateChecksConfig(cfg *Config) error {
 		}
 	}
 
+	// [test.HasReadme] configures which filenames count as a readme; the list
+	// is shared by HasReadme and ReadMeContainsTOC.
+	readme, ok := cfg.Tests["HasReadme"]
+	if !ok || readme == nil {
+		return fmt.Errorf("config section [test.HasReadme] is required (used by the readme checks)")
+	}
+	if len(readme.KeywordArguments) == 0 {
+		return fmt.Errorf("[test.HasReadme] must define keywordArguments with 'readme_names' (a non-empty list of strings)")
+	}
+	for i, args := range readme.KeywordArguments {
+		names, isList := args["readme_names"].([]string)
+		if !isList || len(names) == 0 {
+			return fmt.Errorf("[test.HasReadme] keywordArguments entry %d: 'readme_names' is required and must be a non-empty list of strings", i+1)
+		}
+	}
+
 	return nil
 }

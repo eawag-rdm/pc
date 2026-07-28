@@ -52,8 +52,8 @@ Both binaries share one `pc.toml` (template: `pc.toml.example`):
 - `[general]` — scan/memory limits (both)
 - `[test.<CheckName>]` — per-check settings; `blacklist`/`whitelist` take
   **regex** file-path patterns, `keywords`/`disallowed_names` are **literal**
-  strings (both). `[test.IsFreeOfKeywords]` and `[test.IsValidName]` are
-  required.
+  strings (both). `[test.IsFreeOfKeywords]`, `[test.IsValidName]` and
+  `[test.HasReadme]` are required.
 - `[collector.*]` — collector settings; the CKAN URL, server-side token and
   FileStore path live in `[collector.CkanCollector]` (both)
 - `[operation.main]` — which collector the CLI uses (CLI only)

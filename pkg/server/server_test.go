@@ -20,7 +20,9 @@ const testChecksTOML = "" +
 	"[test.IsFreeOfKeywords]\n" +
 	"keywordArguments = [{keywords = [\"password\"], info = \"Sensitive keyword found:\"}]\n" +
 	"[test.IsValidName]\n" +
-	"keywordArguments = [{disallowed_names = [\".DS_Store\"]}]\n"
+	"keywordArguments = [{disallowed_names = [\".DS_Store\"]}]\n" +
+	"[test.HasReadme]\n" +
+	"keywordArguments = [{readme_names = [\"readme.md\", \"readme.txt\"]}]\n"
 
 // newTestServerConfig writes a minimal valid PC config to a temp file and
 // returns a server.Config pointing at it, with the listen address overridden to

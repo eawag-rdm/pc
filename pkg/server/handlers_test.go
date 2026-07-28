@@ -280,6 +280,11 @@ func ckanPCConfig(ckanURL string) *config.Config {
 			MaxContentScanFileSize: 20 * 1024 * 1024,
 		},
 		Server: &config.ServerConfig{ContactMessage: DefaultContactMessage, LogClientIP: true},
+		Tests: map[string]*config.TestConfig{
+			"HasReadme": {KeywordArguments: []map[string]interface{}{
+				{"readme_names": []string{"readme.md", "readme.txt"}},
+			}},
+		},
 		Collectors: map[string]*config.CollectorConfig{
 			"CkanCollector": {
 				Attrs: map[string]interface{}{

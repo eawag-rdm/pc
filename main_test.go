@@ -68,6 +68,11 @@ keywordArguments = [
     { disallowed_names = [".DS_Store"] }
 ]
 
+[test.HasReadme]
+keywordArguments = [
+    { readme_names = ["readme.md", "readme.txt"] }
+]
+
 [test.HasOnlyASCII]
 blacklist = []
 whitelist = []
@@ -385,6 +390,11 @@ keywordArguments = [
     { disallowed_names = [".DS_Store"] }
 ]
 
+[test.HasReadme]
+keywordArguments = [
+    { readme_names = ["readme.md", "readme.txt"] }
+]
+
 [test.HasOnlyASCII]
 blacklist = []
 whitelist = []
@@ -569,6 +579,11 @@ keywordArguments = [
     { disallowed_names = [".DS_Store"] }
 ]
 
+[test.HasReadme]
+keywordArguments = [
+    { readme_names = ["readme.md", "readme.txt"] }
+]
+
 [test.HasOnlyASCII]
 blacklist = []
 whitelist = []
@@ -627,6 +642,11 @@ blacklist = []
 whitelist = []
 keywordArguments = [
     { disallowed_names = [".DS_Store"] }
+]
+
+[test.HasReadme]
+keywordArguments = [
+    { readme_names = ["readme.md", "readme.txt"] }
 ]
 `
 	configPath := filepath.Join(tempDir, "no_operation.toml")

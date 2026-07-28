@@ -36,8 +36,9 @@ If no `-config` flag is given, `./pc.toml` is used.
 **Startup validation:** both binaries fail fast with a clear error when the
 configuration is unusable — the CLI checks the `[test.*]` sections it needs;
 the server additionally validates every `[server]` value and the
-`[collector.CkanCollector]` attrs. The sections `[test.IsFreeOfKeywords]` and
-`[test.IsValidName]` are **required** (the checks dereference them).
+`[collector.CkanCollector]` attrs. The sections `[test.IsFreeOfKeywords]`,
+`[test.IsValidName]` and `[test.HasReadme]` are **required** (the checks
+dereference them).
 
 ### Per-check configuration
 
@@ -70,6 +71,13 @@ keywordArguments = [
 [test.IsValidName]
 keywordArguments = [
     { disallowed_names = [".DS_Store", "__pycache__", ".vscode"] }
+]
+
+[test.HasReadme]
+# filenames recognized as the repository readme (case-insensitive);
+# shared by HasReadme and ReadMeContainsTOC
+keywordArguments = [
+    { readme_names = ["readme.md", "readme.txt", "readme", "read me", "read me.txt", "read me.md"] }
 ]
 ```
 

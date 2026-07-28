@@ -9,7 +9,21 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+// readmeTestConfig builds the REQUIRED [test.HasReadme] section the readme
+// checks read their filename list from.
+func readmeTestConfig(names ...string) config.Config {
+	if len(names) == 0 {
+		names = []string{"readme.md", "readme.txt"}
+	}
+	return config.Config{Tests: map[string]*config.TestConfig{
+		"HasReadme": {KeywordArguments: []map[string]interface{}{
+			{"readme_names": names},
+		}},
+	}}
+}
+
 func TestIsReadme(t *testing.T) {
+	names := readmeNames(readmeTestConfig())
 	tests := []struct {
 		name     string
 		file     structs.File
@@ -25,11 +39,27 @@ func TestIsReadme(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := isReadMe(tt.file)
+			result := isReadMe(tt.file, names)
 			if result != tt.expected {
 				t.Errorf("isReadme(%v) = %v; expected %v", tt.file, result, tt.expected)
 			}
 		})
+	}
+}
+
+func TestHasReadme_ConfiguredNames(t *testing.T) {
+	repo := structs.Repository{Files: []structs.File{
+		{Name: "README.rst"},
+		{Name: "data.csv"},
+	}}
+
+	// Default list does not recognize README.rst.
+	if msgs := HasReadme(repo, readmeTestConfig()); len(msgs) != 1 {
+		t.Errorf("expected 1 'no readme' message with default names, got %d", len(msgs))
+	}
+	// A configured list does.
+	if msgs := HasReadme(repo, readmeTestConfig("readme.rst")); len(msgs) != 0 {
+		t.Errorf("expected no message with configured readme.rst, got %d", len(msgs))
 	}
 }
 func TestReadMeContainsTOC(t *testing.T) {
@@ -107,7 +137,7 @@ func TestReadMeContainsTOC(t *testing.T) {
 				tt.repository.Files[0].Path = tempFile.Name()
 			}
 
-			result := ReadMeContainsTOC(tt.repository, config.Config{})
+			result := ReadMeContainsTOC(tt.repository, readmeTestConfig())
 			assert.Len(t, result, len(tt.expected))
 		})
 	}

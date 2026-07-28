@@ -16,6 +16,9 @@ func validChecksTestConfig() *Config {
 			"IsValidName": {KeywordArguments: []map[string]interface{}{
 				{"disallowed_names": []string{".DS_Store"}},
 			}},
+			"HasReadme": {KeywordArguments: []map[string]interface{}{
+				{"readme_names": []string{"readme.md", "readme.txt"}},
+			}},
 		},
 	}
 }
@@ -82,6 +85,20 @@ func TestValidateChecksConfig(t *testing.T) {
 		{"disallowed_names wrong type", func(cfg *Config) {
 			cfg.Tests["IsValidName"].KeywordArguments[0]["disallowed_names"] = ".DS_Store"
 		}, "disallowed_names"},
+		{"missing HasReadme section", func(cfg *Config) { delete(cfg.Tests, "HasReadme") }, "HasReadme"},
+		{"nil HasReadme section", func(cfg *Config) { cfg.Tests["HasReadme"] = nil }, "HasReadme"},
+		{"HasReadme without keywordArguments", func(cfg *Config) {
+			cfg.Tests["HasReadme"].KeywordArguments = nil
+		}, "readme_names"},
+		{"missing readme_names key", func(cfg *Config) {
+			delete(cfg.Tests["HasReadme"].KeywordArguments[0], "readme_names")
+		}, "readme_names"},
+		{"empty readme_names list", func(cfg *Config) {
+			cfg.Tests["HasReadme"].KeywordArguments[0]["readme_names"] = []string{}
+		}, "readme_names"},
+		{"readme_names wrong type", func(cfg *Config) {
+			cfg.Tests["HasReadme"].KeywordArguments[0]["readme_names"] = "readme.md"
+		}, "readme_names"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

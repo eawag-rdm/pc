@@ -85,7 +85,7 @@ func TestConfigFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Check if the config file is loaded correctly
-	assert.Equal(t, 3, len(cfg.Tests))
+	assert.Equal(t, 4, len(cfg.Tests))
 	assert.Equal(t, 2, len(cfg.Collectors))
 
 	keywords, ok := (*cfg.Tests["IsFreeOfKeywords"]).KeywordArguments[2]["keywords"].([]string)
