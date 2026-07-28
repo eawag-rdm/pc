@@ -659,6 +659,36 @@ func TestRequestTransportError(t *testing.T) {
 	}
 }
 
+// TestRequestBodyReadFailure asserts that a connection dying mid-body (HTTP 200
+// received, but the response body cut short) surfaces a transport *CKANError —
+// the same class as a failed dial — rather than a raw read error the server
+// would map to internal_error.
+func TestRequestBodyReadFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Declare more bytes than are written; the handler returning early makes
+		// the server abort the connection so the client read fails mid-body.
+		w.Header().Set("Content-Length", "1000")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, `{"succ`)
+	}))
+	defer srv.Close()
+
+	_, err := Request(context.Background(), srv.URL+"/api/3/action/package_show?id=secret-pkg", "secret-token", false)
+	if err == nil {
+		t.Fatalf("expected a transport error, got nil")
+	}
+	var ckanErr *CKANError
+	if !errors.As(err, &ckanErr) {
+		t.Fatalf("expected *CKANError, got %T (%v)", err, err)
+	}
+	if !ckanErr.Transport {
+		t.Errorf("expected Transport=true, got %+v", ckanErr)
+	}
+	if strings.Contains(err.Error(), "secret-token") || strings.Contains(err.Error(), "secret-pkg") {
+		t.Errorf("transport CKANError leaked a secret/URL: %q", err.Error())
+	}
+}
+
 // TestRequestContextDeadlineAborts asserts that an expired/cancelled context
 // aborts the in-flight CKAN call instead of blocking on a hung socket: against a
 // server that never responds, Request returns promptly (well before any

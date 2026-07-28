@@ -141,7 +141,11 @@ func Request(ctx context.Context, url, ckanToken string, verifyTLS bool) (string
 	}
 
 	if readErr != nil {
-		return "", readErr
+		// The connection died mid-body: same failure class as a failed dial — no
+		// usable response. Never embed the underlying error (URL/token hygiene,
+		// see above).
+		output.GlobalLogger.Warning("CKAN request failed: transport error reading response body")
+		return "", &CKANError{Transport: true}
 	}
 
 	// HTTP 200 may still carry a CKAN Action API failure (success:false). Parse
