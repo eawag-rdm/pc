@@ -46,6 +46,14 @@ services:
       #    equal [collector.CkanCollector].attrs.ckan_storage_path in pc.toml.
       #    Left side: where the network share is mounted on the host.
       - /mnt/ckan-storage:/nfsmount/ckan/default:ro
+      # 3) Result cache — persistent named volume (survives container
+      #    rebuilds). Only used when [server] resultCacheDir is set; it must
+      #    then point INSIDE this target, e.g.
+      #    resultCacheDir = "/var/lib/pc/cache". A named volume (not a bind
+      #    mount) keeps the cached analyses — which can contain
+      #    private-package findings — inside Docker-managed storage with the
+      #    container user's ownership.
+      - pc-cache:/var/lib/pc
 
 
     healthcheck:
@@ -67,6 +75,10 @@ services:
       options:
         max-size: "10m"
         max-file: "5"
+
+# Named volume backing the result cache mount above.
+volumes:
+  pc-cache:
 
 # Alternative to the host bind-mount above: let Docker mount the NFS share
 # directly as a named volume. The container path in `volumes:` stays the same
