@@ -107,8 +107,12 @@ func (jf *JSONFormatter) FormatResults(location, collector string, messages []st
 		}
 	}
 
-	// Add PDF files passed from caller
-	result.PDFFiles = pdfFiles
+	// Add PDF files passed from caller. A nil slice (e.g. an empty
+	// FileTracker.SnapshotFiles) must not replace the empty slice initialized
+	// above, or pdf_files serializes as JSON null instead of [].
+	if pdfFiles != nil {
+		result.PDFFiles = pdfFiles
+	}
 
 	// Generate JSON
 	jsonBytes, err := json.MarshalIndent(result, "", "  ")

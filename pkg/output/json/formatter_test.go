@@ -48,6 +48,25 @@ func TestFormatResults_EmptyMessages(t *testing.T) {
 	}
 }
 
+func TestFormatResults_NilPDFFiles(t *testing.T) {
+	formatter := NewJSONFormatter()
+
+	result, err := formatter.FormatResults("/test/location", "CkanCollector", []structs.Message{}, 0, nil)
+	if err != nil {
+		t.Fatalf("FormatResults failed: %v", err)
+	}
+
+	// pdf_files must serialize as [] even when the caller passes nil (e.g. an
+	// empty FileTracker.SnapshotFiles), never as JSON null.
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(result), &raw); err != nil {
+		t.Fatalf("Result is not valid JSON: %v", err)
+	}
+	if string(raw["pdf_files"]) == "null" {
+		t.Error("pdf_files serialized as null; want []")
+	}
+}
+
 func TestFormatResults_WithMessages(t *testing.T) {
 	formatter := NewJSONFormatter()
 
