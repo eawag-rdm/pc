@@ -1,318 +1,81 @@
 # PC - Package Checker
 
-This program aims to improve the quality of data publications via running a few simple tests to ensure best practices for publishing data are being followed.
+This program aims to improve the quality of data publications by running a few
+simple tests to ensure best practices for publishing data are being followed.
 
-Checks are run by file / respository (data package).
-Currently only a few checks are implemented:
+Checks are run by file / repository (data package):
 
 **By file:**
 - HasOnlyASCII (for filenames)
 - HasNoWhiteSpace (for filenames)
-- IsFreeOfKeywords (checking file contents); non binary, .xlsx and .docx are supported
-- IsValidName (checking if nonsense files are present eg: .Rhistory)
-- HasFileNameSpecialChars (~!?@#$%^&*`;,'"()<>[]{})
-- IsFileNameTooLong (>64 is too long)
+- IsFreeOfKeywords (file contents); non-binary files, `.xlsx` and `.docx` are supported
+- IsValidName (nonsense files, e.g. `.Rhistory`)
+- HasFileNameSpecialChars (``~!?@#$%^&*`;,'"()<>[]{}``)
+- IsFileNameTooLong (>64 characters)
 
-Archives (.zip, .tar, .7z) are also supported. On these the content (IsFreeOfKeywords) on each file is checked if the file is not too big.
-As *.tar.gz* files require complete unpacking of the archive to access the list of contained files it is not supported as it would be too slow for large archives.
-
-**By respository:**
+**By repository:**
 - HasReadme (a readme file exists in the repository)
-- ReadMeContainsTOC (readme mentions each file containted in the repository)
+- ReadMeContainsTOC (readme mentions each file contained in the repository)
 
-How the files are passed to the tool is defined via collectors. Currently the `LocaleCollector` and the `CkanCollector` can be used. 
-- the `LocalCollector` reads files from your local file system. 
-- the `CkanCollector` parses CKAN packages via their name. It determines resources in that package via a webrequest to the CKAN API. The resources are then also read locally. This means that the package checker needs to be deployed on the production server of CKAN, so that the package resources are readable.
+Archives (`.zip`, `.tar`, `.tar.gz`, `.7z`) are also supported: file-name checks
+run on the contained file list, and file contents are scanned (IsFreeOfKeywords)
+within configurable size/memory limits.
 
-## Configuration
+Files are discovered via **collectors**:
+- `LocalCollector` — reads files from the local file system.
+- `CkanCollector` — resolves a CKAN package by name via the CKAN API, then reads
+  the resource files locally from the CKAN FileStore. The binary must run where
+  the FileStore is readable (the CKAN server or a machine with the mount).
 
-The configuration is specified in TOML format. Each test can be configured with:
-- `blacklist`: File paths matching these patterns are excluded from the test
-- `whitelist`: Only file paths matching these patterns are included in the test
-- `keywordArguments`: Test-specific arguments
+## Two ways to run
 
-### Important: Regex vs Literal String Usage
+**CLI** — interactive scanning with TUI, JSON, plain or HTML output:
 
-**Regex patterns are ONLY supported in `blacklist` and `whitelist` fields** for file path filtering:
-
-```toml
-[test.IsFreeOfKeywords]
-# These support regex patterns for file path matching
-blacklist = [".*\\.log$", "temp.*", "test[0-9]+\\.txt"]
-whitelist = ["src/.*\\.go", "docs/.*\\.md"]
-```
-
-**Keywords and disallowed names use LITERAL string matching only:**
-
-```toml
-[test.IsFreeOfKeywords]
-keywordArguments = [
-    # These are literal strings (case-insensitive)
-    { keywords = ["password", "api_key", "secret"], info = "Sensitive data found:" },
-    { keywords = ["/Users/", "C:\\"], info = "Hardcoded paths found:" }
-]
-
-[test.IsValidName]
-keywordArguments = [
-    # These are literal filename matches
-    { disallowed_names = [".DS_Store", "__pycache__", ".vscode"] }
-]
-```
-
-**DO NOT use regex patterns in keywords** - they will be treated as literal strings:
-- ❌ `"pass.*"` will look for the literal text "pass.*"
-- ❌ `"[Pp]assword"` will look for the literal text "[Pp]assword"
-- ✅ `"password"` will find "password", "Password", "PASSWORD", etc.
-
-### Performance Optimizations
-
-The tool includes several performance optimizations:
-- **Fast string matching** for keyword detection (100x+ faster than regex)
-- **Parallel processing** for multiple files using worker pools
-- **Streaming I/O** for large files to reduce memory usage
-- **Memory limits** for archive processing to prevent excessive resource usage
-- **Message truncation** to limit output when many similar issues are found
-
-## Run
-Set up the package checker configuration:
 ```bash
-cp pc.toml.example pc.toml
+go build -ldflags="-s -w" -o pc .
+cp pc.toml.example pc.toml       # then edit
+./pc -location ./my-data         # or a CKAN package name, depending on the collector
 ```
 
-Once you edited the necessary config you can run with:
-```bash
-go run main.go
-```
-
-or you compile first and run via:
-```bash
-pc -location your-ckan-package-name
-```
-
-run with Terminal User Interface:
-```bash
-pc -config pc.toml -location .  --tui
-```
-
-run with html output:
-```bash
-pc -config pc.toml -location .  --html report.html
-```
-
-run with plain output:
-```bash
-pc -config pc.toml -location .  --plain
-```
-
-## Building
-To build (https://github.com/confluentinc/confluent-kafka-go/issues/1092#issuecomment-2373681430): 
-```bash
-go build -ldflags="-s -w" . && ./pc
-```
-
-## Deployment with CKAN
-If you want to use the CKAN collector the binary needs to have access to the resources locally, so it can read them without downloading. Make sure the access rights for the binary are set correctly.
-
-Eg:
-```bash
-# copy to ckan server
-scp pc production-ckan:/home/rdm
-# change owner to owner of resources
-sudo chown ckan:ckan pc
-# set the sticky bit, so anyone can run the binary as the user ckan
-sudo chmod u+s pc
-```
-
-To run the tool from another computer one could:
-```bash
-#!/usr/bin/bash
-echo -e "\e[31m=>This script is running a binary on prod2!\e[0m"
-ssh -i .../.ssh/id_ed25519_ckool rdm@production-ckan /home/rdm/pc "$@"
-```
-
-## REST API Server
-
-The package checker includes a REST API server (`pc-server`) for remote package checking. This is useful for integrating package checks into web applications or automated workflows.
-
-### Building the Server
+**HTTP server** — a REST API for a web frontend (`POST /api/v1/analyze`,
+plus `/health` and `/ready` probes):
 
 ```bash
 go build -o pc-server ./cmd/pc-server
+./pc-server -config ./pc.toml
 ```
 
-### Running the Server
+## Configuration
 
-```bash
-pc-server -config ./pc.toml -addr :8080
-```
+Both binaries share one `pc.toml` (template: `pc.toml.example`):
 
-**Flags:**
-- `-config` - Path to PC config file (required, or auto-detected from pc.toml)
-- `-addr` - Server listen address (default: `:8080`)
-- `-ckan-url` - Override CKAN base URL from config
-- `-help` - Show usage information
+- `[general]` — scan/memory limits (both)
+- `[test.<CheckName>]` — per-check settings; `blacklist`/`whitelist` take
+  **regex** file-path patterns, `keywords`/`disallowed_names` are **literal**
+  strings (both). `[test.IsFreeOfKeywords]`, `[test.IsValidName]` and
+  `[test.HasReadme]` are required.
+- `[collector.*]` — collector settings; the CKAN URL, server-side token and
+  FileStore path live in `[collector.CkanCollector]` (both)
+- `[operation.main]` — which collector the CLI uses (CLI only)
+- `[server]` + `[server.smtp]` — listen address, rate limits, timeouts, CORS
+  allow-list and optional admin email alerts (server only)
 
-### API Endpoints
+Both binaries validate their configuration at startup and refuse to start with
+a clear error when a required section or key is missing or wrong-typed.
 
-#### Health Check
-```
-GET /health
-```
+**The detailed guide for running and configuring both — CLI flags, TUI over
+SSH, all server endpoints, error codes and the full `[server]` reference — is
+in [docs/usage.md](docs/usage.md).**
 
-Response:
-```json
-{
-  "status": "ok",
-  "version": "1.0.0",
-  "timestamp": "2024-01-14T10:30:00Z"
-}
-```
+## Production deployment (server)
 
-#### Analyze Package
-```
-POST /api/v1/analyze
-```
-
-**Headers:**
-- `Authorization: Bearer <your-ckan-api-token>` (required)
-- `Content-Type: application/json`
-
-**Request Body:**
-```json
-{
-  "package_id": "my-ckan-package-id",
-  "ckan_url": "https://ckan.example.com"  // optional, overrides server config
-}
-```
-
-**Response:** Same JSON structure as `pc --json` output.
-
-### Authentication
-
-The server uses pass-through CKAN token authentication. When you send your CKAN API token, the server verifies you have read access to the requested package by calling CKAN's `package_show` API. This ensures users can only check packages they have permission to view.
-
-### Example Usage
-
-```bash
-# Start the server
-pc-server -config ./pc.toml
-
-# Health check
-curl http://localhost:8080/health
-
-# Analyze a package (use your CKAN API token)
-curl -X POST http://localhost:8080/api/v1/analyze \
-  -H "Authorization: Bearer <your-ckan-api-token>" \
-  -H "Content-Type: application/json" \
-  -d '{"package_id": "my-package"}'
-```
-
-### Error Responses
-
-| Status | Code | Description |
-|--------|------|-------------|
-| 400 | `invalid_json` | Malformed JSON in request body |
-| 400 | `missing_package_id` | No package_id provided |
-| 401 | `missing_token` | No Authorization header |
-| 401 | `invalid_token_format` | Invalid Bearer token format |
-| 403 | `access_denied` | No access to the requested package |
-| 404 | `package_not_found` | Package does not exist |
-| 500 | `no_ckan_url` | CKAN URL not configured |
-| 500 | `internal_error` | Server-side error during check |
-
-### Production Deployment
-
-The server only supports HTTP. For production use with HTTPS, deploy behind a reverse proxy like nginx:
-
-```nginx
-server {
-    listen 44433 ssl;
-    server_name pc.example.com;
-
-    ssl_certificate /etc/ssl/certs/your-cert.pem;
-    ssl_certificate_key /etc/ssl/private/your-key.pem;
-
-    location / {
-        proxy_pass http://127.0.0.1:8080;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-
-        # Longer timeout for package analysis
-        proxy_read_timeout 300s;
-    }
-}
-```
-
-Then run the server bound to localhost only:
-```bash
-pc-server -addr 127.0.0.1:8080 -config ./pc.toml
-```
-
-### Running TUI over SSH
-
-When running the package checker with TUI interface over SSH, you need to ensure proper terminal allocation:
-
-**Basic SSH execution with TUI:**
-```bash
-ssh -t user@remote-server "cd /path/to/pc && ./pc"
-```
-
-**For better terminal compatibility:**
-```bash
-ssh -t user@remote-server "export TERM=xterm-256color && cd /path/to/pc && ./pc"
-```
-
-**With full environment setup:**
-```bash
-ssh -t user@remote-server "TERM=xterm-256color LANG=en_US.UTF-8 cd /path/to/pc && ./pc"
-```
-
-**Troubleshooting TUI Issues:**
-
-- **Garbled display**: Try different TERM values:
-  ```bash
-  ssh -t user@remote-server "TERM=screen cd /path/to/pc && ./pc"
-  ssh -t user@remote-server "TERM=xterm cd /path/to/pc && ./pc"
-  ssh -t user@remote-server "TERM=vt100 cd /path/to/pc && ./pc"
-  ```
-
-- **No arrow key navigation**: Ensure your local terminal supports the TERM type being used. Modern terminals like iTerm2, Windows Terminal, or GNOME Terminal work best.
-
-- **Color issues**: Use `TERM=xterm-256color` for full color support, or `TERM=xterm` for basic colors.
-
-- **Using tmux/screen**: For persistent sessions:
-  ```bash
-  ssh user@remote-server
-  tmux new-session "cd /path/to/pc && ./pc"
-  ```
-
-**Important**: The `-t` flag is essential as it allocates a pseudo-terminal required for interactive TUI applications.
-
-**Clipboard Issues (Copy Summary)**
-
-When using the TUI summary feature (press `c`) over SSH, the clipboard uses OSC 52 escape sequences to copy to your local clipboard. This requires terminal support:
-
-- **iTerm2 (macOS)**: Enable in Preferences → General → Selection → "Applications in terminal may access clipboard"
-- **kitty, alacritty, Windows Terminal**: Works by default
-- **GNOME Terminal**: Not supported - use an alternative terminal
-
-**Recommended terminals for Linux:**
-- `kitty` - `sudo apt install kitty`
-- `alacritty` - `sudo apt install alacritty`
-- `tilix` - `sudo apt install tilix`
-
-**For tmux users**, add to `~/.tmux.conf`:
-```bash
-set -g set-clipboard on
-set -g allow-passthrough on
-```
-Then reload: `tmux source-file ~/.tmux.conf`
-
+The server speaks plain HTTP and is designed to run behind nginx with HTTPS
+termination, packaged via the provided `Dockerfile` / `docker-compose.yml`
+(read-only FileStore mount, configurable UID/GID). See
+[docs/deploy-server.md](docs/deploy-server.md).
 
 ## Testing
-```
+
+```bash
 go test ./...
 ```
-

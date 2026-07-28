@@ -85,7 +85,7 @@ func TestConfigFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Check if the config file is loaded correctly
-	assert.Equal(t, 3, len(cfg.Tests))
+	assert.Equal(t, 4, len(cfg.Tests))
 	assert.Equal(t, 2, len(cfg.Collectors))
 
 	keywords, ok := (*cfg.Tests["IsFreeOfKeywords"]).KeywordArguments[2]["keywords"].([]string)
@@ -276,4 +276,460 @@ func TestParseSummaryTruncationSettings(t *testing.T) {
 		assert.Equal(t, DefaultSummaryMaxIssuesBeforeTruncation, config.General.SummaryMaxIssuesBeforeTruncation)
 		assert.Equal(t, DefaultSummaryMinGroupSizeForTruncation, config.General.SummaryMinGroupSizeForTruncation)
 	})
+}
+
+func TestParseServerConfig(t *testing.T) {
+	t.Run("DefaultsWhenAbsent", func(t *testing.T) {
+		tomlContent := `
+		[test.test1]
+		blacklist = []
+		`
+		configFile := createTempConfigFile(t, tomlContent)
+		defer os.Remove(configFile)
+
+		config, err := ParseConfig(configFile)
+		assert.NoError(t, err)
+		assert.NotNil(t, config.Server)
+		assert.Equal(t, DefaultServerTrustProxyHeaders, config.Server.TrustProxyHeaders)
+		assert.Nil(t, config.Server.TrustedProxies)
+		assert.Nil(t, config.Server.AllowedOrigins)
+		assert.Equal(t, DefaultServerPerIPRequestsPerHour, config.Server.PerIPRequestsPerHour)
+		assert.Equal(t, DefaultServerGlobalRequestsPerHour, config.Server.GlobalRequestsPerHour)
+		assert.Equal(t, DefaultServerBurstFactor, config.Server.BurstFactor)
+		assert.Equal(t, DefaultServerAnalysisBusyWaitSeconds, config.Server.AnalysisBusyWaitSeconds)
+		assert.Equal(t, DefaultServerMaxTrackedRateKeys, config.Server.MaxTrackedRateKeys)
+		assert.Equal(t, DefaultServerContactMessage, config.Server.ContactMessage)
+		assert.Equal(t, DefaultServerLogClientIP, config.Server.LogClientIP)
+		assert.Equal(t, DefaultServerRequestTimeoutSeconds, config.Server.RequestTimeoutSeconds)
+	})
+
+	t.Run("OverriddenWhenPresent", func(t *testing.T) {
+		tomlContent := `
+		[server]
+		trustProxyHeaders  = false
+		trustedProxies     = ["10.0.0.0/8", "192.168.0.0/16"]
+		allowedOrigins     = ["https://a.example.org", "https://b.example.org"]
+		perIPRequestsPerHour  = 7
+		globalRequestsPerHour = 42
+		burstFactor           = 0.25
+		analysisBusyWaitSeconds = 9
+		maxTrackedRateKeys    = 500
+		contactMessage        = "Contact ops."
+		logClientIP           = false
+		requestTimeoutSeconds = 120
+		`
+		configFile := createTempConfigFile(t, tomlContent)
+		defer os.Remove(configFile)
+
+		config, err := ParseConfig(configFile)
+		assert.NoError(t, err)
+		assert.False(t, config.Server.TrustProxyHeaders)
+		assert.Equal(t, []string{"10.0.0.0/8", "192.168.0.0/16"}, config.Server.TrustedProxies)
+		assert.Equal(t, []string{"https://a.example.org", "https://b.example.org"}, config.Server.AllowedOrigins)
+		assert.Equal(t, 7, config.Server.PerIPRequestsPerHour)
+		assert.Equal(t, 42, config.Server.GlobalRequestsPerHour)
+		assert.Equal(t, 0.25, config.Server.BurstFactor)
+		assert.Equal(t, 9, config.Server.AnalysisBusyWaitSeconds)
+		assert.Equal(t, 500, config.Server.MaxTrackedRateKeys)
+		assert.Equal(t, "Contact ops.", config.Server.ContactMessage)
+		assert.False(t, config.Server.LogClientIP)
+		assert.Equal(t, 120, config.Server.RequestTimeoutSeconds)
+	})
+
+	t.Run("BurstFactorAsFloat", func(t *testing.T) {
+		tomlContent := `
+		[server]
+		burstFactor = 1.5
+		`
+		configFile := createTempConfigFile(t, tomlContent)
+		defer os.Remove(configFile)
+
+		config, err := ParseConfig(configFile)
+		assert.NoError(t, err)
+		assert.Equal(t, 1.5, config.Server.BurstFactor)
+	})
+
+	t.Run("BurstFactorAsInt", func(t *testing.T) {
+		tomlContent := `
+		[server]
+		burstFactor = 2
+		`
+		configFile := createTempConfigFile(t, tomlContent)
+		defer os.Remove(configFile)
+
+		config, err := ParseConfig(configFile)
+		assert.NoError(t, err)
+		assert.Equal(t, 2.0, config.Server.BurstFactor)
+	})
+
+	t.Run("SMTPDefaultsWhenAbsent", func(t *testing.T) {
+		tomlContent := `
+		[test.test1]
+		blacklist = []
+		`
+		configFile := createTempConfigFile(t, tomlContent)
+		defer os.Remove(configFile)
+
+		config, err := ParseConfig(configFile)
+		assert.NoError(t, err)
+		// SMTP defaults: port 25, no host/from/to (alerts disabled).
+		assert.NotNil(t, config.Server.SMTP)
+		assert.Equal(t, "", config.Server.SMTP.Host)
+		assert.Equal(t, DefaultServerSMTPPort, config.Server.SMTP.Port)
+		assert.Equal(t, "", config.Server.SMTP.From)
+		assert.Nil(t, config.Server.SMTP.To)
+	})
+
+	t.Run("SMTPOverriddenWhenPresent", func(t *testing.T) {
+		tomlContent := `
+		[server.smtp]
+		host = "smtp.example.org"
+		port = 587
+		from = "alerts@example.org"
+		to   = ["admin1@example.org", "admin2@example.org"]
+		`
+		configFile := createTempConfigFile(t, tomlContent)
+		defer os.Remove(configFile)
+
+		config, err := ParseConfig(configFile)
+		assert.NoError(t, err)
+		assert.Equal(t, "smtp.example.org", config.Server.SMTP.Host)
+		assert.Equal(t, 587, config.Server.SMTP.Port)
+		assert.Equal(t, "alerts@example.org", config.Server.SMTP.From)
+		assert.Equal(t, []string{"admin1@example.org", "admin2@example.org"}, config.Server.SMTP.To)
+	})
+}
+
+// TestParseServerConfigWrongType verifies that a [server] / [server.smtp] key that
+// is PRESENT but the wrong type fails fast (ParseConfig returns a non-nil error
+// naming the key) instead of being silently skipped and keeping the default.
+func TestParseServerConfigWrongType(t *testing.T) {
+	tests := []struct {
+		name      string
+		toml      string
+		errSubstr string // substring (the key name) the error must mention
+	}{
+		{
+			name: "PerIPRequestsPerHourString",
+			toml: `
+			[server]
+			perIPRequestsPerHour = "4"
+			`,
+			errSubstr: "perIPRequestsPerHour",
+		},
+		{
+			name: "RequestTimeoutSecondsBool",
+			toml: `
+			[server]
+			requestTimeoutSeconds = true
+			`,
+			errSubstr: "requestTimeoutSeconds",
+		},
+		{
+			name: "ListenAddressInt",
+			toml: `
+			[server]
+			listenAddress = 123
+			`,
+			errSubstr: "listenAddress",
+		},
+		{
+			name: "BurstFactorString",
+			toml: `
+			[server]
+			burstFactor = "x"
+			`,
+			errSubstr: "burstFactor",
+		},
+		{
+			name: "TrustProxyHeadersString",
+			toml: `
+			[server]
+			trustProxyHeaders = "yes"
+			`,
+			errSubstr: "trustProxyHeaders",
+		},
+		{
+			name: "GlobalRequestsPerHourString",
+			toml: `
+			[server]
+			globalRequestsPerHour = "20"
+			`,
+			errSubstr: "globalRequestsPerHour",
+		},
+		{
+			name: "AnalysisBusyWaitSecondsString",
+			toml: `
+			[server]
+			analysisBusyWaitSeconds = "2"
+			`,
+			errSubstr: "analysisBusyWaitSeconds",
+		},
+		{
+			name: "MaxTrackedRateKeysFloat",
+			toml: `
+			[server]
+			maxTrackedRateKeys = 1.5
+			`,
+			errSubstr: "maxTrackedRateKeys",
+		},
+		{
+			name: "ContactMessageInt",
+			toml: `
+			[server]
+			contactMessage = 7
+			`,
+			errSubstr: "contactMessage",
+		},
+		{
+			name: "LogClientIPString",
+			toml: `
+			[server]
+			logClientIP = "true"
+			`,
+			errSubstr: "logClientIP",
+		},
+		{
+			name: "TrustedProxiesString",
+			toml: `
+			[server]
+			trustedProxies = "10.0.0.0/8"
+			`,
+			errSubstr: "trustedProxies",
+		},
+		{
+			name: "AllowedOriginsString",
+			toml: `
+			[server]
+			allowedOrigins = "https://a.example.org"
+			`,
+			errSubstr: "allowedOrigins",
+		},
+		{
+			name: "SMTPPortString",
+			toml: `
+			[server.smtp]
+			port = "25"
+			`,
+			errSubstr: "port",
+		},
+		{
+			name: "SMTPHostInt",
+			toml: `
+			[server.smtp]
+			host = 25
+			`,
+			errSubstr: "host",
+		},
+		{
+			name: "SMTPFromInt",
+			toml: `
+			[server.smtp]
+			from = 1
+			`,
+			errSubstr: "from",
+		},
+		{
+			name: "SMTPToString",
+			toml: `
+			[server.smtp]
+			to = "admin@example.org"
+			`,
+			errSubstr: "to",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			configFile := createTempConfigFile(t, tt.toml)
+			defer os.Remove(configFile)
+
+			// ParseConfig must reject the wrong-typed key.
+			config, err := ParseConfig(configFile)
+			assert.Error(t, err)
+			assert.Nil(t, config)
+			if err != nil {
+				assert.Contains(t, err.Error(), tt.errSubstr)
+			}
+
+			// LoadConfig wraps ParseConfig; it must also fail.
+			cfg, lerr := LoadConfig(configFile)
+			assert.Error(t, lerr)
+			assert.Nil(t, cfg)
+		})
+	}
+}
+
+// TestParseServerConfigSliceElementType verifies that a [server] / [server.smtp]
+// slice key whose CONTAINER is a TOML array but whose ELEMENTS are not all strings
+// fails fast (instead of silently dropping the non-string elements). It also
+// confirms an all-string slice still parses and a missing key keeps the default.
+func TestParseServerConfigSliceElementType(t *testing.T) {
+	t.Run("TrustedProxiesNonStringElement", func(t *testing.T) {
+		tomlContent := `
+		[server]
+		trustedProxies = [1, 2]
+		`
+		configFile := createTempConfigFile(t, tomlContent)
+		defer os.Remove(configFile)
+
+		config, err := ParseConfig(configFile)
+		assert.Error(t, err)
+		assert.Nil(t, config)
+		if err != nil {
+			assert.Contains(t, err.Error(), "trustedProxies")
+		}
+
+		cfg, lerr := LoadConfig(configFile)
+		assert.Error(t, lerr)
+		assert.Nil(t, cfg)
+		if lerr != nil {
+			assert.Contains(t, lerr.Error(), "trustedProxies")
+		}
+	})
+
+	t.Run("AllowedOriginsMixedElement", func(t *testing.T) {
+		tomlContent := `
+		[server]
+		allowedOrigins = ["ok", 5]
+		`
+		configFile := createTempConfigFile(t, tomlContent)
+		defer os.Remove(configFile)
+
+		config, err := ParseConfig(configFile)
+		assert.Error(t, err)
+		assert.Nil(t, config)
+		if err != nil {
+			assert.Contains(t, err.Error(), "allowedOrigins")
+		}
+
+		cfg, lerr := LoadConfig(configFile)
+		assert.Error(t, lerr)
+		assert.Nil(t, cfg)
+		if lerr != nil {
+			assert.Contains(t, lerr.Error(), "allowedOrigins")
+		}
+	})
+
+	t.Run("SMTPToMixedElement", func(t *testing.T) {
+		tomlContent := `
+		[server.smtp]
+		to = ["a@b.c", 7]
+		`
+		configFile := createTempConfigFile(t, tomlContent)
+		defer os.Remove(configFile)
+
+		config, err := ParseConfig(configFile)
+		assert.Error(t, err)
+		assert.Nil(t, config)
+		if err != nil {
+			assert.Contains(t, err.Error(), "to")
+		}
+
+		cfg, lerr := LoadConfig(configFile)
+		assert.Error(t, lerr)
+		assert.Nil(t, cfg)
+		if lerr != nil {
+			assert.Contains(t, lerr.Error(), "to")
+		}
+	})
+
+	t.Run("AllStringSliceParses", func(t *testing.T) {
+		tomlContent := `
+		[server]
+		trustedProxies = ["10.0.0.0/8", "192.168.0.0/16"]
+		allowedOrigins = ["https://a.example.org"]
+
+		[server.smtp]
+		to = ["admin1@example.org", "admin2@example.org"]
+		`
+		configFile := createTempConfigFile(t, tomlContent)
+		defer os.Remove(configFile)
+
+		config, err := ParseConfig(configFile)
+		assert.NoError(t, err)
+		assert.NotNil(t, config)
+		assert.Equal(t, []string{"10.0.0.0/8", "192.168.0.0/16"}, config.Server.TrustedProxies)
+		assert.Equal(t, []string{"https://a.example.org"}, config.Server.AllowedOrigins)
+		assert.Equal(t, []string{"admin1@example.org", "admin2@example.org"}, config.Server.SMTP.To)
+	})
+
+	t.Run("MissingSliceKeyKeepsDefault", func(t *testing.T) {
+		tomlContent := `
+		[server]
+		listenAddress = "0.0.0.0:9090"
+		`
+		configFile := createTempConfigFile(t, tomlContent)
+		defer os.Remove(configFile)
+
+		config, err := ParseConfig(configFile)
+		assert.NoError(t, err)
+		assert.NotNil(t, config)
+		assert.Nil(t, config.Server.TrustedProxies)
+		assert.Nil(t, config.Server.AllowedOrigins)
+		assert.Nil(t, config.Server.SMTP.To)
+	})
+}
+
+// TestParseServerConfigBurstFactorAcceptsIntAndFloat asserts burstFactor accepts
+// both a TOML float (0.5) and a bare int (1) without error.
+func TestParseServerConfigBurstFactorAcceptsIntAndFloat(t *testing.T) {
+	cases := []struct {
+		name string
+		toml string
+		want float64
+	}{
+		{"Float", "[server]\nburstFactor = 0.5\n", 0.5},
+		{"Int", "[server]\nburstFactor = 1\n", 1.0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			configFile := createTempConfigFile(t, tc.toml)
+			defer os.Remove(configFile)
+
+			config, err := ParseConfig(configFile)
+			assert.NoError(t, err)
+			assert.NotNil(t, config)
+			assert.Equal(t, tc.want, config.Server.BurstFactor)
+		})
+	}
+}
+
+// TestParseServerConfigMissingKeyKeepsDefault confirms a MISSING [server] key
+// still yields the built-in default with no error (only present-but-wrong-typed
+// keys are rejected).
+func TestParseServerConfigMissingKeyKeepsDefault(t *testing.T) {
+	// [server] present but with only one key set; the rest must keep defaults.
+	tomlContent := `
+	[server]
+	listenAddress = "0.0.0.0:9090"
+	`
+	configFile := createTempConfigFile(t, tomlContent)
+	defer os.Remove(configFile)
+
+	config, err := ParseConfig(configFile)
+	assert.NoError(t, err)
+	assert.NotNil(t, config)
+	// Overridden key took effect.
+	assert.Equal(t, "0.0.0.0:9090", config.Server.ListenAddress)
+	// Missing keys keep their defaults.
+	assert.Equal(t, DefaultServerPerIPRequestsPerHour, config.Server.PerIPRequestsPerHour)
+	assert.Equal(t, DefaultServerBurstFactor, config.Server.BurstFactor)
+	assert.Equal(t, DefaultServerRequestTimeoutSeconds, config.Server.RequestTimeoutSeconds)
+	assert.Equal(t, DefaultServerSMTPPort, config.Server.SMTP.Port)
+}
+
+// TestParseShippedConfigsLoad confirms the shipped, correctly-typed configs still
+// parse cleanly after the fail-fast change.
+func TestParseShippedConfigsLoad(t *testing.T) {
+	for _, path := range []string{
+		"../../pc.toml.example",
+		"../../testdata/test_config.toml",
+	} {
+		t.Run(path, func(t *testing.T) {
+			cfg, err := ParseConfig(path)
+			assert.NoError(t, err)
+			assert.NotNil(t, cfg)
+		})
+	}
 }

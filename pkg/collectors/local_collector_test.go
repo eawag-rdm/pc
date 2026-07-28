@@ -54,3 +54,30 @@ func TestLocalCollector(t *testing.T) {
 		}
 	}
 }
+
+// TestLocalCollectorMissingSection ensures LocalCollector still runs without
+// panicking when the [collector.LocalCollector] section is absent (nil entry).
+// includeFolders defaults to false and files are still collected.
+func TestLocalCollectorMissingSection(t *testing.T) {
+	tempDir := t.TempDir()
+
+	files := []string{"file1.txt", "file2.txt"}
+	for _, name := range files {
+		path := filepath.Join(tempDir, name)
+		if err := os.WriteFile(path, []byte("data"), 0644); err != nil {
+			t.Fatalf("Failed to create temp file: %v", err)
+		}
+	}
+
+	// Config has no "LocalCollector" entry at all.
+	cfg := config.Config{Collectors: map[string]*config.CollectorConfig{}}
+
+	collectedFiles, err := LocalCollector(tempDir, cfg)
+	if err != nil {
+		t.Fatalf("LocalCollector returned an error: %v", err)
+	}
+
+	if len(collectedFiles) != len(files) {
+		t.Fatalf("Expected %d files, got %d", len(files), len(collectedFiles))
+	}
+}

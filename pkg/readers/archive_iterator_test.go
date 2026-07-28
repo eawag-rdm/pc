@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/eawag-rdm/pc/pkg/structs"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -22,7 +23,7 @@ func TestIterareUnpackedFiles(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			parts := strings.Split(test.filepath, "/")
 			filename := parts[len(parts)-1]
-			nfi := InitArchiveIterator(test.filepath, filename, 1024*1024, []string{}, []string{})
+			nfi := InitArchiveIterator(test.filepath, filename, 1024*1024, []string{}, []string{}, 100*1024*1024)
 			assert.True(t, nfi.HasFilesToUnpack(), "Expected archive to have valid files")
 			count := 0
 			for nfi.HasNext() {
@@ -50,7 +51,7 @@ func TestValidFileCount(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			parts := strings.Split(test.filepath, "/")
 			filename := parts[len(parts)-1]
-			nfi := InitArchiveIterator(test.filepath, filename, 1024*1024, []string{}, []string{})
+			nfi := InitArchiveIterator(test.filepath, filename, 1024*1024, []string{}, []string{}, 100*1024*1024)
 			assert.True(t, nfi.HasFilesToUnpack(), "Expected archive to have valid files")
 			count := 0
 			for nfi.HasNext() {
@@ -78,7 +79,7 @@ func TestIterareEmpty(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			parts := strings.Split(test.filepath, "/")
 			filename := parts[len(parts)-1]
-			nfi := InitArchiveIterator(test.filepath, filename, 1024*1024, []string{}, []string{})
+			nfi := InitArchiveIterator(test.filepath, filename, 1024*1024, []string{}, []string{}, 100*1024*1024)
 			assert.False(t, nfi.HasFilesToUnpack(), "Expected no valid files in archive")
 			assert.False(t, nfi.HasNext())
 		})
@@ -104,7 +105,7 @@ func TestIterareUnpackedFilesMaxSize(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			parts := strings.Split(test.filepath, "/")
 			filename := parts[len(parts)-1]
-			nfi := InitArchiveIterator(test.filepath, filename, test.maxLen, []string{}, []string{})
+			nfi := InitArchiveIterator(test.filepath, filename, test.maxLen, []string{}, []string{}, 100*1024*1024)
 
 			if !nfi.HasFilesToUnpack() {
 				assert.Equal(t, 0, test.expectedLen, "No files to unpack, but expected some")
@@ -147,7 +148,7 @@ func TestIteratorEdgeCases(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			parts := strings.Split(test.filepath, "/")
 			filename := parts[len(parts)-1]
-			nfi := InitArchiveIterator(test.filepath, filename, test.maxSize, []string{}, []string{})
+			nfi := InitArchiveIterator(test.filepath, filename, test.maxSize, []string{}, []string{}, 100*1024*1024)
 
 			if test.expectedLen == 0 {
 				assert.False(t, nfi.HasFilesToUnpack(), "Expected no files in archive")
@@ -232,7 +233,7 @@ func TestFiltersDuringArchiveIteration(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			parts := strings.Split(test.filepath, "/")
 			filename := parts[len(parts)-1]
-			nfi := InitArchiveIterator(test.filepath, filename, test.maxLen, test.whitelist, test.blacklist)
+			nfi := InitArchiveIterator(test.filepath, filename, test.maxLen, test.whitelist, test.blacklist, 100*1024*1024)
 			if len(test.unpackedFiles) == 0 {
 				assert.False(t, nfi.HasFilesToUnpack(), "Expected archive to have valid files")
 			} else {
@@ -274,7 +275,7 @@ func TestSkippingALotOfFiles(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			parts := strings.Split(test.filepath, "/")
 			filename := parts[len(parts)-1]
-			nfi := InitArchiveIterator(test.filepath, filename, 1024, []string{}, []string{})
+			nfi := InitArchiveIterator(test.filepath, filename, 1024, []string{}, []string{}, 100*1024*1024)
 			assert.False(t, nfi.HasFilesToUnpack(), "Expected no files in archive")
 			assert.False(t, nfi.HasNext())
 		})
@@ -295,9 +296,85 @@ func TestALotOfBinaryFiles(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			parts := strings.Split(test.filepath, "/")
 			filename := parts[len(parts)-1]
-			nfi := InitArchiveIterator(test.filepath, filename, 1024, []string{}, []string{})
+			nfi := InitArchiveIterator(test.filepath, filename, 1024, []string{}, []string{}, 100*1024*1024)
 			assert.False(t, nfi.HasFilesToUnpack(), "Expected only binary files in archive, so nothing to read")
 			assert.False(t, nfi.HasNext())
+		})
+	}
+}
+
+// drainIterator fully iterates an archive and returns the skip acknowledgements
+// emitted for members that were not content-scanned.
+func drainIterator(nfi *UnpackedFileIterator) []structs.Message {
+	if nfi.HasFilesToUnpack() {
+		for nfi.HasNext() {
+			nfi.Next()
+		}
+	}
+	return nfi.SkipMessages()
+}
+
+func TestArchiveIterator_MemberSizeSkipEmitsMessages(t *testing.T) {
+	formats := []string{".zip", ".tar", ".7z"}
+	for _, ext := range formats {
+		t.Run("size skip "+ext, func(t *testing.T) {
+			path := "../../testdata/archives/one_of_each" + ext
+			filename := "one_of_each" + ext
+
+			// maxLen 0.5MB excludes the 1.2MB and 2.3MB members by size while the
+			// total-memory budget (generous) is not the cause.
+			nfi := InitArchiveIterator(path, filename, int(0.5*1024*1024), []string{}, []string{}, 100*1024*1024)
+			skips := drainIterator(nfi)
+
+			if len(skips) == 0 {
+				t.Fatalf("expected at least one member size-skip message for %s", ext)
+			}
+			for _, m := range skips {
+				if !m.Skipped {
+					t.Errorf("expected Skipped=true, got %+v", m)
+				}
+				if m.Reason == "" {
+					t.Errorf("expected non-empty Reason, got %+v", m)
+				}
+				src, ok := m.Source.(structs.File)
+				if !ok {
+					t.Fatalf("expected File source, got %T", m.Source)
+				}
+				if src.ArchiveName != filename {
+					t.Errorf("expected ArchiveName=%q, got %q", filename, src.ArchiveName)
+				}
+				if !strings.Contains(m.Content, "exceeds maximum archive member size") {
+					t.Errorf("unexpected size-skip content: %q", m.Content)
+				}
+			}
+		})
+	}
+}
+
+func TestArchiveIterator_TotalMemorySkipEmitsMessages(t *testing.T) {
+	formats := []string{".zip", ".tar", ".7z"}
+	for _, ext := range formats {
+		t.Run("memory skip "+ext, func(t *testing.T) {
+			path := "../../testdata/archives/one_of_each" + ext
+			filename := "one_of_each" + ext
+
+			// Large per-member size limit but a tiny total-memory budget: members
+			// are rejected by the memory budget rather than their individual size.
+			nfi := InitArchiveIterator(path, filename, 10*1024*1024, []string{}, []string{}, 1024)
+			skips := drainIterator(nfi)
+
+			foundMemorySkip := false
+			for _, m := range skips {
+				if !m.Skipped {
+					t.Errorf("expected Skipped=true, got %+v", m)
+				}
+				if strings.Contains(m.Content, "total archive memory limit") {
+					foundMemorySkip = true
+				}
+			}
+			if !foundMemorySkip {
+				t.Errorf("expected at least one total-memory skip message for %s, got %+v", ext, skips)
+			}
 		})
 	}
 }

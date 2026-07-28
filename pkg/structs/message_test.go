@@ -43,12 +43,8 @@ func TestMessage_Format_RepositorySource(t *testing.T) {
 	}
 }
 
-// CustomSource is a test type that implements Source interface
+// CustomSource is a test type used as an unrecognized Message source.
 type CustomSource struct{}
-
-func (cs CustomSource) GetValue() []File {
-	return []File{}
-}
 
 func TestMessage_Format_UnknownSource(t *testing.T) {
 	// Create a custom source that implements the Source interface
@@ -102,66 +98,6 @@ func TestMessage_Format_SpecialCharacters(t *testing.T) {
 	}
 }
 
-func TestFile_GetValue(t *testing.T) {
-	file := File{
-		Name: "test.txt",
-		Path: "/path/test.txt",
-	}
-
-	result := file.GetValue()
-
-	if len(result) != 1 {
-		t.Fatalf("Expected 1 file, got %d", len(result))
-	}
-
-	if result[0].Name != "test.txt" {
-		t.Errorf("Expected file name 'test.txt', got '%s'", result[0].Name)
-	}
-
-	if result[0].Path != "/path/test.txt" {
-		t.Errorf("Expected file path '/path/test.txt', got '%s'", result[0].Path)
-	}
-}
-
-func TestRepository_GetValue(t *testing.T) {
-	files := []File{
-		{Name: "file1.txt", Path: "/path/file1.txt"},
-		{Name: "file2.txt", Path: "/path/file2.txt"},
-	}
-
-	repo := Repository{
-		Files: files,
-	}
-
-	result := repo.GetValue()
-
-	if len(result) != 2 {
-		t.Fatalf("Expected 2 files, got %d", len(result))
-	}
-
-	for i, file := range files {
-		if result[i].Name != file.Name {
-			t.Errorf("File %d: expected name '%s', got '%s'", i, file.Name, result[i].Name)
-		}
-
-		if result[i].Path != file.Path {
-			t.Errorf("File %d: expected path '%s', got '%s'", i, file.Path, result[i].Path)
-		}
-	}
-}
-
-func TestRepository_GetValue_EmptyFiles(t *testing.T) {
-	repo := Repository{
-		Files: []File{},
-	}
-
-	result := repo.GetValue()
-
-	if len(result) != 0 {
-		t.Errorf("Expected 0 files for empty repository, got %d", len(result))
-	}
-}
-
 func TestMessage_TestNameField(t *testing.T) {
 	file := File{Name: "test.txt"}
 
@@ -184,24 +120,41 @@ func TestMessage_TestNameField(t *testing.T) {
 	}
 }
 
+func TestMessage_SkippedFields(t *testing.T) {
+	file := File{Name: "big.bin", Path: "/path/to/big.bin"}
+	reason := "Skipped content scan of file: file size (5 bytes) exceeds maximum (1 bytes)."
+
+	skipped := Message{Content: reason, Source: file, TestName: "IsFreeOfKeywords", Skipped: true, Reason: reason}
+	plain := Message{Content: reason, Source: file, TestName: "IsFreeOfKeywords"}
+
+	// The skip metadata is carried for downstream routing (the JSON skipped[]),
+	// but must NOT leak into the human-rendered text: a skipped message has to
+	// render identically to an ordinary file-sourced message.
+	if got, want := skipped.Format(), plain.Format(); got != want {
+		t.Errorf("skip flag changed Format() output: got %q, want %q", got, want)
+	}
+	if got, want := skipped.Format(), "- File issue in 'big.bin': "+reason; got != want {
+		t.Errorf("Format() = %q, want %q", got, want)
+	}
+}
+
+func TestMessage_NonSkipDefaults(t *testing.T) {
+	// The zero value of Message must be a non-skip message (Skipped false, empty
+	// Reason) so ordinary check output is never mis-routed as a size-skip.
+	var message Message
+	if message.Skipped {
+		t.Error("zero-value Message.Skipped must be false")
+	}
+	if message.Reason != "" {
+		t.Errorf("zero-value Message.Reason must be empty, got %q", message.Reason)
+	}
+}
+
 func TestMessage_SourceInterface(t *testing.T) {
-	// Test that both File and Repository implement Source interface
-	// Compile-time check: these assignments verify interface implementation
+	// Test that both File and Repository are usable as a Message Source.
+	// Compile-time check: these assignments verify interface satisfaction.
 	var _ Source = File{Name: "test.txt"}
 	var _ Source = Repository{Files: []File{}}
-
-	// Runtime check: verify GetValue returns expected values
-	file := File{Name: "test.txt"}
-	files := file.GetValue()
-	if len(files) != 1 || files[0].Name != "test.txt" {
-		t.Errorf("File.GetValue() returned unexpected result")
-	}
-
-	repo := Repository{Files: []File{{Name: "a.txt"}, {Name: "b.txt"}}}
-	repoFiles := repo.GetValue()
-	if len(repoFiles) != 2 {
-		t.Errorf("Repository.GetValue() = %d files, want 2", len(repoFiles))
-	}
 }
 
 func TestMessage_ComplexScenarios(t *testing.T) {

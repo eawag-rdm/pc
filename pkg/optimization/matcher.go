@@ -229,18 +229,3 @@ func GetMatcher(patterns []string) *FastMatcher {
 
 	return matcher
 }
-
-// FastStringSearch provides Boyer-Moore-like fast string searching
-func FastStringSearch(text []byte, pattern []byte) bool {
-	if len(pattern) == 0 {
-		return true
-	}
-	if len(text) < len(pattern) {
-		return false
-	}
-
-	// Use Go's optimized bytes.Contains for most cases
-	// Go's implementation uses a combination of algorithms including
-	// a form of Boyer-Moore for larger patterns
-	return bytes.Contains(text, pattern)
-}

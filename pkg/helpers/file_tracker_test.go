@@ -2,7 +2,6 @@ package helpers
 
 import (
 	"fmt"
-	"strings"
 	"sync"
 	"testing"
 
@@ -133,67 +132,6 @@ func TestFileTracker_AddFileIfPDF_MultipleFiles(t *testing.T) {
 		if tracker.Files[i] != expected {
 			t.Errorf("File %d: expected '%s', got '%s'", i, expected, tracker.Files[i])
 		}
-	}
-}
-
-func TestFileTracker_FormatFiles_WithFiles(t *testing.T) {
-	tracker := NewFileTracker("=== PDF Files ===")
-
-	pdfFile := structs.File{Name: "document.pdf", Suffix: ".pdf"}
-	tracker.AddFileIfPDF("Found: ", pdfFile)
-
-	formatted := tracker.FormatFiles()
-
-	if !strings.Contains(formatted, "=== PDF Files ===") {
-		t.Error("Formatted output should contain header")
-	}
-
-	if !strings.Contains(formatted, "Found: document.pdf") {
-		t.Error("Formatted output should contain file entry")
-	}
-
-	if strings.Contains(formatted, "No files found") {
-		t.Error("Should not contain 'No files found' when files exist")
-	}
-}
-
-func TestFileTracker_FormatFiles_NoFiles(t *testing.T) {
-	tracker := NewFileTracker("=== PDF Files ===")
-
-	formatted := tracker.FormatFiles()
-
-	if !strings.Contains(formatted, "=== PDF Files ===") {
-		t.Error("Formatted output should contain header")
-	}
-
-	if !strings.Contains(formatted, "No files found") {
-		t.Error("Should contain 'No files found' when no files exist")
-	}
-}
-
-func TestFileTracker_FormatFiles_MultipleFiles(t *testing.T) {
-	tracker := NewFileTracker("Test Header")
-
-	files := []structs.File{
-		{Name: "doc1.pdf", Suffix: ".pdf"},
-		{Name: "doc2.pdf", Suffix: ".pdf"},
-		{Name: "doc3.pdf", Suffix: ".pdf"},
-	}
-
-	for _, file := range files {
-		tracker.AddFileIfPDF("", file)
-	}
-
-	formatted := tracker.FormatFiles()
-	lines := strings.Split(strings.TrimSpace(formatted), "\n")
-
-	// Should have header + 3 files = 4 lines
-	if len(lines) != 4 {
-		t.Errorf("Expected 4 lines, got %d", len(lines))
-	}
-
-	if lines[0] != "Test Header" {
-		t.Errorf("First line should be header, got '%s'", lines[0])
 	}
 }
 

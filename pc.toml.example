@@ -52,16 +52,80 @@ summaryMaxIssuesBeforeTruncation = 5
 # Minimum group size required to trigger truncation (default: 3)
 summaryMinGroupSizeForTruncation = 3
 
+[server]
+# Settings for the pc-server HTTP API. The server takes NO command-line flags;
+# every setting (including the listen address) lives here. The CKAN URL is NOT
+# configured here — it is read from [collector.CkanCollector.attrs] url.
+# Address the server listens on (host:port)
+listenAddress      = "127.0.0.1:8080"
+# Whether to trust proxy-set client IP headers (X-Real-IP)
+trustProxyHeaders  = true
+# CIDRs allowed to set X-Real-IP (only these connections are trusted as proxies)
+trustedProxies     = ["127.0.0.1/32"]
+# CORS allow-list of origin URLs
+allowedOrigins     = ["https://frontend.example.org"]
+# Per-IP hourly request budget
+perIPRequestsPerHour  = 4
+# Global hourly request budget
+globalRequestsPerHour = 20
+# Additional headroom applied to the budgets (+50%)
+burstFactor           = 0.5
+# Seconds a request waits for the single analysis gate before returning service_busy (503)
+analysisBusyWaitSeconds = 2
+# Limiter memory bound (max tracked rate keys)
+maxTrackedRateKeys    = 10000
+# Contact suffix shown in error envelopes
+contactMessage        = "If you can't resolve this yourself, please contact rdm@eawag.ch."
+# Whether to log the client IP (personal data; documented purpose = abuse/security)
+logClientIP           = true
+# Hard upper bound for a WHOLE analysis request (CKAN call + all checks), in seconds
+requestTimeoutSeconds = 300
+# Upper bound for the single CKAN package_show call, in seconds. A CKAN that
+# cannot answer a metadata GET within this window is reported as unavailable
+# (ckan_unavailable) instead of eating the analysis time budget. Must be <=
+# requestTimeoutSeconds.
+ckanRequestTimeoutSeconds = 10
+# Per-package result cache (SERVER-ONLY; the CLI never caches). When set, a
+# successful analysis is stored as one JSON file per package under this
+# directory and served again while the package's CKAN metadata_modified is
+# unchanged — repeat requests then cost one package_show round-trip instead of
+# a full file scan. Empty disables caching. In Docker this must point into a
+# persistent volume (see docker-compose.yml).
+resultCacheDir        = ""
+# Max cached packages; beyond this the oldest entries are evicted
+resultCacheMaxEntries = 500
+# Max age of a cache entry in hours; 0 (the default) disables the age limit —
+# CKAN's metadata_modified alone decides freshness. Set only if files on the
+# storage mount can change behind CKAN's back.
+resultCacheMaxAgeHours = 0
+
+# [server.smtp] — optional admin-alert relay (a sub-section of [server], so it
+# MUST come after the [server] keys above). When enabled, the server emails this
+# list on a SERVER-FAULT response: internal_error, a recovered panic, or
+# resource_unreadable. Plain relay, NO authentication. Every fault is reported
+# (there is no rate cap). Leave host empty (or omit this whole block) to DISABLE
+# alerts. The mail carries no secrets — only the request_id, code, method, path
+# and package_id; the full cause/stack stays in the logs, keyed by request_id.
+[server.smtp]
+# SMTP relay host; empty disables admin alerts
+host = ""
+# SMTP relay port
+port = 25
+# From / envelope-sender address for alert mails
+from = "pc-server@eawag.ch"
+# Admin recipient addresses (at least one required when host is set)
+to = ["rdm@eawag.ch"]
+
 [operation.main]
 collector = "LocalCollector"
 
 [test.HasOnlyASCII]
-# Checking for white spaces in folder and file names.
+# Checking for Non-ASCII characters in folder and file names.
 blacklist = []
 whitelist = []
 
 [test.HasNoWhiteSpace]
-# Checking for Non-ASCII characters in folder and file names.
+# Checking for white spaces in folder and file names.
 blacklist = []
 whitelist = []
 
@@ -91,6 +155,13 @@ whitelist = []
 # blacklist/whitelist: Use regex patterns to include/exclude files by path
 blacklist = []
 whitelist = []
+
+[test.HasReadme]
+# Filenames recognized as the repository readme (literal, case-insensitive).
+# Used by HasReadme and ReadMeContainsTOC.
+keywordArguments = [
+    { readme_names = ["readme.md", "readme.txt", "readme", "read me", "read me.txt", "read me.md", "read-me", "read-me.txt", "read-me.md", "read_me", "read_me.txt", "read_me.md"] }
+]
 
 [test.IsValidName]
 # Checking for invalid files and folders

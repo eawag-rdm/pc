@@ -43,11 +43,35 @@ summaryIntroText = "Test config intro text."
 summaryMaxIssuesBeforeTruncation = 5
 summaryMinGroupSizeForTruncation = 3
 
+[server]
+# pc-server HTTP API settings. Most values mirror the built-in defaults;
+# allowedOrigins is illustrative (the built-in default is empty/nil).
+listenAddress           = "127.0.0.1:8080"
+trustProxyHeaders       = true
+trustedProxies          = ["127.0.0.1/32"]
+allowedOrigins          = ["http://localhost:3000"]
+perIPRequestsPerHour    = 4
+globalRequestsPerHour   = 20
+burstFactor             = 0.5
+analysisBusyWaitSeconds = 2
+maxTrackedRateKeys      = 10000
+contactMessage          = "If you can't resolve this yourself, please contact rdm@eawag.ch."
+logClientIP             = true
+requestTimeoutSeconds   = 300
+
+# Admin-alert relay (sub-section of [server]); host empty = disabled, mirroring
+# the built-in default. No mail is attempted in tests.
+[server.smtp]
+host = ""
+port = 25
+from = "pc-server@eawag.ch"
+to   = ["rdm@eawag.ch"]
+
 [operation.main]
 collector = "LocalCollector"
 
 [test.HasOnlyASCII]
-# Checking for white spaces in folder and file names.
+# Checking for Non-ASCII characters in folder and file names.
 blacklist = ["test.txt"]
 whitelist = []
 
@@ -61,6 +85,13 @@ keywordArguments = [
     { keywords = ["user", "id_rsa", "password"], info = "Possible credentials in file" },
     { keywords = ["Q:"], info = "Possible internal information in file" },
     { keywords = ["/Users/"], info = "Do you have hardcoded filepaths in your files?  Found suspicious keyword(s):" }
+]
+
+[test.HasReadme]
+# Filenames recognized as the repository readme (literal, case-insensitive).
+# Used by HasReadme and ReadMeContainsTOC.
+keywordArguments = [
+    { readme_names = ["readme.md", "readme.txt", "readme", "read me", "read me.txt", "read me.md", "read-me", "read-me.txt", "read-me.md", "read_me", "read_me.txt", "read_me.md"] }
 ]
 
 [test.IsValidName]
@@ -81,7 +112,7 @@ keywordArguments = [
 ]
 
 [collector.CkanCollector]
-attrs = {url = "https://example.com", token = "", ckan_storage_path = "/nfsmount/ckan/default"}
+attrs = {url = "https://example.com", token = "", verify = true, ckan_storage_path = "/nfsmount/ckan/default"}
 
 [collector.LocalCollector]
-attr = {includeFolders = true}
+attrs = {includeFolders = true}

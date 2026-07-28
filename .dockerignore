@@ -1,0 +1,24 @@
+# Keep the build context small. go.mod/go.sum + source are all the build needs;
+# config is mounted at runtime, not baked into the image.
+.git
+.gitignore
+.github
+docs
+*.md
+LICENSE
+
+# Runtime config (mounted read-only at /etc/pc/pc.toml instead).
+pc.toml
+pc.toml.test
+
+# Docker + CI assets (not needed inside the build).
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Local build artifacts / profiles.
+pc
+pc-server
+*.html
+*.prof
+*.out

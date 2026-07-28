@@ -1,16 +1,8 @@
 package structs
 
-type Source interface {
-	GetValue() []File
-}
-
-func (f File) GetValue() []File {
-	return []File{f}
-}
-
-func (r Repository) GetValue() []File {
-	return r.Files
-}
+// Source identifies what a Message refers to. Both File and Repository satisfy
+// it, and Message.Format() type-switches on the concrete type.
+type Source interface{}
 
 // a struct that defines the message structure, retuned by the failed checks
 type Message struct {
@@ -20,6 +12,12 @@ type Message struct {
 	Source Source
 	// The test name that generated this message.
 	TestName string
+	// Skipped marks this message as a skip acknowledgement rather than a check
+	// failure. Skip messages describe why a file (or archive member) was not
+	// content-scanned; they are surfaced in every output but never counted as issues.
+	Skipped bool
+	// Reason carries the human-readable explanation for a skip (only set when Skipped).
+	Reason string
 }
 
 // define a method for displaying the message

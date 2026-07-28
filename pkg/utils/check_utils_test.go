@@ -1,27 +1,64 @@
 package utils
 
 import (
+	"context"
 	"reflect"
 	"testing"
 
+	"github.com/eawag-rdm/pc/pkg/optimization"
 	"github.com/eawag-rdm/pc/pkg/structs"
 
 	"github.com/eawag-rdm/pc/pkg/config"
 )
+
+// TestApplyAllChecks_NoFilesNotice verifies both engine entrypoints append a
+// single skip-style "no files to analyse" notice when the file set is empty, so
+// the CLI and server surface the same clear, non-issue acknowledgement.
+func TestApplyAllChecks_NoFilesNotice(t *testing.T) {
+	cases := map[string]func() []structs.Message{
+		"ApplyAllChecks": func() []structs.Message {
+			return ApplyAllChecks(context.Background(), config.Config{}, nil, false)
+		},
+		"ApplyAllChecksWithProgress": func() []structs.Message {
+			return ApplyAllChecksWithProgress(context.Background(), config.Config{}, nil, false, nil)
+		},
+	}
+	for name, run := range cases {
+		t.Run(name, func(t *testing.T) {
+			msgs := run()
+			if len(msgs) != 1 {
+				t.Fatalf("expected exactly the no-files notice for an empty set, got %d: %v", len(msgs), msgs)
+			}
+			notice := msgs[0]
+			if !notice.Skipped {
+				t.Error("no-files notice must be Skipped (a non-issue acknowledgement)")
+			}
+			if notice.TestName != "FilesPresent" {
+				t.Errorf("expected TestName FilesPresent, got %q", notice.TestName)
+			}
+			if notice.Reason == "" || notice.Content == "" {
+				t.Error("no-files notice must carry a reason and content")
+			}
+			if _, ok := notice.Source.(structs.Repository); !ok {
+				t.Errorf("no-files notice should be repository-scoped, got %T", notice.Source)
+			}
+		})
+	}
+}
 
 func TestGetFunctionName(t *testing.T) {
 	tests := []struct {
 		input    interface{}
 		expected string
 	}{
-		{input: getFunctionName, expected: "getFunctionName"},
+		{input: optimization.FunctionName, expected: "FunctionName"},
 		{input: reflect.ValueOf, expected: "ValueOf"},
 	}
 
 	for _, test := range tests {
-		result := getFunctionName(test.input)
+		result := optimization.FunctionName(test.input)
 		if result != test.expected {
-			t.Errorf("getFunctionName(%v) = %v; want %v", test.input, result, test.expected)
+			t.Errorf("FunctionName(%v) = %v; want %v", test.input, result, test.expected)
 		}
 	}
 }
@@ -118,7 +155,7 @@ func TestSkipFileCheck(t *testing.T) {
 			expectedSkip: true,
 		},
 		{
-			name: "File matches blacklist regex",
+			name: "File with space matches blacklist regex",
 			config: config.Config{
 				Tests: map[string]*config.TestConfig{
 					"mockCheck": {
@@ -185,19 +222,19 @@ func TestMatchPatterns(t *testing.T) {
 			expectedMatch: false,
 		},
 		{
-			name:          "Regex pattern match",
+			name:          "Regex wildcard dot pattern match",
 			list:          []string{".txt"},
 			str:           "testfile.txt",
 			expectedMatch: true,
 		},
 		{
-			name:          "Regex pattern match",
+			name:          "Regex character class pattern match",
 			list:          []string{"t[a-z]t"},
 			str:           "testfile.txt",
 			expectedMatch: true,
 		},
 		{
-			name:          "Regex pattern no match",
+			name:          "Regex character class pattern no match",
 			list:          []string{"t[d-z]t"},
 			str:           "abc",
 			expectedMatch: false,
@@ -206,9 +243,9 @@ func TestMatchPatterns(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			result := matchPatterns(test.list, test.str)
+			result := matchRegexPatterns(test.list, test.str)
 			if result != test.expectedMatch {
-				t.Errorf("%v: matchPatterns(%v, %v) = %v; want %v", test.name, test.list, test.str, result, test.expectedMatch)
+				t.Errorf("%v: matchRegexPatterns(%v, %v) = %v; want %v", test.name, test.list, test.str, result, test.expectedMatch)
 			}
 		})
 	}
@@ -298,7 +335,7 @@ func TestApplyChecksFilteredByFile(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			result := ApplyChecksFilteredByFile(test.config, test.checks, test.files)
+			result := ApplyChecksFilteredByFile(context.Background(), test.config, test.checks, test.files)
 			if !reflect.DeepEqual(result, test.expected) {
 				t.Errorf("%v: ApplyChecksFilteredByFile() = %v; want %v", test.name, result, test.expected)
 			}

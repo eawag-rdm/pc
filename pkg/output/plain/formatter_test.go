@@ -118,3 +118,75 @@ func TestPlainFormatter_FormatResults_RepositoryIssues(t *testing.T) {
 		t.Errorf("Expected repository issue content, got: %s", result)
 	}
 }
+
+// TestPlainFormatter_FormatResults_SkippedOnly verifies that skip-flagged
+// Messages are never counted as issues (spec §6): a clean-but-oversized file
+// must render "No issues found!" plus a separate "Skipped files" section, not an
+// inflated issue count.
+func TestPlainFormatter_FormatResults_SkippedOnly(t *testing.T) {
+	formatter := NewPlainFormatter()
+
+	huge := structs.File{Name: "huge.bin", Path: "/path/huge.bin"}
+	reason := "Skipped content scan of file: file size (2000 bytes) exceeds maximum (1000 bytes)."
+	messages := []structs.Message{
+		{
+			Content:  reason,
+			Source:   huge,
+			TestName: "IsFreeOfKeywords",
+			Skipped:  true,
+			Reason:   reason,
+		},
+	}
+
+	result := formatter.FormatResults("test/path", "LocalCollector", messages, 1, []string{})
+
+	// Skip-only input must not be reported as issues.
+	if !strings.Contains(result, "✅ No issues found!") {
+		t.Errorf("Expected 'No issues found!' for skip-only input, got: %s", result)
+	}
+	if strings.Contains(result, "❌ Found") {
+		t.Errorf("Skip-only input must not produce a 'Found N issues' header, got: %s", result)
+	}
+	if strings.Contains(result, "Total issues:") {
+		t.Errorf("Skip-only input must not produce an issue total, got: %s", result)
+	}
+	if strings.Contains(result, "Issue types:") {
+		t.Errorf("Skip-only input must not produce an issue-type breakdown, got: %s", result)
+	}
+
+	// The skip must still be surfaced in its own section with its reason.
+	if !strings.Contains(result, "Skipped files (1)") {
+		t.Errorf("Expected a 'Skipped files' section, got: %s", result)
+	}
+	if !strings.Contains(result, "huge.bin") || !strings.Contains(result, reason) {
+		t.Errorf("Expected skipped file name and reason, got: %s", result)
+	}
+}
+
+// TestPlainFormatter_FormatResults_SkipDoesNotInflateIssues verifies that skip
+// Messages mixed with real issues do not inflate the issue count.
+func TestPlainFormatter_FormatResults_SkipDoesNotInflateIssues(t *testing.T) {
+	formatter := NewPlainFormatter()
+
+	huge := structs.File{Name: "huge.bin", Path: "/path/huge.bin"}
+	ok := structs.File{Name: "ok.txt", Path: "/path/ok.txt"}
+	messages := []structs.Message{
+		{Content: "skip reason", Source: huge, TestName: "IsFreeOfKeywords", Skipped: true, Reason: "skip reason"},
+		{Content: "Found keyword 'secret'", Source: ok, TestName: "IsFreeOfKeywords"},
+	}
+
+	result := formatter.FormatResults("test/path", "LocalCollector", messages, 2, []string{})
+
+	if !strings.Contains(result, "❌ Found 1 issues in 1 files") {
+		t.Errorf("Expected exactly 1 counted issue, got: %s", result)
+	}
+	if !strings.Contains(result, "Total issues: 1") {
+		t.Errorf("Expected total issues of 1, got: %s", result)
+	}
+	if strings.Contains(result, "📄 huge.bin") {
+		t.Errorf("Skipped file must not be grouped as an issue file, got: %s", result)
+	}
+	if !strings.Contains(result, "Skipped files (1)") {
+		t.Errorf("Expected skipped file to appear in skipped section, got: %s", result)
+	}
+}

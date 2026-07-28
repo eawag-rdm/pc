@@ -25,8 +25,23 @@ func (f *PlainFormatter) FormatResults(location string, collectorName string, me
 	output.WriteString(fmt.Sprintf("Location: %s\n", location))
 	output.WriteString(fmt.Sprintf("Files scanned: %d\n", totalFiles))
 
-	if len(messages) == 0 {
+	// Segregate skip acknowledgements from real issues. Skip Messages describe
+	// files whose content was not scanned; per spec §6 they are surfaced in their
+	// own section but never counted as issues (mirrors processMessages in
+	// pkg/output/json/formatter.go).
+	skippedFiles := []structs.Message{}
+	issueMessages := make([]structs.Message, 0, len(messages))
+	for _, msg := range messages {
+		if msg.Skipped {
+			skippedFiles = append(skippedFiles, msg)
+			continue
+		}
+		issueMessages = append(issueMessages, msg)
+	}
+
+	if len(issueMessages) == 0 {
 		output.WriteString("\n✅ No issues found!\n")
+		writeSkippedSection(&output, skippedFiles)
 		return output.String()
 	}
 
@@ -35,7 +50,7 @@ func (f *PlainFormatter) FormatResults(location string, collectorName string, me
 	repoIssues := []structs.Message{}
 	metaIssues := []structs.Message{}
 
-	for _, msg := range messages {
+	for _, msg := range issueMessages {
 		switch source := msg.Source.(type) {
 		case *metadata.Entity:
 			metaIssues = append(metaIssues, msg)
@@ -53,7 +68,7 @@ func (f *PlainFormatter) FormatResults(location string, collectorName string, me
 	}
 
 	// Summary
-	totalIssues := len(messages)
+	totalIssues := len(issueMessages)
 	filesWithIssues := len(fileIssues)
 	if len(repoIssues) > 0 {
 		filesWithIssues++ // Count repository as one more "file" with issues
@@ -117,7 +132,7 @@ func (f *PlainFormatter) FormatResults(location string, collectorName string, me
 
 	// Issue type breakdown
 	checkCounts := make(map[string]int)
-	for _, msg := range messages {
+	for _, msg := range issueMessages {
 		checkCounts[msg.TestName]++
 	}
 
@@ -128,5 +143,31 @@ func (f *PlainFormatter) FormatResults(location string, collectorName string, me
 		}
 	}
 
+	writeSkippedSection(&output, skippedFiles)
+
 	return output.String()
+}
+
+// writeSkippedSection renders skip acknowledgements as a non-issue "Skipped
+// files" section. Skip Messages are never counted as issues (spec §6).
+func writeSkippedSection(output *strings.Builder, skippedFiles []structs.Message) {
+	if len(skippedFiles) == 0 {
+		return
+	}
+
+	output.WriteString(fmt.Sprintf("\n⏭️  Skipped files (%d):\n", len(skippedFiles)))
+	for _, msg := range skippedFiles {
+		name := "repository"
+		if source, ok := msg.Source.(structs.File); ok {
+			name = source.GetDisplayName()
+			if source.ArchiveName != "" {
+				name = source.ArchiveName + " > " + name
+			}
+		}
+		reason := msg.Reason
+		if reason == "" {
+			reason = msg.Content
+		}
+		output.WriteString(fmt.Sprintf("  • %s: %s\n", name, reason))
+	}
 }

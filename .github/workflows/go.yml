@@ -25,6 +25,9 @@ jobs:
     - name: Run tests
       run: go test ./...
 
+    - name: Run race detector (server, collectors)
+      run: go test -race ./pkg/server/... ./pkg/collectors/...
+
     - name: Build
       run: go build -ldflags="-s -w" -buildvcs=false -o pc
 

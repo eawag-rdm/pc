@@ -40,8 +40,64 @@ type GeneralConfig struct {
 	SummaryMinGroupSizeForTruncation int    // Minimum group size to trigger truncation
 }
 
+// Default values for the [server] section.
+const (
+	DefaultServerListenAddress             = "127.0.0.1:8080"
+	DefaultServerPerIPRequestsPerHour      = 4
+	DefaultServerGlobalRequestsPerHour     = 20
+	DefaultServerBurstFactor               = 0.5
+	DefaultServerAnalysisBusyWaitSeconds   = 2
+	DefaultServerMaxTrackedRateKeys        = 10000
+	DefaultServerContactMessage            = "If you can't resolve this yourself, please contact rdm@eawag.ch."
+	DefaultServerLogClientIP               = true
+	DefaultServerTrustProxyHeaders         = true
+	DefaultServerRequestTimeoutSeconds     = 300
+	DefaultServerCkanRequestTimeoutSeconds = 10
+	DefaultServerResultCacheMaxEntries     = 500
+	DefaultServerResultCacheMaxAgeHours    = 0 // no age limit: metadata_modified alone keys freshness
+)
+
+// Default values for the [server.smtp] sub-section.
+const (
+	DefaultServerSMTPPort = 25
+)
+
+// SMTPConfig holds the [server.smtp] sub-section: a plain SMTP relay (no auth)
+// used to email admins when the server returns a server-fault response
+// (internal_error, recovered panic, or resource_unreadable). Every such fault
+// is reported — there is no cap. Alerts are DISABLED unless Host is set and To
+// is non-empty.
+type SMTPConfig struct {
+	Host string   // SMTP relay host; empty disables admin alerts
+	Port int      // SMTP relay port (default 25)
+	From string   // From / envelope-sender address for alert mails
+	To   []string // admin recipient addresses
+}
+
+// ServerConfig holds the configuration for the HTTP server (the [server] section).
+type ServerConfig struct {
+	ListenAddress             string      // Address the server listens on (host:port). The server takes no flags; this is the sole source.
+	TrustProxyHeaders         bool        // Whether to trust proxy-set client IP headers
+	TrustedProxies            []string    // CIDRs allowed to set X-Real-IP
+	AllowedOrigins            []string    // CORS allow-list of origin URLs
+	PerIPRequestsPerHour      int         // Per-IP hourly request budget
+	GlobalRequestsPerHour     int         // Global hourly request budget
+	BurstFactor               float64     // Additional headroom factor applied to budgets
+	AnalysisBusyWaitSeconds   int         // Seconds a busy request waits for the analysis gate before 503 (must be >= 1; default 2)
+	MaxTrackedRateKeys        int         // Limiter memory bound (max tracked rate keys)
+	ContactMessage            string      // Contact suffix shown in error envelopes
+	LogClientIP               bool        // Whether to log the client IP
+	RequestTimeoutSeconds     int         // Hard upper bound for a whole analysis request (CKAN call + checks), in seconds
+	CkanRequestTimeoutSeconds int         // Upper bound for the single CKAN package_show call, in seconds (must be <= RequestTimeoutSeconds)
+	ResultCacheDir            string      // Directory for the per-package result cache; empty disables caching
+	ResultCacheMaxEntries     int         // Max cached packages before oldest-entry eviction (default 500)
+	ResultCacheMaxAgeHours    int         // TTL for cache entries in hours; 0 (the default) disables the TTL
+	SMTP                      *SMTPConfig // Optional [server.smtp] admin-alert relay (nil-safe; disabled unless Host+To set)
+}
+
 type Config struct {
 	General    *GeneralConfig
+	Server     *ServerConfig
 	Tests      map[string]*TestConfig
 	Operation  map[string]*OperationConfig
 	Collectors map[string]*CollectorConfig
@@ -62,6 +118,27 @@ func ParseConfig(filename string) (*Config, error) {
 			SummaryIntroText:                 DefaultSummaryIntroText,
 			SummaryMaxIssuesBeforeTruncation: DefaultSummaryMaxIssuesBeforeTruncation,
 			SummaryMinGroupSizeForTruncation: DefaultSummaryMinGroupSizeForTruncation,
+		},
+		Server: &ServerConfig{
+			ListenAddress:             DefaultServerListenAddress,
+			TrustProxyHeaders:         DefaultServerTrustProxyHeaders,
+			TrustedProxies:            nil,
+			AllowedOrigins:            nil,
+			PerIPRequestsPerHour:      DefaultServerPerIPRequestsPerHour,
+			GlobalRequestsPerHour:     DefaultServerGlobalRequestsPerHour,
+			BurstFactor:               DefaultServerBurstFactor,
+			AnalysisBusyWaitSeconds:   DefaultServerAnalysisBusyWaitSeconds,
+			MaxTrackedRateKeys:        DefaultServerMaxTrackedRateKeys,
+			ContactMessage:            DefaultServerContactMessage,
+			LogClientIP:               DefaultServerLogClientIP,
+			RequestTimeoutSeconds:     DefaultServerRequestTimeoutSeconds,
+			CkanRequestTimeoutSeconds: DefaultServerCkanRequestTimeoutSeconds,
+			ResultCacheDir:            "",
+			ResultCacheMaxEntries:     DefaultServerResultCacheMaxEntries,
+			ResultCacheMaxAgeHours:    DefaultServerResultCacheMaxAgeHours,
+			SMTP: &SMTPConfig{
+				Port: DefaultServerSMTPPort,
+			},
 		},
 		Tests:      map[string]*TestConfig{},
 		Operation:  map[string]*OperationConfig{},
@@ -119,6 +196,83 @@ func ParseConfig(filename string) (*Config, error) {
 		}
 	}
 
+	// Parse server section. Each [server] / [server.smtp] key is read through a
+	// typed getter that overrides the default only when the key is PRESENT and of
+	// the right type. A present-but-wrong-typed key returns an error (fail fast)
+	// rather than being silently skipped, so an operator who wrong-types a setting
+	// (e.g. perIPRequestsPerHour = "4") is told instead of silently keeping the
+	// default. A missing key leaves the struct-literal default untouched.
+	if serverData, ok := raw["server"].(map[string]interface{}); ok {
+		if err := serverString(serverData, "listenAddress", &c.Server.ListenAddress); err != nil {
+			return nil, err
+		}
+		if err := serverBool(serverData, "trustProxyHeaders", &c.Server.TrustProxyHeaders); err != nil {
+			return nil, err
+		}
+		if err := serverStringSlice(serverData, "trustedProxies", &c.Server.TrustedProxies); err != nil {
+			return nil, err
+		}
+		if err := serverStringSlice(serverData, "allowedOrigins", &c.Server.AllowedOrigins); err != nil {
+			return nil, err
+		}
+		if err := serverInt(serverData, "perIPRequestsPerHour", &c.Server.PerIPRequestsPerHour); err != nil {
+			return nil, err
+		}
+		if err := serverInt(serverData, "globalRequestsPerHour", &c.Server.GlobalRequestsPerHour); err != nil {
+			return nil, err
+		}
+		// burstFactor may be expressed as a TOML float (0.5) or a bare int (1, 2).
+		if err := serverFloat(serverData, "burstFactor", &c.Server.BurstFactor); err != nil {
+			return nil, err
+		}
+		if err := serverInt(serverData, "analysisBusyWaitSeconds", &c.Server.AnalysisBusyWaitSeconds); err != nil {
+			return nil, err
+		}
+		if err := serverInt(serverData, "maxTrackedRateKeys", &c.Server.MaxTrackedRateKeys); err != nil {
+			return nil, err
+		}
+		if err := serverString(serverData, "contactMessage", &c.Server.ContactMessage); err != nil {
+			return nil, err
+		}
+		if err := serverBool(serverData, "logClientIP", &c.Server.LogClientIP); err != nil {
+			return nil, err
+		}
+		if err := serverInt(serverData, "requestTimeoutSeconds", &c.Server.RequestTimeoutSeconds); err != nil {
+			return nil, err
+		}
+		if err := serverInt(serverData, "ckanRequestTimeoutSeconds", &c.Server.CkanRequestTimeoutSeconds); err != nil {
+			return nil, err
+		}
+		if err := serverString(serverData, "resultCacheDir", &c.Server.ResultCacheDir); err != nil {
+			return nil, err
+		}
+		if err := serverInt(serverData, "resultCacheMaxEntries", &c.Server.ResultCacheMaxEntries); err != nil {
+			return nil, err
+		}
+		if err := serverInt(serverData, "resultCacheMaxAgeHours", &c.Server.ResultCacheMaxAgeHours); err != nil {
+			return nil, err
+		}
+		// [server.smtp] sub-section: plain relay for admin alerts on server faults.
+		if smtpRaw, present := serverData["smtp"]; present {
+			smtpData, ok := smtpRaw.(map[string]interface{})
+			if !ok {
+				return nil, fmt.Errorf("[server.smtp] must be a table, got %T", smtpRaw)
+			}
+			if err := serverString(smtpData, "host", &c.Server.SMTP.Host); err != nil {
+				return nil, err
+			}
+			if err := serverInt(smtpData, "port", &c.Server.SMTP.Port); err != nil {
+				return nil, err
+			}
+			if err := serverString(smtpData, "from", &c.Server.SMTP.From); err != nil {
+				return nil, err
+			}
+			if err := serverStringSlice(smtpData, "to", &c.Server.SMTP.To); err != nil {
+				return nil, err
+			}
+		}
+	}
+
 	if testData, ok := raw["test"].(map[string]interface{}); ok {
 		for name, section := range testData {
 			tc := &TestConfig{}
@@ -172,6 +326,100 @@ func ParseConfig(filename string) (*Config, error) {
 	return c, nil
 }
 
+// The serverXxx helpers read a single [server] / [server.smtp] key from the
+// decoded TOML table. Each OVERRIDES *dst only when the key is PRESENT and of the
+// expected type; a missing key is a no-op (the struct-literal default stands). A
+// present-but-wrong-typed key returns a clear error naming the key and expected
+// type, so an operator who wrong-types a setting fails fast at config load rather
+// than silently keeping the default.
+
+// serverString sets *dst when key holds a string; errors if present but not a string.
+func serverString(m map[string]interface{}, key string, dst *string) error {
+	v, ok := m[key]
+	if !ok {
+		return nil
+	}
+	sv, ok := v.(string)
+	if !ok {
+		return fmt.Errorf("[server] %s must be a string, got %T", key, v)
+	}
+	*dst = sv
+	return nil
+}
+
+// serverInt sets *dst when key holds a TOML integer; errors if present but not an integer.
+func serverInt(m map[string]interface{}, key string, dst *int) error {
+	v, ok := m[key]
+	if !ok {
+		return nil
+	}
+	iv, ok := v.(int64)
+	if !ok {
+		return fmt.Errorf("[server] %s must be an integer, got %T", key, v)
+	}
+	*dst = int(iv)
+	return nil
+}
+
+// serverBool sets *dst when key holds a bool; errors if present but not a bool.
+func serverBool(m map[string]interface{}, key string, dst *bool) error {
+	v, ok := m[key]
+	if !ok {
+		return nil
+	}
+	bv, ok := v.(bool)
+	if !ok {
+		return fmt.Errorf("[server] %s must be a boolean, got %T", key, v)
+	}
+	*dst = bv
+	return nil
+}
+
+// serverFloat sets *dst when key holds a TOML float OR a bare integer (so a value
+// like 1 is accepted as 1.0); errors if present but neither.
+func serverFloat(m map[string]interface{}, key string, dst *float64) error {
+	v, ok := m[key]
+	if !ok {
+		return nil
+	}
+	switch fv := v.(type) {
+	case float64:
+		*dst = fv
+	case int64:
+		*dst = float64(fv)
+	default:
+		return fmt.Errorf("[server] %s must be a number, got %T", key, v)
+	}
+	return nil
+}
+
+// serverStringSlice sets *dst when key holds a TOML array of strings. It errors if
+// the key is present but not an array, OR if any element is not a string. Unlike
+// the lenient shared parseStringSlice (which silently drops non-string elements),
+// this validates every element so an operator typo like trustedProxies = [1, 2]
+// fails fast at config load instead of yielding a silently empty/partial slice. A
+// missing key is a no-op (the struct-literal default stands).
+func serverStringSlice(m map[string]interface{}, key string, dst *[]string) error {
+	v, ok := m[key]
+	if !ok {
+		return nil
+	}
+	av, ok := v.([]interface{})
+	if !ok {
+		return fmt.Errorf("[server] %s must be an array of strings, got %T", key, v)
+	}
+	result := make([]string, 0, len(av))
+	for _, item := range av {
+		s, ok := item.(string)
+		if !ok {
+			return fmt.Errorf("[server] %s must be an array of strings, got a %T element", key, item)
+		}
+		result = append(result, s)
+	}
+	*dst = result
+	return nil
+}
+
 // assesLists checks that there is no overlap between blacklist and whitelist
 // and ensures that only one of the two is defined
 func assesLists(blacklist []string, whitelist []string) error {
@@ -200,22 +448,12 @@ func LoadConfig(file string) (*Config, error) {
 	return config, nil
 }
 
-// check fore the default configurtion file 1. ~/.config/pc/config.toml 2. ./config.toml if exists return the path
+// FindConfigFile returns ./pc.toml if it exists, otherwise "". (Tilde-prefixed
+// home paths were listed here historically but never worked: os.Stat sees a
+// literal "~", so only the working-directory file could ever match.)
 func FindConfigFile() string {
-	// check for the default configuration file
-	// 1. ~/.config/pc/config.toml
-	// 2. ./config.toml
-	paths := []string{
-		"~/pc.toml",
-		"./pc.toml",
-		"~/.config/pc.toml",
-	}
-
-	for _, path := range paths {
-		if _, err := os.Stat(path); err == nil {
-			return path
-		}
+	if _, err := os.Stat("./pc.toml"); err == nil {
+		return "./pc.toml"
 	}
 	return ""
-
 }

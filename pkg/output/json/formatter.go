@@ -3,7 +3,6 @@ package json
 import (
 	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/eawag-rdm/pc/pkg/metadata"
@@ -103,10 +102,12 @@ func (jf *JSONFormatter) FormatResults(location, collector string, messages []st
 		Warnings:              make([]output.LogMessage, 0),
 	}
 
-	// Process messages into the new structured format
+	// Process messages into the new structured format. Skip-flagged Messages are
+	// routed into result.Skipped and excluded from the issue maps.
 	result.processMessages(messages)
 
-	// Separate logger messages by level and extract skipped files
+	// Separate logger messages by level. Skipped files are now sourced from
+	// skip-flagged structs.Messages (see processMessages), not scraped from logs.
 	logMessages := output.GlobalLogger.GetMessages()
 	for _, msg := range logMessages {
 		switch msg.Level {
@@ -114,81 +115,15 @@ func (jf *JSONFormatter) FormatResults(location, collector string, messages []st
 			result.Errors = append(result.Errors, msg)
 		case "warning":
 			result.Warnings = append(result.Warnings, msg)
-		case "info":
-			// Check if this is a binary file skip message
-			if strings.Contains(msg.Message, "Not checking contents of file") && strings.Contains(msg.Message, "binary") {
-				// Extract filename and path from message like "Not checking contents of file: 'filename' (path: 'filepath'). The file seems to be binary."
-
-				// Extract filename (first quoted string)
-				start := strings.Index(msg.Message, "'")
-				if start != -1 {
-					end := strings.Index(msg.Message[start+1:], "'")
-					if end != -1 {
-						filename := msg.Message[start+1 : start+1+end]
-
-						// Extract path (second quoted string after "path: '")
-						pathStart := strings.Index(msg.Message, "(path: '")
-						var path string
-						if pathStart != -1 {
-							pathStart += len("(path: '")
-							pathEnd := strings.Index(msg.Message[pathStart:], "'")
-							if pathEnd != -1 {
-								path = msg.Message[pathStart : pathStart+pathEnd]
-							}
-						}
-
-						// Fallback to filename if path not found
-						if path == "" {
-							path = filename
-						}
-
-						result.Skipped = append(result.Skipped, SkippedFile{
-							Filename: filename,
-							Path:     path,
-							Reason:   "Binary file detected",
-						})
-					}
-				}
-			} else if strings.Contains(msg.Message, "Skipping content scan of file") && strings.Contains(msg.Message, "exceeds maximum") {
-				// Check if this is a file size limit skip message
-				// Extract filename and path from message like "Skipping content scan of file: 'filename' (path: 'filepath'). File size (X bytes) exceeds maximum (Y bytes)."
-
-				// Extract filename (first quoted string)
-				start := strings.Index(msg.Message, "'")
-				if start != -1 {
-					end := strings.Index(msg.Message[start+1:], "'")
-					if end != -1 {
-						filename := msg.Message[start+1 : start+1+end]
-
-						// Extract path (second quoted string after "path: '")
-						pathStart := strings.Index(msg.Message, "(path: '")
-						var path string
-						if pathStart != -1 {
-							pathStart += len("(path: '")
-							pathEnd := strings.Index(msg.Message[pathStart:], "'")
-							if pathEnd != -1 {
-								path = msg.Message[pathStart : pathStart+pathEnd]
-							}
-						}
-
-						// Fallback to filename if path not found
-						if path == "" {
-							path = filename
-						}
-
-						result.Skipped = append(result.Skipped, SkippedFile{
-							Filename: filename,
-							Path:     path,
-							Reason:   "File too large for content scanning",
-						})
-					}
-				}
-			}
 		}
 	}
 
-	// Add PDF files passed from caller
-	result.PDFFiles = pdfFiles
+	// Add PDF files passed from caller. A nil slice (e.g. an empty
+	// FileTracker.SnapshotFiles) must not replace the empty slice initialized
+	// above, or pdf_files serializes as JSON null instead of [].
+	if pdfFiles != nil {
+		result.PDFFiles = pdfFiles
+	}
 
 	// Generate JSON
 	jsonBytes, err := json.MarshalIndent(result, "", "  ")
@@ -219,6 +154,13 @@ func (result *ScanResult) processMessages(messages []structs.Message) {
 	metadataIndex := make(map[*metadata.Entity]int)   // entity -> index in DetailsMetadata
 
 	for _, msg := range messages {
+		// Skip acknowledgements are not issues: route them into the Skipped slice
+		// and keep them out of the Scanned/Details issue maps.
+		if msg.Skipped {
+			result.appendSkipped(msg)
+			continue
+		}
+
 		testName := msg.TestName
 		if testName == "" {
 			testName = "Unknown"
@@ -324,4 +266,25 @@ func (result *ScanResult) processMessages(messages []structs.Message) {
 			Issues:    issues,
 		})
 	}
+}
+
+// appendSkipped converts a skip-flagged Message into a SkippedFile entry. The
+// reason prefers the explicit Reason field, falling back to the Content.
+func (result *ScanResult) appendSkipped(msg structs.Message) {
+	reason := msg.Reason
+	if reason == "" {
+		reason = msg.Content
+	}
+
+	skipped := SkippedFile{Reason: reason}
+	if file, isFile := msg.Source.(structs.File); isFile {
+		displayName := file.GetDisplayName()
+		filename := displayName
+		if file.ArchiveName != "" {
+			filename = file.ArchiveName + " > " + displayName
+		}
+		skipped.Filename = filename
+		skipped.Path = file.Path
+	}
+	result.Skipped = append(result.Skipped, skipped)
 }

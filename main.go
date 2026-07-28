@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -24,11 +25,9 @@ import (
 
 func main() {
 
-	// implement small cli to call pc with config and a folder (both can have default args)
-	// then the files will be collected with the local_collector and the checks will be applied
-	// the results will be printed to the console
-	// the exit code will be 0 if no errors were found, otherwise 1
-	// the cli should have a help command to show the usage
+	// Small CLI: collect files via the configured collector, apply the checks,
+	// and render the results (TUI by default; -json/-plain/-html otherwise).
+	// Errors are reported as JSON error envelopes on stdout.
 
 	// Define default values for the config and folder arguments
 	defaultConfig := config.FindConfigFile()
@@ -74,30 +73,6 @@ func main() {
 		return
 	}
 
-	generalConfig, err := config.LoadConfig(*cfg)
-	if err != nil {
-		// Output config error in JSON format
-		errorResult := map[string]interface{}{
-			"timestamp": time.Now().UTC().Format(time.RFC3339),
-			"error": map[string]string{
-				"type":    "config_error",
-				"message": fmt.Sprintf("Error loading config: %v", err),
-			},
-		}
-		if jsonBytes, marshalErr := json.MarshalIndent(errorResult, "", "  "); marshalErr == nil {
-			fmt.Println(string(jsonBytes))
-		} else {
-			fmt.Printf("{\"error\": \"Error loading config: %v\"}\n", err)
-		}
-		return
-	}
-
-	var (
-		files          []structs.File
-		filesErr       error
-		metadataResult *metadata.Metadata
-	)
-
 	// Helper function to output error in JSON format
 	outputError := func(errorType, message string) {
 		errorResult := map[string]interface{}{
@@ -114,21 +89,49 @@ func main() {
 		}
 	}
 
+	generalConfig, err := config.LoadConfig(*cfg)
+	if err != nil {
+		outputError("config_error", fmt.Sprintf("Error loading config: %v", err))
+		return
+	}
+
+	// Fail fast (like the server does at boot) when a [test.*] section the checks
+	// dereference at scan time is missing or wrong-typed.
+	if err := config.ValidateChecksConfig(generalConfig); err != nil {
+		outputError("config_error", fmt.Sprintf("Invalid config: %v", err))
+		return
+	}
+
+	var (
+		files          []structs.File
+		filesErr       error
+		metadataResult *metadata.Metadata
+	)
+
+	// A missing [operation.main] section leaves a nil *OperationConfig in the
+	// map; dereferencing .Collector would panic. Fail cleanly instead.
+	op, ok := generalConfig.Operation["main"]
+	if !ok || op == nil {
+		outputError("collector_error", "No [operation.main] collector configured in the config file.")
+		return
+	}
+
 	// Decide which collector to use
-	if generalConfig.Operation["main"].Collector == "LocalCollector" {
+	if op.Collector == "LocalCollector" {
 		files, filesErr = collectors.LocalCollector(*folder_or_url, *generalConfig)
 		if filesErr != nil {
 			outputError("collector_error", filesErr.Error())
 			return
 		}
 
-	} else if generalConfig.Operation["main"].Collector == "CkanCollector" {
+	} else if op.Collector == "CkanCollector" {
 		if *folder_or_url == "." {
 			outputError("collector_error", "Please provide a CKAN package name (use the location flag '-location')")
 			return
 		}
-		// Single package_show call; files and metadata both derive from it.
-		result, err := collectors.CkanPackageShow(*folder_or_url, *generalConfig)
+		// Single package_show call; files and metadata both derive from it. The
+		// CLI has no deadline of its own, so the call runs under Background.
+		result, err := collectors.CkanPackageShow(context.Background(), *folder_or_url, *generalConfig)
 		if err != nil {
 			outputError("collector_error", err.Error())
 			return
@@ -145,11 +148,10 @@ func main() {
 		return
 	}
 
-	// Check if we found any files to process
-	if len(files) == 0 {
-		outputError("no_files", fmt.Sprintf("No files found in location: %s", *folder_or_url))
-		return
-	}
+	// Zero files is NOT an error: the analysis proceeds and the result carries a
+	// clear "no files to analyse" notice (added by ApplyAllChecks), surfaced the
+	// same way a skipped file is. This matches the server, which returns a normal
+	// result for a package with no analyzable resources.
 
 	// Determine output modes
 	generateHtml := *htmlOutput != ""
@@ -184,7 +186,7 @@ func main() {
 				app.UpdateProgress(0, 1, "Starting scan...")
 
 				// Run scanning with progress updates
-				messages := append(metadata.RunChecks(metadataResult), utils.ApplyAllChecksWithProgress(*generalConfig, files, true, func(current, total int, message string) {
+				messages := append(metadata.RunChecks(metadataResult), utils.ApplyAllChecksWithProgress(context.Background(), *generalConfig, files, true, func(current, total int, message string) {
 					app.UpdateProgress(current, total, message)
 				})...)
 
@@ -246,7 +248,7 @@ func main() {
 		}
 	} else {
 		// Non-TUI mode: run regular scan
-		messages := append(metadata.RunChecks(metadataResult), utils.ApplyAllChecks(*generalConfig, files, true)...)
+		messages := append(metadata.RunChecks(metadataResult), utils.ApplyAllChecks(context.Background(), *generalConfig, files, true)...)
 
 		// Get collector name from config
 		collectorName := generalConfig.Operation["main"].Collector

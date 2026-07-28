@@ -250,3 +250,29 @@ func TestLogger_ConcurrentAccess(t *testing.T) {
 		t.Errorf("Expected %d messages, got %d", numGoroutines*3, len(messages))
 	}
 }
+
+// TestFileWarning_SubjectTagging asserts FileWarning/FileError buffer the same
+// message text as Warning/Error but tagged with a subject, and that plain
+// Warning/Error stay subject-less (the omitempty JSON contract).
+func TestFileWarning_SubjectTagging(t *testing.T) {
+	logger := &Logger{jsonMode: true, messages: []LogMessage{}}
+
+	logger.FileWarning("data.csv", "Error reading file '%s': %v", "/some/path", "boom")
+	logger.FileError("archive.zip", "Check %s failed", "X")
+	logger.Warning("plain warning")
+	logger.Error("plain error")
+
+	msgs := logger.GetMessages()
+	if len(msgs) != 4 {
+		t.Fatalf("expected 4 messages, got %d", len(msgs))
+	}
+	if msgs[0].Subject != "data.csv" || msgs[0].Level != "warning" || msgs[0].Message != "Error reading file '/some/path': boom" {
+		t.Errorf("FileWarning mis-buffered: %+v", msgs[0])
+	}
+	if msgs[1].Subject != "archive.zip" || msgs[1].Level != "error" {
+		t.Errorf("FileError mis-buffered: %+v", msgs[1])
+	}
+	if msgs[2].Subject != "" || msgs[3].Subject != "" {
+		t.Errorf("plain Warning/Error must stay subject-less: %+v %+v", msgs[2], msgs[3])
+	}
+}

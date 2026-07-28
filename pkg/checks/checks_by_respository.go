@@ -14,18 +14,39 @@ import (
 This file contains tests that need a collection of files. Eg: Checking if a repository has a readme file.
 */
 
-const Readme_1 = "readme.md"
-const Readme_2 = "readme.txt"
+// readmeNames returns the readme filename list from the REQUIRED
+// [test.HasReadme] section (keywordArguments readme_names). Like the other
+// config-driven checks, presence and shape are guaranteed by
+// config.ValidateChecksConfig at boot/startup; SafeRun guards the runtime.
+// ReadMeContainsTOC shares this list deliberately: "what counts as the
+// readme" must have exactly one definition.
+func readmeNames(cfg config.Config) []string {
+	var names []string
+	for _, args := range cfg.Tests["HasReadme"].KeywordArguments {
+		if configured, ok := args["readme_names"].([]string); ok {
+			names = append(names, configured...)
+		}
+	}
+	return names
+}
 
-func isReadMe(file structs.File) bool {
-	return strings.ToLower(file.Name) == Readme_1 || strings.ToLower(file.Name) == Readme_2
+// isReadMe reports whether file's name matches one of the readme names
+// (case-insensitive, full-filename match).
+func isReadMe(file structs.File, names []string) bool {
+	lower := strings.ToLower(file.Name)
+	for _, name := range names {
+		if lower == strings.ToLower(name) {
+			return true
+		}
+	}
+	return false
 }
 
 // Readme File is part of the package
 func HasReadme(repository structs.Repository, config config.Config) []structs.Message {
-
+	names := readmeNames(config)
 	for _, file := range repository.Files {
-		if isReadMe(file) {
+		if isReadMe(file, names) {
 			return nil
 		}
 	}
@@ -34,11 +55,12 @@ func HasReadme(repository structs.Repository, config config.Config) []structs.Me
 
 // Readme File is part of the package
 func ReadMeContainsTOC(repository structs.Repository, config config.Config) []structs.Message {
+	names := readmeNames(config)
 
 	// check if the readme file is part of the repository
 	var readmeFile = structs.File{}
 	for _, file := range repository.Files {
-		if isReadMe(file) {
+		if isReadMe(file, names) {
 			readmeFile = file
 		}
 	}
@@ -57,7 +79,7 @@ func ReadMeContainsTOC(repository structs.Repository, config config.Config) []st
 
 	missing_files := []string{}
 	for _, file := range repository.Files {
-		if !isReadMe(file) {
+		if !isReadMe(file, names) {
 			nameWithoutSuffix := strings.TrimSuffix(file.Name, filepath.Ext(file.Name))
 			if !bytes.Contains(content, []byte(nameWithoutSuffix)) {
 				missing_files = append(missing_files, file.Name)

@@ -48,6 +48,25 @@ func TestFormatResults_EmptyMessages(t *testing.T) {
 	}
 }
 
+func TestFormatResults_NilPDFFiles(t *testing.T) {
+	formatter := NewJSONFormatter()
+
+	result, err := formatter.FormatResults("/test/location", "CkanCollector", []structs.Message{}, 0, nil)
+	if err != nil {
+		t.Fatalf("FormatResults failed: %v", err)
+	}
+
+	// pdf_files must serialize as [] even when the caller passes nil (e.g. an
+	// empty FileTracker.SnapshotFiles), never as JSON null.
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(result), &raw); err != nil {
+		t.Fatalf("Result is not valid JSON: %v", err)
+	}
+	if string(raw["pdf_files"]) == "null" {
+		t.Error("pdf_files serialized as null; want []")
+	}
+}
+
 func TestFormatResults_WithMessages(t *testing.T) {
 	formatter := NewJSONFormatter()
 
@@ -153,6 +172,112 @@ func TestFormatResults_RepositoryMessage(t *testing.T) {
 
 	if scanResult.DetailsSubjectFocused[0].Subject != "repository" {
 		t.Errorf("Expected subject 'repository', got '%s'", scanResult.DetailsSubjectFocused[0].Subject)
+	}
+}
+
+func TestFormatResults_SkippedMessageRoutedToSkipped(t *testing.T) {
+	formatter := NewJSONFormatter()
+
+	oversizedFile := structs.File{
+		Name:        "huge.bin",
+		Path:        "/path/to/huge.bin",
+		DisplayName: "huge.bin",
+	}
+
+	reason := "Skipped content scan of file: file size (2000 bytes) exceeds maximum (1000 bytes)."
+	normalFile := structs.File{Name: "ok.txt", Path: "/path/to/ok.txt"}
+
+	messages := []structs.Message{
+		{
+			Content:  reason,
+			Source:   oversizedFile,
+			TestName: "IsFreeOfKeywords",
+			Skipped:  true,
+			Reason:   reason,
+		},
+		{
+			Content:  "Found keyword 'secret'",
+			Source:   normalFile,
+			TestName: "IsFreeOfKeywords",
+		},
+	}
+
+	result, err := formatter.FormatResults("/test/location", "LocalCollector", messages, 2, []string{})
+	if err != nil {
+		t.Fatalf("FormatResults failed: %v", err)
+	}
+
+	var scanResult ScanResult
+	if err := json.Unmarshal([]byte(result), &scanResult); err != nil {
+		t.Fatalf("Result is not valid JSON: %v", err)
+	}
+
+	// The skip message must land in skipped[].
+	if len(scanResult.Skipped) != 1 {
+		t.Fatalf("Expected 1 skipped file, got %d", len(scanResult.Skipped))
+	}
+	if scanResult.Skipped[0].Filename != "huge.bin" {
+		t.Errorf("Expected skipped filename 'huge.bin', got '%s'", scanResult.Skipped[0].Filename)
+	}
+	if scanResult.Skipped[0].Path != "/path/to/huge.bin" {
+		t.Errorf("Expected skipped path '/path/to/huge.bin', got '%s'", scanResult.Skipped[0].Path)
+	}
+	if scanResult.Skipped[0].Reason != reason {
+		t.Errorf("Expected skipped reason '%s', got '%s'", reason, scanResult.Skipped[0].Reason)
+	}
+
+	// The skip message must NOT appear as a scanned file or as an issue.
+	for _, scanned := range scanResult.Scanned {
+		if scanned.Filename == "huge.bin" {
+			t.Errorf("Skipped file 'huge.bin' must not appear in scanned[]")
+		}
+	}
+	for _, detail := range scanResult.DetailsSubjectFocused {
+		if detail.Subject == "huge.bin" {
+			t.Errorf("Skipped file 'huge.bin' must not appear in details_subject_focused[]")
+		}
+	}
+
+	// The non-skip message must still be processed as a real issue.
+	if len(scanResult.Scanned) != 1 || scanResult.Scanned[0].Filename != "ok.txt" {
+		t.Errorf("Expected only 'ok.txt' in scanned[], got %+v", scanResult.Scanned)
+	}
+}
+
+func TestFormatResults_SkippedArchiveMemberFilenameIncludesArchive(t *testing.T) {
+	formatter := NewJSONFormatter()
+
+	member := structs.ToFileWithDisplay(
+		"/path/to/archive.zip",
+		"inner/big.txt",
+		"inner/big.txt",
+		5000,
+		"",
+		"archive.zip",
+	)
+	reason := "Skipped content scan of archive member: would exceed total archive memory limit (100 bytes)."
+	messages := []structs.Message{
+		{Content: reason, Source: member, TestName: "IsArchiveFreeOfKeywords", Skipped: true, Reason: reason},
+	}
+
+	result, err := formatter.FormatResults("/loc", "LocalCollector", messages, 1, []string{})
+	if err != nil {
+		t.Fatalf("FormatResults failed: %v", err)
+	}
+
+	var scanResult ScanResult
+	if err := json.Unmarshal([]byte(result), &scanResult); err != nil {
+		t.Fatalf("Result is not valid JSON: %v", err)
+	}
+
+	if len(scanResult.Skipped) != 1 {
+		t.Fatalf("Expected 1 skipped entry, got %d", len(scanResult.Skipped))
+	}
+	if scanResult.Skipped[0].Filename != "archive.zip > inner/big.txt" {
+		t.Errorf("Expected archive-qualified filename, got '%s'", scanResult.Skipped[0].Filename)
+	}
+	if len(scanResult.Scanned) != 0 {
+		t.Errorf("Skip-only input must not produce scanned[] entries, got %d", len(scanResult.Scanned))
 	}
 }
 

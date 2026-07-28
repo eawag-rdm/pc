@@ -4,11 +4,21 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/eawag-rdm/pc/pkg/config"
+	"github.com/eawag-rdm/pc/pkg/output"
 )
+
+// writeTimeoutMargin is added to the configured request timeout to derive the
+// http.Server WriteTimeout. It gives the handler enough slack to render and
+// fully flush its own analysis_timeout (504) envelope AFTER the analysis context
+// deadline fires but BEFORE the socket's write deadline tears the connection
+// down — so the client receives the clean 504 instead of a dropped connection.
+const writeTimeoutMargin = 30 * time.Second
 
 // Server wraps the HTTP server with PC functionality
 type Server struct {
@@ -31,28 +41,129 @@ func New(cfg Config) (*Server, error) {
 		return nil, fmt.Errorf("failed to load PC config: %w", err)
 	}
 
+	// Fail fast at boot if the required CkanCollector attrs are missing or
+	// wrong-typed (spec §5): otherwise a bad/absent TOML key only surfaces as an
+	// opaque internal_error 500 on the FIRST /analyze request. Catching it here
+	// gives the operator a clear, actionable error before the server starts.
+	if err := validateCkanCollector(pcConfig); err != nil {
+		return nil, fmt.Errorf("invalid PC config: %w", err)
+	}
+
+	// Fail fast if a [test.*] section the checks dereference at request time is
+	// missing or wrong-typed (see config.ValidateChecksConfig).
+	if err := config.ValidateChecksConfig(pcConfig); err != nil {
+		return nil, fmt.Errorf("invalid PC config: %w", err)
+	}
+
+	// Resolve the listen address from the [server] config (the server takes no
+	// flags) and fail fast if it — or any other [server] setting — is invalid,
+	// so a bad value is caught at boot rather than at bind time or per request.
+	listenAddr := cfg.ListenAddress(pcConfig)
+	if err := validateServerSettings(pcConfig, listenAddr); err != nil {
+		return nil, fmt.Errorf("invalid PC config: %w", err)
+	}
+
+	// slog JSON handler to stdout for request/access logging (§8). Check
+	// Messages are NOT routed through this; they stay in GlobalLogger, which is
+	// switched to JSON mode so per-request messages are buffered (and cleared at
+	// the top of each request) instead of printed to stdout.
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	output.GlobalLogger.SetJSONMode(true)
+
+	// The TOML collector token is CLI-only. Blank it so the server can never
+	// authenticate upstream with it: per-request Bearer tokens (or anonymous
+	// access) are the only auth paths (see scrubConfigToken).
+	scrubConfigToken(pcConfig)
+	logger.Info("ignoring [collector.CkanCollector] token: the server authenticates CKAN calls with per-request Bearer tokens only")
+
 	// Create handler
-	handler := NewHandler(pcConfig, cfg)
+	handler := NewHandler(pcConfig, cfg, logger)
+
+	// Optional per-package result cache (§ result caching): keyed on CKAN's
+	// metadata_modified with a config+version fingerprint, so a config edit or
+	// server upgrade invalidates every entry. The fingerprint hashes the RAW
+	// config file bytes — computed before any in-memory mutation, and cheap to
+	// keep deterministic.
+	if s := pcConfig.Server; s.ResultCacheDir != "" {
+		cfgBytes, err := os.ReadFile(cfg.ConfigPath)
+		if err != nil {
+			return nil, fmt.Errorf("read config for result cache fingerprint: %w", err)
+		}
+		cache, err := newResultCache(
+			s.ResultCacheDir,
+			configFingerprint(cfgBytes),
+			s.ResultCacheMaxEntries,
+			time.Duration(s.ResultCacheMaxAgeHours)*time.Hour,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("invalid PC config: %w", err)
+		}
+		handler.cache = cache
+		logger.Info("result cache enabled",
+			slog.String("dir", s.ResultCacheDir),
+			slog.Int("max_entries", s.ResultCacheMaxEntries),
+			slog.Int("max_age_hours", s.ResultCacheMaxAgeHours),
+		)
+	}
 
 	// Set up routes
 	mux := http.NewServeMux()
 
-	// Health endpoint (no auth required)
+	// Liveness: cheap static 200, no auth, exempt from rate limiting and the
+	// concurrency semaphore (§1/§4).
 	mux.HandleFunc("GET /health", handler.Health)
 
-	// Analyze endpoint (auth required - token extraction middleware)
-	mux.HandleFunc("POST /api/v1/analyze", ExtractToken(handler.Analyze))
+	// Readiness: CKAN reachable (cached ~5s) AND storage mount readable (§1).
+	// Also exempt from the limiter and semaphore so health-check polling is free.
+	mux.HandleFunc("GET /ready", handler.Ready)
 
-	// Wrap with logging middleware
-	loggedMux := LoggingMiddleware(mux)
+	// Analyze endpoint. The draining, rate-limit and concurrency gates wrap THIS
+	// route only (§4/§9): outer -> inner the analyze chain is
+	// draining -> rate-limit(per-IP) -> rate-limit(global) ->
+	// concurrency-gate (single slot, 2s busy-wait) -> token extraction
+	// (optional) -> handler. /health and /ready bypass it entirely (a draining
+	// server must still answer healthchecks).
+	//
+	// Per-IP is the OUTER (primary) limit and global is the INNER (backstop), so
+	// per-IP is checked FIRST. This ordering matters because the limiter uses a
+	// fixed window and allow() increments the counter even when it rejects: if
+	// global ran first, a single IP already over its per-IP cap would still
+	// consume (and exhaust) the shared global budget on every rejected request,
+	// locking out everyone else. Putting per-IP first means a per-IP rejection
+	// short-circuits before global is ever touched — IP-primary, global-backstop.
+	analyze := http.Handler(ExtractToken(handler.Analyze))
+	analyze = handler.Concurrency(analyze)
+	analyze = handler.RateLimitGlobal(analyze)
+	analyze = handler.RateLimitPerIP(analyze)
+	analyze = handler.Draining(analyze)
+	mux.Handle("POST /api/v1/analyze", analyze)
+
+	// Full middleware chain (outer -> inner, §9):
+	//   recover -> request_id -> access-log -> CORS -> route-guard -> routes
+	// The route guard turns the mux's plain-text 404/405 defaults into
+	// catalogue envelopes (§3). The per-analyze gates (draining/limiters/
+	// semaphore) are applied to the analyze route above, inside the mux.
+	chain := handler.RequestContext(handler.AccessLog(handler.CORS(EnforceKnownRoutes(mux))))
+	chain = handler.Recover(chain)
+
+	// Derive the socket WriteTimeout from the SAME request-timeout source the
+	// handler uses for its analysis context deadline, plus a margin. The handler
+	// caps the whole analysis at requestTimeout and writes a clean
+	// analysis_timeout (504) envelope when that fires; the WriteTimeout must be
+	// strictly longer so that 504 can be fully written before the socket deadline
+	// tears the connection down. A hardcoded value would break this invariant once
+	// an operator raises requestTimeoutSeconds above it.
+	writeTimeout := configuredRequestTimeout(pcConfig) + writeTimeoutMargin
 
 	return &Server{
 		httpServer: &http.Server{
-			Addr:         cfg.Address,
-			Handler:      loggedMux,
-			ReadTimeout:  30 * time.Second,
-			WriteTimeout: 300 * time.Second, // Long timeout for analysis
-			IdleTimeout:  120 * time.Second,
+			Addr:              listenAddr,
+			Handler:           chain,
+			ReadTimeout:       30 * time.Second,
+			ReadHeaderTimeout: 10 * time.Second, // slowloris guard (§9)
+			WriteTimeout:      writeTimeout,     // requestTimeout + margin: handler's 504 must flush before this fires
+			IdleTimeout:       120 * time.Second,
+			MaxHeaderBytes:    1 << 20, // 1 MiB header cap (§9)
 		},
 		pcConfig:  pcConfig,
 		serverCfg: cfg,
@@ -62,7 +173,7 @@ func New(cfg Config) (*Server, error) {
 
 // ListenAndServe starts the HTTP server
 func (s *Server) ListenAndServe() error {
-	log.Printf("PC Server starting on %s", s.serverCfg.Address)
+	log.Printf("PC Server starting on %s", s.httpServer.Addr)
 	log.Printf("PC Config loaded from: %s", s.serverCfg.ConfigPath)
 
 	ckanURL := s.serverCfg.GetCKANBaseURL(s.pcConfig)
@@ -73,7 +184,17 @@ func (s *Server) ListenAndServe() error {
 	return s.httpServer.ListenAndServe()
 }
 
-// Shutdown gracefully shuts down the server
+// Shutdown gracefully shuts down the server (§9). It first flips the draining
+// flag so newly arriving /analyze requests are rejected with server_restarting
+// (503), then calls http.Server.Shutdown, which stops accepting new connections
+// and waits for in-flight requests to finish (bounded by the caller's ctx,
+// which should allow at least the analysis timeout to drain).
 func (s *Server) Shutdown(ctx context.Context) error {
-	return s.httpServer.Shutdown(ctx)
+	s.handler.BeginDraining()
+	err := s.httpServer.Shutdown(ctx)
+	// Close the admin alerter only AFTER Shutdown returns, so in-flight requests
+	// that fault during the drain can still enqueue their alerts. Close is
+	// nil-safe (alerts disabled). The Shutdown error is what we return.
+	s.handler.alerter.Close()
+	return err
 }

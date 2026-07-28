@@ -23,7 +23,7 @@ func TestReadZipFileList(t *testing.T) {
 		},
 	}
 	for _, test := range tests {
-		actual, err := ReadZipFileList(test.filepath)
+		actual, err := ReadZipFileListWithDisplayName(test.filepath, "")
 		if err != nil {
 			t.Errorf("Error: %v", err)
 		}
@@ -48,7 +48,7 @@ func TestReadTarFileList(t *testing.T) {
 		},
 	}
 	for _, test := range tests {
-		actual, err := ReadTarFileList(test.filepath)
+		actual, err := ReadTarFileListWithDisplayName(test.filepath, "")
 		if err != nil {
 			t.Errorf("Error: %v", err)
 		}
@@ -73,7 +73,7 @@ func TestReadTarGzFileList(t *testing.T) {
 		},
 	}
 	for _, test := range tests {
-		actual, err := ReadTarGzFileList(test.filepath)
+		actual, err := ReadTarGzFileListWithDisplayName(test.filepath, "")
 		if err != nil {
 			t.Errorf("Error: %v", err)
 		}
@@ -112,7 +112,7 @@ func TestReadArchiveFileList(t *testing.T) {
 			},
 		},
 		{
-			file:     structs.File{Path: "../../testdata/config.toml.test", Name: "config.toml.test", DisplayName: "config.toml.test", Suffix: ".test"},
+			file:     structs.File{Path: "../../testdata/file.unsupported-suffix", Name: "config.toml.test", DisplayName: "config.toml.test", Suffix: ".test"},
 			expected: []structs.File{},
 		},
 	}
@@ -141,7 +141,7 @@ func TestRead7ZipFileList(t *testing.T) {
 		},
 	}
 	for _, test := range tests {
-		actual, err := Read7ZipFileList(test.filepath)
+		actual, err := Read7ZipFileListWithDisplayName(test.filepath, "")
 		if err != nil {
 			t.Errorf("Error: %v", err)
 		}

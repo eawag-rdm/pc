@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -9,6 +10,44 @@ import (
 	"testing"
 	"time"
 )
+
+// testBinaryPath holds the path to the `pc` binary built once by TestMain and
+// shared across all binary/integration tests in this package.
+var testBinaryPath string
+
+// TestMain builds the `pc` binary a single time before running the test suite,
+// rather than rebuilding it in every individual test. The binary is written to
+// a temporary directory that is removed after the run.
+//
+// These tests build only with the Go toolchain (which any CI running `go test`
+// already has), so they run everywhere -- local and CI -- with no external
+// resources required.
+func TestMain(m *testing.M) {
+	os.Exit(runTests(m))
+}
+
+// runTests holds the body of TestMain and returns the exit code so that
+// deferred cleanup runs before the process exits. os.Exit (used by TestMain)
+// does not run deferred functions, so the temp dir holding the compiled test
+// binary must be removed here, where no os.Exit is called.
+func runTests(m *testing.M) int {
+	tmpDir, err := os.MkdirTemp("", "pc-test-binary-")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "TestMain: failed to create temp dir for test binary: %v\n", err)
+		return 1
+	}
+	defer os.RemoveAll(tmpDir)
+
+	testBinaryPath = filepath.Join(tmpDir, "pc")
+
+	buildCmd := exec.Command("go", "build", "-o", testBinaryPath, ".")
+	if output, err := buildCmd.CombinedOutput(); err != nil {
+		fmt.Fprintf(os.Stderr, "TestMain: failed to build pc test binary: %v\nOutput: %s\n", err, string(output))
+		return 1
+	}
+
+	return m.Run()
+}
 
 // Test helper to create a minimal valid config file
 func createTestConfigFile(t *testing.T, tempDir string) string {
@@ -27,6 +66,11 @@ blacklist = []
 whitelist = []
 keywordArguments = [
     { disallowed_names = [".DS_Store"] }
+]
+
+[test.HasReadme]
+keywordArguments = [
+    { readme_names = ["readme.md", "readme.txt"] }
 ]
 
 [test.HasOnlyASCII]
@@ -76,23 +120,11 @@ func main() {
 }
 
 func TestMainBinary_Exists(t *testing.T) {
-	// This test checks if the main binary can be built
-	if os.Getenv("CI") != "" {
-		t.Skip("Skipping binary test in CI environment")
-	}
-
-	tempDir := t.TempDir()
-	binaryPath := filepath.Join(tempDir, "pc")
-
-	// Try to build the main binary
-	cmd := exec.Command("go", "build", "-o", binaryPath, ".")
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("Failed to build main binary: %v\nOutput: %s", err, string(output))
-	}
+	// The binary is built once in TestMain; this verifies it exists and is
+	// executable.
 
 	// Verify binary exists and is executable
-	info, err := os.Stat(binaryPath)
+	info, err := os.Stat(testBinaryPath)
 	if err != nil {
 		t.Fatalf("Built binary does not exist: %v", err)
 	}
@@ -108,22 +140,8 @@ func TestMainBinary_Exists(t *testing.T) {
 }
 
 func TestHelpFlag(t *testing.T) {
-	if os.Getenv("CI") != "" {
-		t.Skip("Skipping help flag test in CI environment")
-	}
-
-	tempDir := t.TempDir()
-	binaryPath := filepath.Join(tempDir, "pc")
-
-	// Build the binary
-	cmd := exec.Command("go", "build", "-o", binaryPath, ".")
-	_, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("Failed to build binary: %v", err)
-	}
-
 	// Test help flag
-	cmd = exec.Command(binaryPath, "-help")
+	cmd := exec.Command(testBinaryPath, "-help")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("Help flag failed: %v", err)
@@ -140,26 +158,14 @@ func TestHelpFlag(t *testing.T) {
 }
 
 func TestJSONOutput(t *testing.T) {
-	if os.Getenv("CI") != "" {
-		t.Skip("Skipping JSON output test in CI environment")
-	}
-
 	tempDir := t.TempDir()
-	binaryPath := filepath.Join(tempDir, "pc")
-
-	// Build the binary
-	cmd := exec.Command("go", "build", "-o", binaryPath, ".")
-	_, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("Failed to build binary: %v", err)
-	}
 
 	// Create test config and files
 	configPath := createTestConfigFile(t, tempDir)
 	testDir := createTestFiles(t, tempDir)
 
 	// Run scanner with JSON output (explicit --json flag, since TUI is now default)
-	cmd = exec.Command(binaryPath, "-config", configPath, "-location", testDir, "-json")
+	cmd := exec.Command(testBinaryPath, "-config", configPath, "-location", testDir, "-json")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("Scanner failed: %v\nOutput: %s", err, string(output))
@@ -192,19 +198,7 @@ func TestJSONOutput(t *testing.T) {
 }
 
 func TestHTMLOutput(t *testing.T) {
-	if os.Getenv("CI") != "" {
-		t.Skip("Skipping HTML output test in CI environment")
-	}
-
 	tempDir := t.TempDir()
-	binaryPath := filepath.Join(tempDir, "pc")
-
-	// Build the binary
-	cmd := exec.Command("go", "build", "-o", binaryPath, ".")
-	_, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("Failed to build binary: %v", err)
-	}
 
 	// Create test config and files
 	configPath := createTestConfigFile(t, tempDir)
@@ -212,7 +206,7 @@ func TestHTMLOutput(t *testing.T) {
 	htmlPath := filepath.Join(tempDir, "report.html")
 
 	// Run scanner with HTML output (need --no-tui since --html alone launches TUI)
-	cmd = exec.Command(binaryPath, "-config", configPath, "-location", testDir, "-html", htmlPath, "-no-tui")
+	cmd := exec.Command(testBinaryPath, "-config", configPath, "-location", testDir, "-html", htmlPath, "-no-tui")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("Scanner with HTML output failed: %v\nOutput: %s", err, string(output))
@@ -252,30 +246,18 @@ func TestHTMLOutput(t *testing.T) {
 }
 
 func TestInvalidConfig(t *testing.T) {
-	if os.Getenv("CI") != "" {
-		t.Skip("Skipping invalid config test in CI environment")
-	}
-
 	tempDir := t.TempDir()
-	binaryPath := filepath.Join(tempDir, "pc")
-
-	// Build the binary
-	cmd := exec.Command("go", "build", "-o", binaryPath, ".")
-	_, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("Failed to build binary: %v", err)
-	}
 
 	// Create invalid config file
 	invalidConfigPath := filepath.Join(tempDir, "invalid.toml")
 	invalidContent := `[invalid toml content`
-	err = os.WriteFile(invalidConfigPath, []byte(invalidContent), 0644)
+	err := os.WriteFile(invalidConfigPath, []byte(invalidContent), 0644)
 	if err != nil {
 		t.Fatalf("Failed to create invalid config file: %v", err)
 	}
 
 	// Run scanner with invalid config
-	cmd = exec.Command(binaryPath, "-config", invalidConfigPath, "-location", ".")
+	cmd := exec.Command(testBinaryPath, "-config", invalidConfigPath, "-location", ".")
 	output, _ := cmd.CombinedOutput()
 
 	// Check for error in JSON output (program doesn't exit with non-zero code)
@@ -305,31 +287,19 @@ func TestInvalidConfig(t *testing.T) {
 }
 
 func TestNonexistentLocation(t *testing.T) {
-	if os.Getenv("CI") != "" {
-		t.Skip("Skipping nonexistent location test in CI environment")
-	}
-
 	tempDir := t.TempDir()
-	binaryPath := filepath.Join(tempDir, "pc")
-
-	// Build the binary
-	cmd := exec.Command("go", "build", "-o", binaryPath, ".")
-	_, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("Failed to build binary: %v", err)
-	}
 
 	// Create valid config
 	configPath := createTestConfigFile(t, tempDir)
 
 	// Run scanner with nonexistent location
 	nonexistentPath := filepath.Join(tempDir, "nonexistent")
-	cmd = exec.Command(binaryPath, "-config", configPath, "-location", nonexistentPath)
+	cmd := exec.Command(testBinaryPath, "-config", configPath, "-location", nonexistentPath)
 	output, _ := cmd.CombinedOutput()
 
 	// Check for error in JSON output (program doesn't exit with non-zero code)
 	var errorResult map[string]interface{}
-	err = json.Unmarshal(output, &errorResult)
+	err := json.Unmarshal(output, &errorResult)
 	if err != nil {
 		t.Fatalf("Output is not valid JSON: %v\nOutput: %s", err, string(output))
 	}
@@ -350,70 +320,57 @@ func TestNonexistentLocation(t *testing.T) {
 }
 
 func TestEmptyDirectory(t *testing.T) {
-	if os.Getenv("CI") != "" {
-		t.Skip("Skipping empty directory test in CI environment")
-	}
-
 	tempDir := t.TempDir()
-	binaryPath := filepath.Join(tempDir, "pc")
-
-	// Build the binary
-	cmd := exec.Command("go", "build", "-o", binaryPath, ".")
-	_, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("Failed to build binary: %v", err)
-	}
 
 	// Create valid config
 	configPath := createTestConfigFile(t, tempDir)
 
 	// Create empty directory
 	emptyDir := filepath.Join(tempDir, "empty")
-	err = os.MkdirAll(emptyDir, 0755)
-	if err != nil {
+	if err := os.MkdirAll(emptyDir, 0755); err != nil {
 		t.Fatalf("Failed to create empty directory: %v", err)
 	}
 
-	// Run scanner with empty directory
-	cmd = exec.Command(binaryPath, "-config", configPath, "-location", emptyDir)
+	// Run scanner with empty directory. An empty location is NOT an error: it
+	// produces a normal result carrying a clear "no files to analyse" notice
+	// (surfaced like a skipped file). Use -json for deterministic, non-TUI output.
+	cmd := exec.Command(testBinaryPath, "-config", configPath, "-location", emptyDir, "-json")
 	output, _ := cmd.CombinedOutput()
 
-	// Check for error in JSON output (program doesn't exit with non-zero code)
-	var errorResult map[string]interface{}
-	err = json.Unmarshal(output, &errorResult)
-	if err != nil {
+	var result map[string]interface{}
+	if err := json.Unmarshal(output, &result); err != nil {
 		t.Fatalf("Output is not valid JSON: %v\nOutput: %s", err, string(output))
 	}
 
-	// Verify error is present in JSON output
-	if _, hasError := errorResult["error"]; !hasError {
-		t.Errorf("Expected error in JSON output for empty directory, but none found. Output: %s", string(output))
+	// No error envelope: an empty directory is no longer treated as an error.
+	if _, hasError := result["error"]; hasError {
+		t.Errorf("empty directory must not produce an error result anymore. Output: %s", string(output))
 	}
 
-	// Verify error indicates no files found
-	if errorField, exists := errorResult["error"]; exists {
-		if errorMap, ok := errorField.(map[string]interface{}); ok {
-			if errorType, exists := errorMap["type"]; !exists || errorType != "no_files" {
-				t.Error("Error type should be 'no_files'")
+	// It must clearly state there were no files to analyse, as a skip-style notice.
+	skipped, ok := result["skipped"].([]interface{})
+	if !ok || len(skipped) == 0 {
+		t.Fatalf("expected a 'skipped' notice for an empty directory. Output: %s", string(output))
+	}
+	found := false
+	for _, s := range skipped {
+		if m, ok := s.(map[string]interface{}); ok {
+			if reason, _ := m["reason"].(string); strings.Contains(reason, "No files were found to analyse") {
+				found = true
 			}
 		}
 	}
+	if !found {
+		t.Errorf("expected a 'no files were found to analyse' skip notice. Output: %s", string(output))
+	}
 }
 
+// TestConfigWithCkanCollector exercises the CkanCollector branch WITHOUT any
+// network access: it omits the -location flag, so the binary fails fast on the
+// "Please provide a CKAN package name" validation in main.go before it would
+// ever contact a CKAN server. It is therefore safe to run in CI.
 func TestConfigWithCkanCollector(t *testing.T) {
-	if os.Getenv("CI") != "" {
-		t.Skip("Skipping CKAN collector test in CI environment")
-	}
-
 	tempDir := t.TempDir()
-	binaryPath := filepath.Join(tempDir, "pc")
-
-	// Build the binary
-	cmd := exec.Command("go", "build", "-o", binaryPath, ".")
-	_, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("Failed to build binary: %v", err)
-	}
 
 	// Create config with CKAN collector
 	ckanConfigContent := `[operation.main]
@@ -433,6 +390,11 @@ keywordArguments = [
     { disallowed_names = [".DS_Store"] }
 ]
 
+[test.HasReadme]
+keywordArguments = [
+    { readme_names = ["readme.md", "readme.txt"] }
+]
+
 [test.HasOnlyASCII]
 blacklist = []
 whitelist = []
@@ -445,19 +407,17 @@ whitelist = []
 attrs = {url = "https://example.com", token = "", verify = true}
 `
 	configPath := filepath.Join(tempDir, "ckan_config.toml")
-	err = os.WriteFile(configPath, []byte(ckanConfigContent), 0644)
-	if err != nil {
+	if err := os.WriteFile(configPath, []byte(ckanConfigContent), 0644); err != nil {
 		t.Fatalf("Failed to create CKAN config file: %v", err)
 	}
 
 	// Run scanner with CKAN collector but default location (should fail)
-	cmd = exec.Command(binaryPath, "-config", configPath)
+	cmd := exec.Command(testBinaryPath, "-config", configPath)
 	output, _ := cmd.CombinedOutput()
 
 	// Check for error in JSON output (program doesn't exit with non-zero code)
 	var errorResult map[string]interface{}
-	err = json.Unmarshal(output, &errorResult)
-	if err != nil {
+	if err := json.Unmarshal(output, &errorResult); err != nil {
 		t.Fatalf("Output is not valid JSON: %v\nOutput: %s", err, string(output))
 	}
 
@@ -478,19 +438,7 @@ attrs = {url = "https://example.com", token = "", verify = true}
 }
 
 func TestProfileFlags(t *testing.T) {
-	if os.Getenv("CI") != "" {
-		t.Skip("Skipping profile flags test in CI environment")
-	}
-
 	tempDir := t.TempDir()
-	binaryPath := filepath.Join(tempDir, "pc")
-
-	// Build the binary
-	cmd := exec.Command("go", "build", "-o", binaryPath, ".")
-	_, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("Failed to build binary: %v", err)
-	}
 
 	// Create test config and files
 	configPath := createTestConfigFile(t, tempDir)
@@ -499,7 +447,7 @@ func TestProfileFlags(t *testing.T) {
 	memProfilePath := filepath.Join(tempDir, "mem.prof")
 
 	// Run scanner with profiling flags (need --json since TUI is now default)
-	cmd = exec.Command(binaryPath,
+	cmd := exec.Command(testBinaryPath,
 		"-config", configPath,
 		"-location", testDir,
 		"-cpuprofile", cpuProfilePath,
@@ -528,19 +476,7 @@ func TestProfileFlags(t *testing.T) {
 }
 
 func TestInvalidHTMLPath(t *testing.T) {
-	if os.Getenv("CI") != "" {
-		t.Skip("Skipping invalid HTML path test in CI environment")
-	}
-
 	tempDir := t.TempDir()
-	binaryPath := filepath.Join(tempDir, "pc")
-
-	// Build the binary
-	cmd := exec.Command("go", "build", "-o", binaryPath, ".")
-	_, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("Failed to build binary: %v", err)
-	}
 
 	// Create test config and files
 	configPath := createTestConfigFile(t, tempDir)
@@ -550,12 +486,12 @@ func TestInvalidHTMLPath(t *testing.T) {
 	invalidHTMLPath := "/root/readonly/report.html" // Should fail on most systems
 
 	// Run scanner with invalid HTML path (need --no-tui since --html alone launches TUI)
-	cmd = exec.Command(binaryPath, "-config", configPath, "-location", testDir, "-html", invalidHTMLPath, "-no-tui")
+	cmd := exec.Command(testBinaryPath, "-config", configPath, "-location", testDir, "-html", invalidHTMLPath, "-no-tui")
 	output, _ := cmd.CombinedOutput()
 
 	// Check for error in JSON output (program doesn't exit with non-zero code)
 	var errorResult map[string]interface{}
-	err = json.Unmarshal(output, &errorResult)
+	err := json.Unmarshal(output, &errorResult)
 	if err != nil {
 		t.Fatalf("Output is not valid JSON: %v\nOutput: %s", err, string(output))
 	}
@@ -623,19 +559,7 @@ func TestJSONErrorHandling(t *testing.T) {
 }
 
 func TestUnknownCollector(t *testing.T) {
-	if os.Getenv("CI") != "" {
-		t.Skip("Skipping unknown collector test in CI environment")
-	}
-
 	tempDir := t.TempDir()
-	binaryPath := filepath.Join(tempDir, "pc")
-
-	// Build the binary
-	cmd := exec.Command("go", "build", "-o", binaryPath, ".")
-	_, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("Failed to build binary: %v", err)
-	}
 
 	// Create config with unknown collector
 	unknownConfigContent := `[operation.main]
@@ -655,6 +579,11 @@ keywordArguments = [
     { disallowed_names = [".DS_Store"] }
 ]
 
+[test.HasReadme]
+keywordArguments = [
+    { readme_names = ["readme.md", "readme.txt"] }
+]
+
 [test.HasOnlyASCII]
 blacklist = []
 whitelist = []
@@ -664,19 +593,17 @@ blacklist = []
 whitelist = []
 `
 	configPath := filepath.Join(tempDir, "unknown_config.toml")
-	err = os.WriteFile(configPath, []byte(unknownConfigContent), 0644)
-	if err != nil {
+	if err := os.WriteFile(configPath, []byte(unknownConfigContent), 0644); err != nil {
 		t.Fatalf("Failed to create unknown collector config file: %v", err)
 	}
 
 	// Run scanner with unknown collector
-	cmd = exec.Command(binaryPath, "-config", configPath, "-location", ".")
+	cmd := exec.Command(testBinaryPath, "-config", configPath, "-location", ".")
 	output, _ := cmd.CombinedOutput()
 
 	// Check for error in JSON output (program doesn't exit with non-zero code)
 	var errorResult map[string]interface{}
-	err = json.Unmarshal(output, &errorResult)
-	if err != nil {
+	if err := json.Unmarshal(output, &errorResult); err != nil {
 		t.Fatalf("Output is not valid JSON: %v\nOutput: %s", err, string(output))
 	}
 
@@ -696,27 +623,71 @@ whitelist = []
 	}
 }
 
-func TestJSONAndPlainConflict(t *testing.T) {
-	if os.Getenv("CI") != "" {
-		t.Skip("Skipping JSON/plain conflict test in CI environment")
-	}
-
+// TestMissingOperationMain asserts that a config lacking an [operation.main]
+// section fails cleanly with a collector_error envelope instead of panicking on
+// a nil-map dereference of generalConfig.Operation["main"].
+func TestMissingOperationMain(t *testing.T) {
 	tempDir := t.TempDir()
-	binaryPath := filepath.Join(tempDir, "pc")
 
-	// Build the binary
-	cmd := exec.Command("go", "build", "-o", binaryPath, ".")
-	_, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("Failed to build binary: %v", err)
+	// Config without an [operation.main] section, but with the [test.*] sections
+	// the checks-config boot validation requires (so the failure under test is
+	// the missing operation, not the missing test sections).
+	noOpConfigContent := `[test.IsFreeOfKeywords]
+keywordArguments = [
+    { keywords = ["password"], info = "Sensitive keyword found:" }
+]
+
+[test.IsValidName]
+blacklist = []
+whitelist = []
+keywordArguments = [
+    { disallowed_names = [".DS_Store"] }
+]
+
+[test.HasReadme]
+keywordArguments = [
+    { readme_names = ["readme.md", "readme.txt"] }
+]
+`
+	configPath := filepath.Join(tempDir, "no_operation.toml")
+	if err := os.WriteFile(configPath, []byte(noOpConfigContent), 0644); err != nil {
+		t.Fatalf("Failed to create config file: %v", err)
 	}
+
+	// Run scanner: must emit a JSON error envelope, not panic.
+	cmd := exec.Command(testBinaryPath, "-config", configPath, "-location", ".")
+	output, _ := cmd.CombinedOutput()
+
+	var errorResult map[string]interface{}
+	if err := json.Unmarshal(output, &errorResult); err != nil {
+		t.Fatalf("Output is not valid JSON: %v\nOutput: %s", err, string(output))
+	}
+
+	errorField, exists := errorResult["error"]
+	if !exists {
+		t.Fatalf("Expected an error envelope for a config missing [operation.main]. Output: %s", string(output))
+	}
+	errorMap, ok := errorField.(map[string]interface{})
+	if !ok {
+		t.Fatalf("Error field is not a map. Output: %s", string(output))
+	}
+	if errorType, _ := errorMap["type"].(string); errorType != "collector_error" {
+		t.Errorf("Error type should be 'collector_error', got %q", errorType)
+	}
+	if message, _ := errorMap["message"].(string); !strings.Contains(message, "operation.main") {
+		t.Errorf("Error message should mention [operation.main], got %q", message)
+	}
+}
+
+func TestJSONAndPlainConflict(t *testing.T) {
+	tempDir := t.TempDir()
 
 	// Create test config and files
 	configPath := createTestConfigFile(t, tempDir)
 	testDir := createTestFiles(t, tempDir)
 
 	// Run scanner with both --json and --plain (should fail)
-	cmd = exec.Command(binaryPath, "-config", configPath, "-location", testDir, "-json", "-plain")
+	cmd := exec.Command(testBinaryPath, "-config", configPath, "-location", testDir, "-json", "-plain")
 	output, err := cmd.CombinedOutput()
 
 	// Command should exit with non-zero code
