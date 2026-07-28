@@ -127,18 +127,18 @@ func main() {
 			outputError("collector_error", "Please provide a CKAN package name (use the location flag '-location')")
 			return
 		}
-		files, filesErr = collectors.CkanCollector(*folder_or_url, *generalConfig)
+		// Single package_show call; files and metadata both derive from it.
+		result, err := collectors.CkanPackageShow(*folder_or_url, *generalConfig)
+		if err != nil {
+			outputError("collector_error", err.Error())
+			return
+		}
+		files, filesErr = collectors.CkanFilesFromResult(result, *generalConfig)
 		if filesErr != nil {
 			outputError("collector_error", filesErr.Error())
 			return
 		}
-
-		var mdErr error
-		metadataResult, mdErr = collectors.CkanMetadataCollector(*folder_or_url, *generalConfig)
-		if mdErr != nil {
-			output.GlobalLogger.Warning("Could not collect package metadata: %v", mdErr)
-			metadataResult = nil
-		}
+		metadataResult = metadata.CkanMetadataFromJSON(result)
 
 	} else {
 		outputError("collector_error", "Unknown collector")
