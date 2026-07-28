@@ -79,6 +79,33 @@ func New(cfg Config) (*Server, error) {
 	// Create handler
 	handler := NewHandler(pcConfig, cfg, logger)
 
+	// Optional per-package result cache (§ result caching): keyed on CKAN's
+	// metadata_modified with a config+version fingerprint, so a config edit or
+	// server upgrade invalidates every entry. The fingerprint hashes the RAW
+	// config file bytes — computed before any in-memory mutation, and cheap to
+	// keep deterministic.
+	if s := pcConfig.Server; s.ResultCacheDir != "" {
+		cfgBytes, err := os.ReadFile(cfg.ConfigPath)
+		if err != nil {
+			return nil, fmt.Errorf("read config for result cache fingerprint: %w", err)
+		}
+		cache, err := newResultCache(
+			s.ResultCacheDir,
+			configFingerprint(cfgBytes),
+			s.ResultCacheMaxEntries,
+			time.Duration(s.ResultCacheMaxAgeHours)*time.Hour,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("invalid PC config: %w", err)
+		}
+		handler.cache = cache
+		logger.Info("result cache enabled",
+			slog.String("dir", s.ResultCacheDir),
+			slog.Int("max_entries", s.ResultCacheMaxEntries),
+			slog.Int("max_age_hours", s.ResultCacheMaxAgeHours),
+		)
+	}
+
 	// Set up routes
 	mux := http.NewServeMux()
 

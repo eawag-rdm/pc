@@ -98,6 +98,17 @@ func validateServerSettings(pcConfig *config.Config, addr string) error {
 		return fmt.Errorf("server ckanRequestTimeoutSeconds (%d) must not exceed requestTimeoutSeconds (%d): the CKAN call runs inside the whole-analysis deadline", s.CkanRequestTimeoutSeconds, s.RequestTimeoutSeconds)
 	}
 
+	// Result cache: settings only matter when a cache dir is set (empty = the
+	// safe disabled default).
+	if s.ResultCacheDir != "" {
+		if s.ResultCacheMaxEntries <= 0 {
+			return fmt.Errorf("server resultCacheMaxEntries must be > 0 when resultCacheDir is set, got %d", s.ResultCacheMaxEntries)
+		}
+		if s.ResultCacheMaxAgeHours < 0 {
+			return fmt.Errorf("server resultCacheMaxAgeHours must be >= 0, got %d", s.ResultCacheMaxAgeHours)
+		}
+	}
+
 	// Trusted proxies must be valid CIDRs (only consulted when trustProxyHeaders
 	// is on, but validate regardless so a typo is caught at boot).
 	for _, cidr := range s.TrustedProxies {

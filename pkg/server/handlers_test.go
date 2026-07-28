@@ -663,6 +663,88 @@ func TestHandler_Analyze_ConcurrentPDF_RaceClean(t *testing.T) {
 	wg.Wait()
 }
 
+// TestHandler_Analyze_ResultCache drives the full analyze flow against a fake
+// CKAN and asserts the cache contract: an unchanged metadata_modified serves
+// the cached body (X-PC-Cache: hit, fresh request_id, package_show still
+// called once per request for auth+freshness), and a bumped metadata_modified
+// forces a full re-analysis.
+func TestHandler_Analyze_ResultCache(t *testing.T) {
+	var mu sync.Mutex
+	metadataModified := "2026-07-28T10:00:00.000000"
+	var calls int
+	ckan := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls++
+		mm := metadataModified
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"success":true,"result":{"name":"cache-pkg","metadata_modified":"`+mm+`","resources":[]}}`)
+	}))
+	defer ckan.Close()
+
+	handler := NewHandler(ckanPCConfig(ckan.URL), Config{}, discardLogger())
+	cache, err := newResultCache(t.TempDir(), "test-fp", 10, 0)
+	if err != nil {
+		t.Fatalf("newResultCache: %v", err)
+	}
+	handler.cache = cache
+
+	// 1st request: miss, full analysis, result stored.
+	rr1 := analyzeWithToken(handler, "cache-pkg", "tok")
+	if rr1.Code != http.StatusOK {
+		t.Fatalf("first: expected 200, got %d (body: %s)", rr1.Code, rr1.Body.String())
+	}
+	if got := rr1.Header().Get("X-PC-Cache"); got != "miss" {
+		t.Errorf("first: X-PC-Cache = %q, want miss", got)
+	}
+
+	// 2nd request, unchanged package: hit — same body except request_id. Use a
+	// distinct request id (analyzeWithToken derives it from the package id) so
+	// the id-injection assertion below is meaningful.
+	body2 := bytes.NewBufferString(`{"package_id":"cache-pkg"}`)
+	req2 := httptest.NewRequest("POST", "/api/v1/analyze", body2)
+	req2 = withRequestContext(req2, "REQ-SECOND", DefaultContactMessage)
+	req2 = req2.WithContext(context.WithValue(req2.Context(), CKANTokenKey, "tok"))
+	rr2 := httptest.NewRecorder()
+	handler.Analyze(rr2, req2)
+	if rr2.Code != http.StatusOK {
+		t.Fatalf("second: expected 200, got %d (body: %s)", rr2.Code, rr2.Body.String())
+	}
+	if got := rr2.Header().Get("X-PC-Cache"); got != "hit" {
+		t.Errorf("second: X-PC-Cache = %q, want hit", got)
+	}
+	var b1, b2 map[string]json.RawMessage
+	if err := json.Unmarshal(rr1.Body.Bytes(), &b1); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(rr2.Body.Bytes(), &b2); err != nil {
+		t.Fatal(err)
+	}
+	if string(b1["request_id"]) == string(b2["request_id"]) {
+		t.Error("cached response must carry the SECOND request's id, not the stored one")
+	}
+	if string(b1["scanned"]) != string(b2["scanned"]) || string(b1["details_metadata"]) != string(b2["details_metadata"]) {
+		t.Error("cached response content must equal the original analysis")
+	}
+
+	// package_show still runs once per request (auth + freshness signal).
+	mu.Lock()
+	if calls != 2 {
+		t.Errorf("expected 2 package_show calls after 2 requests, got %d", calls)
+	}
+	metadataModified = "2026-07-28T11:11:11.000000" // package changed upstream
+	mu.Unlock()
+
+	// 3rd request: freshness mismatch -> full re-analysis.
+	rr3 := analyzeWithToken(handler, "cache-pkg", "tok")
+	if rr3.Code != http.StatusOK {
+		t.Fatalf("third: expected 200, got %d", rr3.Code)
+	}
+	if got := rr3.Header().Get("X-PC-Cache"); got != "miss" {
+		t.Errorf("third: X-PC-Cache = %q, want miss after metadata_modified bump", got)
+	}
+}
+
 // TestHandler_Analyze_TokenForwarding pins the server's CKAN auth contract
 // (spec §2): a request Bearer token is forwarded to CKAN verbatim; a request
 // WITHOUT a token produces an anonymous upstream call (no Authorization

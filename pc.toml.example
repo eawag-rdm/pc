@@ -85,6 +85,18 @@ requestTimeoutSeconds = 300
 # (ckan_unavailable) instead of eating the analysis time budget. Must be <=
 # requestTimeoutSeconds.
 ckanRequestTimeoutSeconds = 10
+# Per-package result cache (SERVER-ONLY; the CLI never caches). When set, a
+# successful analysis is stored as one JSON file per package under this
+# directory and served again while the package's CKAN metadata_modified is
+# unchanged — repeat requests then cost one package_show round-trip instead of
+# a full file scan. Empty disables caching. In Docker this must point into a
+# persistent volume (see docker-compose.yml).
+resultCacheDir        = ""
+# Max cached packages; beyond this the oldest entries are evicted
+resultCacheMaxEntries = 500
+# Max age of a cache entry in hours (safety net for storage-mount edits CKAN
+# never sees); 0 disables the age limit
+resultCacheMaxAgeHours = 24
 
 # [server.smtp] — optional admin-alert relay (a sub-section of [server], so it
 # MUST come after the [server] keys above). When enabled, the server emails this

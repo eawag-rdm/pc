@@ -96,6 +96,10 @@ type Handler struct {
 	// can drain (§9).
 	draining atomic.Bool
 
+	// cache is the per-package on-disk result cache (nil = caching disabled).
+	// It is read and written only inside runAnalysis, under analysisMu.
+	cache *resultCache
+
 	// alerter emails the admin list when the server returns a server-fault
 	// response (internal_error, a recovered panic, or resource_unreadable). It is
 	// nil when [server.smtp] is disabled (no host or no recipients); Notify/Close
@@ -261,7 +265,7 @@ func (h *Handler) Analyze(w http.ResponseWriter, r *http.Request) {
 		slog.String("package_id", req.PackageID),
 	)
 
-	jsonResult, fileCount, skippedCount, errCode, errMsg := h.runAnalysis(ctx, req.PackageID, token)
+	jsonResult, fileCount, skippedCount, cached, errCode, errMsg := h.runAnalysis(ctx, req.PackageID, token)
 
 	// A cancelled/expired context means the client went away or the hard
 	// timeout fired. Distinguish a deadline (the whole-analysis timeout) from a
@@ -296,13 +300,24 @@ func (h *Handler) Analyze(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.logger.LogAttrs(ctx, slog.LevelInfo, "analysis_done",
-		slog.String("request_id", requestID),
-		slog.String("package_id", req.PackageID),
-		slog.Int64("duration_ms", time.Since(start).Milliseconds()),
-		slog.Int("file_count", fileCount),
-		slog.Int("skipped_count", skippedCount),
-	)
+	if cached {
+		// Served from the result cache: the expensive checks phase never ran.
+		// analysis_cached replaces analysis_done so dashboards can tell the
+		// two apart; file/skip counts are not recomputed on this path.
+		h.logger.LogAttrs(ctx, slog.LevelInfo, "analysis_cached",
+			slog.String("request_id", requestID),
+			slog.String("package_id", req.PackageID),
+			slog.Int64("duration_ms", time.Since(start).Milliseconds()),
+		)
+	} else {
+		h.logger.LogAttrs(ctx, slog.LevelInfo, "analysis_done",
+			slog.String("request_id", requestID),
+			slog.String("package_id", req.PackageID),
+			slog.Int64("duration_ms", time.Since(start).Milliseconds()),
+			slog.Int("file_count", fileCount),
+			slog.Int("skipped_count", skippedCount),
+		)
+	}
 
 	// 10. Add request_id to the response body (additive) and return.
 	body, err := withRequestID(jsonResult, requestID)
@@ -311,6 +326,14 @@ func (h *Handler) Analyze(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if h.cache != nil {
+		// Cache observability for clients/ops; only meaningful when caching is on.
+		if cached {
+			w.Header().Set("X-PC-Cache", "hit")
+		} else {
+			w.Header().Set("X-PC-Cache", "miss")
+		}
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	w.Write(body)
@@ -346,7 +369,7 @@ func configuredCkanRequestTimeout(pcConfig *config.Config) time.Duration {
 // process-global GlobalLogger/PDFTracker from leaking or racing across
 // concurrent requests (§6, §9). The collector's package_show is the single CKAN
 // call (spec §5); its outcome drives the error mapping here.
-func (h *Handler) runAnalysis(ctx context.Context, packageID, token string) (body string, fileCount, skippedCount int, errCode, errMsg string) {
+func (h *Handler) runAnalysis(ctx context.Context, packageID, token string) (body string, fileCount, skippedCount int, cached bool, errCode, errMsg string) {
 	h.analysisMu.Lock()
 	defer h.analysisMu.Unlock()
 
@@ -373,6 +396,22 @@ func (h *Handler) runAnalysis(ctx context.Context, packageID, token string) (bod
 	ckanCtx, ckanCancel := context.WithTimeout(ctx, configuredCkanRequestTimeout(h.pcConfig))
 	result, err := collectors.CkanPackageShow(ckanCtx, packageID, pcConfigCopy)
 	ckanCancel()
+
+	// Result cache: metadata_modified from the fetched document is the
+	// freshness signal (CKAN bumps it on every dataset/resource change). On a
+	// hit the expensive file mapping + checks phase is skipped entirely — the
+	// request cost one CKAN round-trip. Authorization is unaffected: a caller
+	// whose token cannot read the package failed the fetch above and never
+	// reaches the cache.
+	var metadataModified string
+	if err == nil {
+		metadataModified, _ = result["metadata_modified"].(string)
+		if cachedBody, ok := h.cache.get(packageID, metadataModified); ok {
+			h.logCKANOutcome(ctx, packageID, nil, time.Since(ckanStart))
+			return cachedBody, 0, 0, true, "", ""
+		}
+	}
+
 	var files []structs.File
 	if err == nil {
 		// File mapping + local path resolution works from the fetched document
@@ -383,7 +422,7 @@ func (h *Handler) runAnalysis(ctx context.Context, packageID, token string) (bod
 	h.logCKANOutcome(ctx, packageID, err, time.Since(ckanStart))
 	if err != nil {
 		code, msg := mapCKANError(err)
-		return "", 0, 0, code, msg
+		return "", 0, 0, false, code, msg
 	}
 
 	// A package that exists (package_show returned 200) but has zero analyzable
@@ -417,9 +456,19 @@ func (h *Handler) runAnalysis(ctx context.Context, packageID, token string) (bod
 	formatter := jsonformatter.NewJSONFormatter()
 	jsonResult, err := formatter.FormatResults(packageID, "CkanCollector", messages, len(files), helpers.PDFTracker.SnapshotFiles())
 	if err != nil {
-		return "", 0, 0, CodeInternalError, ""
+		return "", 0, 0, false, CodeInternalError, ""
 	}
-	return jsonResult, len(files), countSkipped(messages), "", ""
+
+	// Store the successful result for future identical-freshness requests.
+	// Best-effort: a cache write failure is logged but never fails the request.
+	if cacheErr := h.cache.put(packageID, metadataModified, jsonResult); cacheErr != nil {
+		h.logger.LogAttrs(ctx, slog.LevelWarn, "result_cache_write_failed",
+			slog.String("request_id", GetRequestIDFromContext(ctx)),
+			slog.String("package_id", packageID),
+			slog.String("error", cacheErr.Error()),
+		)
+	}
+	return jsonResult, len(files), countSkipped(messages), false, "", ""
 }
 
 // unscannedReason is the soft, user-facing acknowledgement shown (as a skipped[]

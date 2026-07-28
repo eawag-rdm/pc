@@ -53,6 +53,8 @@ const (
 	DefaultServerTrustProxyHeaders         = true
 	DefaultServerRequestTimeoutSeconds     = 300
 	DefaultServerCkanRequestTimeoutSeconds = 10
+	DefaultServerResultCacheMaxEntries     = 500
+	DefaultServerResultCacheMaxAgeHours    = 24
 )
 
 // Default values for the [server.smtp] sub-section.
@@ -87,6 +89,9 @@ type ServerConfig struct {
 	LogClientIP               bool        // Whether to log the client IP
 	RequestTimeoutSeconds     int         // Hard upper bound for a whole analysis request (CKAN call + checks), in seconds
 	CkanRequestTimeoutSeconds int         // Upper bound for the single CKAN package_show call, in seconds (must be <= RequestTimeoutSeconds)
+	ResultCacheDir            string      // Directory for the per-package result cache; empty disables caching
+	ResultCacheMaxEntries     int         // Max cached packages before oldest-entry eviction (default 500)
+	ResultCacheMaxAgeHours    int         // TTL for cache entries in hours; 0 disables the TTL (default 24)
 	SMTP                      *SMTPConfig // Optional [server.smtp] admin-alert relay (nil-safe; disabled unless Host+To set)
 }
 
@@ -128,6 +133,9 @@ func ParseConfig(filename string) (*Config, error) {
 			LogClientIP:               DefaultServerLogClientIP,
 			RequestTimeoutSeconds:     DefaultServerRequestTimeoutSeconds,
 			CkanRequestTimeoutSeconds: DefaultServerCkanRequestTimeoutSeconds,
+			ResultCacheDir:            "",
+			ResultCacheMaxEntries:     DefaultServerResultCacheMaxEntries,
+			ResultCacheMaxAgeHours:    DefaultServerResultCacheMaxAgeHours,
 			SMTP: &SMTPConfig{
 				Port: DefaultServerSMTPPort,
 			},
@@ -233,6 +241,15 @@ func ParseConfig(filename string) (*Config, error) {
 			return nil, err
 		}
 		if err := serverInt(serverData, "ckanRequestTimeoutSeconds", &c.Server.CkanRequestTimeoutSeconds); err != nil {
+			return nil, err
+		}
+		if err := serverString(serverData, "resultCacheDir", &c.Server.ResultCacheDir); err != nil {
+			return nil, err
+		}
+		if err := serverInt(serverData, "resultCacheMaxEntries", &c.Server.ResultCacheMaxEntries); err != nil {
+			return nil, err
+		}
+		if err := serverInt(serverData, "resultCacheMaxAgeHours", &c.Server.ResultCacheMaxAgeHours); err != nil {
 			return nil, err
 		}
 		// [server.smtp] sub-section: plain relay for admin alerts on server faults.
