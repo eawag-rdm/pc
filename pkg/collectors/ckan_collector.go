@@ -16,6 +16,18 @@ import (
 	"github.com/eawag-rdm/pc/pkg/structs"
 )
 
+// CKANStatusError reports a non-200 CKAN response so callers (the server) can
+// map the upstream status to their own error handling. The message carries
+// only the status and a generic hint — never the URL, token or response body.
+type CKANStatusError struct {
+	StatusCode int
+	Hint       string
+}
+
+func (e *CKANStatusError) Error() string {
+	return fmt.Sprintf("request failed with status code %d: %s", e.StatusCode, e.Hint)
+}
+
 func Request(url, ckanToken string, verifyTLS bool) (string, error) {
 
 	transport := &http.Transport{
@@ -57,7 +69,7 @@ func Request(url, ckanToken string, verifyTLS bool) (string, error) {
 		default:
 			hint = "unexpected response from the CKAN API"
 		}
-		return "", fmt.Errorf("request failed with status code %d: %s", resp.StatusCode, hint)
+		return "", &CKANStatusError{StatusCode: resp.StatusCode, Hint: hint}
 	}
 
 	bodyBytes, err := io.ReadAll(resp.Body)
@@ -151,40 +163,88 @@ func getLocalResourcePath(resourceURL string, ckanStoragePath string) string {
 	return ckanStoragePath + localResourcePath
 }
 
-func CkanCollector(package_id string, config config.Config) ([]structs.File, error) {
-
+// CkanPackageShow performs THE single CKAN package_show call for a package and
+// returns the parsed "result" object. It is the sole owner of the CKAN
+// transport concerns (token, TLS verification, URL construction); every
+// consumer of package data — file collection (CkanFilesFromResult) and the
+// metadata checks (metadata.CkanMetadataFromJSON) — works from the returned
+// document, so one analysis costs exactly one CKAN request.
+func CkanPackageShow(package_id string, config config.Config) (map[string]interface{}, error) {
 	collectorName := "CkanCollector"
 
-	urlAttr, ok := config.Collectors[collectorName].Attrs["url"].(string)
+	// A missing [collector.CkanCollector] section leaves a nil *CollectorConfig
+	// in the map; dereferencing .Attrs would panic.
+	cc, ok := config.Collectors[collectorName]
+	if !ok || cc == nil {
+		return nil, fmt.Errorf("CkanCollector configuration is missing")
+	}
+	urlAttr, ok := cc.Attrs["url"].(string)
 	if !ok {
 		return nil, fmt.Errorf("url attribute not found or not a string")
 	}
+	token, ok := cc.Attrs["token"].(string)
+	if !ok {
+		return nil, fmt.Errorf("token attribute not found or not a string")
+	}
+	verify, ok := cc.Attrs["verify"].(bool)
+	if !ok {
+		return nil, fmt.Errorf("verify attribute not found or not a bool")
+	}
 
-	url := fmt.Sprintf("%s/api/3/action/package_show?id=%s", urlAttr, package_id)
-	token := config.Collectors[collectorName].Attrs["token"].(string)
-	verify := config.Collectors[collectorName].Attrs["verify"].(bool)
-
-	jsonStr, err := Request(url, token, verify)
+	// Escape the package id so a crafted value cannot alter the query.
+	requestURL := fmt.Sprintf("%s/api/3/action/package_show?id=%s", urlAttr, url.QueryEscape(package_id))
+	jsonStr, err := Request(requestURL, token, verify)
 	if err != nil {
 		return nil, err
 	}
 	jsonMap, err := JSONToMap(jsonStr)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("could not parse CKAN response as JSON: %w", err)
+	}
+	result, ok := jsonMap["result"].(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("ckan response has no 'result' object")
+	}
+	return result, nil
+}
+
+// CkanFilesFromResult maps an already-fetched package_show result to the
+// package's upload files and resolves each to its local FileStore path. It
+// performs no network IO.
+func CkanFilesFromResult(result map[string]interface{}, config config.Config) ([]structs.File, error) {
+	cc, ok := config.Collectors["CkanCollector"]
+	if !ok || cc == nil {
+		return nil, fmt.Errorf("CkanCollector configuration is missing")
+	}
+	localStoragePath, ok := cc.Attrs["ckan_storage_path"].(string)
+	if !ok {
+		return nil, fmt.Errorf("ckan_storage_path attribute not found or not a string")
 	}
 
-	files, err := GetCKANResources(jsonMap)
+	// GetCKANResources expects the full response shape, so re-wrap the result.
+	files, err := GetCKANResources(map[string]interface{}{"result": result})
 	if err != nil {
 		return nil, err
 	}
 
-	localStoragePath := config.Collectors[collectorName].Attrs["ckan_storage_path"].(string)
 	// Iterate files and apply getLocalResourcePath to each file to change the path in place
 	for i, file := range files {
 		files[i].Path = getLocalResourcePath(file.Path, localStoragePath)
 	}
 
 	return files, nil
+}
+
+// CkanCollector fetches a package's files in one step: the single
+// package_show call plus the file mapping. Callers that also need the
+// metadata document should call CkanPackageShow and CkanFilesFromResult
+// separately to avoid a second fetch.
+func CkanCollector(package_id string, config config.Config) ([]structs.File, error) {
+	result, err := CkanPackageShow(package_id, config)
+	if err != nil {
+		return nil, err
+	}
+	return CkanFilesFromResult(result, config)
 }
 
 // CkanMetadataCollector fetches a CKAN package_show response and maps its
