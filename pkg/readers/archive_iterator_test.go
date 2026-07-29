@@ -351,6 +351,44 @@ func TestArchiveIterator_MemberSizeSkipEmitsMessages(t *testing.T) {
 	}
 }
 
+func TestArchiveIterator_MembersDecompressedAndChargedOnce(t *testing.T) {
+	// Regression for the zip/7z double-read bug: the look-ahead buffer was never
+	// consumed, so every member was decompressed twice and charged twice against
+	// the memory budget (halving the effective budget).
+	formats := []string{".zip", ".tar", ".7z"}
+	for _, ext := range formats {
+		t.Run("single charge "+ext, func(t *testing.T) {
+			path := "../../testdata/archives/ten_valid_files" + ext
+			filename := "ten_valid_files" + ext
+
+			nfi := InitArchiveIterator(path, filename, 1024*1024, []string{}, []string{}, 100*1024*1024)
+			assert.True(t, nfi.HasFilesToUnpack())
+			var contentSum int64
+			count := 0
+			for nfi.HasNext() {
+				nfi.Next()
+				_, content, _ := nfi.UnpackedFile()
+				contentSum += int64(len(content))
+				count++
+			}
+			assert.Equal(t, 10, count)
+			assert.Equal(t, contentSum, nfi.totalMemoryUsed, "each member must be charged exactly once")
+			assert.Equal(t, count, nfi.processedFileCount, "each member must be processed exactly once")
+
+			// A budget of exactly the summed content must admit every member.
+			tight := InitArchiveIterator(path, filename, 1024*1024, []string{}, []string{}, contentSum)
+			assert.True(t, tight.HasFilesToUnpack())
+			tightCount := 0
+			for tight.HasNext() {
+				tight.Next()
+				tightCount++
+			}
+			assert.Equal(t, 10, tightCount, "exact-fit budget must not skip members")
+			assert.Empty(t, tight.SkipMessages())
+		})
+	}
+}
+
 func TestArchiveIterator_TotalMemorySkipEmitsMessages(t *testing.T) {
 	formats := []string{".zip", ".tar", ".7z"}
 	for _, ext := range formats {
