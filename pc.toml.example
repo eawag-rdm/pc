@@ -68,6 +68,8 @@ allowedOrigins     = ["https://frontend.example.org"]
 perIPRequestsPerHour  = 4
 # Global hourly request budget
 globalRequestsPerHour = 20
+# Cache hits are refunded and counted against budgets × this factor; 0 disables the refund
+cachedRequestLimitFactor = 100
 # Additional headroom applied to the budgets (+50%)
 burstFactor           = 0.5
 # Seconds a request waits for the single analysis gate before returning service_busy (503)

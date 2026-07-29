@@ -280,7 +280,7 @@ Every failure uses one envelope:
 | 404 | `not_found` | No such endpoint path |
 | 405 | `method_not_allowed` | Endpoint exists but not for this HTTP method (with `Allow` header) |
 | 422 | `malformed_resource` | A resource is malformed — missing both `url_type` and `url`, or an upload missing `name`/`url`/`size`. The message names the exact resource + package. |
-| 429 | `rate_limited` | Hourly request budget exceeded (with `Retry-After`) |
+| 429 | `rate_limited` | Hourly request budget exceeded (with `Retry-After`); responses served from the result cache are refunded and count against a budget `cachedRequestLimitFactor`× larger |
 | 502 | `ckan_unavailable` | CKAN unreachable or unusable: transport failure, transport-level 5xx, CKAN throttling (429), oversized/truncated response, or no answer within `ckanRequestTimeoutSeconds` |
 | 503 | `service_busy` | Concurrency limit reached (no queueing) |
 | 503 | `service_not_ready` | CKAN or storage mount unavailable (`/ready`) |
@@ -318,6 +318,7 @@ See `pc.toml.example` for the full commented list.
 | `allowedOrigins` | — | CORS allow-list of exact origin URLs (your frontend) |
 | `perIPRequestsPerHour` | 4 | per-client-IP hourly budget (0 = unlimited) |
 | `globalRequestsPerHour` | 20 | all-clients hourly budget (0 = unlimited) |
+| `cachedRequestLimitFactor` | 100 | cache hits are refunded and counted against budgets × this factor; 0 disables the refund |
 | `burstFactor` | 0.5 | extra headroom applied to the budgets |
 | `analysisBusyWaitSeconds` | 2 | wait for the single analysis slot before `service_busy` |
 | `maxTrackedRateKeys` | 10000 | rate-limiter memory bound |

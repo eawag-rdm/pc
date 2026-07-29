@@ -82,6 +82,9 @@ func validateServerSettings(pcConfig *config.Config, addr string) error {
 	if s.BurstFactor < 0 {
 		return fmt.Errorf("server burstFactor must be >= 0, got %v", s.BurstFactor)
 	}
+	if s.CachedRequestLimitFactor < 0 {
+		return fmt.Errorf("server cachedRequestLimitFactor must be >= 0, got %d", s.CachedRequestLimitFactor)
+	}
 	if s.AnalysisBusyWaitSeconds < 1 {
 		return fmt.Errorf("server analysisBusyWaitSeconds must be >= 1, got %d", s.AnalysisBusyWaitSeconds)
 	}

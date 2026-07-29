@@ -132,6 +132,7 @@ func NewHandler(pcConfig *config.Config, serverCfg Config, logger *slog.Logger) 
 			s.PerIPRequestsPerHour,
 			s.GlobalRequestsPerHour,
 			s.BurstFactor,
+			s.CachedRequestLimitFactor,
 			s.MaxTrackedRateKeys,
 			s.TrustProxyHeaders,
 			s.TrustedProxies,
@@ -307,9 +308,14 @@ func (h *Handler) Analyze(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if cached {
-		// Served from the result cache: the expensive checks phase never ran.
-		// analysis_cached replaces analysis_done so dashboards can tell the
-		// two apart; file/skip counts are not recomputed on this path.
+		// Served from the result cache: cheap for us, so refund the main
+		// rate-limit tokens and charge the (much larger) cached budgets instead.
+		if h.limiter != nil {
+			h.limiter.refundCached(h.limiter.clientIPKey(r))
+		}
+		// The expensive checks phase never ran: analysis_cached replaces
+		// analysis_done so dashboards can tell the two apart; file/skip counts
+		// are not recomputed on this path.
 		h.logger.LogAttrs(ctx, slog.LevelInfo, "analysis_cached",
 			slog.String("request_id", requestID),
 			slog.String("package_id", req.PackageID),

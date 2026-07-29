@@ -45,6 +45,7 @@ const (
 	DefaultServerListenAddress             = "127.0.0.1:8080"
 	DefaultServerPerIPRequestsPerHour      = 4
 	DefaultServerGlobalRequestsPerHour     = 20
+	DefaultServerCachedRequestLimitFactor  = 100 // cache hits count against budgets × this factor
 	DefaultServerBurstFactor               = 0.5
 	DefaultServerAnalysisBusyWaitSeconds   = 2
 	DefaultServerMaxTrackedRateKeys        = 10000
@@ -82,6 +83,7 @@ type ServerConfig struct {
 	AllowedOrigins            []string    // CORS allow-list of origin URLs
 	PerIPRequestsPerHour      int         // Per-IP hourly request budget
 	GlobalRequestsPerHour     int         // Global hourly request budget
+	CachedRequestLimitFactor  int         // Cache-hit requests are refunded and counted against budgets × this factor; 0 disables the refund
 	BurstFactor               float64     // Additional headroom factor applied to budgets
 	AnalysisBusyWaitSeconds   int         // Seconds a busy request waits for the analysis gate before 503 (must be >= 1; default 2)
 	MaxTrackedRateKeys        int         // Limiter memory bound (max tracked rate keys)
@@ -126,6 +128,7 @@ func ParseConfig(filename string) (*Config, error) {
 			AllowedOrigins:            nil,
 			PerIPRequestsPerHour:      DefaultServerPerIPRequestsPerHour,
 			GlobalRequestsPerHour:     DefaultServerGlobalRequestsPerHour,
+			CachedRequestLimitFactor:  DefaultServerCachedRequestLimitFactor,
 			BurstFactor:               DefaultServerBurstFactor,
 			AnalysisBusyWaitSeconds:   DefaultServerAnalysisBusyWaitSeconds,
 			MaxTrackedRateKeys:        DefaultServerMaxTrackedRateKeys,
@@ -219,6 +222,9 @@ func ParseConfig(filename string) (*Config, error) {
 			return nil, err
 		}
 		if err := serverInt(serverData, "globalRequestsPerHour", &c.Server.GlobalRequestsPerHour); err != nil {
+			return nil, err
+		}
+		if err := serverInt(serverData, "cachedRequestLimitFactor", &c.Server.CachedRequestLimitFactor); err != nil {
 			return nil, err
 		}
 		// burstFactor may be expressed as a TOML float (0.5) or a bare int (1, 2).

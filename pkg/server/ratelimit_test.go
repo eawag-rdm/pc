@@ -37,7 +37,7 @@ func (c *fixedClock) advance(d time.Duration) {
 // instant inside an hour (so the next-boundary math is deterministic).
 func newTestLimiter(t *testing.T, perIP, global int, burst float64, maxKeys int, trustProxies bool, cidrs []string) (*rateLimiter, *fixedClock) {
 	t.Helper()
-	rl := newRateLimiter(perIP, global, burst, maxKeys, trustProxies, cidrs)
+	rl := newRateLimiter(perIP, global, burst, 0, maxKeys, trustProxies, cidrs)
 	clk := &fixedClock{t: time.Date(2026, 6, 24, 10, 30, 0, 0, time.UTC)}
 	rl.now = clk.now
 	return rl, clk
@@ -156,7 +156,7 @@ func TestEffectiveLimit(t *testing.T) {
 // trusted-proxy CIDR; a spoofed header from an untrusted RemoteAddr is ignored
 // and the connection address is used (§4).
 func TestClientIPKey_ProxyTrust(t *testing.T) {
-	rl := newRateLimiter(4, 0, 0.5, 1000, true, []string{"127.0.0.1/32", "10.0.0.0/8"})
+	rl := newRateLimiter(4, 0, 0.5, 0, 1000, true, []string{"127.0.0.1/32", "10.0.0.0/8"})
 
 	// Trusted proxy: X-Real-IP wins.
 	r := httptest.NewRequest("POST", "/api/v1/analyze", nil)
@@ -179,7 +179,7 @@ func TestClientIPKey_ProxyTrust(t *testing.T) {
 // TestClientIPKey_ProxyHeadersDisabled: with trustProxyHeaders=false, X-Real-IP
 // is never consulted even from an otherwise-trusted address.
 func TestClientIPKey_ProxyHeadersDisabled(t *testing.T) {
-	rl := newRateLimiter(4, 0, 0.5, 1000, false, []string{"127.0.0.1/32"})
+	rl := newRateLimiter(4, 0, 0.5, 0, 1000, false, []string{"127.0.0.1/32"})
 	r := httptest.NewRequest("POST", "/api/v1/analyze", nil)
 	r.RemoteAddr = "127.0.0.1:5555"
 	r.Header.Set("X-Real-IP", "203.0.113.7")
@@ -639,4 +639,106 @@ func (rl *rateLimiter) trackedKeys() int {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 	return len(rl.entries)
+}
+
+// TestRateLimiter_RefundCached: a cache hit refunds its main-budget token, so
+// hits well past the main cap stay admitted while the cached budget lasts.
+func TestRateLimiter_RefundCached(t *testing.T) {
+	rl := newRateLimiter(4, 0, 0, 100, 1000, false, nil)
+	clk := &fixedClock{t: time.Date(2026, 6, 24, 10, 30, 0, 0, time.UTC)}
+	rl.now = clk.now
+
+	const key = "1.2.3.4"
+	for i := 1; i <= 20; i++ {
+		ok, count, limit, _ := rl.allow(key, scopeIP)
+		if !ok {
+			t.Fatalf("cache-hit request %d rejected (count=%d limit=%d): refund did not restore the token", i, count, limit)
+		}
+		rl.refundCached(key)
+	}
+}
+
+// TestRateLimiter_RefundCached_BudgetSpent: once the cached budget for the
+// window is exhausted, further hits keep their main-budget charge (full price).
+func TestRateLimiter_RefundCached_BudgetSpent(t *testing.T) {
+	// main cap 1, cached cap 2 (factor 2, no burst).
+	rl := newRateLimiter(1, 0, 0, 2, 1000, false, nil)
+	clk := &fixedClock{t: time.Date(2026, 6, 24, 10, 30, 0, 0, time.UTC)}
+	rl.now = clk.now
+
+	const key = "1.2.3.4"
+	for i := 1; i <= 2; i++ {
+		if ok, _, _, _ := rl.allow(key, scopeIP); !ok {
+			t.Fatalf("refunded hit %d rejected", i)
+		}
+		rl.refundCached(key)
+	}
+	// Cached budget (2) spent: this hit keeps its charge...
+	if ok, _, _, _ := rl.allow(key, scopeIP); !ok {
+		t.Fatal("third hit rejected while main budget still free")
+	}
+	rl.refundCached(key)
+	// ...so the next request exceeds the main cap of 1.
+	if ok, count, limit, _ := rl.allow(key, scopeIP); ok {
+		t.Fatalf("request after spent cached budget admitted (count=%d limit=%d)", count, limit)
+	}
+}
+
+// TestRateLimiter_RefundCached_GlobalScope: the refund applies to the global
+// counter as well.
+func TestRateLimiter_RefundCached_GlobalScope(t *testing.T) {
+	// per-IP unlimited, global cap 1, cached global cap 2.
+	rl := newRateLimiter(0, 1, 0, 2, 1000, false, nil)
+	clk := &fixedClock{t: time.Date(2026, 6, 24, 10, 30, 0, 0, time.UTC)}
+	rl.now = clk.now
+
+	const key = "1.2.3.4"
+	for i := 1; i <= 2; i++ {
+		if ok, _, _, _ := rl.allow(globalKey, scopeGlobal); !ok {
+			t.Fatalf("refunded global hit %d rejected", i)
+		}
+		rl.refundCached(key)
+	}
+	if ok, _, _, _ := rl.allow(globalKey, scopeGlobal); !ok {
+		t.Fatal("third global hit rejected while budget still free")
+	}
+	rl.refundCached(key) // cached global budget spent: no refund
+	if ok, _, _, _ := rl.allow(globalKey, scopeGlobal); ok {
+		t.Fatal("global cap not enforced after cached budget spent")
+	}
+}
+
+// TestRateLimiter_RefundCached_Disabled: factor 0 disables refunds; the main
+// cap applies to cache hits unchanged.
+func TestRateLimiter_RefundCached_Disabled(t *testing.T) {
+	rl := newRateLimiter(1, 0, 0, 0, 1000, false, nil)
+	clk := &fixedClock{t: time.Date(2026, 6, 24, 10, 30, 0, 0, time.UTC)}
+	rl.now = clk.now
+
+	const key = "1.2.3.4"
+	if ok, _, _, _ := rl.allow(key, scopeIP); !ok {
+		t.Fatal("first request rejected")
+	}
+	rl.refundCached(key)
+	if ok, _, _, _ := rl.allow(key, scopeIP); ok {
+		t.Fatal("factor 0 must not refund")
+	}
+}
+
+// TestRateLimiter_RefundCached_StaleWindow: a refund landing after the hour
+// rolled over is a no-op and does not corrupt the fresh window's counter.
+func TestRateLimiter_RefundCached_StaleWindow(t *testing.T) {
+	rl := newRateLimiter(4, 0, 0, 100, 1000, false, nil)
+	clk := &fixedClock{t: time.Date(2026, 6, 24, 10, 30, 0, 0, time.UTC)}
+	rl.now = clk.now
+
+	const key = "1.2.3.4"
+	if ok, _, _, _ := rl.allow(key, scopeIP); !ok {
+		t.Fatal("first request rejected")
+	}
+	clk.advance(time.Hour)
+	rl.refundCached(key) // stale entry: must not underflow or resurrect the window
+	if ok, count, _, _ := rl.allow(key, scopeIP); !ok || count != 1 {
+		t.Fatalf("fresh window after stale refund: ok=%v count=%d, want ok count=1", ok, count)
+	}
 }

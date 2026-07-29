@@ -44,6 +44,13 @@ type rateLimiter struct {
 	perIPLimit  int
 	globalLimit int
 
+	// Cheap budgets for cache-hit requests (main limits × cachedFactor). A hit
+	// refunds its main-budget token and is charged here instead; 0 factor
+	// disables refunds entirely.
+	cachedFactor      int
+	cachedPerIPLimit  int
+	cachedGlobalLimit int
+
 	maxTrackedKeys int
 
 	// trustProxyHeaders gates whether X-Real-IP is consulted at all; when true
@@ -61,11 +68,17 @@ type rateLimiter struct {
 // with a floor of 1 so a positive per-hour budget always admits at least one
 // request (§4). A non-positive per-hour budget disables that scope (limit 0 =
 // unlimited).
-func newRateLimiter(perIPPerHour, globalPerHour int, burstFactor float64, maxTrackedKeys int, trustProxyHeaders bool, trustedProxies []string) *rateLimiter {
+func newRateLimiter(perIPPerHour, globalPerHour int, burstFactor float64, cachedFactor int, maxTrackedKeys int, trustProxyHeaders bool, trustedProxies []string) *rateLimiter {
+	if cachedFactor < 0 {
+		cachedFactor = 0
+	}
 	return &rateLimiter{
 		entries:           make(map[string]*rateEntry),
 		perIPLimit:        effectiveLimit(perIPPerHour, burstFactor),
 		globalLimit:       effectiveLimit(globalPerHour, burstFactor),
+		cachedFactor:      cachedFactor,
+		cachedPerIPLimit:  effectiveLimit(perIPPerHour*cachedFactor, burstFactor),
+		cachedGlobalLimit: effectiveLimit(globalPerHour*cachedFactor, burstFactor),
 		maxTrackedKeys:    maxTrackedKeys,
 		trustProxyHeaders: trustProxyHeaders,
 		trustedProxies:    parseCIDRs(trustedProxies),
@@ -145,6 +158,61 @@ func (rl *rateLimiter) allow(key string, scope rateScope) (allowed bool, count, 
 	count = e.count
 
 	return count <= limit, count, limit, retryAfter
+}
+
+// cachedKeySuffix marks the cheap-budget counter keys for cache-hit requests.
+// NUL can never appear in an IP-derived key or in globalKey, so a cached key
+// cannot collide with a main key.
+const cachedKeySuffix = "\x00cached"
+
+// refundCached returns one main-budget token to the per-IP and global counters
+// after a response served from the result cache, charging the cheap cached
+// budgets instead. A scope whose cached budget for this window is exhausted
+// keeps its main-budget charge (the hit then counts at full price), so cache
+// traffic stays bounded — every hit still costs one CKAN package_show. Refund
+// and re-charge happen under one lock so concurrent hits cannot over-refund.
+func (rl *rateLimiter) refundCached(key string) {
+	if rl.cachedFactor <= 0 {
+		return
+	}
+	now := rl.now()
+	window := now.Truncate(time.Hour)
+
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	rl.refundScopeLocked(key, rl.perIPLimit, rl.cachedPerIPLimit, window, now)
+	rl.refundScopeLocked(globalKey, rl.globalLimit, rl.cachedGlobalLimit, window, now)
+}
+
+// refundScopeLocked refunds one token for a single scope. No-op when the scope
+// is unlimited (nothing was charged), the main entry is missing/stale/zero, or
+// the cached budget is spent. Caller holds rl.mu.
+func (rl *rateLimiter) refundScopeLocked(key string, mainLimit, cachedLimit int, window, now time.Time) {
+	if mainLimit <= 0 {
+		return
+	}
+	main, ok := rl.entries[key]
+	if !ok || !main.window.Equal(window) || main.count <= 0 {
+		return
+	}
+
+	ck := key + cachedKeySuffix
+	c, ok := rl.entries[ck]
+	if !ok {
+		rl.evictLocked(window)
+		c = &rateEntry{window: window}
+		rl.entries[ck] = c
+	}
+	if !c.window.Equal(window) {
+		c.window = window
+		c.count = 0
+	}
+	if c.count >= cachedLimit {
+		return
+	}
+	c.seen = now
+	c.count++
+	main.count--
 }
 
 // evictLocked bounds the number of tracked keys (§4). It first drops entries
