@@ -63,7 +63,7 @@ func newReadinessChecker(h *Handler) *readinessChecker {
 // is returned without re-probing. On expiry, exactly ONE caller runs the
 // (blocking) probe while holding NO lock; every other concurrent caller returns
 // the last known verdict immediately. The lock is held only for the brief
-// read-the-cache / publish-the-verdict windows, never across the probe — so a
+// read-the-cache / publish-the-verdict windows, never across the probe - so a
 // burst of /ready polls hitting an expired cache cannot form a lock-convoy
 // behind the CKAN round-trip + storage stat.
 //
@@ -72,7 +72,7 @@ func newReadinessChecker(h *Handler) *readinessChecker {
 // and the storage mount, not of any single poller's connection. If the probe
 // inherited the request context, an LB/healthcheck that closes its connection
 // (cancelling r.Context()) before the probe finished would make the probe fail
-// and poison the cache with ready=false for the full TTL — flapping the
+// and poison the cache with ready=false for the full TTL - flapping the
 // instance out of rotation. probeCKAN applies its own readinessProbeTimeout, so
 // dropping the caller's deadline does not let a hung CKAN block indefinitely.
 func (rc *readinessChecker) isReady() bool {
@@ -107,7 +107,7 @@ func (rc *readinessChecker) isReady() bool {
 
 // probeCKAN reports whether the CKAN Action API is reachable. It issues a short,
 // tokenless GET to status_show (a public, cheap action) and treats any HTTP
-// response as "reachable" — readiness only needs the repository to answer, not a
+// response as "reachable" - readiness only needs the repository to answer, not a
 // specific status. A transport error (DNS / connection refused / timeout) means
 // not reachable. An empty URL is treated as not reachable. It never logs the URL
 // or any secret.

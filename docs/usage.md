@@ -1,10 +1,10 @@
-# PC Usage Guide — CLI and Server
+# PC Usage Guide - CLI and Server
 
 PC can be run in two ways:
 
-1. **CLI (`pc`)** — scan a local folder or a CKAN package from the command line
+1. **CLI (`pc`)** - scan a local folder or a CKAN package from the command line
    (interactive TUI, JSON, plain text or HTML output).
-2. **HTTP server (`pc-server`)** — a REST API that analyzes CKAN packages on
+2. **HTTP server (`pc-server`)** - a REST API that analyzes CKAN packages on
    request, meant to be called from a web frontend.
 
 Both are built from this repository and share the same configuration file and
@@ -34,7 +34,7 @@ If no `-config` flag is given, `./pc.toml` is used.
 | `[server]`, `[server.smtp]` | server | listen address, rate limits, timeouts, CORS, admin alerts |
 
 **Startup validation:** both binaries fail fast with a clear error when the
-configuration is unusable — the CLI checks the `[test.*]` sections it needs;
+configuration is unusable - the CLI checks the `[test.*]` sections it needs;
 the server additionally validates every `[server]` value and the
 `[collector.CkanCollector]` attrs. The sections `[test.IsFreeOfKeywords]`,
 `[test.IsValidName]` and `[test.HasReadme]` are **required** (the checks
@@ -44,9 +44,9 @@ dereference them).
 
 Each `[test.<CheckName>]` section accepts:
 
-- `blacklist` — files matching these patterns are excluded from the check
-- `whitelist` — only files matching these patterns are checked
-- `keywordArguments` — check-specific arguments
+- `blacklist` - files matching these patterns are excluded from the check
+- `whitelist` - only files matching these patterns are checked
+- `keywordArguments` - check-specific arguments
 
 Only one of `blacklist`/`whitelist` may be non-empty per check.
 
@@ -81,7 +81,7 @@ keywordArguments = [
 ]
 ```
 
-Do **not** use regex in keywords — `"pass.*"` looks for the literal text
+Do **not** use regex in keywords - `"pass.*"` looks for the literal text
 `pass.*`, not a pattern.
 
 ### `[general]` limits
@@ -193,12 +193,12 @@ go build -o pc-server ./cmd/pc-server
 pc-server -config ./pc.toml
 ```
 
-The server takes **no tunable flags** (`-config` and `-help` only) — every
+The server takes **no tunable flags** (`-config` and `-help` only) - every
 setting lives in the `[server]` section and is validated at startup.
 
 ### Endpoints
 
-#### `GET /health` — liveness
+#### `GET /health` - liveness
 
 Cheap static `200`, no upstream I/O.
 
@@ -206,7 +206,7 @@ Cheap static `200`, no upstream I/O.
 { "status": "ok", "version": "1.0.0", "timestamp": "2024-01-14T10:30:00Z" }
 ```
 
-#### `GET /ready` — readiness
+#### `GET /ready` - readiness
 
 Verifies the CKAN Action API is reachable (cached ~5s) **and** the storage
 mount is readable. Healthy → `200`; not ready → `503 service_not_ready`. Both
@@ -215,12 +215,12 @@ probes are exempt from rate limiting and the analysis gate.
 #### `POST /api/v1/analyze`
 
 **Headers:**
-- `Authorization: Bearer <your-ckan-api-token>` — **optional**; omit for public packages
+- `Authorization: Bearer <your-ckan-api-token>` - **optional**; omit for public packages
 - `Content-Type: application/json`
 
 **Body:** `{ "package_id": "my-ckan-package" }`
 
-There is no `ckan_url` field — the CKAN base URL is server-side only (it was
+There is no `ckan_url` field - the CKAN base URL is server-side only (it was
 an SSRF / token-exfiltration vector). The response is the same JSON structure
 as `pc -json`, plus a `request_id` field (also in the `X-Request-Id` header).
 It includes a `details_metadata` section with the Eawag publication-metadata
@@ -243,11 +243,11 @@ curl -X POST http://localhost:8080/api/v1/analyze \
 
 ### Authentication
 
-The server has no user accounts of its own — it delegates authorization to
+The server has no user accounts of its own - it delegates authorization to
 CKAN. If a Bearer token is present it is forwarded (raw) to CKAN's
 `package_show`, so private packages the token can read are analyzable; without
 a token only public packages are. The `token` in `[collector.CkanCollector]`
-is used by the **CLI only** — the server blanks it at startup and never
+is used by the **CLI only** - the server blanks it at startup and never
 authenticates upstream calls with it. A present-but-malformed `Authorization`
 header is rejected with `invalid_request` (400). The token is never logged,
 never used as a rate-limit key, and each request's token is isolated from
@@ -279,7 +279,7 @@ Every failure uses one envelope:
 | 404 | `package_not_found` | No such package (or private + unauthorized) |
 | 404 | `not_found` | No such endpoint path |
 | 405 | `method_not_allowed` | Endpoint exists but not for this HTTP method (with `Allow` header) |
-| 422 | `malformed_resource` | A resource is malformed — missing both `url_type` and `url`, or an upload missing `name`/`url`/`size`. The message names the exact resource + package. |
+| 422 | `malformed_resource` | A resource is malformed - missing both `url_type` and `url`, or an upload missing `name`/`url`/`size`. The message names the exact resource + package. |
 | 429 | `rate_limited` | Hourly request budget exceeded (with `Retry-After`); responses served from the result cache are refunded and count against a budget `cachedRequestLimitFactor`× larger |
 | 502 | `ckan_unavailable` | CKAN unreachable or unusable: transport failure, transport-level 5xx, CKAN throttling (429), oversized/truncated response, or no answer within `ckanRequestTimeoutSeconds` |
 | 503 | `service_busy` | Concurrency limit reached (no queueing) |
@@ -291,7 +291,7 @@ Every failure uses one envelope:
 
 Notes:
 
-- **`malformed_resource` is the only code with a dynamic message** — every other
+- **`malformed_resource` is the only code with a dynamic message** - every other
   code uses a fixed, non-technical message; raw errors, CKAN bodies, URLs and
   file paths are never exposed in error envelopes (they are logged instead,
   keyed by `request_id`).
@@ -302,7 +302,7 @@ Notes:
   in the `200` body are always empty, and all `path` fields are blank (files are
   identified by name). A file that could not be read/scanned appears as a
   `skipped[]` entry with the soft reason *"The file could not be fully
-  scanned."* — the technical cause (full path, OS error) goes to the server log
+  scanned."* - the technical cause (full path, OS error) goes to the server log
   as a `scan_diagnostic` record keyed by `request_id`. CLI output is unaffected:
   its JSON/HTML/TUI keep full paths and the raw warnings.
 
@@ -314,8 +314,8 @@ See `pc.toml.example` for the full commented list.
 |---|---|---|
 | `listenAddress` | `127.0.0.1:8080` | bind address (host:port) |
 | `trustProxyHeaders` | `true` | honor `X-Real-IP` from trusted proxies |
-| `trustedProxies` | — | CIDRs allowed to set `X-Real-IP` (set this behind nginx!) |
-| `allowedOrigins` | — | CORS allow-list of exact origin URLs (your frontend) |
+| `trustedProxies` | - | CIDRs allowed to set `X-Real-IP` (set this behind nginx!) |
+| `allowedOrigins` | - | CORS allow-list of exact origin URLs (your frontend) |
 | `perIPRequestsPerHour` | 4 | per-client-IP hourly budget (0 = unlimited) |
 | `globalRequestsPerHour` | 20 | all-clients hourly budget (0 = unlimited) |
 | `cachedRequestLimitFactor` | 100 | cache hits are refunded and counted against budgets × this factor; 0 disables the refund |
@@ -326,7 +326,7 @@ See `pc.toml.example` for the full commented list.
 | `logClientIP` | `true` | record the client IP in access logs |
 | `requestTimeoutSeconds` | 300 | hard bound for a WHOLE analysis (CKAN call + checks) → `analysis_timeout` (504) |
 | `ckanRequestTimeoutSeconds` | 10 | bound for the single CKAN `package_show` call → `ckan_unavailable` (502); must be ≤ `requestTimeoutSeconds` |
-| `resultCacheDir` | — (disabled) | directory for the per-package result cache; empty disables caching |
+| `resultCacheDir` | - (disabled) | directory for the per-package result cache; empty disables caching |
 | `resultCacheMaxEntries` | 500 | max cached packages before oldest-entry eviction |
 | `resultCacheMaxAgeHours` | 0 (no limit) | max age of a cache entry; 0 disables the age limit |
 
@@ -338,15 +338,15 @@ with a `Retry-After` header.
 
 **Server-only** (the CLI never caches). When `resultCacheDir` is set, each
 successful analysis is stored as one JSON file per package, keyed on the
-package's CKAN `metadata_modified` timestamp — which the mandatory
+package's CKAN `metadata_modified` timestamp - which the mandatory
 `package_show` call already carries, so freshness costs no extra CKAN request.
 A repeat request for an unchanged package is served from the cache in a single
 CKAN round-trip (response header `X-PC-Cache: hit`/`miss`; the `package_show`
 still runs per request, so authorization is enforced exactly as without the
 cache). Entries self-invalidate when `pc.toml` or the server version changes
 or when the package changes in CKAN; `resultCacheMaxAgeHours` can additionally
-age entries out, but is off by default — CKAN's `metadata_modified` alone
-decides freshness. Cached files can contain private-package findings — keep
+age entries out, but is off by default - CKAN's `metadata_modified` alone
+decides freshness. Cached files can contain private-package findings - keep
 the directory readable by the server user only.
 
 ### Admin email alerts (`[server.smtp]`)
@@ -354,14 +354,14 @@ the directory readable by the server user only.
 Optional. When configured, the server emails the admin list on every
 **server-fault response**:
 
-- `internal_error` (500) — any unexpected server-side error, **including a
+- `internal_error` (500) - any unexpected server-side error, **including a
   recovered panic** in a handler;
-- `resource_unreadable` (500) — an upload file missing/unreadable on the
+- `resource_unreadable` (500) - an upload file missing/unreadable on the
   storage mount (often a stale NFS mount).
 
 Client-side errors (4xx) and operational conditions (`ckan_unavailable`,
 `service_busy`, `analysis_timeout`, `server_restarting`, `service_not_ready`)
-do **not** alert. The mail carries no secrets — only `request_id`, code,
+do **not** alert. The mail carries no secrets - only `request_id`, code,
 method, path and `package_id`; the full cause/stack stays in the logs, keyed
 by `request_id`.
 
@@ -378,7 +378,7 @@ settings are validated at startup (valid `from`/`to`, port 1–65535).
 
 ### HTTPS
 
-`pc-server` speaks **plain HTTP only** — it has no TLS listener. Run it behind
+`pc-server` speaks **plain HTTP only** - it has no TLS listener. Run it behind
 a TLS-terminating reverse proxy (nginx) and bind it to localhost
 (`listenAddress = "127.0.0.1:8080"`). Because the CKAN API token travels in the
 `Authorization` header, HTTPS in front is **mandatory** for any non-local

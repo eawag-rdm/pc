@@ -745,8 +745,8 @@ func TestRequestTransportError(t *testing.T) {
 }
 
 // TestRequestBodyReadFailure asserts that a connection dying mid-body (HTTP 200
-// received, but the response body cut short) surfaces a transport *CKANError —
-// the same class as a failed dial — rather than a raw read error the server
+// received, but the response body cut short) surfaces a transport *CKANError -
+// the same class as a failed dial - rather than a raw read error the server
 // would map to internal_error.
 func TestRequestBodyReadFailure(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

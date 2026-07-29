@@ -3,7 +3,7 @@
 //
 // A collector maps a source document (e.g. a CKAN package_show response) into
 // Entities, attaching fields and the checks to run against them. The checks
-// are recorded during collection but executed later by RunChecks — the same
+// are recorded during collection but executed later by RunChecks - the same
 // collect-then-check split used for files elsewhere in pc.
 package metadata
 
@@ -20,7 +20,7 @@ type Rule struct {
 	Fn   func(values []string) string
 }
 
-// Entity is the uniform unit of metadata — a "package" or a "resource" (or a
+// Entity is the uniform unit of metadata - a "package" or a "resource" (or a
 // future kind). It owns its fields and the checks registered against them.
 type Entity struct {
 	Kind   string              // "package" | "resource"
@@ -42,7 +42,7 @@ func (e *Entity) GetValue() []structs.File { return nil }
 
 // Field records a field's values and registers zero or more checks against it
 // in one atomic call. Blank/whitespace-only values are dropped; "false" and
-// "0" are kept. The checks are stored, not run — see RunChecks.
+// "0" are kept. The checks are stored, not run - see RunChecks.
 func (e *Entity) Field(name string, values []string, rules ...Rule) {
 	var kept []string
 	for _, v := range values {

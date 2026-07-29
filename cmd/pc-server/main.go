@@ -16,7 +16,7 @@ import (
 )
 
 func main() {
-	// The server is configured entirely from the TOML file — no tunable flags.
+	// The server is configured entirely from the TOML file - no tunable flags.
 	// The only argument is the optional config-file location (with a sensible
 	// search fallback); everything else, including the listen address, lives in
 	// the [server] section of pc.toml.

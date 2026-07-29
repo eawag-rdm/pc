@@ -242,10 +242,10 @@ func clientIP(r *http.Request) string {
 
 // RateLimitGlobal enforces the global (all-clients) fixed-hourly-window cap
 // (§4). It is the INNER limiter (backstop): it runs AFTER the per-IP check, so a
-// request already rejected by its per-IP cap never reaches — and never consumes
-// — the shared global counter. It runs before any CKAN call; the token is never
+// request already rejected by its per-IP cap never reaches - and never consumes
+// - the shared global counter. It runs before any CKAN call; the token is never
 // consulted. On rejection it emits the rate_limited slog event and renders the
-// rate_limited envelope with a Retry-After header. It wraps /analyze only —
+// rate_limited envelope with a Retry-After header. It wraps /analyze only -
 // /health and /ready never see it.
 func (h *Handler) RateLimitGlobal(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -256,7 +256,7 @@ func (h *Handler) RateLimitGlobal(next http.Handler) http.Handler {
 		ok, count, limit, retryAfter := h.limiter.allow(globalKey, scopeGlobal)
 		if !ok {
 			// Log the GLOBAL bucket key (the key the limiter actually counts on for
-			// this scope), not the per-IP key — a scope=global event carrying a
+			// this scope), not the per-IP key - a scope=global event carrying a
 			// per-IP key is misleading. The per-IP path (RateLimitPerIP) logs its
 			// own clientIPKey.
 			h.logRateLimited(r, scopeGlobal, hashIPKey(globalKey), count, limit, retryAfter)
@@ -297,7 +297,7 @@ func (h *Handler) RateLimitPerIP(next http.Handler) http.Handler {
 // frees in time the request proceeds, otherwise it is rejected with the
 // service_busy envelope (503) plus a Retry-After header so the frontend can
 // render a busy state and clients can back off. The slot is released when the
-// handler returns. There is no unbounded queue — the wait is capped.
+// handler returns. There is no unbounded queue - the wait is capped.
 func (h *Handler) Concurrency(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if h.sem == nil {
@@ -358,7 +358,7 @@ func writeRateLimited(w http.ResponseWriter, r *http.Request, retryAfter time.Du
 }
 
 // logRateLimited emits the rate_limited slog event (§8): request_id, scope,
-// key (a hashed/truncated IP — never the token), count, limit, retry_after.
+// key (a hashed/truncated IP - never the token), count, limit, retry_after.
 func (h *Handler) logRateLimited(r *http.Request, scope rateScope, key string, count, limit int, retryAfter time.Duration) {
 	h.logger.LogAttrs(r.Context(), slog.LevelWarn, "rate_limited",
 		slog.String("request_id", GetRequestID(r)),
@@ -384,7 +384,7 @@ func (h *Handler) Recover(next http.Handler) http.Handler {
 				// RequestContext and carries no request_id. Fall back to the
 				// X-Request-Id response header (set by RequestContext on the shared
 				// ResponseWriter) so the panic stack is keyed by the SAME id the
-				// client envelope and admin alert cite — the same fallback renderError
+				// client envelope and admin alert cite - the same fallback renderError
 				// uses. Without this the only record carrying the stack would have an
 				// empty request_id, breaking log correlation.
 				rid := GetRequestID(r)
@@ -425,7 +425,7 @@ func (h *Handler) CORS(next http.Handler) http.Handler {
 		// Vary on Origin UNCONDITIONALLY so a shared cache keys on the request
 		// Origin for every CORS-handled request. Setting it only for allowed
 		// origins would let a cache store a header-less response for a disallowed
-		// origin and replay it to an allowed one (or vice-versa) — a
+		// origin and replay it to an allowed one (or vice-versa) - a
 		// cache-poisoning vector. It must be set whether or not the origin passes
 		// the allow-list check below.
 		w.Header().Add("Vary", "Origin")
@@ -458,8 +458,8 @@ func (h *Handler) originAllowed(origin string) bool {
 }
 
 // knownRoutes maps every path registered on the mux (server.go New) to the
-// methods it serves, so requests that match no route get catalogue envelopes —
-// not_found (404) / method_not_allowed (405) — instead of the mux's plain-text
+// methods it serves, so requests that match no route get catalogue envelopes -
+// not_found (404) / method_not_allowed (405) - instead of the mux's plain-text
 // defaults (§3: every failure uses the envelope). HEAD is listed alongside GET
 // because the mux serves it implicitly; OPTIONS never reaches this (the CORS
 // middleware answers preflights upstream). MUST be kept in sync with the mux

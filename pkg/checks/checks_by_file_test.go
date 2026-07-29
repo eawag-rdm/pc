@@ -262,7 +262,7 @@ func TestHasFileNameSpecialChars(t *testing.T) {
 				},
 			},
 		},
-		// 4) Multiple specials—only first is reported ('[')
+		// 4) Multiple specials-only first is reported ('[')
 		{
 			name: "Multiple specials",
 			file: structs.File{Name: "file[name]{ok}.txt"},
@@ -284,7 +284,7 @@ func TestHasFileNameSpecialChars(t *testing.T) {
 				},
 			},
 		},
-		// 6) Non-ASCII rune (e.g. “é”)—should pass unless you explicitly forbid ≥128
+		// 6) Non-ASCII rune (e.g. “é”)-should pass unless you explicitly forbid ≥128
 		{
 			name:     "Non-ASCII allowed",
 			file:     structs.File{Name: "café.txt"},
@@ -716,7 +716,7 @@ func TestIsFreeOfKeywords_NormalFileNotSkipped(t *testing.T) {
 	// ...and it must have actually RUN: the planted "password" keyword
 	// (configured in newKeywordConfig) must be reported. Asserting the positive
 	// finding catches a regression where the file is silently not scanned (no
-	// skip message, but also no findings — which the old test would have passed).
+	// skip message, but also no findings - which the old test would have passed).
 	var found bool
 	for _, m := range messages {
 		if !m.Skipped && strings.Contains(m.Content, "password") {

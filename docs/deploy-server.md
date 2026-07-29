@@ -53,10 +53,10 @@ Use the two probes for **different** purposes:
 - **`/ready` is the readiness gate** consulted by a load balancer or
   orchestrator to decide whether to *route traffic* to the instance. It returns
   `503 service_not_ready` while CKAN or the mount is unavailable, so traffic is
-  withheld — but the container is left running, so it recovers on its own once
+  withheld - but the container is left running, so it recovers on its own once
   the dependency returns. Do **not** wire `/ready` to a container restart.
 
-Example Docker `HEALTHCHECK` (liveness — matches the committed compose):
+Example Docker `HEALTHCHECK` (liveness - matches the committed compose):
 
 ```dockerfile
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 --start-period=5s \
@@ -69,7 +69,7 @@ The URL port must match the `[server] listenAddress` port in `pc.toml`.
 
 ## 3. Docker image & compose
 
-A **`Dockerfile`** and a **`docker-compose.yml`** ship in the repository root —
+A **`Dockerfile`** and a **`docker-compose.yml`** ship in the repository root -
 use them rather than copying the inline snippets here. The `Dockerfile` is a
 minimal multi-stage build (static CGO-off binary on `alpine`) running
 unprivileged; the server is configured **entirely from `pc.toml`** (no flags)
@@ -89,7 +89,7 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        PC_UID: "10001"   # uid:gid the server runs as — set to the
+        PC_UID: "10001"   # uid:gid the server runs as - set to the
         PC_GID: "10001"   # CKAN storage share's owner so the mount is readable
 ```
 
@@ -113,7 +113,7 @@ ckan_storage_path` in `pc.toml`. The committed compose also sets
 
 `pc-server` writes **structured JSON logs to stdout** (`log/slog`) and does
 **not** write or rotate log files itself. Rotation and retention are the
-responsibility of the **Docker log driver** — configure them there.
+responsibility of the **Docker log driver** - configure them there.
 
 `docker run`:
 
@@ -126,7 +126,7 @@ docker run \
 ```
 
 `docker-compose.yml` (the committed compose already sets this `logging:`
-block — rotate at 10 MiB, keep 5 files):
+block - rotate at 10 MiB, keep 5 files):
 
 ```yaml
 services:
@@ -152,7 +152,7 @@ Notes:
 ## 5. Reverse proxy (nginx) and `trustedProxies`
 
 The rate limiter keys on the **client IP**. Behind nginx the real client IP
-arrives in a header, so the server reads `X-Real-IP` — but **only** when the
+arrives in a header, so the server reads `X-Real-IP` - but **only** when the
 connection's `RemoteAddr` is within a configured trusted-proxy CIDR. This
 prevents a client from spoofing `X-Real-IP` to evade or poison rate limiting.
 
@@ -206,7 +206,7 @@ from = "pc-server@example.org"   # From / envelope-sender address
 to   = ["rdm@example.org"]       # admin recipients (>= 1 required when enabled)
 ```
 
-It is a **plain SMTP relay with NO authentication** — point it at a relay that
+It is a **plain SMTP relay with NO authentication** - point it at a relay that
 accepts mail from the container's network.
 
 - **Disabled** unless `host` is set **and** `to` has at least one recipient.
@@ -218,9 +218,9 @@ accepts mail from the container's network.
   panic) and `resource_unreadable`. 4xx responses and the other 5xx codes
   (`analysis_timeout`, `ckan_unavailable`, `service_busy`, `service_not_ready`,
   `server_restarting`) are **not** server faults and never alert. **Every** such
-  fault is reported — there is no rate cap or dedup.
+  fault is reported - there is no rate cap or dedup.
 - **The mail carries no secrets.** It contains only the `request_id`, the error
-  `code`, and the request `method`, `path` and `package_id` — never the token,
+  `code`, and the request `method`, `path` and `package_id` - never the token,
   CKAN URL, raw upstream body, internal file paths or a stack trace. The full
   cause and stack stay in the server logs, keyed by the same `request_id`.
 
@@ -234,7 +234,7 @@ relay never blocks request handling or shutdown; delivery failures are logged
 ## 7. Graceful shutdown
 
 On `SIGTERM` / `SIGINT` the server:
-1. flips into **draining** mode — new `POST /api/v1/analyze` requests are
+1. flips into **draining** mode - new `POST /api/v1/analyze` requests are
    rejected with `503 server_restarting`;
 2. stops accepting new connections and **waits for in-flight analyses to
    finish**, bounded by a drain timeout that is larger than
@@ -267,13 +267,13 @@ the process **exits non-zero immediately** rather than hanging.
   raises `WriteTimeout` with it.
 - Request bodies are capped (the analyze body is a tiny JSON object).
 - Two nested timeouts bound an analysis: `ckanRequestTimeoutSeconds`
-  (default **10s**) caps the single CKAN `package_show` call — a CKAN that
+  (default **10s**) caps the single CKAN `package_show` call - a CKAN that
   cannot answer a metadata GET within it is reported as `ckan_unavailable`
-  (502) — and `requestTimeoutSeconds` (default **300s**) caps the whole
+  (502) - and `requestTimeoutSeconds` (default **300s**) caps the whole
   request including the checks phase; when it fires the checks stop between
   files and the client receives `analysis_timeout` (504).
 - A panic in any handler is recovered and returned as `internal_error` (500)
   without crashing the process or leaking a stack trace to the client (this
-  also fires an admin alert — see §6). A panic inside a checks worker
+  also fires an admin alert - see §6). A panic inside a checks worker
   goroutine is likewise converted into a logged failure instead of killing
   the process.

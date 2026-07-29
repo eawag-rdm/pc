@@ -298,8 +298,8 @@ func ckanPCConfig(ckanURL string) *config.Config {
 }
 
 // TestHandler_Analyze_NoUploadResources_OK asserts that a package which EXISTS
-// (package_show 200) but has zero analyzable upload resources — here the fixture
-// serves only an external-link resource — is NOT an error. The analysis runs and
+// (package_show 200) but has zero analyzable upload resources - here the fixture
+// serves only an external-link resource - is NOT an error. The analysis runs and
 // returns a normal 200 result (no file issues) carrying request_id. This is the
 // fixed behavior: package_not_found is reserved for a genuine CKAN 404, not for
 // a real package whose resources happen to be all links.
@@ -382,7 +382,7 @@ func mapKeys(m map[string]json.RawMessage) []string {
 
 // TestHandler_Analyze_NoTokenBleed proves concurrent requests with different
 // tokens never cross: each request's token must reach CKAN as-is. Every request
-// is verified INDIVIDUALLY by its own index — each goroutine uses a UNIQUE
+// is verified INDIVIDUALLY by its own index - each goroutine uses a UNIQUE
 // package id ("pkg-<i>") and a UNIQUE token ("token-for-<i>"), and we assert
 // that all N requests were observed and each one carried its own token (no slot
 // is aliased/overwritten by another index). Run under -race to also catch
@@ -470,7 +470,7 @@ func TestRespondJSON(t *testing.T) {
 // IGNORED so a request can never redirect the server's CKAN base (the removed
 // SSRF + token-exfiltration vector). We decode a body that smuggles those
 // fields and assert (a) package_id is still parsed, and (b) the decoded struct
-// exposes no field that captured the attacker URL — proving AnalyzeRequest has
+// exposes no field that captured the attacker URL - proving AnalyzeRequest has
 // no CkanURL/BaseURL field for the server to honor.
 func TestAnalyzeRequest_JSONParsing(t *testing.T) {
 	const malicious = `{"package_id":"my-package","ckan_url":"https://evil.example.com","base_url":"https://evil.example.com"}`
@@ -506,7 +506,7 @@ func TestAnalyzeRequest_JSONParsing(t *testing.T) {
 // must reach the collector and NOT 401: the single package_show drives the
 // outcome and an empty token is forwarded as an empty Authorization header
 // (§2, §5). The fakeCKAN fixture serves only an external-link resource, so the
-// package exists with zero upload files and the analysis returns a normal 200 —
+// package exists with zero upload files and the analysis returns a normal 200 -
 // the point is that it is NOT invalid_token (401).
 func TestHandler_Analyze_NoToken_PublicPath(t *testing.T) {
 	var mu sync.Mutex
@@ -559,7 +559,7 @@ func TestAccessLog_RecordsPackageID(t *testing.T) {
 	req = req.WithContext(context.WithValue(req.Context(), CKANTokenKey, "tok"))
 
 	rr := httptest.NewRecorder()
-	// AccessLog wraps the real handler — exactly the production layering.
+	// AccessLog wraps the real handler - exactly the production layering.
 	handler.AccessLog(http.HandlerFunc(handler.Analyze)).ServeHTTP(rr, req)
 
 	mu.Lock()
@@ -648,7 +648,7 @@ func TestHandler_Analyze_ConcurrentPDF_RaceClean(t *testing.T) {
 				t.Errorf("expected 200 for PDF-bearing package, got %d (body: %s)", rr.Code, rr.Body.String())
 				return
 			}
-			// The response must list exactly this request's single PDF — proof the
+			// The response must list exactly this request's single PDF - proof the
 			// snapshot is consistent and not bleeding another request's state.
 			var obj map[string]json.RawMessage
 			if err := json.Unmarshal(rr.Body.Bytes(), &obj); err != nil {
@@ -703,7 +703,7 @@ func TestHandler_Analyze_ResultCache(t *testing.T) {
 		t.Errorf("first: X-PC-Cache = %q, want miss", got)
 	}
 
-	// 2nd request, unchanged package: hit — same body except request_id. Use a
+	// 2nd request, unchanged package: hit - same body except request_id. Use a
 	// distinct request id (analyzeWithToken derives it from the package id) so
 	// the id-injection assertion below is meaningful.
 	body2 := bytes.NewBufferString(`{"package_id":"cache-pkg"}`)
@@ -754,13 +754,13 @@ func TestHandler_Analyze_ResultCache(t *testing.T) {
 // (spec §2): a request Bearer token is forwarded to CKAN verbatim; a request
 // WITHOUT a token produces an anonymous upstream call (no Authorization
 // header); and the operator token from the TOML config is NEVER sent by the
-// server under either path — it exists for the CLI only.
+// server under either path - it exists for the CLI only.
 func TestHandler_Analyze_TokenForwarding(t *testing.T) {
 	var mu sync.Mutex
 	var gotAuth []string
 	ckan := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
-		// Header.Get returns "" when the header is absent — exactly the
+		// Header.Get returns "" when the header is absent - exactly the
 		// "anonymous request" observation we want to record.
 		gotAuth = append(gotAuth, r.Header.Get("Authorization"))
 		mu.Unlock()
@@ -879,7 +879,7 @@ func mustJSON(s string) string {
 // TestHandler_Analyze_ValidPackageNames asserts valid CKAN names and lowercase
 // UUIDs pass validation and therefore reach the collector. The fixture serves a
 // package with only an external-link resource, so a validated name produces a
-// normal 200 result (no uploads to analyze) — NOT a 400 invalid_package_name.
+// normal 200 result (no uploads to analyze) - NOT a 400 invalid_package_name.
 // Asserting the 200 outcome proves the validated name actually reached CKAN
 // (an invalid name would be rejected with 400 BEFORE any CKAN call).
 func TestHandler_Analyze_ValidPackageNames(t *testing.T) {
@@ -1153,7 +1153,7 @@ func TestHandler_Analyze_BodyTooLarge(t *testing.T) {
 
 // TestHandler_Analyze_Timeout asserts a request whose hard timeout fires while
 // the analysis is still running returns a clean 504 envelope carrying the
-// analysis_timeout code (spec §2) — NOT ckan_unavailable, since the deadline
+// analysis_timeout code (spec §2) - NOT ckan_unavailable, since the deadline
 // bounds the whole analysis rather than indicating CKAN is unreachable. It uses
 // a CKAN that parks until released rather than a fixed wall-clock sleep, so the
 // test does not burn real time and the 504 is driven purely by the 1s
@@ -1229,8 +1229,8 @@ func TestHandler_Analyze_Timeout_HungUpstream(t *testing.T) {
 
 // TestHandler_Analyze_ClientCancelled_ServiceBusy drives Analyze with a request
 // context that is ALREADY cancelled (the client went away). This exercises the
-// ctx.Err()==context.Canceled branch — distinct from the DeadlineExceeded (504)
-// branch — which must render service_busy (503), not gateway_timeout. The
+// ctx.Err()==context.Canceled branch - distinct from the DeadlineExceeded (504)
+// branch - which must render service_busy (503), not gateway_timeout. The
 // collector's in-flight call aborts immediately on the cancelled context, so the
 // handler sees a non-nil ctx.Err() that is NOT a deadline.
 func TestHandler_Analyze_ClientCancelled_ServiceBusy(t *testing.T) {
@@ -1265,7 +1265,7 @@ func TestHandler_Analyze_ClientCancelled_ServiceBusy(t *testing.T) {
 
 // TestHandler_Analyze_UnknownCKANType_InternalNoLeak: CKAN answers HTTP 200 with
 // success:false and an UNRECOGNISED error.__type ("Validation Error"). This is
-// not a 401/403/404/transport-5xx, so it maps to internal_error (500) — CKAN was
+// not a 401/403/404/transport-5xx, so it maps to internal_error (500) - CKAN was
 // reachable, so it is NOT ckan_unavailable. Critically, the verbose CKAN body
 // text (including the __type and any message) must NOT leak into the client
 // envelope (spec §3: raw CKAN bodies are kept out and logged instead).
@@ -1303,7 +1303,7 @@ func TestHandler_Analyze_UnknownCKANType_InternalNoLeak(t *testing.T) {
 // handler maps it to malformed_resource (422). Unlike a server-fault envelope,
 // the collector's authored, user-facing message IS surfaced verbatim so the user
 // learns the exact resource + package to fix (spec §3). The message names only
-// the resource and package — no token, URL or internal path.
+// the resource and package - no token, URL or internal path.
 func TestHandler_Analyze_MalformedResource_Surfaced(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -1388,7 +1388,7 @@ func TestWithRequestID_Additive(t *testing.T) {
 // TestHandler_Analyze_SlowCKAN_TimesOutAsUnavailable asserts the dedicated CKAN
 // call deadline ([server] ckanRequestTimeoutSeconds) is enforced: a CKAN that
 // does not answer package_show within it is treated as unavailable
-// (ckan_unavailable, 502) at ~the configured bound — it does not eat the
+// (ckan_unavailable, 502) at ~the configured bound - it does not eat the
 // whole-analysis (requestTimeoutSeconds) budget.
 func TestHandler_Analyze_SlowCKAN_TimesOutAsUnavailable(t *testing.T) {
 	release := make(chan struct{})

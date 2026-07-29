@@ -29,7 +29,7 @@ const maxAnalyzeBodyBytes = 4 << 10 // 4 KiB
 const serverVersion = "1.0.0"
 
 // The fallback timeouts (applied only when the config or its Server section is
-// nil, i.e. hand-built configs in tests — ParseConfig always sets both fields)
+// nil, i.e. hand-built configs in tests - ParseConfig always sets both fields)
 // derive from the same config defaults, so there is one source of truth.
 const (
 	defaultRequestTimeout     = time.Duration(config.DefaultServerRequestTimeoutSeconds) * time.Second
@@ -281,7 +281,7 @@ func (h *Handler) Analyze(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(ctxErr, context.DeadlineExceeded) {
 			// Past the hard upper bound. The deadline bounds the WHOLE analysis
 			// (CKAN call + local file reads + checks), so this is an
-			// analysis_timeout (504) — NOT ckan_unavailable, which is reserved
+			// analysis_timeout (504) - NOT ckan_unavailable, which is reserved
 			// for CKAN genuinely being unreachable.
 			writeError(w, r, CodeAnalysisTimeout)
 		} else {
@@ -411,7 +411,7 @@ func (h *Handler) runAnalysis(ctx context.Context, packageID, token string) (bod
 
 	// Result cache: metadata_modified from the fetched document is the
 	// freshness signal (CKAN bumps it on every dataset/resource change). On a
-	// hit the expensive file mapping + checks phase is skipped entirely — the
+	// hit the expensive file mapping + checks phase is skipped entirely - the
 	// request cost one CKAN round-trip. Authorization is unaffected: a caller
 	// whose token cannot read the package failed the fetch above and never
 	// reaches the cache.
@@ -438,7 +438,7 @@ func (h *Handler) runAnalysis(ctx context.Context, packageID, token string) (bod
 	}
 
 	// A package that exists (package_show returned 200) but has zero analyzable
-	// upload resources — e.g. one whose resources are all external links — is NOT
+	// upload resources - e.g. one whose resources are all external links - is NOT
 	// an error: run the checks (which yield no file issues) and return a normal
 	// result. package_not_found is reserved for the CKAN 404 above.
 
@@ -446,7 +446,7 @@ func (h *Handler) runAnalysis(ctx context.Context, packageID, token string) (bod
 	// cannot fail), then the file checks (accumulate into GlobalLogger /
 	// PDFTracker). ctx carries the whole-analysis deadline: the checks loop stops
 	// between files once it fires, so the spec's hard upper bound holds over the
-	// checks phase too — the handler then maps the expired context to
+	// checks phase too - the handler then maps the expired context to
 	// analysis_timeout (504).
 	md := metadata.CkanMetadataFromJSON(result)
 	messages := append(metadata.RunChecks(md), utils.ApplyAllChecks(ctx, pcConfigCopy, files, true)...)
@@ -458,7 +458,7 @@ func (h *Handler) runAnalysis(ctx context.Context, packageID, token string) (bod
 	// acknowledgement per affected file. The buffer is cleared, so the
 	// formatter's warnings[]/errors[] arrays are always empty in server
 	// responses. Then any remaining absolute FileStore paths are blanked from
-	// the outgoing messages. The CLI shares none of this — its formatters read
+	// the outgoing messages. The CLI shares none of this - its formatters read
 	// the untouched GlobalLogger and full paths.
 	messages = append(messages, h.convertScanDiagnostics(ctx, packageID)...)
 	scrubMessagePaths(messages)
@@ -484,7 +484,7 @@ func (h *Handler) runAnalysis(ctx context.Context, packageID, token string) (bod
 }
 
 // unscannedReason is the soft, user-facing acknowledgement shown (as a skipped[]
-// entry) for a file whose content could not be fully scanned — read error,
+// entry) for a file whose content could not be fully scanned - read error,
 // unreadable archive, or an internal check failure. The technical cause stays in
 // the server log, keyed by request_id.
 const unscannedReason = "The file could not be fully scanned."
@@ -496,7 +496,7 @@ const unscannedReason = "The file could not be fully scanned."
 // Subject display name) yields ONE soft, path-free skip acknowledgement for the
 // response. Subject-less diagnostics (CKAN/transport/config notes) are
 // log-only. Must be called under analysisMu, before FormatResults reads the
-// logger — clearing the buffer here is what keeps warnings[]/errors[] empty in
+// logger - clearing the buffer here is what keeps warnings[]/errors[] empty in
 // server responses.
 func (h *Handler) convertScanDiagnostics(ctx context.Context, packageID string) []structs.Message {
 	diags := output.GlobalLogger.GetMessages()
@@ -581,14 +581,14 @@ func countSkipped(messages []structs.Message) int {
 //     ckan_unavailable (CKAN really is unreachable/erroring);
 //   - explicit 401 -> invalid_token, 403 -> access_denied;
 //   - 429 (CKAN throttling the server) -> ckan_unavailable: an upstream
-//     availability condition, not a server fault — no internal_error, no
+//     availability condition, not a server fault - no internal_error, no
 //     admin alert;
 //   - 404 (nonexistent OR private-unauthorized under CKAN's default
 //     reveal_private_datasets=false), including a 200+success:false body that
 //     resolves to 404 -> package_not_found;
 //   - a 200+success:false body with an UNRECOGNISED error.__type (which
 //     ckanActionErrorStatus resolves to 500 with StatusFromBody set): CKAN was
-//     reachable and answered 200, so this is not "we can't reach CKAN" — it is an
+//     reachable and answered 200, so this is not "we can't reach CKAN" - it is an
 //     unexpected upstream condition mapped to internal_error so the verbose CKAN
 //     __type never leaks into the client envelope;
 //   - anything else -> internal_error.

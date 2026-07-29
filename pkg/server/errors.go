@@ -44,16 +44,16 @@ var errorCatalogue = map[string]catalogueEntry{
 	CodeInvalidPackageName: {http.StatusBadRequest, "That dataset name contains characters CKAN doesn't allow. Please check the name and try again."},
 	CodeInvalidRequest:     {http.StatusBadRequest, "Your request was malformed. Please check it and try again."},
 	CodeInvalidToken:       {http.StatusUnauthorized, "The access token wasn't accepted. Please check that it's correct and hasn't expired."},
-	CodeTokenRequired:      {http.StatusUnauthorized, "This dataset isn't publicly readable and no access token was provided. Please pass your access token — you can create one in your CKAN user profile."},
+	CodeTokenRequired:      {http.StatusUnauthorized, "This dataset isn't publicly readable and no access token was provided. Please pass your access token - you can create one in your CKAN user profile."},
 	CodeAccessDenied:       {http.StatusForbidden, "Your token doesn't have permission to read this dataset."},
-	CodePackageNotFound:    {http.StatusNotFound, "We couldn't find a dataset with that name. Either the name is misspelled, or it's private — make it public in CKAN, or provide your access token to that package."},
+	CodePackageNotFound:    {http.StatusNotFound, "We couldn't find a dataset with that name. Either the name is misspelled, or it's private - make it public in CKAN, or provide your access token to that package."},
 	CodeNotFound:           {http.StatusNotFound, "There's nothing at this URL. Please check the endpoint path."},
 	CodeMethodNotAllowed:   {http.StatusMethodNotAllowed, "This endpoint doesn't support that HTTP method."},
 	CodeRateLimited:        {http.StatusTooManyRequests, "You've reached the limit of analyses for this hour. Please try again later."},
 	CodeServiceBusy:        {http.StatusServiceUnavailable, "The analysis service is busy right now. Please try again in a minute. If this keeps happening, contact us."},
 	CodeServiceNotReady:    {http.StatusServiceUnavailable, "The service isn't ready yet (the data repository or storage is unavailable). Please try again shortly."},
 	CodeServerRestarting:   {http.StatusServiceUnavailable, "The service is restarting. Please try again in a moment."},
-	CodeCKANUnavailable:    {http.StatusBadGateway, "We can't reach the data repository right now. This is usually temporary — please try again shortly."},
+	CodeCKANUnavailable:    {http.StatusBadGateway, "We can't reach the data repository right now. This is usually temporary - please try again shortly."},
 	CodeMalformedResource:  {http.StatusUnprocessableEntity, "A resource in this dataset is malformed and can't be processed. Please check the dataset and try again."},
 	CodeAnalysisTimeout:    {http.StatusGatewayTimeout, "The analysis took too long and was stopped. Please try again; if it keeps happening, contact us."},
 	CodeResourceUnreadable: {http.StatusInternalServerError, "A file in this dataset couldn't be read from storage."},
@@ -145,7 +145,7 @@ func renderError(w http.ResponseWriter, r *http.Request, code string, messageOve
 	json.NewEncoder(w).Encode(ErrorResponse{Error: body})
 
 	// After the response is written, email the admin list for server-fault
-	// responses ONLY (internal_error — including a recovered panic — and
+	// responses ONLY (internal_error - including a recovered panic - and
 	// resource_unreadable). 4xx and the other 5xx codes (analysis_timeout,
 	// ckan_unavailable, service_busy, ...) are not server faults and never alert.
 	// Notify is non-blocking and nil-safe (a nil alerter = alerts disabled).

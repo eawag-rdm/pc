@@ -298,7 +298,7 @@ func rateTestHandler(t *testing.T, srv *config.ServerConfig) (*Handler, *bytes.B
 
 // TestRateLimitPerIP_429AndRetryAfter: the per-IP middleware returns the
 // rate_limited envelope with a Retry-After header once the cap is exceeded, and
-// the rate_limited log line carries a hashed key — never the token.
+// the rate_limited log line carries a hashed key - never the token.
 func TestRateLimitPerIP_429AndRetryAfter(t *testing.T) {
 	const token = "secret-token-do-not-log"
 	srv := &config.ServerConfig{
@@ -410,7 +410,7 @@ func TestRateLimitGlobal_429(t *testing.T) {
 // ordering: per-IP is the OUTER (primary) limit and global is the INNER
 // (backstop), so per-IP runs FIRST. Because the fixed-window limiter increments
 // its counter even when it rejects (allow() does e.count++ before the cap
-// check), a per-IP-over-cap request must NOT reach the global limiter — otherwise
+// check), a per-IP-over-cap request must NOT reach the global limiter - otherwise
 // a single abusive IP, already past its own cap, would burn the shared global
 // budget on every rejected request and lock everyone else out.
 //
@@ -473,7 +473,7 @@ func TestRateLimitOrder_PerIPRejectionDoesNotConsumeGlobal(t *testing.T) {
 //	(a) a second request that arrives while the slot is busy SUCCEEDS if the
 //	    holder finishes within the busy-wait window; and
 //	(b) a second request that is still blocked after the busy-wait window gets
-//	    the busy response — HTTP 503, envelope code service_busy, and a
+//	    the busy response - HTTP 503, envelope code service_busy, and a
 //	    Retry-After header.
 func TestConcurrency_ServiceBusyNoQueueing(t *testing.T) {
 	// Sub-case (a): the waiter proceeds once the holder releases within the
@@ -515,7 +515,7 @@ func TestConcurrency_ServiceBusyNoQueueing(t *testing.T) {
 		// slot. Without this barrier the scheduler could let the holder release
 		// and the waiter take the fast path before ever parking, so an
 		// immediate-reject regression (no busy-wait) would still reach 200 and
-		// ship green. If the waiter returns here it did NOT wait — fail loudly.
+		// ship green. If the waiter returns here it did NOT wait - fail loudly.
 		select {
 		case <-waiterDone:
 			t.Fatal("waiter returned before the slot was freed (it must WAIT in the gate, not reject)")

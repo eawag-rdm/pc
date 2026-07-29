@@ -6,7 +6,7 @@ import "strconv"
 // response into a Metadata: one "package" entity plus one "resource" entity
 // per resource, with the Eawag publication checks registered against them.
 //
-// This is the pure mapping step — no IO — so it is fully unit-testable. A
+// This is the pure mapping step - no IO - so it is fully unit-testable. A
 // network-bound collector wraps this after fetching and parsing the response.
 func CkanMetadataFromJSON(result map[string]any) *Metadata {
 	m := &Metadata{}
@@ -22,7 +22,7 @@ func CkanMetadataFromJSON(result map[string]any) *Metadata {
 
 	// embargo: when set, the date must already have passed. DateExpired passes
 	// when the field is absent (nothing to check). The exact CKAN key is
-	// assumed to be "embargo" — confirm against a real embargoed package.
+	// assumed to be "embargo" - confirm against a real embargoed package.
 	pkg.Field("embargo", one(str(result, "embargo")), DateExpired())
 
 	for _, r := range objSlice(result, "resources") {

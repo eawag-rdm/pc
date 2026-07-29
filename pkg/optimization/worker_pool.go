@@ -122,7 +122,7 @@ func (wp *WorkerPool) processWorkItem(work WorkItem) []structs.Message {
 // panic in a pool goroutine is not covered by any request-level recover, so
 // without this a single buggy check (or unreadable/crafted archive) kills the
 // whole process. The panic value and stack go to stderr for the operator; the
-// buffered GlobalLogger gets only a short, path-free notice — tagged with
+// buffered GlobalLogger gets only a short, path-free notice - tagged with
 // subject (a display name) when the failure concerns one file, so the server
 // can acknowledge that file as unscanned. It lives in this package (not
 // pkg/utils) because the worker pool needs it and utils imports optimization.
@@ -176,7 +176,7 @@ func (wp *WorkerPool) Results() <-chan WorkResult {
 // select waits on both the work channel and the pool context; cancel()+close()
 // here can make BOTH cases ready, and if the runtime commits the send case the
 // process panics with "send on closed channel". Callers must ensure all Submit
-// calls have returned before Stop runs — the submit/collect handshake in
+// calls have returned before Stop runs - the submit/collect handshake in
 // pkg/utils/check_utils.go (collect exactly `submitted` results, which
 // happens-after the submitter goroutine's last Submit) provides this.
 func (wp *WorkerPool) Stop() {

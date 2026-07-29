@@ -12,7 +12,7 @@ import (
 // TestWorkerPool_PanickingCheck_DoesNotKillProcess asserts the defence-in-depth
 // contract behind the boot-time checks-config validation: even if a check
 // panics inside a worker-pool goroutine (where no request-level recover can
-// reach), the panic is converted into a logged failure — the pool keeps
+// reach), the panic is converted into a logged failure - the pool keeps
 // working, the other checks' messages survive, and the process stays alive.
 // Without SafeRunCheck this test would crash the whole test binary.
 func TestWorkerPool_PanickingCheck_DoesNotKillProcess(t *testing.T) {

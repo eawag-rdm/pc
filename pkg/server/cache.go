@@ -15,7 +15,7 @@ import (
 // resultCache is the per-package on-disk cache of successful analyze response
 // bodies (spec: buffer repeat requests for unchanged packages). Freshness is
 // keyed on the CKAN package's metadata_modified timestamp, which the single
-// package_show call already carries — CKAN bumps it on every dataset or
+// package_show call already carries - CKAN bumps it on every dataset or
 // resource change, so no extra CKAN (activity log) call is needed.
 //
 // Layout: one JSON file per package, <dir>/<package_id>.json. The package id
@@ -23,7 +23,7 @@ import (
 // it is ever used as a filename, so no traversal is possible. Each file is
 // self-contained (fingerprint, metadata_modified, cached_at, body): a config
 // or version change makes every existing file fail its fingerprint check on
-// read — no wipe step, stale files are simply overwritten by the next
+// read - no wipe step, stale files are simply overwritten by the next
 // analysis or pruned by eviction.
 //
 // Writes happen only after a completed analysis and go through a same-dir

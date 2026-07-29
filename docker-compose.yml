@@ -3,18 +3,18 @@
 # ┌─────────────────────────────────────────────────────────────────────────┐
 # │ IMPORTANT: these settings MUST stay aligned with pc.toml.                 │
 # │                                                                           │
-# │ 1. PORT — the container side of `ports` below must equal the port in      │
+# │ 1. PORT - the container side of `ports` below must equal the port in      │
 # │    [server] listenAddress in pc.toml, AND that listenAddress must bind    │
 # │    0.0.0.0 (NOT 127.0.0.1) so the server is reachable from outside the    │
 # │    container, e.g.  listenAddress = "0.0.0.0:8080".                       │
 # │                                                                           │
-# │ 2. STORAGE PATH — the TARGET of the CKAN-storage volume below must equal  │
+# │ 2. STORAGE PATH - the TARGET of the CKAN-storage volume below must equal  │
 # │    [collector.CkanCollector].attrs.ckan_storage_path in pc.toml.          │
 # │                                                                           │
-# │ 3. SMTP — if [server.smtp] is enabled, its host must be reachable from    │
+# │ 3. SMTP - if [server.smtp] is enabled, its host must be reachable from    │
 # │    inside this container's network.                                       │
 # │                                                                           │
-# │ 4. USER — the PC_UID / PC_GID build args (below) bake the server's user;  │
+# │ 4. USER - the PC_UID / PC_GID build args (below) bake the server's user;  │
 # │    set them to the CKAN storage share's owner uid:gid so it is readable.   │
 # └─────────────────────────────────────────────────────────────────────────┘
 
@@ -28,30 +28,30 @@ services:
         # share so the read-only mount is readable. Baked into the image's `pc`
         # user at build time, so change them here and rebuild (docker compose
         # build / up --build).
-        PC_UID: "10001"
-        PC_GID: "10001"
+        PC_UID: "503"
+        PC_GID: "502"
     image: pc-server:latest
     restart: unless-stopped
 
     ports:
-      # host:container — the CONTAINER port must equal the [server] listenAddress
+      # host:container - the CONTAINER port must equal the [server] listenAddress
       # port in pc.toml. Bind on host-localhost when nginx terminates in front of
       # it; use "0.0.0.0:8080:8080" (or just "8080:8080") to expose it directly.
-      - "127.0.0.1:8080:8080"
+      - "0.0.0.0:8080:8080"
 
     volumes:
-      # 1) pc.toml — READ-ONLY. The server reads ALL configuration from here.
+      # 1) pc.toml - READ-ONLY. The server reads ALL configuration from here.
       - ./pc.toml:/etc/pc/pc.toml:ro
-      # 2) CKAN storage network share — READ-ONLY. The TARGET path here MUST
+      # 2) CKAN storage network share - READ-ONLY. The TARGET path here MUST
       #    equal [collector.CkanCollector].attrs.ckan_storage_path in pc.toml.
       #    Left side: where the network share is mounted on the host.
-      - /mnt/ckan-storage:/nfsmount/ckan/default:ro
-      # 3) Result cache — persistent named volume (survives container
+      - /home/christian/eric_related/ckan_docker/eric/data/ckan:/nfsmount/ckan/default:ro
+      # 3) Result cache - persistent named volume (survives container
       #    rebuilds). Only used when [server] resultCacheDir is set; it must
       #    then point INSIDE this target, e.g.
       #    resultCacheDir = "/var/lib/pc/cache". A named volume (not a bind
-      #    mount) keeps the cached analyses — which can contain
-      #    private-package findings — inside Docker-managed storage with the
+      #    mount) keeps the cached analyses - which can contain
+      #    private-package findings - inside Docker-managed storage with the
       #    container user's ownership.
       - pc-cache:/var/lib/pc
 
@@ -67,7 +67,7 @@ services:
 
     # The server traps SIGTERM and drains in-flight analyses (up to ~330s). Give
     # Docker time to let a running analysis finish on stop/restart.
-    stop_grace_period: 330s
+    stop_grace_period: 60s
 
     # Logs are JSON on stdout; Docker handles rotation (spec §8).
     logging:

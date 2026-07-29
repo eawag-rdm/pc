@@ -169,7 +169,7 @@ const cachedKeySuffix = "\x00cached"
 // after a response served from the result cache, charging the cheap cached
 // budgets instead. A scope whose cached budget for this window is exhausted
 // keeps its main-budget charge (the hit then counts at full price), so cache
-// traffic stays bounded — every hit still costs one CKAN package_show. Refund
+// traffic stays bounded - every hit still costs one CKAN package_show. Refund
 // and re-charge happen under one lock so concurrent hits cannot over-refund.
 func (rl *rateLimiter) refundCached(key string) {
 	if rl.cachedFactor <= 0 {

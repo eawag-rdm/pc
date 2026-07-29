@@ -27,7 +27,7 @@ const alertDialTimeout = 10 * time.Second
 
 // alertPayload is the non-secret summary of a server-fault response, mailed to
 // the admin list. It deliberately carries NO token, URL, raw CKAN body or
-// internal path — only the request_id (so admins can find the full cause/stack
+// internal path - only the request_id (so admins can find the full cause/stack
 // in the logs) and the already-validated package_id.
 type alertPayload struct {
 	RequestID string
@@ -187,7 +187,7 @@ func (a *alerter) Notify(p alertPayload) {
 // closeOnce it first sets stopped=true under mu and THEN closes stop: setting the
 // flag before closing stop is what makes any concurrent Notify either enqueue
 // strictly before shutdown (and be drained by the worker) or, once it observes
-// stopped, deliver out-of-band — so no alert is ever lost (see the alerter.mu
+// stopped, deliver out-of-band - so no alert is ever lost (see the alerter.mu
 // invariant). It closes stop (NOT queue), so a Notify that races Close can never
 // send on a closed channel. Safe to call on a nil *alerter and idempotent:
 // closeOnce guards the flag-set and close, and the bounded wait keeps shutdown
@@ -259,7 +259,7 @@ var crlfStripper = strings.NewReplacer("\r", "", "\n", "")
 
 // buildMessage renders the RFC 5322 alert mail. It contains only non-secret
 // fields; the full cause/stack lives in the server logs, keyed by request_id.
-// Every interpolated field is CR/LF-stripped first — both the request-derived
+// Every interpolated field is CR/LF-stripped first - both the request-derived
 // fields (method, path, package_id) and the operator-config From/To addresses
 // (already validated by mail.ParseAddress at boot, but stripped here for
 // consistency and defence-in-depth). Although the routing pins the only

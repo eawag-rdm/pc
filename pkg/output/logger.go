@@ -11,7 +11,7 @@ type LogMessage struct {
 	Level     string `json:"level"`
 	Message   string `json:"message"`
 	Timestamp string `json:"timestamp"`
-	// Subject optionally names the file/archive the message is about — always a
+	// Subject optionally names the file/archive the message is about - always a
 	// display name, never a path; empty for messages without a single-file
 	// subject.
 	Subject string `json:"subject,omitempty"`

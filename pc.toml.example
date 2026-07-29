@@ -55,7 +55,7 @@ summaryMinGroupSizeForTruncation = 3
 [server]
 # Settings for the pc-server HTTP API. The server takes NO command-line flags;
 # every setting (including the listen address) lives here. The CKAN URL is NOT
-# configured here — it is read from [collector.CkanCollector.attrs] url.
+# configured here - it is read from [collector.CkanCollector.attrs] url.
 # Address the server listens on (host:port)
 listenAddress      = "127.0.0.1:8080"
 # Whether to trust proxy-set client IP headers (X-Real-IP)
@@ -90,23 +90,23 @@ ckanRequestTimeoutSeconds = 10
 # Per-package result cache (SERVER-ONLY; the CLI never caches). When set, a
 # successful analysis is stored as one JSON file per package under this
 # directory and served again while the package's CKAN metadata_modified is
-# unchanged — repeat requests then cost one package_show round-trip instead of
+# unchanged - repeat requests then cost one package_show round-trip instead of
 # a full file scan. Empty disables caching. In Docker this must point into a
 # persistent volume (see docker-compose.yml).
 resultCacheDir        = ""
 # Max cached packages; beyond this the oldest entries are evicted
 resultCacheMaxEntries = 500
-# Max age of a cache entry in hours; 0 (the default) disables the age limit —
+# Max age of a cache entry in hours; 0 (the default) disables the age limit -
 # CKAN's metadata_modified alone decides freshness. Set only if files on the
 # storage mount can change behind CKAN's back.
 resultCacheMaxAgeHours = 0
 
-# [server.smtp] — optional admin-alert relay (a sub-section of [server], so it
+# [server.smtp] - optional admin-alert relay (a sub-section of [server], so it
 # MUST come after the [server] keys above). When enabled, the server emails this
 # list on a SERVER-FAULT response: internal_error, a recovered panic, or
 # resource_unreadable. Plain relay, NO authentication. Every fault is reported
 # (there is no rate cap). Leave host empty (or omit this whole block) to DISABLE
-# alerts. The mail carries no secrets — only the request_id, code, method, path
+# alerts. The mail carries no secrets - only the request_id, code, method, path
 # and package_id; the full cause/stack stays in the logs, keyed by request_id.
 [server.smtp]
 # SMTP relay host; empty disables admin alerts

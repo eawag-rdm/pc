@@ -23,7 +23,7 @@ type Config struct {
 	ConfigPath string
 
 	// VerifyTLS optionally overrides TLS verification for CKAN API calls.
-	// nil means "not set" — fall back to the PC config (and finally the
+	// nil means "not set" - fall back to the PC config (and finally the
 	// secure default). A non-nil value is honored exactly, so that an
 	// explicit false (verify=false) disables verification.
 	VerifyTLS *bool
@@ -204,7 +204,7 @@ func validateCkanCollector(pcConfig *config.Config) error {
 // when none is sent) and must NEVER fall back to the operator token. The
 // analyze path already overrides the attr per request
 // (deepCopyConfigForRequest) and the readiness probe is deliberately
-// tokenless; blanking the value at boot makes the guarantee structural — no
+// tokenless; blanking the value at boot makes the guarantee structural - no
 // present or future server code path can send a token that is no longer in
 // memory. Called by New after validateCkanCollector (which only requires the
 // key to EXIST as a string; "" stays valid).
@@ -229,7 +229,7 @@ func (c Config) GetCKANBaseURL(pcConfig *config.Config) string {
 // GetVerifyTLS returns whether TLS should be verified for CKAN API calls.
 //
 // Resolution order:
-//  1. an explicit server-config override (c.VerifyTLS != nil) — honored as-is,
+//  1. an explicit server-config override (c.VerifyTLS != nil) - honored as-is,
 //     so verify=false is respected;
 //  2. the PC config's CkanCollector "verify" attr;
 //  3. the secure default (true).

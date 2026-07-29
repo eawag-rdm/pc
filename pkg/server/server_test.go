@@ -113,7 +113,7 @@ func TestNew_MissingCkanAttr_FailsAtBoot(t *testing.T) {
 
 // TestNew_MissingChecksConfig_FailsAtBoot asserts that a config lacking the
 // [test.*] sections the checks dereference at request time makes server.New
-// fail at startup with a clear error — instead of booting and panicking inside
+// fail at startup with a clear error - instead of booting and panicking inside
 // a worker-pool goroutine on the first multi-file /analyze (which would kill
 // the process, not the request).
 func TestNew_MissingChecksConfig_FailsAtBoot(t *testing.T) {
@@ -239,7 +239,7 @@ func TestServer_CleanShutdown_ReturnsErrServerClosed(t *testing.T) {
 	go func() { errCh <- srv.httpServer.Serve(ln) }()
 
 	// Wait deterministically until Serve is accepting connections, then shut
-	// down — polling the bound address beats a fixed sleep (CI-flaky).
+	// down - polling the bound address beats a fixed sleep (CI-flaky).
 	waitListening(t, ln.Addr().String())
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()

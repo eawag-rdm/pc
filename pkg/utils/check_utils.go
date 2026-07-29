@@ -438,7 +438,7 @@ type ProgressCallback func(current, total int, message string)
 // noFilesNotice returns a skip-style acknowledgement that no files were found to
 // analyse. ApplyAllChecks(WithProgress) appends it whenever the collected file
 // set is empty, so every output (CLI plain/TUI/JSON and the server) surfaces the
-// same clear, non-issue message — rather than the CLI erroring or the server
+// same clear, non-issue message - rather than the CLI erroring or the server
 // returning a silent empty result. It is modelled on a per-file skip (Skipped =
 // true, with a Reason) but is repository-scoped.
 func noFilesNotice() structs.Message {
@@ -454,7 +454,7 @@ func noFilesNotice() structs.Message {
 
 // ApplyAllChecks runs every check group over the collected files. ctx bounds the
 // work coarsely: once its deadline fires (the server's whole-analysis timeout)
-// or it is cancelled, the loops stop between files — a file in progress
+// or it is cancelled, the loops stop between files - a file in progress
 // finishes, no new one starts. CLI callers pass context.Background().
 func ApplyAllChecks(ctx context.Context, config config.Config, files []structs.File, checksAcrossFiles bool) []structs.Message {
 	var messages []structs.Message

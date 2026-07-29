@@ -66,7 +66,7 @@ const (
 // SMTPConfig holds the [server.smtp] sub-section: a plain SMTP relay (no auth)
 // used to email admins when the server returns a server-fault response
 // (internal_error, recovered panic, or resource_unreadable). Every such fault
-// is reported — there is no cap. Alerts are DISABLED unless Host is set and To
+// is reported - there is no cap. Alerts are DISABLED unless Host is set and To
 // is non-empty.
 type SMTPConfig struct {
 	Host string   // SMTP relay host; empty disables admin alerts

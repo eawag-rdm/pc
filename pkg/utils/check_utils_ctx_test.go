@@ -43,7 +43,7 @@ func TestApplyAllChecks_CancelledContext_ReturnsPromptly(t *testing.T) {
 
 	select {
 	case <-done:
-		// Returned promptly — content does not matter (a file in progress may
+		// Returned promptly - content does not matter (a file in progress may
 		// finish); the contract is coarse-grained early exit, not zero output.
 	case <-time.After(5 * time.Second):
 		t.Fatal("ApplyAllChecks did not return promptly on a cancelled context")

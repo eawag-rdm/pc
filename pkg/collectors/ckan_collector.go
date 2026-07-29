@@ -36,7 +36,7 @@ var ErrResourceUnreadable = errors.New("resource file is unreadable")
 // MalformedResourceError carries a user-facing message describing a CKAN
 // resource that cannot be processed: either it is missing BOTH url_type and url,
 // or it is an upload missing required metadata (name/url/size). The message is
-// authored for the end user and is safe to surface verbatim — it names only the
+// authored for the end user and is safe to surface verbatim - it names only the
 // resource and the package, never a token, URL or internal path. The server
 // maps it to the "malformed_resource" error code (422) and shows Msg directly;
 // the CLI surfaces it as a plain collector error.
@@ -150,7 +150,7 @@ func Request(ctx context.Context, url, ckanToken string, verifyTLS bool) (string
 	}
 
 	if readErr != nil {
-		// The connection died mid-body: same failure class as a failed dial — no
+		// The connection died mid-body: same failure class as a failed dial - no
 		// usable response. Never embed the underlying error (URL/token hygiene,
 		// see above).
 		output.GlobalLogger.Warning("CKAN request failed: transport error reading response body")
@@ -405,9 +405,9 @@ func resolveLocalResource(resourceURL, displayLabel, ckanStoragePath string) (st
 // upstream HTTP call so a slow/hung CKAN cannot outlive the caller's deadline
 // (spec §2); CLI callers with no deadline pass context.Background(). It is the
 // sole owner of the CKAN transport concerns (token, TLS verification, URL
-// construction): every consumer of package data — file collection
+// construction): every consumer of package data - file collection
 // (CkanFilesFromResult) and the metadata checks (metadata.CkanMetadataFromJSON)
-// — works from the returned document, so one analysis costs exactly one CKAN
+// - works from the returned document, so one analysis costs exactly one CKAN
 // request.
 func CkanPackageShow(ctx context.Context, package_id string, config config.Config) (map[string]interface{}, error) {
 	collectorName := "CkanCollector"

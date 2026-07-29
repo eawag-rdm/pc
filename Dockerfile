@@ -22,7 +22,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" \
 FROM alpine:3.20
 
 # The non-root user is created with a configurable uid:gid (build args) so it can
-# match the OWNER of the CKAN storage share — set these in docker-compose so the
+# match the OWNER of the CKAN storage share - set these in docker-compose so the
 # read-only mount is readable. They must not collide with an existing id in the
 # base image (share-owner ids are typically > 1000, which is fine).
 ARG PC_UID=10001

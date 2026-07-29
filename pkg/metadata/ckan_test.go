@@ -34,7 +34,7 @@ func countByTest(msgs []structs.Message) map[string]int {
 	return out
 }
 
-// package_show.json — a "complete" publication package; all resources public.
+// package_show.json - a "complete" publication package; all resources public.
 func TestCkanComplete(t *testing.T) {
 	m := CkanMetadataFromJSON(loadResult(t, "package_show.json"))
 	if len(m.Entities) != 21 { // 1 package + 20 resources
@@ -58,7 +58,7 @@ func TestCkanComplete(t *testing.T) {
 	}
 }
 
-// package_show_incomplete.json — an "incomplete" package with restricted resources.
+// package_show_incomplete.json - an "incomplete" package with restricted resources.
 func TestCkanIncomplete(t *testing.T) {
 	m := CkanMetadataFromJSON(loadResult(t, "package_show_incomplete.json"))
 	if len(m.Entities) != 8 { // 1 package + 7 resources

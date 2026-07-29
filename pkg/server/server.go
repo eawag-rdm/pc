@@ -17,7 +17,7 @@ import (
 // http.Server WriteTimeout. It gives the handler enough slack to render and
 // fully flush its own analysis_timeout (504) envelope AFTER the analysis context
 // deadline fires but BEFORE the socket's write deadline tears the connection
-// down — so the client receives the clean 504 instead of a dropped connection.
+// down - so the client receives the clean 504 instead of a dropped connection.
 const writeTimeoutMargin = 30 * time.Second
 
 // Server wraps the HTTP server with PC functionality
@@ -56,7 +56,7 @@ func New(cfg Config) (*Server, error) {
 	}
 
 	// Resolve the listen address from the [server] config (the server takes no
-	// flags) and fail fast if it — or any other [server] setting — is invalid,
+	// flags) and fail fast if it - or any other [server] setting - is invalid,
 	// so a bad value is caught at boot rather than at bind time or per request.
 	listenAddr := cfg.ListenAddress(pcConfig)
 	if err := validateServerSettings(pcConfig, listenAddr); err != nil {
@@ -82,7 +82,7 @@ func New(cfg Config) (*Server, error) {
 	// Optional per-package result cache (§ result caching): keyed on CKAN's
 	// metadata_modified with a config+version fingerprint, so a config edit or
 	// server upgrade invalidates every entry. The fingerprint hashes the RAW
-	// config file bytes — computed before any in-memory mutation, and cheap to
+	// config file bytes - computed before any in-memory mutation, and cheap to
 	// keep deterministic.
 	if s := pcConfig.Server; s.ResultCacheDir != "" {
 		cfgBytes, err := os.ReadFile(cfg.ConfigPath)
@@ -130,7 +130,7 @@ func New(cfg Config) (*Server, error) {
 	// global ran first, a single IP already over its per-IP cap would still
 	// consume (and exhaust) the shared global budget on every rejected request,
 	// locking out everyone else. Putting per-IP first means a per-IP rejection
-	// short-circuits before global is ever touched — IP-primary, global-backstop.
+	// short-circuits before global is ever touched - IP-primary, global-backstop.
 	analyze := http.Handler(ExtractToken(handler.Analyze))
 	analyze = handler.Concurrency(analyze)
 	analyze = handler.RateLimitGlobal(analyze)

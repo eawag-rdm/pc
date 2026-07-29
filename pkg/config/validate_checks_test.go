@@ -25,7 +25,7 @@ func validChecksTestConfig() *Config {
 
 // TestValidateChecksConfig asserts the fail-fast contract: a [test.*] section or
 // key the checks dereference at scan time that is missing or wrong-typed is
-// rejected with an error naming the offending section/key — instead of surfacing
+// rejected with an error naming the offending section/key - instead of surfacing
 // as a request-time panic inside a worker goroutine (which would kill the
 // process, not the request).
 func TestValidateChecksConfig(t *testing.T) {

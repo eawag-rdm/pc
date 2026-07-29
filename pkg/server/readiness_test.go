@@ -131,7 +131,7 @@ func TestReady_CancelledRequestContextDoesNotPoisonCache(t *testing.T) {
 		t.Fatalf("cancelled request context must not affect the readiness verdict: expected 200, got %d (body: %s)", rr.Code, rr.Body.String())
 	}
 
-	// The next poller (with a live context) must also see ready — i.e. the
+	// The next poller (with a live context) must also see ready - i.e. the
 	// cancelled call must not have poisoned the cache with ready=false.
 	req2 := httptest.NewRequest("GET", "/ready", nil)
 	req2 = withRequestContext(req2, "REQ-NEXT", DefaultContactMessage)
@@ -185,7 +185,7 @@ func TestReady_Caches(t *testing.T) {
 // behind the blocking probe while holding the cache mutex. We use a probe that
 // blocks until released and asserts (a) at most ONE goroutine is ever inside the
 // probe at a time (singleflight), and (b) the flood of concurrent callers returns
-// promptly (no deadlock / convoy) — most of them without waiting for the probe.
+// promptly (no deadlock / convoy) - most of them without waiting for the probe.
 // Must be correct under -race.
 func TestReady_ConcurrentNoConvoy(t *testing.T) {
 	const callers = 64
@@ -242,7 +242,7 @@ func TestReady_ConcurrentNoConvoy(t *testing.T) {
 	}()
 
 	// The flood of concurrent callers must finish WITHOUT the probe being
-	// released — proving they did not serialize behind it.
+	// released - proving they did not serialize behind it.
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
