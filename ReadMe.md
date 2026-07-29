@@ -9,6 +9,8 @@ Checks are run by file / repository (data package):
 - HasOnlyASCII (for filenames)
 - HasNoWhiteSpace (for filenames)
 - IsFreeOfKeywords (file contents); non-binary files, `.xlsx` and `.docx` are supported
+- IsFreeOfSecrets (file contents); credentials, tokens and private keys, found by
+  the bundled [betterleaks](https://github.com/betterleaks/betterleaks) scanner
 - IsValidName (nonsense files, e.g. `.Rhistory`)
 - HasFileNameSpecialChars (``~!?@#$%^&*`;,'"()<>[]{}``)
 - IsFileNameTooLong (>64 characters)
@@ -18,8 +20,8 @@ Checks are run by file / repository (data package):
 - ReadMeContainsTOC (readme mentions each file contained in the repository)
 
 Archives (`.zip`, `.tar`, `.tar.gz`, `.7z`) are also supported: file-name checks
-run on the contained file list, and file contents are scanned (IsFreeOfKeywords)
-within configurable size/memory limits.
+run on the contained file list, and file contents are scanned (IsFreeOfKeywords,
+IsFreeOfSecrets) within configurable size/memory limits.
 
 Files are discovered via **collectors**:
 - `LocalCollector` - reads files from the local file system.
@@ -53,7 +55,10 @@ Both binaries share one `pc.toml` (template: `pc.toml.example`):
 - `[test.<CheckName>]` - per-check settings; `blacklist`/`whitelist` take
   **regex** file-path patterns, `keywords`/`disallowed_names` are **literal**
   strings (both). `[test.IsFreeOfKeywords]`, `[test.IsValidName]` and
-  `[test.HasReadme]` are required.
+  `[test.HasReadme]` are required. `[test.IsFreeOfSecrets]` is optional and
+  enables the betterleaks secret scan (`attrs = {enabled, binary,
+  timeoutSeconds, maxProcs}`); the CLI needs the scanner binary on PATH, the
+  Docker image ships it.
 - `[collector.*]` - collector settings; the CKAN URL, server-side token and
   FileStore path live in `[collector.CkanCollector]` (both)
 - `[operation.main]` - which collector the CLI uses (CLI only)

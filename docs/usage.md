@@ -38,7 +38,8 @@ configuration is unusable - the CLI checks the `[test.*]` sections it needs;
 the server additionally validates every `[server]` value and the
 `[collector.CkanCollector]` attrs. The sections `[test.IsFreeOfKeywords]`,
 `[test.IsValidName]` and `[test.HasReadme]` are **required** (the checks
-dereference them).
+dereference them). `[test.IsFreeOfSecrets]` is optional; when present its
+`attrs` are validated (types, unknown keys, timeout vs. server timeout).
 
 ### Per-check configuration
 
@@ -84,6 +85,33 @@ keywordArguments = [
 Do **not** use regex in keywords - `"pass.*"` looks for the literal text
 `pass.*`, not a pattern.
 
+### Secret scan: `[test.IsFreeOfSecrets]`
+
+Secrets (credentials, API tokens, private keys) are found by the external
+[betterleaks](https://github.com/betterleaks/betterleaks) scanner rather than
+keyword matching - real secret formats with far fewer false positives. One
+scanner run covers the whole package: plain files are scanned in place, archive
+members are extracted (size-gated, see `[general]` limits) to a private temp
+directory first. Findings are condensed to one message per file (rule ids +
+line numbers); secret values themselves never appear in any output.
+
+```toml
+[test.IsFreeOfSecrets]
+blacklist = []
+whitelist = []
+# enabled: toggle the scan; binary: scanner executable (name in PATH or absolute path);
+# timeoutSeconds: whole-scan cap (must not exceed [server] requestTimeoutSeconds);
+# maxProcs: CPU cores the scanner may use
+attrs = {enabled = true, binary = "betterleaks", timeoutSeconds = 120, maxProcs = 3}
+```
+
+The CLI needs the `betterleaks` binary on PATH (or `binary` set to an absolute
+path); the server's Docker image ships it. The scanner runs fully offline - no
+finding validation calls, nothing leaves the machine. Note that low-entropy
+plain passwords (e.g. `password = hunter2`) are below the scanner's generic-rule
+entropy threshold; add a `password` keyword group to `[test.IsFreeOfKeywords]`
+if you want a literal-match safety net for those.
+
 ### `[general]` limits
 
 ```toml
@@ -92,6 +120,11 @@ maxArchiveFileSize     = 10485760   # max size per file inside an archive (bytes
 maxTotalArchiveMemory  = 536870912  # total memory budget for archive processing
 maxContentScanFileSize = 20971520   # max size for content-scanned files
 ```
+
+These limits gate the keyword checks and the secret scan alike: files above
+`maxContentScanFileSize` are never content-scanned (skip acknowledgement
+instead), and only archive members within `maxArchiveFileSize` /
+`maxTotalArchiveMemory` are unpacked.
 
 Files over `maxContentScanFileSize` are reported as *skipped* rather than
 content-scanned. Archive members over the per-file or total-memory budget are

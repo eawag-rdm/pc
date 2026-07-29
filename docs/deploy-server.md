@@ -107,6 +107,20 @@ ckan_storage_path` in `pc.toml`. The committed compose also sets
 `restart: unless-stopped`, the `/health` healthcheck (§2), the log rotation
 (§4) and `stop_grace_period: 330s` (§7).
 
+**Secret scanner (betterleaks).** The image bundles the
+[betterleaks](https://github.com/betterleaks/betterleaks) binary for the
+`[test.IsFreeOfSecrets]` check - version and SHA-256 are pinned via the
+`BETTERLEAKS_VERSION` / `BETTERLEAKS_SHA256` build args in the `Dockerfile`
+(checksum-verified at build). The scanner runs offline, capped at
+`attrs.maxProcs` cores and `attrs.timeoutSeconds` per analysis.
+
+**RAM-backed `/tmp` (tmpfs).** The committed compose mounts `/tmp` as tmpfs
+(2 GB): the secret scan extracts archive members there before scanning, so
+plaintext copies live only in RAM and vanish on container restart. Size it to
+at least the worst-case extraction (archives per analysis x
+`maxTotalArchiveMemory`); when tmpfs runs full, affected members are skipped
+with a logged warning and the analysis continues.
+
 ---
 
 ## 4. Logging & retention (Docker log driver)
