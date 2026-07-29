@@ -18,6 +18,16 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" \
     -o /out/pc-server ./cmd/pc-server
 
+# ---- betterleaks stage ----
+# Secret-scanner binary for the IsFreeOfSecrets check: pinned release, checksum-verified.
+FROM alpine:3.20 AS betterleaks
+ARG BETTERLEAKS_VERSION=1.7.2
+ARG BETTERLEAKS_SHA256=ea9ed6a4aa2845ac2e00c0eafbc841057631321d53c061d5a435cf33e6e9ddaf
+RUN apk add --no-cache ca-certificates && \
+    wget -qO /tmp/betterleaks.tar.gz "https://github.com/betterleaks/betterleaks/releases/download/v${BETTERLEAKS_VERSION}/betterleaks_${BETTERLEAKS_VERSION}_linux_x64.tar.gz" && \
+    echo "${BETTERLEAKS_SHA256}  /tmp/betterleaks.tar.gz" | sha256sum -c - && \
+    tar -xzf /tmp/betterleaks.tar.gz -C /usr/local/bin betterleaks
+
 # ---- runtime stage ----
 FROM alpine:3.20
 
@@ -41,6 +51,8 @@ RUN apk add --no-cache ca-certificates && \
     chown pc:pc /var/lib/pc
 
 COPY --from=build /out/pc-server /usr/local/bin/pc-server
+# Secret scanner used by the IsFreeOfSecrets check ([test.IsFreeOfSecrets] in pc.toml).
+COPY --from=betterleaks /usr/local/bin/betterleaks /usr/local/bin/betterleaks
 
 # Runs unprivileged as the pc user built above. The listen address comes from
 # [server] listenAddress in the TOML and must bind 0.0.0.0 (not 127.0.0.1) to be

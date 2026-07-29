@@ -55,6 +55,11 @@ services:
       #    container user's ownership.
       - pc-cache:/var/lib/pc
 
+    # RAM-backed /tmp: the IsFreeOfSecrets check extracts archive members here
+    # before scanning, so plaintext copies never touch disk. Size it to at least
+    # the worst-case extraction (archives per analysis x maxTotalArchiveMemory).
+    tmpfs:
+      - /tmp:size=2g,mode=1777
 
     healthcheck:
       # /health is a cheap liveness probe (static 200, no upstream I/O). The URL
