@@ -541,3 +541,49 @@ func TestDraining_RejectsNewRequests(t *testing.T) {
 		t.Errorf("expected %q, got %q", CodeServerRestarting, resp.Error.Code)
 	}
 }
+
+// TestAccessLog_SkipsSuccessfulProbes asserts successful /health and /ready
+// hits emit no access record (probe noise), while failing probes and normal
+// routes are still logged.
+func TestAccessLog_SkipsSuccessfulProbes(t *testing.T) {
+	cases := []struct {
+		name    string
+		path    string
+		status  int
+		wantLog bool
+	}{
+		{"health 200 skipped", "/health", http.StatusOK, false},
+		{"ready 200 skipped", "/ready", http.StatusOK, false},
+		{"ready 503 logged", "/ready", http.StatusServiceUnavailable, true},
+		{"health 503 logged", "/health", http.StatusServiceUnavailable, true},
+		{"analyze 200 logged", "/api/v1/analyze", http.StatusOK, true},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			var mu sync.Mutex
+			logger := slog.New(slog.NewJSONHandler(&syncWriter{w: &buf, mu: &mu}, nil))
+			handler := NewHandler(&config.Config{Server: &config.ServerConfig{}}, Config{}, logger)
+
+			inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tt.status)
+			})
+
+			req := httptest.NewRequest("GET", tt.path, nil)
+			req = withRequestContext(req, "REQ-PROBE", DefaultContactMessage)
+			rr := httptest.NewRecorder()
+			handler.AccessLog(inner).ServeHTTP(rr, req)
+
+			mu.Lock()
+			out := buf.String()
+			mu.Unlock()
+
+			if tt.wantLog && !strings.Contains(out, `"msg":"access"`) {
+				t.Errorf("expected an access record, got: %q", out)
+			}
+			if !tt.wantLog && strings.Contains(out, `"msg":"access"`) {
+				t.Errorf("expected no access record, got: %q", out)
+			}
+		})
+	}
+}

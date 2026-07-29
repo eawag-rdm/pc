@@ -186,7 +186,8 @@ func (sr *statusRecorder) Write(b []byte) (int, error) {
 
 // AccessLog emits exactly one structured (slog JSON) access record per request
 // at completion: ts, level, request_id, method, path, package_id, status,
-// latency_ms, and client_ip (gated by logClientIP). It never routes check
+// latency_ms, and client_ip (gated by logClientIP). Successful /health and
+// /ready probes are not logged (only failing ones). It never routes check
 // Messages and never logs the token.
 func (h *Handler) AccessLog(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -204,6 +205,12 @@ func (h *Handler) AccessLog(next http.Handler) http.Handler {
 		status := rec.status
 		if status == 0 {
 			status = http.StatusOK
+		}
+
+		// Successful probe hits are pure noise (a healthcheck every 30s would
+		// dominate the log); probes are logged only when they fail.
+		if (r.URL.Path == "/health" || r.URL.Path == "/ready") && status < 400 {
+			return
 		}
 
 		attrs := []slog.Attr{
