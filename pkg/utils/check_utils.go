@@ -34,6 +34,13 @@ var BY_FILE_ON_ARCHIVE = []func(file structs.File, config config.Config) []struc
 	checks.IsArchiveFreeOfKeywords,
 }
 
+// BY_REPOSITORY_SECRETS runs regardless of checksAcrossFiles: IsFreeOfSecrets is
+// a file-content check that is repository-scoped only so the whole file set
+// shares one scanner invocation.
+var BY_REPOSITORY_SECRETS = []func(repository structs.Repository, config config.Config) []structs.Message{
+	checks.IsFreeOfSecrets,
+}
+
 var BY_FILE_ON_ARCHIVE_FILE_LIST = []func(file structs.File, config config.Config) []structs.Message{
 	checks.HasOnlyASCII,
 	checks.HasNoWhiteSpace,
@@ -462,6 +469,9 @@ func ApplyAllChecks(ctx context.Context, config config.Config, files []structs.F
 	messages = append(messages, ApplyChecksFilteredByFile(ctx, config, BY_FILE, files)...)
 	messages = append(messages, ApplyChecksFilteredByFileOnArchiveFileList(ctx, config, BY_FILE_ON_ARCHIVE_FILE_LIST, files)...)
 	messages = append(messages, ApplyChecksFilteredByFileOnArchive(ctx, config, BY_FILE_ON_ARCHIVE, files)...)
+	if len(files) > 0 {
+		messages = append(messages, ApplyChecksFilteredByRepository(ctx, config, BY_REPOSITORY_SECRETS, files)...)
+	}
 	if checksAcrossFiles {
 		messages = append(messages, ApplyChecksFilteredByRepository(ctx, config, BY_REPOSITORY, files)...)
 	}
@@ -497,6 +507,11 @@ func ApplyAllChecksWithProgress(ctx context.Context, config config.Config, files
 		if file.IsArchive {
 			totalTests += len(BY_FILE_ON_ARCHIVE)
 		}
+	}
+
+	// Count the repository-scoped secret scan (runs whenever there are files)
+	if len(files) > 0 {
+		totalTests += len(BY_REPOSITORY_SECRETS)
 	}
 
 	// Count repository tests
@@ -544,7 +559,16 @@ func ApplyAllChecksWithProgress(ctx context.Context, config config.Config, files
 		}
 	}
 
-	// Step 4: Repository checks (if enabled)
+	// Step 4: Repository-scoped secret scan (always runs when there are files)
+	if len(files) > 0 {
+		if progressCallback != nil {
+			progressCallback(testsRun, totalTests, "Running secret scan...")
+		}
+		messages = append(messages, ApplyChecksFilteredByRepository(ctx, config, BY_REPOSITORY_SECRETS, files)...)
+		testsRun += len(BY_REPOSITORY_SECRETS)
+	}
+
+	// Step 5: Repository checks (if enabled)
 	if checksAcrossFiles {
 		if progressCallback != nil {
 			progressCallback(testsRun, totalTests, "Running repository tests...")
