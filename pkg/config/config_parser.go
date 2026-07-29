@@ -12,6 +12,10 @@ type TestConfig struct {
 	Blacklist        []string
 	Whitelist        []string
 	KeywordArguments []map[string]interface{}
+	// Attrs holds check-specific scalar settings (e.g. the [test.IsFreeOfSecrets]
+	// attrs table). Values are stored verbatim; ValidateChecksConfig type-checks
+	// the keys each check dereferences so wrong-typed values fail at config load.
+	Attrs map[string]interface{}
 }
 
 type CollectorConfig struct {
@@ -291,6 +295,9 @@ func ParseConfig(filename string) (*Config, error) {
 				}
 				if kwArgs, ok := sectionMap["keywordArguments"].([]interface{}); ok {
 					tc.KeywordArguments = parseKeywordArguments(kwArgs)
+				}
+				if attrs, ok := sectionMap["attrs"].(map[string]interface{}); ok {
+					tc.Attrs = attrs
 				}
 			}
 			c.Tests[name] = tc

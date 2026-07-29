@@ -1,6 +1,14 @@
 package config
 
-import "fmt"
+import (
+	"fmt"
+	"regexp"
+)
+
+// defaultSecretsTimeoutSeconds mirrors defaultLeakTimeoutSecs in pkg/checks
+// (config cannot import checks); used to cross-check the server timeout when
+// the attr is not set explicitly.
+const defaultSecretsTimeoutSeconds = 120
 
 // ValidateChecksConfig fails fast when a [test.*] section the checks dereference
 // at scan time is missing or wrong-typed (nil-pointer on a missing section,
@@ -33,6 +41,50 @@ func ValidateChecksConfig(cfg *Config) error {
 	for i, args := range valid.KeywordArguments {
 		if _, ok := args["disallowed_names"].([]string); !ok {
 			return fmt.Errorf("[test.IsValidName] keywordArguments entry %d: 'disallowed_names' is required and must be a list of strings", i+1)
+		}
+	}
+
+	// [test.IsFreeOfSecrets] is optional (the check is disabled without it), but a
+	// present attrs table must be well-typed so the scan doesn't misbehave at
+	// runtime. Unknown attr keys fail fast to catch operator typos.
+	if leaks, ok := cfg.Tests["IsFreeOfSecrets"]; ok && leaks != nil {
+		for _, p := range append(append([]string{}, leaks.Blacklist...), leaks.Whitelist...) {
+			if _, err := regexp.Compile(p); err != nil {
+				return fmt.Errorf("[test.IsFreeOfSecrets]: invalid regex pattern '%s': %v", p, err)
+			}
+		}
+		if leaks.Attrs != nil {
+			for key, v := range leaks.Attrs {
+				var typeOK bool
+				switch key {
+				case "enabled":
+					_, typeOK = v.(bool)
+				case "binary":
+					s, isStr := v.(string)
+					typeOK = isStr && s != ""
+				case "timeoutSeconds", "maxProcs":
+					n, isInt := v.(int64)
+					typeOK = isInt && n > 0
+				default:
+					return fmt.Errorf("[test.IsFreeOfSecrets] attrs: unknown key '%s' (allowed: enabled, binary, timeoutSeconds, maxProcs)", key)
+				}
+				if !typeOK {
+					return fmt.Errorf("[test.IsFreeOfSecrets] attrs: '%s' has the wrong type or an invalid value (%v)", key, v)
+				}
+			}
+		}
+		// The secret scan runs inside a server analysis request but cannot see its
+		// deadline (check functions take no context), so a scan timeout longer than
+		// the request timeout could keep the scanner running past the analysis
+		// deadline. Reject that combination up front.
+		timeoutSeconds := int64(defaultSecretsTimeoutSeconds)
+		if leaks.Attrs != nil {
+			if n, isInt := leaks.Attrs["timeoutSeconds"].(int64); isInt {
+				timeoutSeconds = n
+			}
+		}
+		if cfg.Server != nil && cfg.Server.RequestTimeoutSeconds > 0 && timeoutSeconds > int64(cfg.Server.RequestTimeoutSeconds) {
+			return fmt.Errorf("[test.IsFreeOfSecrets] attrs: timeoutSeconds (%d) must not exceed [server] requestTimeoutSeconds (%d)", timeoutSeconds, cfg.Server.RequestTimeoutSeconds)
 		}
 	}
 

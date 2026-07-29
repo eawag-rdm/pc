@@ -87,6 +87,13 @@ keywordArguments = [
     { keywords = ["/Users/"], info = "Do you have hardcoded filepaths in your files?  Found suspicious keyword(s):" }
 ]
 
+[test.IsFreeOfSecrets]
+# Secret scan via betterleaks; disabled in tests (no scanner binary in CI).
+# The keyword groups above stay: they exercise the keyword-check machinery.
+blacklist = []
+whitelist = []
+attrs = {enabled = false, binary = "betterleaks", timeoutSeconds = 120, maxProcs = 3}
+
 [test.HasReadme]
 # Filenames recognized as the repository readme (literal, case-insensitive).
 # Used by HasReadme and ReadMeContainsTOC.

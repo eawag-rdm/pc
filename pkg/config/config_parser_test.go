@@ -85,8 +85,14 @@ func TestConfigFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Check if the config file is loaded correctly
-	assert.Equal(t, 4, len(cfg.Tests))
+	assert.Equal(t, 5, len(cfg.Tests))
 	assert.Equal(t, 2, len(cfg.Collectors))
+
+	// The IsFreeOfSecrets attrs table is parsed verbatim.
+	secrets := cfg.Tests["IsFreeOfSecrets"]
+	assert.NotNil(t, secrets)
+	assert.Equal(t, false, secrets.Attrs["enabled"])
+	assert.Equal(t, "betterleaks", secrets.Attrs["binary"])
 
 	keywords, ok := (*cfg.Tests["IsFreeOfKeywords"]).KeywordArguments[2]["keywords"].([]string)
 	assert.True(t, ok)
