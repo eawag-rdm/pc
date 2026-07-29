@@ -13,6 +13,7 @@ const (
 	CodeInvalidPackageName = "invalid_package_name"
 	CodeInvalidRequest     = "invalid_request"
 	CodeInvalidToken       = "invalid_token"
+	CodeTokenRequired      = "token_required"
 	CodeAccessDenied       = "access_denied"
 	CodePackageNotFound    = "package_not_found"
 	CodeNotFound           = "not_found"
@@ -43,6 +44,7 @@ var errorCatalogue = map[string]catalogueEntry{
 	CodeInvalidPackageName: {http.StatusBadRequest, "That dataset name contains characters CKAN doesn't allow. Please check the name and try again."},
 	CodeInvalidRequest:     {http.StatusBadRequest, "Your request was malformed. Please check it and try again."},
 	CodeInvalidToken:       {http.StatusUnauthorized, "The access token wasn't accepted. Please check that it's correct and hasn't expired."},
+	CodeTokenRequired:      {http.StatusUnauthorized, "This dataset isn't publicly readable and no access token was provided. Please pass your access token — you can create one in your CKAN user profile."},
 	CodeAccessDenied:       {http.StatusForbidden, "Your token doesn't have permission to read this dataset."},
 	CodePackageNotFound:    {http.StatusNotFound, "We couldn't find a dataset with that name. Either the name is misspelled, or it's private — make it public in CKAN, or provide your access token to that package."},
 	CodeNotFound:           {http.StatusNotFound, "There's nothing at this URL. Please check the endpoint path."},

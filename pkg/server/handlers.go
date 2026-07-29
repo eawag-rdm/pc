@@ -290,6 +290,12 @@ func (h *Handler) Analyze(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A 403 on an anonymous request means the dataset needs a token, not that
+	// the token lacks rights: steer the user to provide one (401 token_required).
+	if errCode == CodeAccessDenied && token == "" {
+		errCode = CodeTokenRequired
+	}
+
 	if errCode != "" {
 		if errMsg != "" {
 			// A dynamic, user-facing message (malformed_resource): surface it.

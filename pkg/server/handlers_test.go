@@ -141,7 +141,7 @@ func TestHandler_Analyze_NoCKANURL(t *testing.T) {
 // code can never silently render as a fallback internal_error.
 var allErrorCodes = []string{
 	CodeMissingPackage, CodeInvalidPackageName, CodeInvalidRequest,
-	CodeInvalidToken, CodeAccessDenied, CodePackageNotFound,
+	CodeInvalidToken, CodeTokenRequired, CodeAccessDenied, CodePackageNotFound,
 	CodeNotFound, CodeMethodNotAllowed,
 	CodeRateLimited, CodeServiceBusy, CodeServiceNotReady, CodeServerRestarting,
 	CodeCKANUnavailable, CodeMalformedResource, CodeAnalysisTimeout,
@@ -1014,6 +1014,37 @@ func TestHandler_Analyze_CKANOutcomeMapping(t *testing.T) {
 			mu.Unlock()
 			if got != 1 {
 				t.Errorf("expected exactly 1 package_show call, got %d", got)
+			}
+		})
+	}
+}
+
+// TestHandler_Analyze_AnonymousForbidden asserts a CKAN 403 maps to
+// token_required (401) when the request carried NO token, and stays
+// access_denied (403) when a token was sent.
+func TestHandler_Analyze_AnonymousForbidden(t *testing.T) {
+	tests := []struct {
+		name     string
+		token    string
+		wantHTTP int
+		wantCode string
+	}{
+		{"no token -> token_required", "", http.StatusUnauthorized, CodeTokenRequired},
+		{"with token -> access_denied", "tok", http.StatusForbidden, CodeAccessDenied},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ckan := statusCKAN(t, http.StatusForbidden, ``, nil, nil)
+			defer ckan.Close()
+			handler := NewHandler(ckanPCConfig(ckan.URL), Config{}, discardLogger())
+
+			rr := analyzeWithToken(handler, "some-pkg", tt.token)
+			if rr.Code != tt.wantHTTP {
+				t.Errorf("expected HTTP %d, got %d (body: %s)", tt.wantHTTP, rr.Code, rr.Body.String())
+			}
+			resp := decodeEnvelope(t, rr)
+			if resp.Error.Code != tt.wantCode {
+				t.Errorf("expected code %q, got %q", tt.wantCode, resp.Error.Code)
 			}
 		})
 	}

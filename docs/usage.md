@@ -274,6 +274,7 @@ Every failure uses one envelope:
 | 400 | `invalid_package_name` | `package_id` violates CKAN's name grammar |
 | 400 | `invalid_request` | Malformed body or malformed `Authorization` header |
 | 401 | `invalid_token` | CKAN rejected the token |
+| 401 | `token_required` | Package needs a token and none was provided |
 | 403 | `access_denied` | Token lacks permission for the package |
 | 404 | `package_not_found` | No such package (or private + unauthorized) |
 | 404 | `not_found` | No such endpoint path |
