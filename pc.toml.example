@@ -132,19 +132,26 @@ blacklist = []
 whitelist = []
 
 [test.IsFreeOfKeywords]
-# Checking file contents for sensitive information
+# Checking file contents for non-secret keywords; secrets (credentials, keys,
+# tokens) are found by [test.IsFreeOfSecrets] (betterleaks) instead.
 # blacklist/whitelist: Use regex patterns to include/exclude files by path
 blacklist = []
 whitelist = []
 # keywords: Use literal strings only (case-insensitive matching)
 keywordArguments = [
-    { keywords = ["password", "secret", "key", "token", "api", "credential", "auth"], info = "Security credentials detected" },
-    { keywords = ["id_rsa", "id_ed25519", "BEGIN PRIVATE KEY", "BEGIN RSA PRIVATE KEY"], info = "Private key detected" },
-    { keywords = ["jwt", "bearer", "oauth", "client_secret"], info = "Authentication token detected" },
-    { keywords = ["database", "db_password", "connection_string"], info = "Database credentials detected" },
     { keywords = ["/home/", "/Users/", "C:\\Users\\", "Q:"], info = "Hardcoded file paths detected" },
     { keywords = ["admin", "root", "superuser"], info = "Administrative accounts detected" }
 ]
+
+[test.IsFreeOfSecrets]
+# Secret scan of file contents via the bundled betterleaks binary
+# blacklist/whitelist: Use regex patterns to include/exclude files by path
+blacklist = []
+whitelist = []
+# enabled: toggle the scan; binary: scanner executable (name in PATH or absolute path);
+# timeoutSeconds: whole-scan cap (must not exceed [server] requestTimeoutSeconds);
+# maxProcs: CPU cores the scanner may use
+attrs = {enabled = true, binary = "betterleaks", timeoutSeconds = 120, maxProcs = 3}
 
 [test.HasFileNameSpecialChars]
 # Checking for invalid/special characters in file names
