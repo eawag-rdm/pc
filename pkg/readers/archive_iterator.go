@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"archive/zip"
 	"compress/gzip"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -45,11 +46,42 @@ type UnpackedFileIterator struct {
 	// drain these via SkipMessages() and thread them into their returned []Message.
 	skipMessages []structs.Message
 
+	// sniffBuf is per-member scratch for content-type detection (iterator is
+	// single-goroutine); avoids one allocation per member.
+	sniffBuf [512]byte
+
+	// walkCounter bounds decompressed bytes for tar.gz walks (nil otherwise).
+	walkCounter *countingReader
+
 	tarFile        *os.File
 	tarReader      *tar.Reader
 	gzipReader     *gzip.Reader
 	zipReader      *zip.ReadCloser
 	sevenZipReader *sevenzip.ReadCloser
+}
+
+// declaredSizeBudgetMultiple bounds per-archive decompression work relative to
+// maxTotalMemory: the 7z declared-size gate and the tar.gz walk cap.
+const declaredSizeBudgetMultiple = 4
+
+var errWalkCapExceeded = errors.New("archive walk cap exceeded")
+
+// countingReader counts decompressed bytes flowing out of the gzip layer and
+// fails hard once count exceeds limit, so member drains and reads alike stop
+// within one chunk.
+type countingReader struct {
+	r     io.Reader
+	count int64
+	limit int64
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	if c.count > c.limit {
+		return 0, errWalkCapExceeded
+	}
+	n, err := c.r.Read(p)
+	c.count += int64(n)
+	return n, err
 }
 
 func InitArchiveIterator(archivePath string, archiveName string, maxSize int, whitelist []string, blacklist []string, maxTotalMemory int64) *UnpackedFileIterator {
@@ -125,6 +157,23 @@ func (u *UnpackedFileIterator) recordSkip(memberName, reason string, memberSize 
 	})
 }
 
+// recordArchiveSkip appends a skip acknowledgement for the archive as a whole
+// (declared-size gate, walk cap). Source is the archive File itself with an
+// empty ArchiveName, matching the existing archive-level message convention.
+func (u *UnpackedFileIterator) recordArchiveSkip(reason string) {
+	var size int64
+	if fi, err := os.Stat(u.ArchivePath); err == nil {
+		size = fi.Size()
+	}
+	archive := structs.ToFileWithDisplay(u.ArchivePath, u.ArchiveName, u.ArchiveName, size, "", "")
+	u.skipMessages = append(u.skipMessages, structs.Message{
+		Content: reason,
+		Source:  archive,
+		Skipped: true,
+		Reason:  reason,
+	})
+}
+
 // SkipMessages returns the skip acknowledgements collected so far for archive
 // members that were not content-scanned (per-member size or total-memory limit).
 func (u *UnpackedFileIterator) SkipMessages() []structs.Message {
@@ -141,6 +190,23 @@ func (u *UnpackedFileIterator) memberSizeSkipReason(size int64) string {
 // because scanning it would exceed the total archive memory budget.
 func (u *UnpackedFileIterator) memberMemorySkipReason() string {
 	return fmt.Sprintf("Skipped content scan of archive member: would exceed total archive memory limit (%d bytes).", u.maxTotalMemory)
+}
+
+// memberOverrunSkipReason: member stream produced more data than its header
+// declared (defense in depth against archive-library bugs).
+func (u *UnpackedFileIterator) memberOverrunSkipReason(declared int64) string {
+	return fmt.Sprintf("Skipped content scan of archive member: content exceeds declared size (%d bytes).", declared)
+}
+
+// declaredSizeGateSkipReason: whole archive rejected because the summed
+// declared uncompressed sizes exceed the decompression-work bound.
+func (u *UnpackedFileIterator) declaredSizeGateSkipReason() string {
+	return fmt.Sprintf("Skipped content scan of archive: total declared uncompressed size exceeds %dx the total archive memory limit (%d bytes).", declaredSizeBudgetMultiple, u.maxTotalMemory)
+}
+
+// walkCapSkipReason: tar.gz walk stopped after decompressing the cap.
+func (u *UnpackedFileIterator) walkCapSkipReason() string {
+	return fmt.Sprintf("Stopped content scan of archive: decompressed data exceeds %dx the total archive memory limit (%d bytes).", declaredSizeBudgetMultiple, u.maxTotalMemory)
 }
 
 func matchLiteralPatterns(list []string, str string) bool {
@@ -174,60 +240,7 @@ func (u *UnpackedFileIterator) findFirstTar() bool {
 		u.tarFile = file
 		u.tarReader = tar.NewReader(file)
 	}
-
-	// Buffer the first valid file
-	for {
-		header, err := u.tarReader.Next()
-		if err != nil {
-			u.iterationEnded = true
-			return false
-		}
-		u.fileIndex++
-
-		isFile := !(header.Typeflag == tar.TypeDir)
-		isGreaterZero := header.Size > 0
-		isBelowMaxSize := header.Size <= int64(u.MaxSize)
-
-		// Check memory limits
-		if !u.checkMemoryLimit(header.Size) {
-			if isFile && isGreaterZero {
-				u.recordSkip(header.Name, u.memberMemorySkipReason(), header.Size)
-			}
-			// Skip remaining bytes
-			_, _ = io.CopyN(io.Discard, u.tarReader, header.Size)
-			continue
-		}
-
-		// Acknowledge members skipped purely because they exceed the size limit.
-		if isFile && isGreaterZero && !isBelowMaxSize {
-			u.recordSkip(header.Name, u.memberSizeSkipReason(header.Size), header.Size)
-		}
-
-		var isGoodToUnpack bool
-		if isFile && isGreaterZero && isBelowMaxSize {
-			isGoodToUnpack = fileGoodToUnpack(u.Whitelist, u.Blacklist, header.Name)
-		}
-
-		if isGoodToUnpack {
-			isText, content, err := u.isTarTextFileWithContent(header, u.tarReader)
-			if err != nil {
-				continue
-			}
-			if !isText {
-				continue
-			}
-
-			u.bufferedFilename = header.Name
-			u.bufferedFileContent = content
-			u.bufferedFileSize = len(content)
-			u.updateMemoryUsage(len(content))
-			return true
-		} else {
-			// Skip non-matching files
-			_, _ = io.CopyN(io.Discard, u.tarReader, header.Size)
-			continue
-		}
-	}
+	return u.bufferNextTar()
 }
 
 func (u *UnpackedFileIterator) findFirstTarGz() bool {
@@ -247,13 +260,23 @@ func (u *UnpackedFileIterator) findFirstTarGz() bool {
 			return false
 		}
 		u.gzipReader = gzipReader
-		u.tarReader = tar.NewReader(gzipReader)
+		u.walkCounter = &countingReader{r: gzipReader, limit: declaredSizeBudgetMultiple * u.maxTotalMemory}
+		u.tarReader = tar.NewReader(u.walkCounter)
 	}
+	return u.bufferNextTar()
+}
 
-	// Buffer the first valid file
+// bufferNextTar advances the tar stream until the next scannable text member
+// is buffered, exactly once per member. Skipped members are discarded by the
+// next tar.Next call (a Seek on plain tar files, bounded by the walk cap for
+// tar.gz). Returns false when iteration ended (EOF, error, or walk cap).
+func (u *UnpackedFileIterator) bufferNextTar() bool {
 	for {
 		header, err := u.tarReader.Next()
 		if err != nil {
+			if errors.Is(err, errWalkCapExceeded) {
+				u.recordArchiveSkip(u.walkCapSkipReason())
+			}
 			u.iterationEnded = true
 			return false
 		}
@@ -263,13 +286,18 @@ func (u *UnpackedFileIterator) findFirstTarGz() bool {
 		isGreaterZero := header.Size > 0
 		isBelowMaxSize := header.Size <= int64(u.MaxSize)
 
+		// Stop before decompressing a member that would bust the walk cap anyway.
+		if u.walkCounter != nil && u.walkCounter.count+header.Size > u.walkCounter.limit {
+			u.recordArchiveSkip(u.walkCapSkipReason())
+			u.iterationEnded = true
+			return false
+		}
+
 		// Check memory limits
 		if !u.checkMemoryLimit(header.Size) {
 			if isFile && isGreaterZero {
 				u.recordSkip(header.Name, u.memberMemorySkipReason(), header.Size)
 			}
-			// Skip remaining bytes
-			_, _ = io.CopyN(io.Discard, u.tarReader, header.Size)
 			continue
 		}
 
@@ -278,205 +306,107 @@ func (u *UnpackedFileIterator) findFirstTarGz() bool {
 			u.recordSkip(header.Name, u.memberSizeSkipReason(header.Size), header.Size)
 		}
 
-		var isGoodToUnpack bool
-		if isFile && isGreaterZero && isBelowMaxSize {
-			isGoodToUnpack = fileGoodToUnpack(u.Whitelist, u.Blacklist, header.Name)
-		}
-
-		if isGoodToUnpack {
-			isText, content, err := u.isTarTextFileWithContent(header, u.tarReader)
-			if err != nil {
-				continue
-			}
-			if !isText {
-				continue
-			}
-
-			u.bufferedFilename = header.Name
-			u.bufferedFileContent = content
-			u.bufferedFileSize = len(content)
-			u.updateMemoryUsage(len(content))
-			return true
-		} else {
-			// Skip non-matching files
-			_, _ = io.CopyN(io.Discard, u.tarReader, header.Size)
+		if !(isFile && isGreaterZero && isBelowMaxSize) || !fileGoodToUnpack(u.Whitelist, u.Blacklist, header.Name) {
 			continue
 		}
+
+		isText, content, err := u.isTarTextFileWithContent(header)
+		if err != nil || !isText {
+			continue
+		}
+
+		u.bufferedFilename = header.Name
+		u.bufferedFileContent = content
+		u.bufferedFileSize = len(content)
+		u.updateMemoryUsage(len(content))
+		return true
 	}
 }
 
-func (u *UnpackedFileIterator) isTarTextFileWithContent(header *tar.Header, reader io.Reader) (bool, []byte, error) {
-	const sampleSize = 512
-	buffer := make([]byte, sampleSize)
-
-	n, err := reader.Read(buffer)
+// isTarTextFileWithContent classifies the current tar member from its first
+// 512 bytes and reads the rest only for text members. Tar framing enforces
+// header.Size, so the content is preallocated exactly.
+func (u *UnpackedFileIterator) isTarTextFileWithContent(header *tar.Header) (bool, []byte, error) {
+	n, err := io.ReadFull(u.tarReader, u.sniffBuf[:])
 	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
 		return false, nil, err
 	}
 
-	if n == 0 || !strings.HasPrefix(http.DetectContentType(buffer[:n]), "text/") {
-		// Not a text file: skip remaining bytes
-		remaining := header.Size - int64(n)
-		if remaining > 0 {
-			_, _ = io.CopyN(io.Discard, reader, remaining)
-		}
+	if n == 0 || !strings.HasPrefix(http.DetectContentType(u.sniffBuf[:n]), "text/") {
+		// Not text: the next tar.Next call discards the remaining bytes.
 		return false, nil, nil
 	}
 
-	// Read rest of file content
-	remaining := header.Size - int64(n)
-	rest, err := io.ReadAll(io.LimitReader(reader, remaining))
-	if err != nil {
-		return false, nil, fmt.Errorf("error reading rest of text file: %w", err)
+	content := make([]byte, header.Size)
+	copy(content, u.sniffBuf[:n])
+	if int64(n) < header.Size {
+		if _, err := io.ReadFull(u.tarReader, content[n:]); err != nil {
+			return false, nil, fmt.Errorf("error reading rest of text file: %w", err)
+		}
 	}
-
-	fullContent := append(buffer[:n], rest...)
-	return true, fullContent, nil
+	return true, content, nil
 }
 
+// unpackTar promotes the buffered member to current and buffers the next one.
 func unpackTar(u *UnpackedFileIterator) (bool, error) {
-	if u.iterationEnded {
+	if u.bufferedFilename == "" {
+		u.iterationEnded = true
 		return false, nil
 	}
 
-	if u.bufferedFilename != "" {
-		u.CurrentFilename = u.bufferedFilename
-		u.CurrentFileContent = u.bufferedFileContent
-		u.CurrentFileSize = u.bufferedFileSize
+	u.CurrentFilename = u.bufferedFilename
+	u.CurrentFileContent = u.bufferedFileContent
+	u.CurrentFileSize = u.bufferedFileSize
+	u.bufferedFilename = ""
+	u.bufferedFileContent = nil
+	u.bufferedFileSize = 0
 
-		u.bufferedFilename = ""
-		u.bufferedFileContent = nil
-		u.bufferedFileSize = 0
-	} else {
-		return false, nil
-	}
-
-	// Buffer next valid file
-	for {
-		header, err := u.tarReader.Next()
-		if err == io.EOF {
-			u.iterationEnded = true
-			break
-		}
-		if err != nil {
-			u.iterationEnded = true
-			return true, fmt.Errorf("error reading tar header: %w", err)
-		}
-		u.fileIndex++
-
-		isFile := !(header.Typeflag == tar.TypeDir)
-		isGreaterZero := header.Size > 0
-		isBelowMaxSize := header.Size <= int64(u.MaxSize)
-
-		// Check memory limits
-		if !u.checkMemoryLimit(header.Size) {
-			if isFile && isGreaterZero {
-				u.recordSkip(header.Name, u.memberMemorySkipReason(), header.Size)
-			}
-			// Skip remaining bytes
-			_, _ = io.CopyN(io.Discard, u.tarReader, header.Size)
-			continue
-		}
-
-		// Acknowledge members skipped purely because they exceed the size limit.
-		if isFile && isGreaterZero && !isBelowMaxSize {
-			u.recordSkip(header.Name, u.memberSizeSkipReason(header.Size), header.Size)
-		}
-
-		var isGoodToUnpack bool
-		if isFile && isGreaterZero && isBelowMaxSize {
-			isGoodToUnpack = fileGoodToUnpack(u.Whitelist, u.Blacklist, header.Name)
-		}
-
-		if isGoodToUnpack {
-			isText, content, err := u.isTarTextFileWithContent(header, u.tarReader)
-			if err != nil {
-				u.iterationEnded = true
-				return true, err
-			}
-			if !isText {
-				continue
-			}
-
-			u.bufferedFilename = header.Name
-			u.bufferedFileContent = content
-			u.bufferedFileSize = len(content)
-			u.updateMemoryUsage(len(content))
-			break
-		} else {
-			// Skip non-matching files
-			_, _ = io.CopyN(io.Discard, u.tarReader, header.Size)
-			continue
-		}
-	}
-
+	u.bufferNextTar()
 	return true, nil
 }
 
-// is7zTextFileWithContent decompresses the member at index once and reports
-// whether it is text.
-func (u *UnpackedFileIterator) is7zTextFileWithContent(index int) (bool, []byte, error) {
-	f := u.sevenZipReader.File[index]
-
-	rc, err := f.Open()
-	if err != nil {
-		return false, nil, err
+// sniffThenRead classifies rc from its first 512 bytes and reads the rest only
+// for text members, so non-text members cost at most 512 decompressed bytes.
+// declared is the header-declared size, already validated against MaxSize and
+// the memory budget; both archive libraries cap reads at it, so the content is
+// preallocated exactly. overrun means the stream outgrew declared (defense in
+// depth against library bugs).
+func (u *UnpackedFileIterator) sniffThenRead(rc io.Reader, declared int64) (isText bool, content []byte, overrun bool, err error) {
+	n, err := io.ReadFull(rc, u.sniffBuf[:])
+	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+		return false, nil, false, err
 	}
-	defer rc.Close()
-
-	// Read the entire file content once
-	content, err := io.ReadAll(rc)
-	if err != nil {
-		return false, nil, err
+	if n == 0 || !strings.HasPrefix(http.DetectContentType(u.sniffBuf[:n]), "text/") {
+		return false, nil, false, nil
 	}
-
-	if len(content) == 0 {
-		return false, nil, nil
+	if int64(n) > declared {
+		return true, nil, true, nil
 	}
 
-	// Use the first 512 bytes for content type detection
-	sampleSize := 512
-	if len(content) < sampleSize {
-		sampleSize = len(content)
+	content = make([]byte, declared)
+	copy(content, u.sniffBuf[:n])
+	if int64(n) < declared {
+		m, err := io.ReadFull(rc, content[n:])
+		if err == io.EOF || err == io.ErrUnexpectedEOF {
+			// Stream ended early (7z members may be shorter than declared).
+			return true, content[:n+m], false, nil
+		}
+		if err != nil {
+			return true, nil, false, err
+		}
 	}
 
-	filetype := http.DetectContentType(content[:sampleSize])
-	isText := strings.HasPrefix(filetype, "text/") // Same logic as TAR and ZIP
-
-	return isText, content, nil
-}
-
-// isZippedTextWithContent decompresses the member at fileIndex once and reports
-// whether it is text.
-func (u *UnpackedFileIterator) isZippedTextWithContent(fileIndex int) (bool, []byte, error) {
-	file := u.zipReader.File[fileIndex]
-
-	rc, err := file.Open()
-	if err != nil {
-		return false, nil, err
+	// Probe one byte past declared: detects lying streams and, for zip, drives
+	// the reader to EOF so its CRC check still runs.
+	var probe [1]byte
+	m, err := rc.Read(probe[:])
+	if m > 0 {
+		return true, nil, true, nil
 	}
-	defer rc.Close()
-
-	// Read the entire file content once
-	content, err := io.ReadAll(rc)
-	if err != nil {
-		return false, nil, err
+	if err != nil && err != io.EOF {
+		return true, nil, false, err
 	}
-
-	if len(content) == 0 {
-		return false, nil, nil
-	}
-
-	// Use the first 512 bytes for content type detection (same as original)
-	sampleSize := 512
-	if len(content) < sampleSize {
-		sampleSize = len(content)
-	}
-
-	filetype := http.DetectContentType(content[:sampleSize])
-	isText := strings.HasPrefix(filetype, "text/") // Same logic as TAR and 7Z
-
-	return isText, content, nil
+	return true, content, false, nil
 }
 
 // bufferNextZip scans forward from fileIndex+1, decompresses the next scannable
@@ -509,15 +439,24 @@ func (u *UnpackedFileIterator) bufferNextZip() bool {
 			continue
 		}
 
-		isText, content, err := u.isZippedTextWithContent(i)
+		rc, err := f.Open()
+		if err != nil {
+			continue
+		}
+		isText, content, overrun, err := u.sniffThenRead(rc, int64(f.UncompressedSize64))
+		rc.Close()
 		if err != nil || !isText {
+			continue
+		}
+		if overrun {
+			u.recordSkip(f.Name, u.memberOverrunSkipReason(int64(f.UncompressedSize64)), int64(f.UncompressedSize64))
 			continue
 		}
 
 		u.fileIndex = i
 		u.bufferedFilename = f.Name
 		u.bufferedFileContent = content
-		u.bufferedFileSize = int(f.UncompressedSize64)
+		u.bufferedFileSize = len(content)
 		u.updateMemoryUsage(len(content))
 		return true
 	}
@@ -575,15 +514,24 @@ func (u *UnpackedFileIterator) bufferNext7z() bool {
 			continue
 		}
 
-		isText, content, err := u.is7zTextFileWithContent(i)
+		rc, err := f.Open()
+		if err != nil {
+			continue
+		}
+		isText, content, overrun, err := u.sniffThenRead(rc, int64(f.UncompressedSize))
+		rc.Close()
 		if err != nil || !isText {
+			continue
+		}
+		if overrun {
+			u.recordSkip(f.Name, u.memberOverrunSkipReason(int64(f.UncompressedSize)), int64(f.UncompressedSize))
 			continue
 		}
 
 		u.fileIndex = i
 		u.bufferedFilename = f.Name
 		u.bufferedFileContent = content
-		u.bufferedFileSize = int(f.UncompressedSize)
+		u.bufferedFileSize = len(content)
 		u.updateMemoryUsage(len(content))
 		return true
 	}
@@ -602,7 +550,33 @@ func (u *UnpackedFileIterator) findFirst7z() bool {
 		}
 		u.sevenZipReader = reader
 	}
+	if !u.passes7zDeclaredSizeGate() {
+		u.recordArchiveSkip(u.declaredSizeGateSkipReason())
+		u.iterationEnded = true
+		return false
+	}
 	return u.bufferNext7z()
+}
+
+// passes7zDeclaredSizeGate bounds solid-folder transit decompression: in 7z,
+// skipped members still cost transit CPU for later members in the same folder,
+// so the summed declared sizes are the honest bound on decompression work.
+// O(entries) field reads, zero decompression; the running sum rejects early
+// and saturates so crafted huge headers cannot wrap it.
+func (u *UnpackedFileIterator) passes7zDeclaredSizeGate() bool {
+	limit := uint64(declaredSizeBudgetMultiple) * uint64(u.maxTotalMemory)
+	var sum uint64
+	for i := range u.sevenZipReader.File {
+		s := u.sevenZipReader.File[i].UncompressedSize
+		if s == 0 {
+			continue
+		}
+		sum += s
+		if sum < s || sum > limit {
+			return false
+		}
+	}
+	return true
 }
 
 // unpack7z promotes the buffered member to current and buffers the next one,
@@ -640,19 +614,21 @@ func (u *UnpackedFileIterator) findFirstZip() bool {
 func (u *UnpackedFileIterator) close() {
 	if u.tarFile != nil {
 		u.tarFile.Close()
+		u.tarFile = nil
 	}
 	if u.gzipReader != nil {
 		u.gzipReader.Close()
+		u.gzipReader = nil
 	}
 	if u.zipReader != nil {
 		u.zipReader.Close()
+		u.zipReader = nil
 	}
 	if u.sevenZipReader != nil {
 		u.sevenZipReader.Close()
+		u.sevenZipReader = nil
 	}
-	if u.tarReader != nil {
-		u.tarReader = nil
-	}
+	u.tarReader = nil
 }
 
 func (u *UnpackedFileIterator) HasNext() bool {
@@ -668,24 +644,29 @@ func (u *UnpackedFileIterator) HasFilesToUnpack() bool {
 		return !u.iterationEnded
 	}
 	u.hasCheckedFirstFile = true
+
+	var found bool
 	// Handle .tar.gz separately since filepath.Ext only returns .gz
 	if strings.HasSuffix(u.ArchiveName, ".tar.gz") {
-		return u.findFirstTarGz()
+		found = u.findFirstTarGz()
+	} else {
+		switch filepath.Ext(u.ArchiveName) {
+		case ".zip":
+			found = u.findFirstZip()
+		case ".tar":
+			found = u.findFirstTar()
+		case ".7z":
+			found = u.findFirst7z()
+		default:
+			output.GlobalLogger.FileWarning(u.ArchiveName, "Unsupported archive type '%s'", u.ArchiveName)
+			u.iterationEnded = true
+		}
 	}
-
-	switch filepath.Ext(u.ArchiveName) {
-	case ".zip":
-		return u.findFirstZip()
-	case ".tar":
-		return u.findFirstTar()
-	case ".7z":
-		return u.findFirst7z()
-	default:
-		output.GlobalLogger.FileWarning(u.ArchiveName, "Unsupported archive type '%s'", u.ArchiveName)
-		u.iterationEnded = true
+	// Consumers never call HasNext after a false here, so release fds now.
+	if !found {
 		u.close()
-		return false
 	}
+	return found
 }
 
 func (u *UnpackedFileIterator) Next() bool {

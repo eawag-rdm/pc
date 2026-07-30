@@ -1,7 +1,14 @@
 package readers
 
 import (
+	"archive/tar"
+	"archive/zip"
+	"bytes"
+	"compress/gzip"
+	"encoding/binary"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -351,6 +358,240 @@ func TestArchiveIterator_MemberSizeSkipEmitsMessages(t *testing.T) {
 	}
 }
 
+// sniffTrapReader serves its data and fails the test on any read past it —
+// structural proof that binary members are never read beyond the sample.
+type sniffTrapReader struct {
+	t    *testing.T
+	data []byte
+	pos  int
+}
+
+func (r *sniffTrapReader) Read(p []byte) (int, error) {
+	if r.pos >= len(r.data) {
+		r.t.Fatal("sniffThenRead read past the 512-byte sample on a binary member")
+	}
+	n := copy(p, r.data[r.pos:])
+	r.pos += n
+	return n, nil
+}
+
+func TestSniffThenRead(t *testing.T) {
+	it := InitArchiveIterator("x", "x.zip", 10*1024*1024, nil, nil, 100*1024*1024)
+	text := func(n int) string { return strings.Repeat("a", n) }
+
+	t.Run("binary aborts after sample", func(t *testing.T) {
+		r := &sniffTrapReader{t: t, data: make([]byte, 512)}
+		isText, content, overrun, err := it.sniffThenRead(r, 1<<20)
+		assert.NoError(t, err)
+		assert.False(t, isText)
+		assert.False(t, overrun)
+		assert.Nil(t, content)
+	})
+	t.Run("text exact declared size", func(t *testing.T) {
+		isText, content, overrun, err := it.sniffThenRead(strings.NewReader(text(600)), 600)
+		assert.NoError(t, err)
+		assert.True(t, isText)
+		assert.False(t, overrun)
+		assert.Equal(t, text(600), string(content))
+	})
+	t.Run("text shorter than declared", func(t *testing.T) {
+		isText, content, overrun, err := it.sniffThenRead(strings.NewReader(text(600)), 1000)
+		assert.NoError(t, err)
+		assert.True(t, isText)
+		assert.False(t, overrun)
+		assert.Equal(t, text(600), string(content))
+	})
+	t.Run("tiny text member", func(t *testing.T) {
+		isText, content, overrun, err := it.sniffThenRead(strings.NewReader(text(10)), 10)
+		assert.NoError(t, err)
+		assert.True(t, isText)
+		assert.False(t, overrun)
+		assert.Equal(t, text(10), string(content))
+	})
+	t.Run("stream longer than declared is overrun", func(t *testing.T) {
+		isText, content, overrun, err := it.sniffThenRead(strings.NewReader(text(700)), 600)
+		assert.NoError(t, err)
+		assert.True(t, isText)
+		assert.True(t, overrun)
+		assert.Nil(t, content)
+	})
+	t.Run("sample already exceeds declared is overrun", func(t *testing.T) {
+		isText, content, overrun, err := it.sniffThenRead(strings.NewReader(text(600)), 10)
+		assert.NoError(t, err)
+		assert.True(t, isText)
+		assert.True(t, overrun)
+		assert.Nil(t, content)
+	})
+	t.Run("empty stream is not text", func(t *testing.T) {
+		isText, _, _, err := it.sniffThenRead(strings.NewReader(""), 100)
+		assert.NoError(t, err)
+		assert.False(t, isText)
+	})
+}
+
+func TestZipBinaryBombAbortedAfterSniff(t *testing.T) {
+	// Deflate bomb with a corrupt tail: one stored block of 4096 binary bytes,
+	// then a reserved block type. Reading past the sample would error; the
+	// sniff-abort path never touches the corrupt region and iteration proceeds
+	// cleanly to the text member behind it.
+	var raw bytes.Buffer
+	raw.WriteByte(0x00) // BFINAL=0, BTYPE=00 (stored)
+	assert.NoError(t, binary.Write(&raw, binary.LittleEndian, uint16(4096)))
+	assert.NoError(t, binary.Write(&raw, binary.LittleEndian, ^uint16(4096)))
+	raw.Write(make([]byte, 4096))
+	raw.Write([]byte{0x07, 0xff, 0xff, 0xff}) // BFINAL=1, BTYPE=11 (reserved) = corrupt
+
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	w, err := zw.CreateRaw(&zip.FileHeader{
+		Name:               "bomb.bin",
+		Method:             zip.Deflate,
+		UncompressedSize64: 1 << 20,
+		CompressedSize64:   uint64(raw.Len()),
+	})
+	assert.NoError(t, err)
+	_, err = w.Write(raw.Bytes())
+	assert.NoError(t, err)
+	tw, err := zw.Create("readme.txt")
+	assert.NoError(t, err)
+	text := []byte(strings.Repeat("plain text content\n", 40))
+	_, err = tw.Write(text)
+	assert.NoError(t, err)
+	assert.NoError(t, zw.Close())
+
+	path := filepath.Join(t.TempDir(), "bomb.zip")
+	assert.NoError(t, os.WriteFile(path, buf.Bytes(), 0o600))
+
+	nfi := InitArchiveIterator(path, "bomb.zip", 2*1024*1024, nil, nil, 100*1024*1024)
+	assert.True(t, nfi.HasFilesToUnpack())
+	var names []string
+	for nfi.HasNext() {
+		nfi.Next()
+		name, content, _ := nfi.UnpackedFile()
+		names = append(names, name)
+		assert.Equal(t, text, content)
+	}
+	assert.Equal(t, []string{"readme.txt"}, names)
+	assert.Equal(t, int64(len(text)), nfi.totalMemoryUsed, "bomb must not be charged")
+	assert.Empty(t, nfi.SkipMessages())
+}
+
+func TestArchiveIterator_7zDeclaredSizeGate(t *testing.T) {
+	path := "../../testdata/archives/one_of_each.7z"
+
+	// Declared sum ~4.7 MB; budget 1 MB -> 4 MB gate limit -> rejected before
+	// any decompression.
+	nfi := InitArchiveIterator(path, "one_of_each.7z", 10*1024*1024, []string{}, []string{}, 1024*1024)
+	assert.False(t, nfi.HasFilesToUnpack())
+	skips := nfi.SkipMessages()
+	if assert.Len(t, skips, 1) {
+		m := skips[0]
+		assert.True(t, m.Skipped)
+		assert.Contains(t, m.Content, "declared uncompressed size")
+		src, ok := m.Source.(structs.File)
+		if assert.True(t, ok) {
+			assert.Equal(t, "", src.ArchiveName, "archive-level ack must not nest the archive in itself")
+		}
+	}
+	assert.Equal(t, int64(0), nfi.totalMemoryUsed)
+	assert.Equal(t, 0, nfi.processedFileCount)
+
+	// Budget above sum/4: gate passes, scan proceeds.
+	ok := InitArchiveIterator(path, "one_of_each.7z", 10*1024*1024, []string{}, []string{}, 2*1024*1024)
+	assert.True(t, ok.HasFilesToUnpack())
+}
+
+func writeTarGzFixture(t *testing.T, path string, members []struct {
+	name    string
+	content []byte
+}) {
+	t.Helper()
+	f, err := os.Create(path)
+	assert.NoError(t, err)
+	gw := gzip.NewWriter(f)
+	tw := tar.NewWriter(gw)
+	for _, m := range members {
+		assert.NoError(t, tw.WriteHeader(&tar.Header{
+			Name:     m.name,
+			Mode:     0o600,
+			Size:     int64(len(m.content)),
+			Typeflag: tar.TypeReg,
+		}))
+		_, err = tw.Write(m.content)
+		assert.NoError(t, err)
+	}
+	assert.NoError(t, tw.Close())
+	assert.NoError(t, gw.Close())
+	assert.NoError(t, f.Close())
+}
+
+func TestTarGzNormalScan(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ok.tar.gz")
+	text := []byte(strings.Repeat("text line\n", 1000))
+	writeTarGzFixture(t, path, []struct {
+		name    string
+		content []byte
+	}{{"a.txt", text}, {"b.txt", text}})
+
+	nfi := InitArchiveIterator(path, "ok.tar.gz", 1024*1024, []string{}, []string{}, 100*1024*1024)
+	assert.True(t, nfi.HasFilesToUnpack())
+	count := 0
+	for nfi.HasNext() {
+		nfi.Next()
+		_, content, _ := nfi.UnpackedFile()
+		assert.Equal(t, text, content)
+		count++
+	}
+	assert.Equal(t, 2, count)
+	assert.Equal(t, int64(2*len(text)), nfi.totalMemoryUsed)
+}
+
+func TestTarGzWalkCapStopsIteration(t *testing.T) {
+	// Three 2 MB members with a 1 MB budget: every member is memory-skipped,
+	// but the drains still count against the 4 MB walk cap -> iteration stops
+	// with an archive-level acknowledgement instead of decompressing all 6 MB.
+	path := filepath.Join(t.TempDir(), "big.tar.gz")
+	big := bytes.Repeat([]byte("A"), 2*1024*1024)
+	writeTarGzFixture(t, path, []struct {
+		name    string
+		content []byte
+	}{{"m1.txt", big}, {"m2.txt", big}, {"m3.txt", big}})
+
+	nfi := InitArchiveIterator(path, "big.tar.gz", 10*1024*1024, []string{}, []string{}, 1024*1024)
+	assert.False(t, nfi.HasFilesToUnpack())
+
+	foundWalkStop := false
+	for _, m := range nfi.SkipMessages() {
+		if strings.Contains(m.Content, "Stopped content scan") {
+			foundWalkStop = true
+		}
+	}
+	assert.True(t, foundWalkStop, "expected walk-cap acknowledgement, got %+v", nfi.SkipMessages())
+	assert.LessOrEqual(t, nfi.walkCounter.count, nfi.walkCounter.limit+64*1024, "decompression must stop within one chunk of the cap")
+}
+
+func TestTarGzWalkCapSingleHugeMember(t *testing.T) {
+	// One member alone busts the cap: the header pre-check stops the scan
+	// before ANY of its content is decompressed.
+	path := filepath.Join(t.TempDir(), "huge.tar.gz")
+	writeTarGzFixture(t, path, []struct {
+		name    string
+		content []byte
+	}{{"huge.txt", bytes.Repeat([]byte("B"), 20*1024*1024)}})
+
+	nfi := InitArchiveIterator(path, "huge.tar.gz", 1024*1024, []string{}, []string{}, 1024*1024)
+	assert.False(t, nfi.HasFilesToUnpack())
+
+	foundWalkStop := false
+	for _, m := range nfi.SkipMessages() {
+		if strings.Contains(m.Content, "Stopped content scan") {
+			foundWalkStop = true
+		}
+	}
+	assert.True(t, foundWalkStop)
+	assert.Less(t, nfi.walkCounter.count, int64(64*1024), "only tar headers may be decompressed")
+}
+
 func TestArchiveIterator_MembersDecompressedAndChargedOnce(t *testing.T) {
 	// Regression for the zip/7z double-read bug: the look-ahead buffer was never
 	// consumed, so every member was decompressed twice and charged twice against
@@ -396,15 +637,21 @@ func TestArchiveIterator_TotalMemorySkipEmitsMessages(t *testing.T) {
 			path := "../../testdata/archives/one_of_each" + ext
 			filename := "one_of_each" + ext
 
-			// Large per-member size limit but a tiny total-memory budget: members
+			// Large per-member size limit but a small total-memory budget: members
 			// are rejected by the memory budget rather than their individual size.
-			nfi := InitArchiveIterator(path, filename, 10*1024*1024, []string{}, []string{}, 1024)
+			// The budget is chosen above declaredSum/declaredSizeBudgetMultiple so
+			// the 7z declared-size gate does NOT trip (that path has its own test)
+			// while the 2.3 MB member still exceeds the remaining budget.
+			nfi := InitArchiveIterator(path, filename, 10*1024*1024, []string{}, []string{}, 1536*1024)
 			skips := drainIterator(nfi)
 
 			foundMemorySkip := false
 			for _, m := range skips {
 				if !m.Skipped {
 					t.Errorf("expected Skipped=true, got %+v", m)
+				}
+				if strings.Contains(m.Content, "declared uncompressed size") {
+					t.Errorf("declared-size gate must not trip in this test, got %q", m.Content)
 				}
 				if strings.Contains(m.Content, "total archive memory limit") {
 					foundMemorySkip = true
