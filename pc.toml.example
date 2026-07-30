@@ -43,6 +43,8 @@
 maxArchiveFileSize = 10485760
 # Maximum total memory for archive processing (bytes) - 500MB
 maxTotalArchiveMemory = 536870912
+# Max unpack-candidate members per archive for content checks (0 = default 1000, not unlimited)
+maxArchiveMemberCount = 1000
 # Maximum size for files that read content (like IsFreeOfKeywords) (bytes) - 20MB
 maxContentScanFileSize = 20971520
 # Introductory text shown at the top of the summary (set to "" to disable)

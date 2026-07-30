@@ -35,13 +35,43 @@ const (
 	DefaultSummaryMinGroupSizeForTruncation = 3 // Minimum group size to trigger truncation
 )
 
+// Default archive-unpacking limits (see GeneralConfig.ArchiveLimits).
+const (
+	DefaultMaxArchiveFileSize     = 10 * 1024 * 1024   // per archive member (bytes)
+	DefaultMaxTotalArchiveMemory  = 100 * 1024 * 1024  // per archive (bytes)
+	DefaultMaxArchiveMemberCount  = 1000               // unpack candidates per archive
+	DefaultMaxContentScanFileSize = 1024 * 1024 * 1024 // whole-file content scan gate (bytes)
+)
+
 type GeneralConfig struct {
 	MaxArchiveFileSize               int64  // Maximum size for individual files in archives (bytes)
 	MaxTotalArchiveMemory            int64  // Maximum total memory for archive processing (bytes)
+	MaxArchiveMemberCount            int    // Max unpack-candidate members per archive for content checks (0 = default, not unlimited; enforced from C4)
 	MaxContentScanFileSize           int64  // Maximum size for files that read content (like IsFreeOfKeywords) (bytes)
 	SummaryIntroText                 string // Introductory text shown at the top of the summary
 	SummaryMaxIssuesBeforeTruncation int    // Number of issues to show before truncating
 	SummaryMinGroupSizeForTruncation int    // Minimum group size to trigger truncation
+}
+
+// ArchiveLimits returns the effective per-archive unpacking limits, applying
+// the documented defaults to non-positive values. This is the ONLY defaulting
+// site: it also covers GeneralConfig values hand-built in code that never pass
+// ParseConfig, so 0 never means "unlimited". The MaxContentScanFileSize
+// whole-file gates are deliberately not part of these limits.
+func (g *GeneralConfig) ArchiveLimits() (memberSize int64, totalMemory int64, memberCount int) {
+	memberSize = g.MaxArchiveFileSize
+	if memberSize <= 0 {
+		memberSize = DefaultMaxArchiveFileSize
+	}
+	totalMemory = g.MaxTotalArchiveMemory
+	if totalMemory <= 0 {
+		totalMemory = DefaultMaxTotalArchiveMemory
+	}
+	memberCount = g.MaxArchiveMemberCount
+	if memberCount <= 0 {
+		memberCount = DefaultMaxArchiveMemberCount
+	}
+	return memberSize, totalMemory, memberCount
 }
 
 // Default values for the [server] section.
@@ -118,9 +148,10 @@ func ParseConfig(filename string) (*Config, error) {
 
 	c := &Config{
 		General: &GeneralConfig{
-			MaxArchiveFileSize:               10 * 1024 * 1024,   // 10MB default
-			MaxTotalArchiveMemory:            100 * 1024 * 1024,  // 100MB default
-			MaxContentScanFileSize:           1024 * 1024 * 1024, // 1GB default for content scanning
+			MaxArchiveFileSize:               DefaultMaxArchiveFileSize,
+			MaxTotalArchiveMemory:            DefaultMaxTotalArchiveMemory,
+			MaxArchiveMemberCount:            DefaultMaxArchiveMemberCount,
+			MaxContentScanFileSize:           DefaultMaxContentScanFileSize,
 			SummaryIntroText:                 DefaultSummaryIntroText,
 			SummaryMaxIssuesBeforeTruncation: DefaultSummaryMaxIssuesBeforeTruncation,
 			SummaryMinGroupSizeForTruncation: DefaultSummaryMinGroupSizeForTruncation,
@@ -191,6 +222,14 @@ func ParseConfig(filename string) (*Config, error) {
 		}
 		if maxContentScanFileSize, ok := generalData["maxContentScanFileSize"].(int64); ok {
 			c.General.MaxContentScanFileSize = maxContentScanFileSize
+		}
+		// Newer fail-fast convention (wrong type = load error, unlike the
+		// silent asserts above; those migrate in a separate commit).
+		if err := generalInt(generalData, "maxArchiveMemberCount", &c.General.MaxArchiveMemberCount); err != nil {
+			return nil, err
+		}
+		if c.General.MaxArchiveMemberCount < 0 {
+			return nil, fmt.Errorf("[general] maxArchiveMemberCount must be >= 0, got %d", c.General.MaxArchiveMemberCount)
 		}
 		if summaryIntroText, ok := generalData["summaryIntroText"].(string); ok {
 			c.General.SummaryIntroText = summaryIntroText
@@ -360,18 +399,29 @@ func serverString(m map[string]interface{}, key string, dst *string) error {
 	return nil
 }
 
-// serverInt sets *dst when key holds a TOML integer; errors if present but not an integer.
-func serverInt(m map[string]interface{}, key string, dst *int) error {
+// tomlInt sets *dst when key holds a TOML integer; errors (naming section and
+// key) if present but not an integer. Missing key is a no-op.
+func tomlInt(section string, m map[string]interface{}, key string, dst *int) error {
 	v, ok := m[key]
 	if !ok {
 		return nil
 	}
 	iv, ok := v.(int64)
 	if !ok {
-		return fmt.Errorf("[server] %s must be an integer, got %T", key, v)
+		return fmt.Errorf("[%s] %s must be an integer, got %T", section, key, v)
 	}
 	*dst = int(iv)
 	return nil
+}
+
+// serverInt sets *dst when key holds a TOML integer; errors if present but not an integer.
+func serverInt(m map[string]interface{}, key string, dst *int) error {
+	return tomlInt("server", m, key, dst)
+}
+
+// generalInt reads a [general] integer key with the fail-fast convention.
+func generalInt(m map[string]interface{}, key string, dst *int) error {
+	return tomlInt("general", m, key, dst)
 }
 
 // serverBool sets *dst when key holds a bool; errors if present but not a bool.

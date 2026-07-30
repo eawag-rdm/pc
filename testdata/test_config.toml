@@ -39,6 +39,8 @@
 #####################################################################################
 
 [general]
+# Max unpack-candidate members per archive for content checks
+maxArchiveMemberCount = 1000
 summaryIntroText = "Test config intro text."
 summaryMaxIssuesBeforeTruncation = 5
 summaryMinGroupSizeForTruncation = 3

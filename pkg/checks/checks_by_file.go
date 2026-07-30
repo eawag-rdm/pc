@@ -255,22 +255,15 @@ func IsArchiveFreeOfKeywords(file structs.File, config config.Config) []structs.
 		return messages
 	}
 
-	// Use configurable memory limits
-	maxFileSize := int(config.General.MaxArchiveFileSize)
-	if maxFileSize <= 0 {
-		maxFileSize = 10 * 1024 * 1024 // Default to 10MB if not configured
-	}
-
 	whitelist := config.Tests["IsFreeOfKeywords"].Whitelist
 	blacklist := config.Tests["IsFreeOfKeywords"].Blacklist
 
-	// Use configurable total memory limit
-	maxTotalMemory := config.General.MaxTotalArchiveMemory
-	if maxTotalMemory <= 0 {
-		maxTotalMemory = 100 * 1024 * 1024 // Default to 100MB if not configured
-	}
-
-	archiveIterator := readers.InitArchiveIterator(file.Path, file.Name, maxFileSize, whitelist, blacklist, maxTotalMemory)
+	memberSize, totalMemory, memberCount := config.General.ArchiveLimits()
+	archiveIterator := readers.InitArchiveIterator(file.Path, file.Name, readers.ArchiveLimits{
+		MaxMemberSize:  memberSize,
+		MaxTotalMemory: totalMemory,
+		MaxMemberCount: memberCount,
+	}, whitelist, blacklist)
 	if !archiveIterator.HasFilesToUnpack() {
 		// Even with no scannable members, the iterator may have skipped members
 		// (too large / over memory budget). Surface those acknowledgements.

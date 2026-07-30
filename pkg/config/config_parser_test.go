@@ -406,6 +406,76 @@ func TestParseServerConfig(t *testing.T) {
 	})
 }
 
+func TestParseMaxArchiveMemberCount(t *testing.T) {
+	t.Run("Configured", func(t *testing.T) {
+		configFile := createTempConfigFile(t, `
+		[general]
+		maxArchiveMemberCount = 250
+		`)
+		defer os.Remove(configFile)
+		config, err := ParseConfig(configFile)
+		assert.NoError(t, err)
+		assert.Equal(t, 250, config.General.MaxArchiveMemberCount)
+	})
+
+	t.Run("MissingUsesDefault", func(t *testing.T) {
+		configFile := createTempConfigFile(t, `
+		[general]
+		`)
+		defer os.Remove(configFile)
+		config, err := ParseConfig(configFile)
+		assert.NoError(t, err)
+		assert.Equal(t, DefaultMaxArchiveMemberCount, config.General.MaxArchiveMemberCount)
+	})
+
+	t.Run("WrongTypeFailsFast", func(t *testing.T) {
+		configFile := createTempConfigFile(t, `
+		[general]
+		maxArchiveMemberCount = "many"
+		`)
+		defer os.Remove(configFile)
+		_, err := ParseConfig(configFile)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "maxArchiveMemberCount")
+	})
+
+	t.Run("NegativeFailsFast", func(t *testing.T) {
+		configFile := createTempConfigFile(t, `
+		[general]
+		maxArchiveMemberCount = -5
+		`)
+		defer os.Remove(configFile)
+		_, err := ParseConfig(configFile)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "maxArchiveMemberCount")
+	})
+}
+
+// TestArchiveLimits verifies the single defaulting site for per-archive
+// unpacking limits: non-positive values (e.g. from hand-built GeneralConfig
+// structs that never pass ParseConfig) map to the documented defaults.
+func TestArchiveLimits(t *testing.T) {
+	t.Run("ZeroValuesDefault", func(t *testing.T) {
+		g := &GeneralConfig{}
+		ms, tm, mc := g.ArchiveLimits()
+		assert.Equal(t, int64(DefaultMaxArchiveFileSize), ms)
+		assert.Equal(t, int64(DefaultMaxTotalArchiveMemory), tm)
+		assert.Equal(t, DefaultMaxArchiveMemberCount, mc)
+	})
+
+	t.Run("ConfiguredPassthrough", func(t *testing.T) {
+		g := &GeneralConfig{
+			MaxArchiveFileSize:    5 * 1024 * 1024,
+			MaxTotalArchiveMemory: 50 * 1024 * 1024,
+			MaxArchiveMemberCount: 42,
+		}
+		ms, tm, mc := g.ArchiveLimits()
+		assert.Equal(t, int64(5*1024*1024), ms)
+		assert.Equal(t, int64(50*1024*1024), tm)
+		assert.Equal(t, 42, mc)
+	})
+}
+
 // TestParseServerConfigWrongType verifies that a [server] / [server.smtp] key that
 // is PRESENT but the wrong type fails fast (ParseConfig returns a non-nil error
 // naming the key) instead of being silently skipped and keeping the default.

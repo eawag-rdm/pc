@@ -118,13 +118,16 @@ if you want a literal-match safety net for those.
 [general]
 maxArchiveFileSize     = 10485760   # max size per file inside an archive (bytes)
 maxTotalArchiveMemory  = 536870912  # total memory budget for archive processing
+maxArchiveMemberCount  = 1000       # max unpack-candidate members per archive
 maxContentScanFileSize = 20971520   # max size for content-scanned files
 ```
 
 These limits gate the keyword checks and the secret scan alike: files above
 `maxContentScanFileSize` are never content-scanned (skip acknowledgement
 instead), and only archive members within `maxArchiveFileSize` /
-`maxTotalArchiveMemory` are unpacked.
+`maxTotalArchiveMemory` are unpacked. Archives with more than
+`maxArchiveMemberCount` unpack candidates get a skip acknowledgement instead of
+a content scan (0 is not unlimited — it means the default of 1000).
 
 Files over `maxContentScanFileSize` are reported as *skipped* rather than
 content-scanned. Archive members over the per-file or total-memory budget are

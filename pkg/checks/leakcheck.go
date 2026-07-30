@@ -200,18 +200,16 @@ func IsFreeOfSecrets(repo structs.Repository, cfg config.Config) []structs.Messa
 // Iterator skip acknowledgements (member too large / memory budget reached)
 // are appended to messages.
 func extractArchivesForLeakScan(cfg config.Config, tc *config.TestConfig, archives []structs.File, tmpDir string, sources map[string]structs.File, messages *[]structs.Message) []string {
-	maxFileSize := int(cfg.General.MaxArchiveFileSize)
-	if maxFileSize <= 0 {
-		maxFileSize = 10 * 1024 * 1024 // mirror IsArchiveFreeOfKeywords default
-	}
-	maxTotalMemory := cfg.General.MaxTotalArchiveMemory
-	if maxTotalMemory <= 0 {
-		maxTotalMemory = 100 * 1024 * 1024 // mirror IsArchiveFreeOfKeywords default
+	memberSize, totalMemory, memberCount := cfg.General.ArchiveLimits()
+	limits := readers.ArchiveLimits{
+		MaxMemberSize:  memberSize,
+		MaxTotalMemory: totalMemory,
+		MaxMemberCount: memberCount,
 	}
 
 	var memberPaths []string
 	for ai, archive := range archives {
-		it := readers.InitArchiveIterator(archive.Path, archive.Name, maxFileSize, tc.Whitelist, tc.Blacklist, maxTotalMemory)
+		it := readers.InitArchiveIterator(archive.Path, archive.Name, limits, tc.Whitelist, tc.Blacklist)
 		if !it.HasFilesToUnpack() {
 			*messages = append(*messages, it.SkipMessages()...)
 			continue

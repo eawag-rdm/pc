@@ -18,12 +18,21 @@ import (
 	"github.com/eawag-rdm/pc/pkg/structs"
 )
 
+// ArchiveLimits carries the effective per-archive unpacking limits (derive via
+// config.GeneralConfig.ArchiveLimits). The iterator applies them verbatim and
+// fails closed: a non-positive limit means nothing qualifies, never "unlimited".
+type ArchiveLimits struct {
+	MaxMemberSize  int64 // per-member size ceiling (bytes)
+	MaxTotalMemory int64 // per-archive decompressed-content budget (bytes)
+	MaxMemberCount int   // unpack-candidate ceiling (stored here; enforced from C4)
+}
+
 type UnpackedFileIterator struct {
-	ArchivePath string
-	ArchiveName string
-	MaxSize     int
-	Whitelist   []string
-	Blacklist   []string
+	ArchivePath   string
+	ArchiveName   string
+	MaxMemberSize int64
+	Whitelist     []string
+	Blacklist     []string
 
 	CurrentFilename    string
 	CurrentFileContent []byte
@@ -39,6 +48,7 @@ type UnpackedFileIterator struct {
 	// Memory tracking
 	totalMemoryUsed    int64
 	maxTotalMemory     int64
+	maxMemberCount     int // unenforced until C4 (member counting)
 	processedFileCount int
 
 	// skipMessages accumulates skip acknowledgements for archive members that were
@@ -84,11 +94,11 @@ func (c *countingReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-func InitArchiveIterator(archivePath string, archiveName string, maxSize int, whitelist []string, blacklist []string, maxTotalMemory int64) *UnpackedFileIterator {
+func InitArchiveIterator(archivePath string, archiveName string, limits ArchiveLimits, whitelist []string, blacklist []string) *UnpackedFileIterator {
 	return &UnpackedFileIterator{
 		ArchivePath:        archivePath,
 		ArchiveName:        archiveName,
-		MaxSize:            maxSize,
+		MaxMemberSize:      limits.MaxMemberSize,
 		Whitelist:          whitelist,
 		Blacklist:          blacklist,
 		CurrentFilename:    "",
@@ -104,7 +114,8 @@ func InitArchiveIterator(archivePath string, archiveName string, maxSize int, wh
 		fileIndex:           -1,
 
 		totalMemoryUsed:    0,
-		maxTotalMemory:     maxTotalMemory,
+		maxTotalMemory:     limits.MaxTotalMemory,
+		maxMemberCount:     limits.MaxMemberCount,
 		processedFileCount: 0,
 
 		tarFile:        nil,
@@ -183,7 +194,7 @@ func (u *UnpackedFileIterator) SkipMessages() []structs.Message {
 // memberSizeSkipReason builds the reason string for an archive member skipped
 // because it exceeds the per-member size limit.
 func (u *UnpackedFileIterator) memberSizeSkipReason(size int64) string {
-	return fmt.Sprintf("Skipped content scan of archive member: size (%d bytes) exceeds maximum archive member size (%d bytes).", size, u.MaxSize)
+	return fmt.Sprintf("Skipped content scan of archive member: size (%d bytes) exceeds maximum archive member size (%d bytes).", size, u.MaxMemberSize)
 }
 
 // memberMemorySkipReason builds the reason string for an archive member skipped
@@ -284,7 +295,7 @@ func (u *UnpackedFileIterator) bufferNextTar() bool {
 
 		isFile := !(header.Typeflag == tar.TypeDir)
 		isGreaterZero := header.Size > 0
-		isBelowMaxSize := header.Size <= int64(u.MaxSize)
+		isBelowMaxSize := header.Size <= u.MaxMemberSize
 
 		// Stop before decompressing a member that would bust the walk cap anyway.
 		if u.walkCounter != nil && u.walkCounter.count+header.Size > u.walkCounter.limit {
@@ -414,13 +425,15 @@ func (u *UnpackedFileIterator) sniffThenRead(rc io.Reader, declared int64) (isTe
 // further member qualifies.
 func (u *UnpackedFileIterator) bufferNextZip() bool {
 	files := u.zipReader.File
-	maxSize := uint64(u.MaxSize)
+	// Fail closed on non-positive limits (a negative int64 would wrap huge as uint64).
+	sizeOK := u.MaxMemberSize > 0
+	maxSize := uint64(max(u.MaxMemberSize, 0))
 
 	for i := u.fileIndex + 1; i < len(files); i++ {
 		f := files[i]
 		isFile := !f.FileInfo().IsDir()
 		isGreaterZero := f.UncompressedSize64 > 0
-		isBelowMaxSize := f.UncompressedSize64 <= maxSize
+		isBelowMaxSize := sizeOK && f.UncompressedSize64 <= maxSize
 
 		// Check memory limits
 		if !u.checkMemoryLimit(int64(f.UncompressedSize64)) {
@@ -489,13 +502,15 @@ func unpackZip(u *UnpackedFileIterator) (bool, error) {
 // further member qualifies.
 func (u *UnpackedFileIterator) bufferNext7z() bool {
 	files := u.sevenZipReader.File
-	maxSize := uint64(u.MaxSize)
+	// Fail closed on non-positive limits (a negative int64 would wrap huge as uint64).
+	sizeOK := u.MaxMemberSize > 0
+	maxSize := uint64(max(u.MaxMemberSize, 0))
 
 	for i := u.fileIndex + 1; i < len(files); i++ {
 		f := files[i]
 		isFile := !f.FileInfo().IsDir()
 		isGreaterZero := f.UncompressedSize > 0
-		isBelowMaxSize := f.UncompressedSize <= maxSize
+		isBelowMaxSize := sizeOK && f.UncompressedSize <= maxSize
 
 		// Check memory limits
 		if !u.checkMemoryLimit(int64(f.UncompressedSize)) {
