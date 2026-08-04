@@ -543,6 +543,10 @@ func pdfLimits(cfg config.Config) readers.PDFLimits {
 	}
 }
 
+// pdfTooLargeReason acknowledges documents past the sandbox input gate;
+// shared by the pre-read Stat gate and the ReadPDF sentinel mapping.
+var pdfTooLargeReason = fmt.Sprintf("Skipped content scan of file: PDF exceeds %d bytes (sandbox memory limit).", int64(readers.MaxPDFInputBytes))
+
 // scanPDFFile extracts and keyword-scans a top-level PDF. handled = false
 // means the bytes carry no PDF magic (PDFium accepts "%PDF" at any offset up
 // to 1024 - a prefix-only check would be a one-byte-prepend evasion vector)
@@ -577,6 +581,11 @@ func scanPDFFile(file structs.File, config config.Config) ([]structs.Message, bo
 
 	var buf bytes.Buffer
 	if st, serr := f.Stat(); serr == nil {
+		// Gate before the body read: a doomed oversize document must not
+		// pay the full-file I/O just to be rejected by ReadPDF.
+		if st.Size() > readers.MaxPDFInputBytes {
+			return ack(pdfTooLargeReason), true
+		}
 		buf.Grow(int(st.Size()))
 	}
 	buf.Write(head)
@@ -590,6 +599,8 @@ func scanPDFFile(file structs.File, config config.Config) ([]structs.Message, bo
 
 	var messages []structs.Message
 	switch {
+	case errors.Is(err, readers.ErrPDFTooLarge):
+		return ack(pdfTooLargeReason), true
 	case errors.Is(err, readers.ErrPDFPassword):
 		return ack("Skipped content scan of file: PDF is password-protected."), true
 	case errors.Is(err, readers.ErrPDFTimeout):

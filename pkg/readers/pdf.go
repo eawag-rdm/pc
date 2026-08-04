@@ -41,9 +41,15 @@ type PDFLimits struct {
 const DefaultPDFTimeout = 30 * time.Second
 
 // pdfWasmMemoryLimitPages caps each sandbox instance at 1 GiB (64 KiB pages).
-// Document bytes are copied into wasm memory, so this must exceed the largest
-// admissible input plus working set; growth failure surfaces as a parse error.
+// Document bytes are copied into wasm memory, so the input gate below keeps
+// admissible documents at half this ceiling, leaving the other half for
+// pdfium's working set.
 const pdfWasmMemoryLimitPages = 16384
+
+// MaxPDFInputBytes rejects documents that cannot fit the wasm sandbox
+// alongside pdfium's working set (512 MiB, half the memory ceiling).
+// Callers with the size at hand can gate before reading the file at all.
+const MaxPDFInputBytes = pdfWasmMemoryLimitPages * 65536 / 2
 
 var (
 	// ErrPDFPassword marks password-protected documents (distinct ack).
@@ -52,6 +58,9 @@ var (
 	// partial content is returned - partial-on-timeout would make findings
 	// depend on machine speed.
 	ErrPDFTimeout = errors.New("pdf extraction timed out")
+	// ErrPDFTooLarge marks documents rejected by the MaxPDFInputBytes gate
+	// before any extraction work (distinct ack: "parse error" would mislead).
+	ErrPDFTooLarge = errors.New("pdf too large for sandbox")
 )
 
 // pdfRuntime is the lazily-initialized shared wasm runtime. A run without
@@ -116,6 +125,11 @@ func pdfRuntimeInitialized() bool {
 func ReadPDF(data []byte, limits PDFLimits) (pages [][]byte, truncated bool, err error) {
 	if limits.MaxPages <= 0 || limits.MaxTextBytes <= 0 {
 		return nil, false, fmt.Errorf("pdf limits must be positive")
+	}
+	// Before pool init: an oversized document must not be what first pays
+	// the runtime compile.
+	if int64(len(data)) > MaxPDFInputBytes {
+		return nil, false, ErrPDFTooLarge
 	}
 	pool, err := pdfPool()
 	if err != nil {

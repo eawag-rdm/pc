@@ -129,6 +129,14 @@ func TestReadPDFFailClosedLimits(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestReadPDFTooLargeFailsFast(t *testing.T) {
+	// The zeroed pages are never touched: ReadPDF must reject on length
+	// alone, before any runtime init or extraction work.
+	data := make([]byte, MaxPDFInputBytes+1)
+	_, _, err := ReadPDF(data, testPDFLimits)
+	assert.ErrorIs(t, err, ErrPDFTooLarge)
+}
+
 func TestReadPDFConcurrentBatch(t *testing.T) {
 	// Pool + Once under concurrency: more goroutines than pool instances.
 	data := writeMinimalPDF("concurrent page")
