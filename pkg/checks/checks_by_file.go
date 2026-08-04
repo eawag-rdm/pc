@@ -339,7 +339,7 @@ func IsFreeOfKeywords(file structs.File, config config.Config) []structs.Message
 	// pass the printable heuristic is never raw-scanned. scanOOXMLFile falls
 	// through (handled = false) when the file does not open as a zip, so a
 	// text file misnamed .xlsx keeps being scanned as text below.
-	if kind := ooxmlKind(file.Path); kind != "" {
+	if kind := readers.OOXMLKind(file.Path); kind != "" {
 		if msgs, handled := scanOOXMLFile(file, config, kind); handled {
 			return append(messages, msgs...)
 		}
@@ -480,18 +480,6 @@ func matchPatternsListLowered(patternList []string, body, loweredBody []byte) st
 		return foundKeywordsStr
 	}
 
-	return ""
-}
-
-// ooxmlKind reports the OOXML container kind for a path ("" if none).
-// Case-insensitive: .XLSX routes like .xlsx.
-func ooxmlKind(path string) string {
-	switch strings.ToLower(filepath.Ext(path)) {
-	case ".xlsx":
-		return "xlsx"
-	case ".docx":
-		return "docx"
-	}
 	return ""
 }
 

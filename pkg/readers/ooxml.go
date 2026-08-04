@@ -5,7 +5,21 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
+	"strings"
 )
+
+// OOXMLKind reports the OOXML container kind for a path or member name
+// ("xlsx", "docx", or ""). Case-insensitive.
+func OOXMLKind(path string) string {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".xlsx":
+		return "xlsx"
+	case ".docx":
+		return "docx"
+	}
+	return ""
+}
 
 // ErrOOXMLDeclaredSize rejects a container whose zip index declares more data
 // than the archive limits allow (checked before any decompression).

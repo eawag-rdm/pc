@@ -3,6 +3,7 @@ package readers
 import (
 	"archive/tar"
 	"archive/zip"
+	"bytes"
 	"compress/gzip"
 	"errors"
 	"fmt"
@@ -352,8 +353,11 @@ func (u *UnpackedFileIterator) bufferNextTar() bool {
 // read -> ack-or-buffer -> charge tail. It fills the look-ahead buffer and
 // returns true when the member qualified. Read errors and non-text members
 // are skipped silently (the caller's loop continues); overruns get an ack.
-// This is the single place C8's OOXML routing will branch from.
+// OOXML members route by extension BEFORE the sniff (they classify as binary).
 func (u *UnpackedFileIterator) tryBufferMember(name string, declared int64, r io.Reader) bool {
+	if kind := OOXMLKind(name); kind != "" {
+		return u.tryBufferOOXMLMember(name, declared, r, kind)
+	}
 	isText, content, overrun, err := u.sniffThenRead(r, declared)
 	if err != nil || !isText {
 		return false
@@ -366,6 +370,65 @@ func (u *UnpackedFileIterator) tryBufferMember(name string, declared int64, r io
 	u.bufferedFileContent = content
 	u.bufferedFileSize = len(content)
 	u.updateMemoryUsage(len(content))
+	return true
+}
+
+// tryBufferOOXMLMember extracts the text of an xlsx/docx archive member and
+// buffers it as ONE concatenated block (per-sheet indexing is lost for
+// members - documented trade-off). Extracted text is what gets charged to the
+// archive memory budget; the extraction cap is the remaining budget, so
+// shared-string amplification cannot blow past it.
+func (u *UnpackedFileIterator) tryBufferOOXMLMember(name string, declared int64, r io.Reader, kind string) bool {
+	data := make([]byte, declared)
+	if _, err := io.ReadFull(r, data); err != nil {
+		return false // truncated or unreadable container member
+	}
+
+	limits := ArchiveLimits{
+		MaxMemberSize:  min(u.MaxMemberSize, u.maxTotalMemory-u.totalMemoryUsed),
+		MaxTotalMemory: u.maxTotalMemory,
+	}
+	var content [][]byte
+	var truncated bool
+	var err error
+	if kind == "xlsx" {
+		content, truncated, err = ReadXLSX(bytes.NewReader(data), declared, limits)
+	} else {
+		content, truncated, err = ReadDOCX(bytes.NewReader(data), declared, limits)
+	}
+	if errors.Is(err, ErrOOXMLNotZip) {
+		// Misnamed member: classify the raw bytes like the sniff path would.
+		n := min(len(data), len(u.sniffBuf))
+		if n == 0 || !strings.HasPrefix(http.DetectContentType(data[:n]), "text/") {
+			return false
+		}
+		u.bufferedFilename = name
+		u.bufferedFileContent = data
+		u.bufferedFileSize = len(data)
+		u.updateMemoryUsage(len(data))
+		return true
+	}
+	if errors.Is(err, ErrOOXMLDeclaredSize) {
+		u.recordSkip(name, fmt.Sprintf("Skipped content scan of archive member: container declares more data than allowed (member limit %d bytes, total limit %d bytes).", limits.MaxMemberSize, limits.MaxTotalMemory), declared)
+		return false
+	}
+	if err != nil {
+		output.GlobalLogger.FileWarning(u.ArchiveName, "Cannot parse %s member '%s' -> %v", kind, name, err)
+		u.recordSkip(name, "Skipped content scan of archive member: container could not be parsed.", declared)
+		return false
+	}
+
+	text := bytes.Join(content, []byte("\n"))
+	if len(text) == 0 {
+		return false
+	}
+	if truncated {
+		u.recordSkip(name, fmt.Sprintf("Stopped content scan of archive member: extracted text exceeds %d bytes; scanned the first part only.", limits.MaxMemberSize), declared)
+	}
+	u.bufferedFilename = name
+	u.bufferedFileContent = text
+	u.bufferedFileSize = len(text)
+	u.updateMemoryUsage(len(text))
 	return true
 }
 

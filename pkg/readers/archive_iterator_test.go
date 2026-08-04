@@ -600,6 +600,123 @@ func TestTarGzWalkCapSingleHugeMember(t *testing.T) {
 	assert.Less(t, nfi.walkCounter.count, int64(64*1024), "only tar headers may be decompressed")
 }
 
+// buildMemberZip writes a zip archive with the given members to a temp path.
+func buildMemberZip(t *testing.T, members map[string][]byte) string {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for name, data := range members {
+		w, err := zw.Create(name)
+		assert.NoError(t, err)
+		_, err = w.Write(data)
+		assert.NoError(t, err)
+	}
+	assert.NoError(t, zw.Close())
+	path := filepath.Join(t.TempDir(), "members.zip")
+	assert.NoError(t, os.WriteFile(path, buf.Bytes(), 0o600))
+	return path
+}
+
+func TestOOXMLMemberExtraction(t *testing.T) {
+	xlsxData := buildAmplifiedXLSX(t)
+	docxData, err := os.ReadFile("../../testdata/test.docx")
+	assert.NoError(t, err)
+	path := buildMemberZip(t, map[string][]byte{
+		"report.xlsx": xlsxData,
+		"notes.docx":  docxData,
+		"plain.txt":   []byte("ordinary text content\n"),
+	})
+
+	nfi := InitArchiveIterator(path, "members.zip",
+		ArchiveLimits{MaxMemberSize: 10 * 1024 * 1024, MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 1000}, nil, nil)
+	assert.True(t, nfi.HasFilesToUnpack())
+	got := map[string][]byte{}
+	for nfi.HasNext() {
+		nfi.Next()
+		name, content, _ := nfi.UnpackedFile()
+		got[name] = content
+	}
+	assert.Len(t, got, 3)
+	assert.Contains(t, string(got["report.xlsx"]), "AAAA", "xlsx member text must be extracted")
+	assert.Contains(t, string(got["notes.docx"]), "PAGE 1", "docx member text must be extracted")
+	assert.Equal(t, "ordinary text content\n", string(got["plain.txt"]))
+}
+
+func TestOOXMLMemberTruncationAndCharge(t *testing.T) {
+	// Amplified container: small zip entries, ~400 KB extracted. Member cap
+	// 16 KB -> truncated ack, partial text scanned, charge stays bounded.
+	path := buildMemberZip(t, map[string][]byte{"big.xlsx": buildAmplifiedXLSX(t)})
+	nfi := InitArchiveIterator(path, "members.zip",
+		ArchiveLimits{MaxMemberSize: 16 * 1024, MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 1000}, nil, nil)
+	assert.True(t, nfi.HasFilesToUnpack())
+	count := 0
+	for nfi.HasNext() {
+		nfi.Next()
+		_, content, _ := nfi.UnpackedFile()
+		assert.NotEmpty(t, content)
+		count++
+	}
+	assert.Equal(t, 1, count)
+	foundStop := false
+	for _, m := range nfi.SkipMessages() {
+		if strings.Contains(m.Content, "Stopped content scan of archive member") {
+			foundStop = true
+		}
+	}
+	assert.True(t, foundStop, "expected truncation ack, got %+v", nfi.SkipMessages())
+	assert.LessOrEqual(t, nfi.totalMemoryUsed, int64(64*1024), "charge must reflect the capped extraction")
+}
+
+func TestOOXMLMemberGateReject(t *testing.T) {
+	// Container member whose inner index declares 1 TB: gate ack, member
+	// skipped, iteration continues to the scannable member behind it.
+	var raw bytes.Buffer
+	zw := zip.NewWriter(&raw)
+	w, err := zw.CreateRaw(&zip.FileHeader{
+		Name:               "xl/worksheets/sheet1.xml",
+		Method:             zip.Deflate,
+		UncompressedSize64: 1 << 40,
+		CompressedSize64:   8,
+	})
+	assert.NoError(t, err)
+	_, err = w.Write([]byte{0x07, 0xff, 0xff, 0xff, 0, 0, 0, 0})
+	assert.NoError(t, err)
+	assert.NoError(t, zw.Close())
+
+	path := buildMemberZip(t, map[string][]byte{
+		"bomb.xlsx": raw.Bytes(),
+		"safe.txt":  []byte("still scanned\n"),
+	})
+	nfi := InitArchiveIterator(path, "members.zip",
+		ArchiveLimits{MaxMemberSize: 10 * 1024 * 1024, MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 1000}, nil, nil)
+	assert.True(t, nfi.HasFilesToUnpack())
+	var names []string
+	for nfi.HasNext() {
+		nfi.Next()
+		name, _, _ := nfi.UnpackedFile()
+		names = append(names, name)
+	}
+	assert.Equal(t, []string{"safe.txt"}, names)
+	foundGate := false
+	for _, m := range nfi.SkipMessages() {
+		if strings.Contains(m.Content, "container declares more data") {
+			foundGate = true
+		}
+	}
+	assert.True(t, foundGate, "expected gate ack, got %+v", nfi.SkipMessages())
+}
+
+func TestOOXMLMemberMisnamedTextFallback(t *testing.T) {
+	path := buildMemberZip(t, map[string][]byte{"data.xlsx": []byte("csv,misnamed,as,xlsx\nplain,text\n")})
+	nfi := InitArchiveIterator(path, "members.zip",
+		ArchiveLimits{MaxMemberSize: 10 * 1024 * 1024, MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 1000}, nil, nil)
+	assert.True(t, nfi.HasFilesToUnpack())
+	nfi.Next()
+	name, content, _ := nfi.UnpackedFile()
+	assert.Equal(t, "data.xlsx", name)
+	assert.Equal(t, "csv,misnamed,as,xlsx\nplain,text\n", string(content), "misnamed text member must be scanned raw")
+}
+
 func countMemberCountAcks(msgs []structs.Message) int {
 	n := 0
 	for _, m := range msgs {
