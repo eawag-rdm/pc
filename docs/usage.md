@@ -131,7 +131,11 @@ maxContentScanFileSize = 20971520   # max size for content-scanned files
 These limits gate the keyword checks and the secret scan alike: files above
 `maxContentScanFileSize` are never content-scanned (skip acknowledgement
 instead), and only archive members within `maxArchiveFileSize` /
-`maxTotalArchiveMemory` are unpacked. Archives with more than
+`maxTotalArchiveMemory` are unpacked. Excel/Word files (`.xlsx`/`.docx`) are
+text-extracted and keyword-scanned both at top level and inside archives;
+their zip index is checked against the same limits before parsing, and
+over-long extractions are truncated with an acknowledgement (the truncated
+part is still scanned). Archives with more than
 `maxArchiveMemberCount` unpack candidates get a skip acknowledgement instead of
 a content scan (0 is not unlimited — it means the default of 1000).
 
