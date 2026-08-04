@@ -351,10 +351,10 @@ func (u *UnpackedFileIterator) tryBufferMember(name string, declared int64, r io
 }
 
 // unpackTar promotes the buffered member to current and buffers the next one.
-func unpackTar(u *UnpackedFileIterator) (bool, error) {
+func unpackTar(u *UnpackedFileIterator) bool {
 	if u.bufferedFilename == "" {
 		u.iterationEnded = true
-		return false, nil
+		return false
 	}
 
 	u.CurrentFilename = u.bufferedFilename
@@ -365,7 +365,7 @@ func unpackTar(u *UnpackedFileIterator) (bool, error) {
 	u.bufferedFileSize = 0
 
 	u.bufferNextTar()
-	return true, nil
+	return true
 }
 
 // sniffThenRead classifies rc from its first 512 bytes and reads the rest only
@@ -468,10 +468,10 @@ func (u *UnpackedFileIterator) bufferNextZip() bool {
 
 // unpackZip promotes the buffered member to current and buffers the next one,
 // so each member is decompressed and charged to the memory budget exactly once.
-func unpackZip(u *UnpackedFileIterator) (bool, error) {
+func unpackZip(u *UnpackedFileIterator) bool {
 	if u.bufferedFilename == "" {
 		u.iterationEnded = true
-		return false, nil
+		return false
 	}
 
 	u.CurrentFilename = u.bufferedFilename
@@ -482,7 +482,7 @@ func unpackZip(u *UnpackedFileIterator) (bool, error) {
 	u.bufferedFileSize = 0
 
 	u.bufferNextZip()
-	return true, nil
+	return true
 }
 
 // bufferNext7z scans forward from fileIndex+1, decompresses the next scannable
@@ -570,10 +570,10 @@ func (u *UnpackedFileIterator) passes7zDeclaredSizeGate() bool {
 
 // unpack7z promotes the buffered member to current and buffers the next one,
 // so each member is decompressed and charged to the memory budget exactly once.
-func unpack7z(u *UnpackedFileIterator) (bool, error) {
+func unpack7z(u *UnpackedFileIterator) bool {
 	if u.bufferedFilename == "" {
 		u.iterationEnded = true
-		return false, nil
+		return false
 	}
 
 	u.CurrentFilename = u.bufferedFilename
@@ -584,7 +584,7 @@ func unpack7z(u *UnpackedFileIterator) (bool, error) {
 	u.bufferedFileSize = 0
 
 	u.bufferNext7z()
-	return true, nil
+	return true
 }
 
 func (u *UnpackedFileIterator) findFirstZip() bool {
@@ -668,31 +668,19 @@ func (u *UnpackedFileIterator) Next() bool {
 		return false
 	}
 
-	var ok bool
-	var err error
-
 	// Handle .tar.gz separately since filepath.Ext only returns .gz
 	if strings.HasSuffix(u.ArchiveName, ".tar.gz") {
-		ok, err = unpackTar(u) // Reuse TAR unpacking logic for TAR.GZ
-	} else {
-		switch filepath.Ext(u.ArchiveName) {
-		case ".zip":
-			ok, err = unpackZip(u)
-		case ".tar":
-			ok, err = unpackTar(u)
-		case ".7z":
-			ok, err = unpack7z(u)
-		default:
-			u.iterationEnded = true
-			return false
-		}
+		return unpackTar(u) // Reuse TAR unpacking logic for TAR.GZ
 	}
-
-	if err != nil {
+	switch filepath.Ext(u.ArchiveName) {
+	case ".zip":
+		return unpackZip(u)
+	case ".tar":
+		return unpackTar(u)
+	case ".7z":
+		return unpack7z(u)
+	default:
 		u.iterationEnded = true
-		u.Close()
 		return false
 	}
-
-	return ok // true only if valid file was found
 }
