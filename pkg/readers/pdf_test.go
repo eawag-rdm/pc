@@ -3,6 +3,7 @@ package readers
 import (
 	"bytes"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -10,11 +11,17 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// NOTE: this test must stay FIRST in this file, and no other test file in the
-// package may touch the PDF runtime: it asserts the lazy-init guarantee (a
-// run that never sees a PDF must never pay for the wasm runtime).
-func TestPDFRuntimeLazyBeforeFirstUse(t *testing.T) {
-	assert.False(t, pdfRuntimeInitialized(), "PDF runtime must not initialize before the first PDF")
+// TestMain asserts the lazy-init guarantee mechanically before ANY test in
+// the package runs (immune to -shuffle and -run selections, unlike the
+// former must-stay-first test): a run that never sees a PDF must never pay
+// for the wasm runtime. Benchmarks run after tests, so committed
+// Benchmark* functions do not violate this.
+func TestMain(m *testing.M) {
+	if pdfRuntimeInitialized() {
+		fmt.Fprintln(os.Stderr, "FAIL: PDF runtime initialized before any test ran - lazy-init guarantee broken (package-level init touched the pool)")
+		os.Exit(1)
+	}
+	os.Exit(m.Run())
 }
 
 // writeMinimalPDF builds a valid single-font PDF with one page per text,

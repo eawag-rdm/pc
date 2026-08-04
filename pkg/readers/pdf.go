@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	pdfium "github.com/klippa-app/go-pdfium"
@@ -66,9 +67,10 @@ var (
 // PDFs never pays for it. The Once memoizes failures too: every later PDF
 // gets the same error (skip ack) instead of a per-file init retry storm.
 var pdfRuntime struct {
-	once sync.Once
-	pool pdfium.Pool
-	err  error
+	once        sync.Once
+	pool        pdfium.Pool
+	err         error
+	initialized atomic.Bool
 }
 
 func pdfPool() (pdfium.Pool, error) {
@@ -113,14 +115,16 @@ func pdfPool() (pdfium.Pool, error) {
 			Stdout: io.Discard,
 			Stderr: io.Discard,
 		})
+		pdfRuntime.initialized.Store(true)
 	})
 	return pdfRuntime.pool, pdfRuntime.err
 }
 
 // pdfRuntimeInitialized reports whether the lazy runtime was ever started
-// (test hook for the zero-PDF-run guarantee).
+// (test hook for the zero-PDF-run guarantee). Atomic so the probe is safe
+// from any goroutine, without touching the Once.
 func pdfRuntimeInitialized() bool {
-	return pdfRuntime.pool != nil || pdfRuntime.err != nil
+	return pdfRuntime.initialized.Load()
 }
 
 // ReadPDF extracts per-page text (findings can cite "page N"; archive members
