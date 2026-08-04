@@ -6,7 +6,7 @@
 # wiring and the alignment notes with pc.toml.
 
 # ---- build stage ----
-FROM golang:1.23-alpine AS build
+FROM golang:1.25-alpine AS build
 WORKDIR /src
 
 # Module download layer (cached unless go.mod/go.sum change).

@@ -41,16 +41,28 @@ const (
 	DefaultMaxTotalArchiveMemory  = 100 * 1024 * 1024  // per archive (bytes)
 	DefaultMaxArchiveMemberCount  = 1000               // unpack candidates per archive
 	DefaultMaxContentScanFileSize = 1024 * 1024 * 1024 // whole-file content scan gate (bytes)
+	DefaultMaxPDFPages            = 500                // pages scanned per PDF (covers full theses; appendices carry the secrets)
 )
 
 type GeneralConfig struct {
 	MaxArchiveFileSize               int64  // Maximum size for individual files in archives (bytes)
 	MaxTotalArchiveMemory            int64  // Maximum total memory for archive processing (bytes)
 	MaxArchiveMemberCount            int    // Max unpack-candidate members per archive for content checks (0 = default, not unlimited; enforced from C4)
+	MaxPDFPages                      int    // Pages scanned per PDF (0 = default, not unlimited)
 	MaxContentScanFileSize           int64  // Maximum size for files that read content (like IsFreeOfKeywords) (bytes)
 	SummaryIntroText                 string // Introductory text shown at the top of the summary
 	SummaryMaxIssuesBeforeTruncation int    // Number of issues to show before truncating
 	SummaryMinGroupSizeForTruncation int    // Minimum group size to trigger truncation
+}
+
+// EffectiveMaxPDFPages applies the documented default to non-positive values
+// (same single-defaulting-site convention as ArchiveLimits; 0 never means
+// unlimited).
+func (g *GeneralConfig) EffectiveMaxPDFPages() int {
+	if g.MaxPDFPages <= 0 {
+		return DefaultMaxPDFPages
+	}
+	return g.MaxPDFPages
 }
 
 // ArchiveLimits returns the effective per-archive unpacking limits, applying
@@ -151,6 +163,7 @@ func ParseConfig(filename string) (*Config, error) {
 			MaxArchiveFileSize:               DefaultMaxArchiveFileSize,
 			MaxTotalArchiveMemory:            DefaultMaxTotalArchiveMemory,
 			MaxArchiveMemberCount:            DefaultMaxArchiveMemberCount,
+			MaxPDFPages:                      DefaultMaxPDFPages,
 			MaxContentScanFileSize:           DefaultMaxContentScanFileSize,
 			SummaryIntroText:                 DefaultSummaryIntroText,
 			SummaryMaxIssuesBeforeTruncation: DefaultSummaryMaxIssuesBeforeTruncation,
@@ -230,6 +243,12 @@ func ParseConfig(filename string) (*Config, error) {
 		}
 		if c.General.MaxArchiveMemberCount < 0 {
 			return nil, fmt.Errorf("[general] maxArchiveMemberCount must be >= 0, got %d", c.General.MaxArchiveMemberCount)
+		}
+		if err := generalInt(generalData, "maxPDFPages", &c.General.MaxPDFPages); err != nil {
+			return nil, err
+		}
+		if c.General.MaxPDFPages < 0 {
+			return nil, fmt.Errorf("[general] maxPDFPages must be >= 0, got %d", c.General.MaxPDFPages)
 		}
 		if summaryIntroText, ok := generalData["summaryIntroText"].(string); ok {
 			c.General.SummaryIntroText = summaryIntroText
