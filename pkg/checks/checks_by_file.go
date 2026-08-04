@@ -344,6 +344,11 @@ func IsFreeOfKeywords(file structs.File, config config.Config) []structs.Message
 			return append(messages, msgs...)
 		}
 	}
+	if strings.EqualFold(filepath.Ext(file.Path), ".pdf") {
+		if msgs, handled := scanPDFFile(file, config); handled {
+			return append(messages, msgs...)
+		}
+	}
 
 	isText, err := isTextFile(file.Path)
 	if err != nil {
@@ -522,6 +527,75 @@ func scanOOXMLFile(file structs.File, config config.Config, kind string) ([]stru
 		var info = argumentSet["info"].(string)
 		if ret := isFreeOfKeywordsCoreLowered(file, keywordList, info, content, lowered, true); ret != nil {
 			messages = append(messages, ret...)
+		}
+	}
+	return messages, true
+}
+
+// pdfLimits packs the effective PDF extraction bounds: the new page knob,
+// the shared per-member text cap, and the internal wall-time backstop.
+func pdfLimits(cfg config.Config) readers.PDFLimits {
+	memberSize, _, _ := cfg.General.ArchiveLimits()
+	return readers.PDFLimits{
+		MaxPages:     cfg.General.EffectiveMaxPDFPages(),
+		MaxTextBytes: memberSize,
+		Timeout:      readers.DefaultPDFTimeout,
+	}
+}
+
+// scanPDFFile extracts and keyword-scans a top-level PDF. handled = false
+// means the bytes carry no PDF magic (PDFium accepts "%PDF" at any offset up
+// to 1024 - a prefix-only check would be a one-byte-prepend evasion vector)
+// and the generic text/binary flow should decide instead.
+func scanPDFFile(file structs.File, config config.Config) ([]structs.Message, bool) {
+	data, err := os.ReadFile(file.Path)
+	if err != nil {
+		output.GlobalLogger.FileWarning(file.GetDisplayName(), "Error reading file '%s': %v", file.Path, err)
+		return nil, true
+	}
+	magicWindow := data
+	if len(magicWindow) > 1029 {
+		magicWindow = magicWindow[:1029]
+	}
+	if !bytes.Contains(magicWindow, []byte("%PDF")) {
+		return nil, false
+	}
+
+	limits := pdfLimits(config)
+	pages, truncated, err := readers.ReadPDF(data, limits)
+
+	var messages []structs.Message
+	ack := func(reason string) []structs.Message {
+		return append(messages, structs.Message{Content: reason, Source: file, Skipped: true, Reason: reason})
+	}
+	switch {
+	case errors.Is(err, readers.ErrPDFPassword):
+		return ack("Skipped content scan of file: PDF is password-protected."), true
+	case errors.Is(err, readers.ErrPDFTimeout):
+		return ack("Skipped content scan of file: PDF extraction timed out."), true
+	case err != nil:
+		output.GlobalLogger.FileWarning(file.GetDisplayName(), "Error reading PDF '%s': %v", file.Path, err)
+		return ack("Skipped content scan of file: PDF could not be parsed."), true
+	}
+	if truncated {
+		reason := fmt.Sprintf("Stopped content scan of file: PDF exceeds %d pages or %d extracted bytes; scanned the first part only.", limits.MaxPages, limits.MaxTextBytes)
+		messages = append(messages, structs.Message{Content: reason, Source: file, Skipped: true, Reason: reason})
+	}
+
+	lowered := lowerAll(pages)
+	for _, argumentSet := range config.Tests["IsFreeOfKeywords"].KeywordArguments {
+		var keywordList = argumentSet["keywords"].([]string)
+		var info = argumentSet["info"].(string)
+		for idx, page := range pages {
+			if len(page) == 0 {
+				continue
+			}
+			if found := matchPatternsListLowered(keywordList, page, lowered[idx]); found != "" {
+				messages = append(messages, structs.Message{
+					Content: fmt.Sprintf("%s '%s' (page %d)", info, found, idx+1),
+					Source:  file,
+				})
+			}
 		}
 	}
 	return messages, true

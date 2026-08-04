@@ -478,6 +478,44 @@ func TestParseMaxArchiveMemberCount(t *testing.T) {
 	})
 }
 
+func TestParseMaxPDFPages(t *testing.T) {
+	t.Run("Configured", func(t *testing.T) {
+		configFile := createTempConfigFile(t, `
+		[general]
+		maxPDFPages = 42
+		`)
+		defer os.Remove(configFile)
+		config, err := ParseConfig(configFile)
+		assert.NoError(t, err)
+		assert.Equal(t, 42, config.General.MaxPDFPages)
+	})
+	t.Run("MissingUsesDefault", func(t *testing.T) {
+		configFile := createTempConfigFile(t, `
+		[general]
+		`)
+		defer os.Remove(configFile)
+		config, err := ParseConfig(configFile)
+		assert.NoError(t, err)
+		assert.Equal(t, DefaultMaxPDFPages, config.General.MaxPDFPages)
+	})
+	t.Run("NegativeFailsFast", func(t *testing.T) {
+		configFile := createTempConfigFile(t, `
+		[general]
+		maxPDFPages = -1
+		`)
+		defer os.Remove(configFile)
+		_, err := ParseConfig(configFile)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "maxPDFPages")
+	})
+	t.Run("EffectiveZeroDefaults", func(t *testing.T) {
+		g := &GeneralConfig{}
+		assert.Equal(t, DefaultMaxPDFPages, g.EffectiveMaxPDFPages())
+		g.MaxPDFPages = 7
+		assert.Equal(t, 7, g.EffectiveMaxPDFPages())
+	})
+}
+
 // TestArchiveLimits verifies the single defaulting site for per-archive
 // unpacking limits: non-positive values (e.g. from hand-built GeneralConfig
 // structs that never pass ParseConfig) map to the documented defaults.

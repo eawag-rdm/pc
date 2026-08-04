@@ -117,6 +117,11 @@ image bundles the
 (checksum-verified at build). The scanner runs offline, capped at
 `attrs.maxProcs` cores and `attrs.timeoutSeconds` per analysis.
 
+**PDF engine cache.** The committed compose sets `XDG_CACHE_HOME=/var/lib/pc`
+(the persistent named volume) so the sandboxed PDF engine's one-time wasm
+compilation (~3 s) is cached across container recreations; without it every
+fresh container pays the compile on its first PDF.
+
 **RAM-backed `/tmp` (tmpfs).** The committed compose mounts `/tmp` as tmpfs
 (2 GB): the secret scan extracts archive members there before scanning, so
 plaintext copies live only in RAM and vanish on container restart. Size it to

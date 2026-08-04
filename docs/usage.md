@@ -125,6 +125,7 @@ if you want a literal-match safety net for those.
 maxArchiveFileSize     = 10485760   # max size per file inside an archive (bytes)
 maxTotalArchiveMemory  = 536870912  # total memory budget for archive processing
 maxArchiveMemberCount  = 1000       # max unpack-candidate members per archive
+maxPDFPages            = 500        # pages scanned per PDF
 maxContentScanFileSize = 20971520   # max size for content-scanned files
 ```
 
@@ -135,7 +136,12 @@ instead), and only archive members within `maxArchiveFileSize` /
 text-extracted and keyword-scanned both at top level and inside archives;
 their zip index is checked against the same limits before parsing, and
 over-long extractions are truncated with an acknowledgement (the truncated
-part is still scanned). Archives with more than
+part is still scanned). PDFs are text-extracted (sandboxed PDFium) and
+keyword-scanned page by page - findings cite the page; the first
+`maxPDFPages` pages are scanned (default 500, deterministic), extracted text
+shares the `maxArchiveFileSize` cap, and a 30 s per-file backstop skips
+pathological files with an acknowledgement. Password-protected and unparsable
+PDFs get skip acknowledgements. Archives with more than
 `maxArchiveMemberCount` unpack candidates get a skip acknowledgement instead of
 a content scan (0 is not unlimited — it means the default of 1000).
 

@@ -55,6 +55,12 @@ services:
       #    container user's ownership.
       - pc-cache:/var/lib/pc
 
+    # Wazero compilation cache for the PDF engine lands under XDG_CACHE_HOME;
+    # pointing it into the persistent volume avoids a ~3 s wasm recompile on
+    # every container recreation (the container home is ephemeral).
+    environment:
+      - XDG_CACHE_HOME=/var/lib/pc
+
     # RAM-backed /tmp: the IsFreeOfSecrets check extracts archive members here
     # before scanning, so plaintext copies never touch disk. Size it to at least
     # the worst-case extraction (archives per analysis x maxTotalArchiveMemory).
