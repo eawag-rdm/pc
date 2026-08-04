@@ -551,7 +551,8 @@ func scanPDFFile(file structs.File, config config.Config) ([]structs.Message, bo
 	data, err := os.ReadFile(file.Path)
 	if err != nil {
 		output.GlobalLogger.FileWarning(file.GetDisplayName(), "Error reading file '%s': %v", file.Path, err)
-		return nil, true
+		reason := "Skipped content scan of file: file could not be read."
+		return []structs.Message{{Content: reason, Source: file, Skipped: true, Reason: reason}}, true
 	}
 	magicWindow := data
 	if len(magicWindow) > 1029 {

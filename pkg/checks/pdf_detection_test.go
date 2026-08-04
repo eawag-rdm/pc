@@ -131,6 +131,23 @@ func TestMisnamedTextPDFFallsBack(t *testing.T) {
 	}
 }
 
+func TestUnreadablePDFEmitsSkipAck(t *testing.T) {
+	file := writePDFFixture(t, buildTestPDF("some text"))
+	if err := os.Chmod(file.Path, 0); err != nil {
+		t.Fatal(err)
+	}
+	msgs := IsFreeOfKeywords(file, keywordConfig([]string{"password"}))
+	found := false
+	for _, m := range msgs {
+		if m.Skipped && strings.Contains(m.Content, "could not be read") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("unreadable PDF must produce a read skip ack, got %v", msgs)
+	}
+}
+
 func TestMalformedPDFEmitsSkipAck(t *testing.T) {
 	junk := append([]byte("%PDF-1.4\n"), bytes.Repeat([]byte{0x13, 0x00, 0x42}, 2048)...)
 	file := writePDFFixture(t, junk)
