@@ -546,29 +546,49 @@ func pdfLimits(cfg config.Config) readers.PDFLimits {
 // scanPDFFile extracts and keyword-scans a top-level PDF. handled = false
 // means the bytes carry no PDF magic (PDFium accepts "%PDF" at any offset up
 // to 1024 - a prefix-only check would be a one-byte-prepend evasion vector)
-// and the generic text/binary flow should decide instead.
+// and the generic text/binary flow should decide instead. The magic is
+// sniffed from the first 1028 bytes (1024 + the 4 magic bytes) BEFORE the
+// whole-file read, so a large non-PDF named .pdf costs ~1 KiB of I/O here
+// instead of a full read that gets discarded.
 func scanPDFFile(file structs.File, config config.Config) ([]structs.Message, bool) {
-	data, err := os.ReadFile(file.Path)
-	if err != nil {
+	ack := func(reason string) []structs.Message {
+		return []structs.Message{{Content: reason, Source: file, Skipped: true, Reason: reason}}
+	}
+	readAck := func(err error) []structs.Message {
 		output.GlobalLogger.FileWarning(file.GetDisplayName(), "Error reading file '%s': %v", file.Path, err)
-		reason := "Skipped content scan of file: file could not be read."
-		return []structs.Message{{Content: reason, Source: file, Skipped: true, Reason: reason}}, true
+		return ack("Skipped content scan of file: file could not be read.")
 	}
-	magicWindow := data
-	if len(magicWindow) > 1029 {
-		magicWindow = magicWindow[:1029]
+
+	f, err := os.Open(file.Path)
+	if err != nil {
+		return readAck(err), true
 	}
-	if !bytes.Contains(magicWindow, []byte("%PDF")) {
+	defer f.Close()
+
+	head := make([]byte, 1028)
+	n, err := io.ReadFull(f, head)
+	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+		return readAck(err), true
+	}
+	head = head[:n]
+	if !bytes.Contains(head, []byte("%PDF")) {
 		return nil, false
 	}
+
+	var buf bytes.Buffer
+	if st, serr := f.Stat(); serr == nil {
+		buf.Grow(int(st.Size()))
+	}
+	buf.Write(head)
+	if _, err := buf.ReadFrom(f); err != nil {
+		return readAck(err), true
+	}
+	data := buf.Bytes()
 
 	limits := pdfLimits(config)
 	pages, truncated, err := readers.ReadPDF(data, limits)
 
 	var messages []structs.Message
-	ack := func(reason string) []structs.Message {
-		return append(messages, structs.Message{Content: reason, Source: file, Skipped: true, Reason: reason})
-	}
 	switch {
 	case errors.Is(err, readers.ErrPDFPassword):
 		return ack("Skipped content scan of file: PDF is password-protected."), true
