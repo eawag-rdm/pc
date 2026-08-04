@@ -259,12 +259,7 @@ func IsArchiveFreeOfKeywords(file structs.File, config config.Config) []structs.
 	whitelist := config.Tests["IsFreeOfKeywords"].Whitelist
 	blacklist := config.Tests["IsFreeOfKeywords"].Blacklist
 
-	memberSize, totalMemory, memberCount := config.General.ArchiveLimits()
-	archiveIterator := readers.InitArchiveIterator(file.Path, file.Name, readers.ArchiveLimits{
-		MaxMemberSize:  memberSize,
-		MaxTotalMemory: totalMemory,
-		MaxMemberCount: memberCount,
-	}, whitelist, blacklist)
+	archiveIterator := readers.InitArchiveIterator(file.Path, file.Name, archiveLimits(config), whitelist, blacklist)
 	defer archiveIterator.Close()
 	if !archiveIterator.HasFilesToUnpack() {
 		// Even with no scannable members, the iterator may have skipped members
@@ -401,6 +396,17 @@ func IsFreeOfKeywords(file structs.File, config config.Config) []structs.Message
 		}
 	}
 	return messages
+}
+
+// archiveLimits packs the config-derived effective limits into the readers
+// struct (readers stays config-free, so the tuple crosses here).
+func archiveLimits(cfg config.Config) readers.ArchiveLimits {
+	memberSize, totalMemory, memberCount := cfg.General.ArchiveLimits()
+	return readers.ArchiveLimits{
+		MaxMemberSize:  memberSize,
+		MaxTotalMemory: totalMemory,
+		MaxMemberCount: memberCount,
+	}
 }
 
 // lowerAll lowercases each body entry once so every keyword set scans the
