@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"net/http"
@@ -279,11 +280,13 @@ func IsArchiveFreeOfKeywords(file structs.File, config config.Config) []structs.
 
 		archiveIterator.Next()
 		fileName, fileContent, fileSize := archiveIterator.UnpackedFile()
+		// Lower once per member; every keyword set scans the shared copy.
+		loweredContent := bytes.ToLower(fileContent)
 
 		for _, argumentSet := range config.Tests["IsFreeOfKeywords"].KeywordArguments {
 			var keywordList = argumentSet["keywords"].([]string)
 			var info = argumentSet["info"].(string)
-			foundKeywordsStr := matchPatternsList(keywordList, fileContent)
+			foundKeywordsStr := matchPatternsListLowered(keywordList, fileContent, loweredContent)
 
 			if foundKeywordsStr != "" {
 				// Create a File struct for the archived file with proper archive reference
@@ -368,12 +371,13 @@ func IsFreeOfKeywords(file structs.File, config config.Config) []structs.Message
 				return messages
 			}
 			body := [][]byte{content}
+			lowered := lowerAll(body)
 
 			for _, argumentSet := range config.Tests["IsFreeOfKeywords"].KeywordArguments {
 				var keywordList = argumentSet["keywords"].([]string)
 				var info = argumentSet["info"].(string)
 
-				ret := IsFreeOfKeywordsCoreList(file, keywordList, info, body, false)
+				ret := isFreeOfKeywordsCoreLowered(file, keywordList, info, body, lowered, false)
 				if ret != nil {
 					messages = append(messages, ret...)
 				}
@@ -385,11 +389,12 @@ func IsFreeOfKeywords(file structs.File, config config.Config) []structs.Message
 		if skipMsg != nil {
 			messages = append(messages, *skipMsg)
 		}
+		lowered := lowerAll(body)
 		for _, argumentSet := range config.Tests["IsFreeOfKeywords"].KeywordArguments {
 			var keywordList = argumentSet["keywords"].([]string)
 			var info = argumentSet["info"].(string)
 
-			ret := IsFreeOfKeywordsCoreList(file, keywordList, info, body, true)
+			ret := isFreeOfKeywordsCoreLowered(file, keywordList, info, body, lowered, true)
 			if ret != nil {
 				messages = append(messages, ret...)
 			}
@@ -398,11 +403,25 @@ func IsFreeOfKeywords(file structs.File, config config.Config) []structs.Message
 	return messages
 }
 
+// lowerAll lowercases each body entry once so every keyword set scans the
+// shared copies instead of re-lowering per set.
+func lowerAll(body [][]byte) [][]byte {
+	lowered := make([][]byte, len(body))
+	for i, entry := range body {
+		lowered[i] = bytes.ToLower(entry)
+	}
+	return lowered
+}
+
 func IsFreeOfKeywordsCoreList(file structs.File, keywordList []string, info string, body [][]byte, isBinary bool) []structs.Message {
+	return isFreeOfKeywordsCoreLowered(file, keywordList, info, body, lowerAll(body), isBinary)
+}
+
+func isFreeOfKeywordsCoreLowered(file structs.File, keywordList []string, info string, body, lowered [][]byte, isBinary bool) []structs.Message {
 	var messages []structs.Message
 
 	for idx, entry := range body {
-		foundKeywordsStr := matchPatternsList(keywordList, entry)
+		foundKeywordsStr := matchPatternsListLowered(keywordList, entry, lowered[idx])
 		if foundKeywordsStr != "" {
 			if isBinary {
 				messages = append(messages, structs.Message{Content: info + " '" + foundKeywordsStr + "' in sheet/paragraph/table " + fmt.Sprintf("%d", idx), Source: file})
@@ -414,15 +433,16 @@ func IsFreeOfKeywordsCoreList(file structs.File, keywordList []string, info stri
 	return messages
 }
 
-// matchPatternsList is an optimized version that takes a pattern slice directly
-func matchPatternsList(patternList []string, body []byte) string {
+// matchPatternsListLowered scans with a caller-provided lowercase copy of body,
+// so loops over several keyword sets lower the content once instead of per set.
+func matchPatternsListLowered(patternList []string, body, loweredBody []byte) string {
 	if len(body) == 0 || len(patternList) == 0 {
 		return ""
 	}
 
 	// Use fast matcher for pattern detection with original case preservation
 	matcher := optimization.GetMatcher(patternList)
-	foundMatches := matcher.FindMatchesWithOriginalCase(body)
+	foundMatches := matcher.FindMatchesWithOriginalCaseLowered(body, loweredBody)
 
 	if len(foundMatches) > 0 {
 		// Deduplicate and format results

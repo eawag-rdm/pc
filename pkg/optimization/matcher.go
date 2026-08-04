@@ -89,8 +89,15 @@ func (fm *FastMatcher) FindMatches(text []byte) []string {
 
 // FindMatchesWithOriginalCase finds matches and returns them with their original case from the text
 func (fm *FastMatcher) FindMatchesWithOriginalCase(text []byte) []string {
+	return fm.FindMatchesWithOriginalCaseLowered(text, bytes.ToLower(text))
+}
+
+// FindMatchesWithOriginalCaseLowered is FindMatchesWithOriginalCase for callers
+// that scan several pattern sets against the same content: lowering the content
+// once and passing it in removes the dominant per-set cost (a full ToLower copy
+// of the text). lowerText MUST equal bytes.ToLower(text).
+func (fm *FastMatcher) FindMatchesWithOriginalCaseLowered(text, lowerText []byte) []string {
 	found := make(map[string]string) // map[lowerPattern]originalFromText
-	lowerText := bytes.ToLower(text)
 
 	// Find all matches first
 	matchSet := make(map[string]struct{})
@@ -210,8 +217,11 @@ func GetMatcher(patterns []string) *FastMatcher {
 		return NewFastMatcher(patterns)
 	}
 
-	// Create a cache key from patterns
-	key := strings.Join(patterns, "|")
+	// NUL-joined cache key: "|" collided ["a|b"] with ["a", "b"], silently
+	// serving the first-created matcher for both pattern sets. Pattern sets
+	// come from config keywords and check lists, so the cache stays small;
+	// it is unbounded by design.
+	key := strings.Join(patterns, "\x00")
 
 	globalMatcherCache.mutex.RLock()
 	if matcher, exists := globalMatcherCache.cache[key]; exists {
