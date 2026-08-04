@@ -19,7 +19,6 @@ import (
 	"github.com/tetratelabs/wazero"
 
 	"github.com/eawag-rdm/pc/pkg/output"
-	"github.com/eawag-rdm/pc/pkg/structs"
 )
 
 // PDFLimits bounds PDF text extraction. Like ArchiveLimits it fails closed:
@@ -75,7 +74,14 @@ var pdfRuntime struct {
 func pdfPool() (pdfium.Pool, error) {
 	pdfRuntime.once.Do(func() {
 		runtimeConfig := wazero.NewRuntimeConfig().
-			// Kill() can only interrupt in-flight wasm with this set.
+			// Kill() can only interrupt in-flight wasm with this set. The
+			// termination checkpoints wazero compiles in are NOT free:
+			// measured ~2.3x on pdfium's hot loops (~92 ms vs ~39 ms for a
+			// 50-page document). Deliberate trade - without it a
+			// pathological page pins a pool slot and OS thread forever,
+			// which the long-lived server cannot afford. If PDF-heavy CLI
+			// wall-clock ever matters, this flag is where half the time
+			// goes.
 			WithCloseOnContextDone(true).
 			WithMemoryLimitPages(pdfWasmMemoryLimitPages)
 		// Disk-backed compilation cache: without it every CLI run recompiles
@@ -271,14 +277,4 @@ func ReadPDF(data []byte, limits PDFLimits) (pages [][]byte, truncated bool, err
 	}
 
 	return pages, truncated, nil
-}
-
-// ReadPDFFile is the path-based wrapper around ReadPDF. The input is bounded
-// upstream by the maxContentScanFileSize whole-file gate.
-func ReadPDFFile(file structs.File, limits PDFLimits) ([][]byte, bool, error) {
-	data, err := os.ReadFile(file.Path)
-	if err != nil {
-		return nil, false, err
-	}
-	return ReadPDF(data, limits)
 }
