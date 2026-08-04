@@ -401,6 +401,14 @@ func TestSniffThenRead(t *testing.T) {
 		assert.False(t, overrun)
 		assert.Equal(t, text(600), string(content))
 	})
+	t.Run("much shorter than declared releases the backing array", func(t *testing.T) {
+		isText, content, overrun, err := it.sniffThenRead(strings.NewReader(text(600)), 1024*1024)
+		assert.NoError(t, err)
+		assert.True(t, isText)
+		assert.False(t, overrun)
+		assert.Equal(t, text(600), string(content))
+		assert.Equal(t, len(content), cap(content), "declared-size backing must be released")
+	})
 	t.Run("tiny text member", func(t *testing.T) {
 		isText, content, overrun, err := it.sniffThenRead(strings.NewReader(text(10)), 10)
 		assert.NoError(t, err)

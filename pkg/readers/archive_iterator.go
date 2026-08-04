@@ -387,7 +387,17 @@ func (u *UnpackedFileIterator) sniffThenRead(rc io.Reader, declared int64) (isTe
 		m, err := io.ReadFull(rc, content[n:])
 		if err == io.EOF || err == io.ErrUnexpectedEOF {
 			// Stream ended early (7z members may be shorter than declared).
-			return true, content[:n+m], false, nil
+			// A much-shorter member would pin the declared-size backing array
+			// for its whole buffer lifetime: copy the small actual content out
+			// and release the big allocation (also makes len == cap, so the
+			// memory charge is honest).
+			read := n + m
+			if int64(cap(content))-int64(read) >= 64*1024 {
+				trimmed := make([]byte, read)
+				copy(trimmed, content[:read])
+				return true, trimmed, false, nil
+			}
+			return true, content[:read], false, nil
 		}
 		if err != nil {
 			return true, nil, false, err
