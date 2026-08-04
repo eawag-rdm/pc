@@ -31,10 +31,51 @@ func validatePath(path string) error {
 	return nil
 }
 
+// localCollectorAttrs holds the resolved [collector.LocalCollector] attrs.
+// depth: 0 = top-level files only (default), N = descend N directory levels,
+// -1 = unlimited. maxFileCount: stop the walk once this many entries are
+// collected (0 = no cap).
+type localCollectorAttrs struct {
+	depth        int
+	maxFileCount int64
+}
+
+// localAttrsFrom resolves the attrs. includeFolders (legacy bool, string form
+// "true" accepted) without maxFolderDepth keeps its old meaning of unlimited
+// recursion; an explicit maxFolderDepth always wins.
+func localAttrsFrom(cfg config.Config) (localCollectorAttrs, error) {
+	a := localCollectorAttrs{}
+	cc, ok := cfg.Collectors["LocalCollector"]
+	if !ok || cc == nil || cc.Attrs == nil {
+		return a, nil
+	}
+	switch v := cc.Attrs["includeFolders"].(type) {
+	case bool:
+		if v {
+			a.depth = -1
+		}
+	case string:
+		if v == "true" {
+			a.depth = -1
+		}
+	}
+	if v, ok := cc.Attrs["maxFolderDepth"].(int64); ok {
+		if v < 0 {
+			return a, fmt.Errorf("[collector.LocalCollector] attrs.maxFolderDepth must be >= 0, got %d", v)
+		}
+		a.depth = int(v)
+	}
+	if v, ok := cc.Attrs["maxFileCount"].(int64); ok {
+		if v < 0 {
+			return a, fmt.Errorf("[collector.LocalCollector] attrs.maxFileCount must be >= 0, got %d", v)
+		}
+		a.maxFileCount = v
+	}
+	return a, nil
+}
+
 // read all files from a local directory
 func LocalCollector(path string, config config.Config) ([]structs.File, error) {
-	collectorName := "LocalCollector"
-
 	// Validate the input path
 	if err := validatePath(path); err != nil {
 		return nil, fmt.Errorf("invalid path: %w", err)
@@ -51,23 +92,15 @@ func LocalCollector(path string, config config.Config) ([]structs.File, error) {
 		return nil, fmt.Errorf("cannot access path %s: %w", cleanPath, err)
 	}
 
-	foundFiles := []structs.File{}
-
-	// Check if folders should be included recursively
-	includeFolders := false
-	if cc, ok := config.Collectors[collectorName]; ok && cc != nil {
-		if attrs, ok := cc.Attrs["includeFolders"]; ok {
-			switch v := attrs.(type) {
-			case bool:
-				includeFolders = v
-			case string:
-				includeFolders = v == "true"
-			}
-		}
+	attrs, err := localAttrsFrom(config)
+	if err != nil {
+		return nil, err
 	}
 
-	// Use filepath.WalkDir for recursive traversal
-	err := filepath.WalkDir(cleanPath, func(currentPath string, d os.DirEntry, err error) error {
+	foundFiles := []structs.File{}
+	sep := string(os.PathSeparator)
+
+	err = filepath.WalkDir(cleanPath, func(currentPath string, d os.DirEntry, err error) error {
 		if err != nil {
 			output.GlobalLogger.Warning("Warning: error accessing %s: %v", currentPath, err)
 			return nil // Continue walking despite errors
@@ -78,13 +111,25 @@ func LocalCollector(path string, config config.Config) ([]structs.File, error) {
 			return nil
 		}
 
+		// SkipAll (not a no-op continue) so the cap bounds worst-case I/O.
+		if attrs.maxFileCount > 0 && int64(len(foundFiles)) >= attrs.maxFileCount {
+			output.GlobalLogger.Warning("LocalCollector: maxFileCount (%d) reached; remaining entries under '%s' are not collected", attrs.maxFileCount, cleanPath)
+			return filepath.SkipAll
+		}
+
 		if d.IsDir() {
-			// If includeFolders is false, skip traversing into subdirectories
-			if !includeFolders {
+			if attrs.depth == 0 {
+				// Top-level-only mode: directories are neither listed nor entered.
 				return filepath.SkipDir
 			}
-			// Include directory only if includeFolders is true
 			foundFiles = append(foundFiles, structs.ToFile(currentPath, d.Name(), -1, ""))
+			if attrs.depth > 0 {
+				rel := strings.TrimPrefix(strings.TrimPrefix(currentPath, cleanPath), sep)
+				if strings.Count(rel, sep) >= attrs.depth {
+					// Boundary-depth directory: listed but not descended.
+					return filepath.SkipDir
+				}
+			}
 		} else {
 			// Add regular files
 			info, err := d.Info()

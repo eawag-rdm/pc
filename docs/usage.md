@@ -28,7 +28,7 @@ If no `-config` flag is given, `./pc.toml` is used.
 |---|---|---|
 | `[general]` | both | memory/scan limits, summary text |
 | `[test.<CheckName>]` | both | per-check configuration (see below) |
-| `[collector.LocalCollector]` | CLI | local file system collector |
+| `[collector.LocalCollector]` | CLI | local file system collector; `attrs`: `maxFolderDepth` (0 = top level only, N = descend N levels; boundary-depth folders are listed but not entered), `maxFileCount` (walk stops after N collected entries, 0 = no cap), `includeFolders` (legacy, true = unlimited recursion; an explicit `maxFolderDepth` wins) |
 | `[collector.CkanCollector]` | both | CKAN URL, server-side token, TLS verify, storage path |
 | `[operation.main]` | CLI | which collector the CLI uses |
 | `[server]`, `[server.smtp]` | server | listen address, rate limits, timeouts, CORS, admin alerts |

@@ -196,4 +196,6 @@ keywordArguments = [
 attrs = {url = "https://example.com", token = "", verify = true, ckan_storage_path = "/nfsmount/ckan/default"}
 
 [collector.LocalCollector]
-attrs = {includeFolders = false}
+# includeFolders: legacy switch, true = unlimited recursion; maxFolderDepth (0 = top level, N = descend N levels) wins over it
+# maxFileCount: stop collecting after N entries (0 = no cap)
+attrs = {includeFolders = false, maxFolderDepth = 0, maxFileCount = 10000}
