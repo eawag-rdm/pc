@@ -87,6 +87,12 @@ Do **not** use regex in keywords - `"pass.*"` looks for the literal text
 
 ### Secret scan: `[test.IsFreeOfSecrets]`
 
+> **Status (2026-08-04): dormant.** The scan is shipped disabled
+> (`enabled = false` in the example configs) because the current scanner runs
+> are too slow for our latency target. The code stays in place and working —
+> set `enabled = true` to reactivate. Until then, the keyword check is the
+> only content-based credential net.
+
 Secrets (credentials, API tokens, private keys) are found by the external
 [betterleaks](https://github.com/betterleaks/betterleaks) scanner rather than
 keyword matching - real secret formats with far fewer false positives. One
@@ -102,7 +108,7 @@ whitelist = []
 # enabled: toggle the scan; binary: scanner executable (name in PATH or absolute path);
 # timeoutSeconds: whole-scan cap (must not exceed [server] requestTimeoutSeconds);
 # maxProcs: CPU cores the scanner may use
-attrs = {enabled = true, binary = "betterleaks", timeoutSeconds = 120, maxProcs = 3}
+attrs = {enabled = false, binary = "betterleaks", timeoutSeconds = 120, maxProcs = 3}
 ```
 
 The CLI needs the `betterleaks` binary on PATH (or `binary` set to an absolute

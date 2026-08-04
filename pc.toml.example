@@ -153,7 +153,8 @@ whitelist = []
 # enabled: toggle the scan; binary: scanner executable (name in PATH or absolute path);
 # timeoutSeconds: whole-scan cap (must not exceed [server] requestTimeoutSeconds);
 # maxProcs: CPU cores the scanner may use
-attrs = {enabled = true, binary = "betterleaks", timeoutSeconds = 120, maxProcs = 3}
+# Dormant for now: scan too slow; code kept, flip enabled = true to reactivate.
+attrs = {enabled = false, binary = "betterleaks", timeoutSeconds = 120, maxProcs = 3}
 
 [test.HasFileNameSpecialChars]
 # Checking for invalid/special characters in file names

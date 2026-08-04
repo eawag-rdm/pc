@@ -107,7 +107,10 @@ ckan_storage_path` in `pc.toml`. The committed compose also sets
 `restart: unless-stopped`, the `/health` healthcheck (§2), the log rotation
 (§4) and `stop_grace_period: 330s` (§7).
 
-**Secret scanner (betterleaks).** The image bundles the
+**Secret scanner (betterleaks).** *Dormant since 2026-08-04: the scan ships
+disabled (`enabled = false`) because it is too slow for our latency target;
+the binary stays bundled and the check reactivates by flipping the attr.* The
+image bundles the
 [betterleaks](https://github.com/betterleaks/betterleaks) binary for the
 `[test.IsFreeOfSecrets]` check - version and SHA-256 are pinned via the
 `BETTERLEAKS_VERSION` / `BETTERLEAKS_SHA256` build args in the `Dockerfile`
