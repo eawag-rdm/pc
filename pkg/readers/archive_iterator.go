@@ -321,41 +321,33 @@ func (u *UnpackedFileIterator) bufferNextTar() bool {
 			continue
 		}
 
-		isText, content, err := u.isTarTextFileWithContent(header)
-		if err != nil || !isText {
-			continue
+		// Truncated members yield their truncated content (tar errors are
+		// sticky, so iteration ends on the next Next call either way).
+		if u.tryBufferMember(header.Name, header.Size, u.tarReader) {
+			return true
 		}
-
-		u.bufferedFilename = header.Name
-		u.bufferedFileContent = content
-		u.bufferedFileSize = len(content)
-		u.updateMemoryUsage(len(content))
-		return true
 	}
 }
 
-// isTarTextFileWithContent classifies the current tar member from its first
-// 512 bytes and reads the rest only for text members. Tar framing enforces
-// header.Size, so the content is preallocated exactly.
-func (u *UnpackedFileIterator) isTarTextFileWithContent(header *tar.Header) (bool, []byte, error) {
-	n, err := io.ReadFull(u.tarReader, u.sniffBuf[:])
-	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
-		return false, nil, err
+// tryBufferMember runs one candidate member through the shared classify ->
+// read -> ack-or-buffer -> charge tail. It fills the look-ahead buffer and
+// returns true when the member qualified. Read errors and non-text members
+// are skipped silently (the caller's loop continues); overruns get an ack.
+// This is the single place C8's OOXML routing will branch from.
+func (u *UnpackedFileIterator) tryBufferMember(name string, declared int64, r io.Reader) bool {
+	isText, content, overrun, err := u.sniffThenRead(r, declared)
+	if err != nil || !isText {
+		return false
 	}
-
-	if n == 0 || !strings.HasPrefix(http.DetectContentType(u.sniffBuf[:n]), "text/") {
-		// Not text: the next tar.Next call discards the remaining bytes.
-		return false, nil, nil
+	if overrun {
+		u.recordSkip(name, u.memberOverrunSkipReason(declared), declared)
+		return false
 	}
-
-	content := make([]byte, header.Size)
-	copy(content, u.sniffBuf[:n])
-	if int64(n) < header.Size {
-		if _, err := io.ReadFull(u.tarReader, content[n:]); err != nil {
-			return false, nil, fmt.Errorf("error reading rest of text file: %w", err)
-		}
-	}
-	return true, content, nil
+	u.bufferedFilename = name
+	u.bufferedFileContent = content
+	u.bufferedFileSize = len(content)
+	u.updateMemoryUsage(len(content))
+	return true
 }
 
 // unpackTar promotes the buffered member to current and buffers the next one.
@@ -456,22 +448,12 @@ func (u *UnpackedFileIterator) bufferNextZip() bool {
 		if err != nil {
 			continue
 		}
-		isText, content, overrun, err := u.sniffThenRead(rc, int64(f.UncompressedSize64))
+		ok := u.tryBufferMember(f.Name, int64(f.UncompressedSize64), rc)
 		rc.Close()
-		if err != nil || !isText {
-			continue
+		if ok {
+			u.fileIndex = i
+			return true
 		}
-		if overrun {
-			u.recordSkip(f.Name, u.memberOverrunSkipReason(int64(f.UncompressedSize64)), int64(f.UncompressedSize64))
-			continue
-		}
-
-		u.fileIndex = i
-		u.bufferedFilename = f.Name
-		u.bufferedFileContent = content
-		u.bufferedFileSize = len(content)
-		u.updateMemoryUsage(len(content))
-		return true
 	}
 
 	u.iterationEnded = true
@@ -533,22 +515,12 @@ func (u *UnpackedFileIterator) bufferNext7z() bool {
 		if err != nil {
 			continue
 		}
-		isText, content, overrun, err := u.sniffThenRead(rc, int64(f.UncompressedSize))
+		ok := u.tryBufferMember(f.Name, int64(f.UncompressedSize), rc)
 		rc.Close()
-		if err != nil || !isText {
-			continue
+		if ok {
+			u.fileIndex = i
+			return true
 		}
-		if overrun {
-			u.recordSkip(f.Name, u.memberOverrunSkipReason(int64(f.UncompressedSize)), int64(f.UncompressedSize))
-			continue
-		}
-
-		u.fileIndex = i
-		u.bufferedFilename = f.Name
-		u.bufferedFileContent = content
-		u.bufferedFileSize = len(content)
-		u.updateMemoryUsage(len(content))
-		return true
 	}
 
 	u.iterationEnded = true

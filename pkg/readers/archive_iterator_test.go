@@ -592,6 +592,36 @@ func TestTarGzWalkCapSingleHugeMember(t *testing.T) {
 	assert.Less(t, nfi.walkCounter.count, int64(64*1024), "only tar headers may be decompressed")
 }
 
+func TestTruncatedTarMemberYieldsTruncatedContent(t *testing.T) {
+	// Decided in the hardening plan (H3): a member cut off by archive
+	// truncation is scanned with the content that IS there, instead of being
+	// silently skipped. Iteration still ends right after (tar errors are sticky).
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	full := []byte(strings.Repeat("text line\n", 400)) // 4000 bytes declared
+	assert.NoError(t, tw.WriteHeader(&tar.Header{Name: "cut.txt", Mode: 0o600, Size: int64(len(full)), Typeflag: tar.TypeReg}))
+	_, err := tw.Write(full)
+	assert.NoError(t, err)
+	assert.NoError(t, tw.Close())
+
+	path := filepath.Join(t.TempDir(), "cut.tar")
+	// Truncate mid-member: header block (512) + 2048 content bytes.
+	assert.NoError(t, os.WriteFile(path, buf.Bytes()[:512+2048], 0o600))
+
+	nfi := InitArchiveIterator(path, "cut.tar",
+		ArchiveLimits{MaxMemberSize: 1024 * 1024, MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 1000}, nil, nil)
+	assert.True(t, nfi.HasFilesToUnpack())
+	count := 0
+	for nfi.HasNext() {
+		nfi.Next()
+		name, content, _ := nfi.UnpackedFile()
+		assert.Equal(t, "cut.txt", name)
+		assert.Equal(t, full[:2048], content, "truncated member must yield exactly the bytes present")
+		count++
+	}
+	assert.Equal(t, 1, count)
+}
+
 func TestIteratorCloseEarly(t *testing.T) {
 	nfi := InitArchiveIterator("../../testdata/archives/ten_valid_files.zip", "ten_valid_files.zip",
 		ArchiveLimits{MaxMemberSize: 1024 * 1024, MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 1000}, nil, nil)
