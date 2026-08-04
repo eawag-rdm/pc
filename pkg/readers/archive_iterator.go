@@ -293,31 +293,26 @@ func (u *UnpackedFileIterator) bufferNextTar() bool {
 		}
 		u.fileIndex++
 
-		isFile := !(header.Typeflag == tar.TypeDir)
-		isGreaterZero := header.Size > 0
-		isBelowMaxSize := header.Size <= u.MaxMemberSize
-
 		// Stop before decompressing a member that would bust the walk cap anyway.
+		// This stays FIRST: cap enforcement must not slide into the drains.
 		if u.walkCounter != nil && u.walkCounter.count+header.Size > u.walkCounter.limit {
 			u.recordArchiveSkip(u.walkCapSkipReason())
 			u.iterationEnded = true
 			return false
 		}
 
-		// Check memory limits
-		if !u.checkMemoryLimit(header.Size) {
-			if isFile && isGreaterZero {
-				u.recordSkip(header.Name, u.memberMemorySkipReason(), header.Size)
-			}
+		// Ack precedence: name filter (silent) -> size -> memory. Members the
+		// check excludes by name get no acknowledgements at all.
+		isFile := !(header.Typeflag == tar.TypeDir)
+		if !(isFile && header.Size > 0) || !fileGoodToUnpack(u.Whitelist, u.Blacklist, header.Name) {
 			continue
 		}
-
-		// Acknowledge members skipped purely because they exceed the size limit.
-		if isFile && isGreaterZero && !isBelowMaxSize {
+		if header.Size > u.MaxMemberSize {
 			u.recordSkip(header.Name, u.memberSizeSkipReason(header.Size), header.Size)
+			continue
 		}
-
-		if !(isFile && isGreaterZero && isBelowMaxSize) || !fileGoodToUnpack(u.Whitelist, u.Blacklist, header.Name) {
+		if !u.checkMemoryLimit(header.Size) {
+			u.recordSkip(header.Name, u.memberMemorySkipReason(), header.Size)
 			continue
 		}
 
@@ -423,24 +418,18 @@ func (u *UnpackedFileIterator) bufferNextZip() bool {
 
 	for i := u.fileIndex + 1; i < len(files); i++ {
 		f := files[i]
-		isFile := !f.FileInfo().IsDir()
-		isGreaterZero := f.UncompressedSize64 > 0
-		isBelowMaxSize := sizeOK && f.UncompressedSize64 <= maxSize
 
-		// Check memory limits
-		if !u.checkMemoryLimit(int64(f.UncompressedSize64)) {
-			if isFile && isGreaterZero {
-				u.recordSkip(f.Name, u.memberMemorySkipReason(), int64(f.UncompressedSize64))
-			}
+		// Ack precedence: name filter (silent) -> size -> memory. Members the
+		// check excludes by name get no acknowledgements at all.
+		if f.FileInfo().IsDir() || f.UncompressedSize64 == 0 || !fileGoodToUnpack(u.Whitelist, u.Blacklist, f.Name) {
 			continue
 		}
-
-		// Acknowledge members skipped purely because they exceed the size limit.
-		if isFile && isGreaterZero && !isBelowMaxSize {
+		if !(sizeOK && f.UncompressedSize64 <= maxSize) {
 			u.recordSkip(f.Name, u.memberSizeSkipReason(int64(f.UncompressedSize64)), int64(f.UncompressedSize64))
+			continue
 		}
-
-		if !(isFile && isGreaterZero && isBelowMaxSize) || !fileGoodToUnpack(u.Whitelist, u.Blacklist, f.Name) {
+		if !u.checkMemoryLimit(int64(f.UncompressedSize64)) {
+			u.recordSkip(f.Name, u.memberMemorySkipReason(), int64(f.UncompressedSize64))
 			continue
 		}
 
@@ -490,24 +479,18 @@ func (u *UnpackedFileIterator) bufferNext7z() bool {
 
 	for i := u.fileIndex + 1; i < len(files); i++ {
 		f := files[i]
-		isFile := !f.FileInfo().IsDir()
-		isGreaterZero := f.UncompressedSize > 0
-		isBelowMaxSize := sizeOK && f.UncompressedSize <= maxSize
 
-		// Check memory limits
-		if !u.checkMemoryLimit(int64(f.UncompressedSize)) {
-			if isFile && isGreaterZero {
-				u.recordSkip(f.Name, u.memberMemorySkipReason(), int64(f.UncompressedSize))
-			}
+		// Ack precedence: name filter (silent) -> size -> memory. Members the
+		// check excludes by name get no acknowledgements at all.
+		if f.FileInfo().IsDir() || f.UncompressedSize == 0 || !fileGoodToUnpack(u.Whitelist, u.Blacklist, f.Name) {
 			continue
 		}
-
-		// Acknowledge members skipped purely because they exceed the size limit.
-		if isFile && isGreaterZero && !isBelowMaxSize {
+		if !(sizeOK && f.UncompressedSize <= maxSize) {
 			u.recordSkip(f.Name, u.memberSizeSkipReason(int64(f.UncompressedSize)), int64(f.UncompressedSize))
+			continue
 		}
-
-		if !(isFile && isGreaterZero && isBelowMaxSize) || !fileGoodToUnpack(u.Whitelist, u.Blacklist, f.Name) {
+		if !u.checkMemoryLimit(int64(f.UncompressedSize)) {
+			u.recordSkip(f.Name, u.memberMemorySkipReason(), int64(f.UncompressedSize))
 			continue
 		}
 

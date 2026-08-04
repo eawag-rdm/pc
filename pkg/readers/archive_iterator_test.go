@@ -592,6 +592,55 @@ func TestTarGzWalkCapSingleHugeMember(t *testing.T) {
 	assert.Less(t, nfi.walkCounter.count, int64(64*1024), "only tar headers may be decompressed")
 }
 
+func TestSkipAckPrecedence(t *testing.T) {
+	// filter (silent) -> size -> memory: labels must match the actual reason,
+	// independent of how much budget earlier members consumed; name-filtered
+	// members get no acknowledgements at all.
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	text := func(n int) []byte { return bytes.Repeat([]byte("a"), n) }
+	for _, m := range []struct {
+		name string
+		size int
+	}{
+		{"a.txt", 1024},     // buffered (consumes budget)
+		{"skip.blst", 4096}, // blacklisted: silent, despite being oversized
+		{"big.txt", 4096},   // over member size: size ack, NOT memory
+		{"c.txt", 2048},     // within member size, over remaining budget: memory ack
+	} {
+		w, err := zw.Create(m.name)
+		assert.NoError(t, err)
+		_, err = w.Write(text(m.size))
+		assert.NoError(t, err)
+	}
+	assert.NoError(t, zw.Close())
+	path := filepath.Join(t.TempDir(), "prec.zip")
+	assert.NoError(t, os.WriteFile(path, buf.Bytes(), 0o600))
+
+	nfi := InitArchiveIterator(path, "prec.zip",
+		ArchiveLimits{MaxMemberSize: 2048, MaxTotalMemory: 2560, MaxMemberCount: 1000}, nil, []string{".blst"})
+	assert.True(t, nfi.HasFilesToUnpack())
+	var yielded []string
+	for nfi.HasNext() {
+		nfi.Next()
+		name, _, _ := nfi.UnpackedFile()
+		yielded = append(yielded, name)
+	}
+	assert.Equal(t, []string{"a.txt"}, yielded)
+
+	skips := nfi.SkipMessages()
+	assert.Len(t, skips, 2)
+	byName := map[string]string{}
+	for _, m := range skips {
+		src, ok := m.Source.(structs.File)
+		assert.True(t, ok)
+		byName[src.Name] = m.Content
+	}
+	assert.Contains(t, byName["big.txt"], "maximum archive member size", "oversized member must be size-labeled even with budget consumed")
+	assert.Contains(t, byName["c.txt"], "total archive memory limit")
+	assert.NotContains(t, byName, "skip.blst", "name-filtered members must not be acknowledged")
+}
+
 func TestTruncatedTarMemberYieldsTruncatedContent(t *testing.T) {
 	// Decided in the hardening plan (H3): a member cut off by archive
 	// truncation is scanned with the content that IS there, instead of being
