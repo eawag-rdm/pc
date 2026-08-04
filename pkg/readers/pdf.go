@@ -213,7 +213,10 @@ func ReadPDF(data []byte, limits PDFLimits) (pages [][]byte, truncated bool, err
 			if expired() {
 				return nil, false, ErrPDFTimeout
 			}
-			continue // unreadable page: scan the rest
+			// Unreadable page: scan the rest, but keep its placeholder so
+			// later findings still cite the right "page N".
+			pages = append(pages, nil)
+			continue
 		}
 
 		// Raw single-call extraction: the convenience GetPageText crosses

@@ -97,6 +97,20 @@ func TestReadPDFTextCap(t *testing.T) {
 	assert.LessOrEqual(t, total, 16+4, "extraction must stop at the byte cap (UTF-8 slack allowed)")
 }
 
+func TestReadPDFDamagedMiddlePageKeepsIndexes(t *testing.T) {
+	// Middle Kids entry points at a nonexistent object. Whether PDFium
+	// surfaces that as a load error or as an empty page, the damaged page
+	// must keep a placeholder so later pages still cite the right "page N".
+	data := writeMinimalPDF("first page text", "second page text", "third page text")
+	data = bytes.Replace(data, []byte("/Kids [3 0 R 5 0 R 7 0 R]"), []byte("/Kids [3 0 R 99 0 R 7 0 R]"), 1)
+	pages, truncated, err := ReadPDF(data, testPDFLimits)
+	assert.NoError(t, err)
+	assert.False(t, truncated)
+	assert.Len(t, pages, 3)
+	assert.Empty(t, pages[1])
+	assert.Contains(t, string(pages[2]), "third page", "damaged page 2 must not shift page 3's index")
+}
+
 func TestReadPDFMalformed(t *testing.T) {
 	// Magic present, body garbage: must error cleanly, never hang or crash.
 	junk := append([]byte("%PDF-1.4\n"), bytes.Repeat([]byte{0x42, 0x00, 0x13}, 4096)...)
