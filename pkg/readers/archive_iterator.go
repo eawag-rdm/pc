@@ -48,8 +48,13 @@ type UnpackedFileIterator struct {
 	// Memory tracking
 	totalMemoryUsed    int64
 	maxTotalMemory     int64
-	maxMemberCount     int // unenforced until C4 (member counting)
+	maxMemberCount     int
 	processedFileCount int
+
+	// candidateCount tracks unpack candidates (regular, size > 0, name-filter
+	// pass) for the tar family, where counting is only possible inline during
+	// the single pass. zip/7z pre-count over their indexes instead.
+	candidateCount int
 
 	// skipMessages accumulates skip acknowledgements for archive members that were
 	// not content-scanned (per-member size limit or total-memory limit). Callers
@@ -225,6 +230,13 @@ func (u *UnpackedFileIterator) memberOpenSkipReason() string {
 	return "Skipped content scan of archive member: member could not be read (corrupt or unsupported entry)."
 }
 
+// memberCountSkipReason: the archive holds more unpack candidates than the
+// configured limit ("more than": for tar.gz the exact count is unknowable
+// without decompressing the whole stream).
+func (u *UnpackedFileIterator) memberCountSkipReason() string {
+	return fmt.Sprintf("Skipped content scan of archive: more than %d members eligible for content scanning (maximum archive member count).", u.maxMemberCount)
+}
+
 func matchLiteralPatterns(list []string, str string) bool {
 	if len(list) == 0 || str == "" {
 		return true // Empty patterns match everything
@@ -296,7 +308,6 @@ func (u *UnpackedFileIterator) bufferNextTar() bool {
 			u.iterationEnded = true
 			return false
 		}
-		u.fileIndex++
 
 		// Stop before decompressing a member that would bust the walk cap anyway.
 		// This stays FIRST: cap enforcement must not slide into the drains.
@@ -311,6 +322,14 @@ func (u *UnpackedFileIterator) bufferNextTar() bool {
 		isFile := !(header.Typeflag == tar.TypeDir)
 		if !(isFile && header.Size > 0) || !fileGoodToUnpack(u.Whitelist, u.Blacklist, header.Name) {
 			continue
+		}
+		// Candidates count toward the member limit whether or not they end up
+		// size- or memory-skipped; members already yielded stay scanned.
+		u.candidateCount++
+		if u.candidateCount > u.maxMemberCount {
+			u.recordArchiveSkip(u.memberCountSkipReason())
+			u.iterationEnded = true
+			return false
 		}
 		if header.Size > u.MaxMemberSize {
 			u.recordSkip(header.Name, u.memberSizeSkipReason(header.Size), header.Size)
@@ -544,7 +563,29 @@ func (u *UnpackedFileIterator) findFirst7z() bool {
 		u.iterationEnded = true
 		return false
 	}
+	if u.sevenZipCandidateCountExceeded() {
+		u.recordArchiveSkip(u.memberCountSkipReason())
+		u.iterationEnded = true
+		return false
+	}
 	return u.bufferNext7z()
+}
+
+// sevenZipCandidateCountExceeded mirrors zipCandidateCountExceeded over the
+// 7z file list.
+func (u *UnpackedFileIterator) sevenZipCandidateCountExceeded() bool {
+	count := 0
+	for i := range u.sevenZipReader.File {
+		f := u.sevenZipReader.File[i]
+		if f.UncompressedSize == 0 || !fileGoodToUnpack(u.Whitelist, u.Blacklist, f.Name) {
+			continue
+		}
+		count++
+		if count > u.maxMemberCount {
+			return true
+		}
+	}
+	return false
 }
 
 // passes7zDeclaredSizeGate bounds solid-folder transit decompression: in 7z,
@@ -597,7 +638,31 @@ func (u *UnpackedFileIterator) findFirstZip() bool {
 		}
 		u.zipReader = reader
 	}
+	if u.zipCandidateCountExceeded() {
+		u.recordArchiveSkip(u.memberCountSkipReason())
+		u.iterationEnded = true
+		return false
+	}
 	return u.bufferNextZip()
+}
+
+// zipCandidateCountExceeded counts unpack candidates over the central
+// directory: field reads plus the name filter, zero decompression, early exit
+// past the limit. Directory entries carry size 0 and are excluded by the
+// size term (no FileInfo call - it allocates).
+func (u *UnpackedFileIterator) zipCandidateCountExceeded() bool {
+	count := 0
+	for i := range u.zipReader.File {
+		f := u.zipReader.File[i]
+		if f.UncompressedSize64 == 0 || !fileGoodToUnpack(u.Whitelist, u.Blacklist, f.Name) {
+			continue
+		}
+		count++
+		if count > u.maxMemberCount {
+			return true
+		}
+	}
+	return false
 }
 
 // Close releases the underlying archive handles and ends iteration.

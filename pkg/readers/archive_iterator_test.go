@@ -600,6 +600,124 @@ func TestTarGzWalkCapSingleHugeMember(t *testing.T) {
 	assert.Less(t, nfi.walkCounter.count, int64(64*1024), "only tar headers may be decompressed")
 }
 
+func countMemberCountAcks(msgs []structs.Message) int {
+	n := 0
+	for _, m := range msgs {
+		if strings.Contains(m.Content, "maximum archive member count") {
+			n++
+		}
+	}
+	return n
+}
+
+func TestMemberCountLimitZip7z(t *testing.T) {
+	// zip/7z pre-count over the index: an over-limit archive is rejected with
+	// ZERO member reads; at the limit everything scans with no ack.
+	for _, ext := range []string{".zip", ".7z"} {
+		t.Run("over limit "+ext, func(t *testing.T) {
+			nfi := InitArchiveIterator("../../testdata/archives/ten_valid_files"+ext, "ten_valid_files"+ext,
+				ArchiveLimits{MaxMemberSize: 1024 * 1024, MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 5}, nil, nil)
+			assert.False(t, nfi.HasFilesToUnpack())
+			assert.Equal(t, 1, countMemberCountAcks(nfi.SkipMessages()))
+			assert.Equal(t, int64(0), nfi.totalMemoryUsed, "over-limit archive must have zero member reads")
+			assert.Equal(t, 0, nfi.processedFileCount)
+		})
+		t.Run("at limit "+ext, func(t *testing.T) {
+			nfi := InitArchiveIterator("../../testdata/archives/ten_valid_files"+ext, "ten_valid_files"+ext,
+				ArchiveLimits{MaxMemberSize: 1024 * 1024, MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 10}, nil, nil)
+			assert.True(t, nfi.HasFilesToUnpack())
+			count := 0
+			for nfi.HasNext() {
+				nfi.Next()
+				count++
+			}
+			assert.Equal(t, 10, count)
+			assert.Equal(t, 0, countMemberCountAcks(nfi.SkipMessages()))
+		})
+	}
+}
+
+func TestMemberCountLimitFilteredMembersDoNotCount(t *testing.T) {
+	// Name-filtered members are not candidates: 10 members, 6 blacklisted,
+	// limit 5 -> passes.
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for i := 0; i < 10; i++ {
+		name := fmt.Sprintf("m%d.txt", i)
+		if i >= 4 {
+			name = fmt.Sprintf("m%d.blst", i)
+		}
+		w, err := zw.Create(name)
+		assert.NoError(t, err)
+		_, err = w.Write([]byte("plain text content\n"))
+		assert.NoError(t, err)
+	}
+	assert.NoError(t, zw.Close())
+	path := filepath.Join(t.TempDir(), "filtered.zip")
+	assert.NoError(t, os.WriteFile(path, buf.Bytes(), 0o600))
+
+	nfi := InitArchiveIterator(path, "filtered.zip",
+		ArchiveLimits{MaxMemberSize: 1024 * 1024, MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 5}, nil, []string{".blst"})
+	assert.True(t, nfi.HasFilesToUnpack())
+	count := 0
+	for nfi.HasNext() {
+		nfi.Next()
+		count++
+	}
+	assert.Equal(t, 4, count)
+	assert.Equal(t, 0, countMemberCountAcks(nfi.SkipMessages()))
+}
+
+func TestMemberCountLimitTarInline(t *testing.T) {
+	// tar family counts inline: members yielded before the limit stay
+	// scanned, then one archive-level ack and the iteration stops.
+	nfi := InitArchiveIterator("../../testdata/archives/ten_valid_files.tar", "ten_valid_files.tar",
+		ArchiveLimits{MaxMemberSize: 1024 * 1024, MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 5}, nil, nil)
+	assert.True(t, nfi.HasFilesToUnpack())
+	count := 0
+	for nfi.HasNext() {
+		nfi.Next()
+		count++
+	}
+	assert.Equal(t, 5, count, "members before the limit stay scanned")
+	assert.Equal(t, 1, countMemberCountAcks(nfi.SkipMessages()))
+}
+
+func TestMemberCountLimitTarGz(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "many.tar.gz")
+	text := []byte(strings.Repeat("line\n", 200))
+	var members []struct {
+		name    string
+		content []byte
+	}
+	for i := 0; i < 8; i++ {
+		members = append(members, struct {
+			name    string
+			content []byte
+		}{fmt.Sprintf("m%d.txt", i), text})
+	}
+	writeTarGzFixture(t, path, members)
+
+	nfi := InitArchiveIterator(path, "many.tar.gz",
+		ArchiveLimits{MaxMemberSize: 1024 * 1024, MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 3}, nil, nil)
+	assert.True(t, nfi.HasFilesToUnpack())
+	count := 0
+	for nfi.HasNext() {
+		nfi.Next()
+		count++
+	}
+	assert.Equal(t, 3, count)
+	assert.Equal(t, 1, countMemberCountAcks(nfi.SkipMessages()))
+}
+
+func TestMemberCountLimitFolderHeavyZip(t *testing.T) {
+	// Directory entries carry size 0 and never count as candidates.
+	nfi := InitArchiveIterator("../../testdata/archives/only_folders.zip", "only_folders.zip",
+		ArchiveLimits{MaxMemberSize: 1024 * 1024, MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 1}, nil, nil)
+	assert.False(t, nfi.HasFilesToUnpack())
+	assert.Equal(t, 0, countMemberCountAcks(nfi.SkipMessages()), "folder-only archives must not trip the member count")
+}
+
 func TestSkipAckPrecedence(t *testing.T) {
 	// filter (silent) -> size -> memory: labels must match the actual reason,
 	// independent of how much budget earlier members consumed; name-filtered
