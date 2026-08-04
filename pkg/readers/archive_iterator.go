@@ -220,6 +220,11 @@ func (u *UnpackedFileIterator) walkCapSkipReason() string {
 	return fmt.Sprintf("Stopped content scan of archive: decompressed data exceeds %dx the total archive memory limit (%d bytes).", declaredSizeBudgetMultiple, u.maxTotalMemory)
 }
 
+// memberOpenSkipReason: the archive library could not open the member.
+func (u *UnpackedFileIterator) memberOpenSkipReason() string {
+	return "Skipped content scan of archive member: member could not be read (corrupt or unsupported entry)."
+}
+
 func matchLiteralPatterns(list []string, str string) bool {
 	if len(list) == 0 || str == "" {
 		return true // Empty patterns match everything
@@ -445,6 +450,8 @@ func (u *UnpackedFileIterator) bufferNextZip() bool {
 
 		rc, err := f.Open()
 		if err != nil {
+			output.GlobalLogger.FileWarning(u.ArchiveName, "Cannot open archive member '%s' -> %v", f.Name, err)
+			u.recordSkip(f.Name, u.memberOpenSkipReason(), int64(f.UncompressedSize64))
 			continue
 		}
 		ok := u.tryBufferMember(f.Name, int64(f.UncompressedSize64), rc)
@@ -506,6 +513,8 @@ func (u *UnpackedFileIterator) bufferNext7z() bool {
 
 		rc, err := f.Open()
 		if err != nil {
+			output.GlobalLogger.FileWarning(u.ArchiveName, "Cannot open archive member '%s' -> %v", f.Name, err)
+			u.recordSkip(f.Name, u.memberOpenSkipReason(), int64(f.UncompressedSize))
 			continue
 		}
 		ok := u.tryBufferMember(f.Name, int64(f.UncompressedSize), rc)
