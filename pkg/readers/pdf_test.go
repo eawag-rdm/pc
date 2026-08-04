@@ -144,6 +144,27 @@ func TestReadPDFTooLargeFailsFast(t *testing.T) {
 	assert.ErrorIs(t, err, ErrPDFTooLarge)
 }
 
+// The two shapes that matter: per-document pool churn dominates the
+// single page, extraction throughput dominates the 50 pages. Benchmarks
+// run after tests, so the TestMain lazy-init assert is unaffected.
+func benchmarkReadPDF(b *testing.B, pageCount int) {
+	texts := make([]string, pageCount)
+	for i := range texts {
+		texts[i] = strings.Repeat("benchmark page text with several words ", 20)
+	}
+	data := writeMinimalPDF(texts...)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, _, err := ReadPDF(data, testPDFLimits); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkReadPDFSinglePage(b *testing.B) { benchmarkReadPDF(b, 1) }
+func BenchmarkReadPDF50Pages(b *testing.B)    { benchmarkReadPDF(b, 50) }
+
 func TestReadPDFConcurrentBatch(t *testing.T) {
 	// Pool + Once under concurrency: more goroutines than pool instances.
 	data := writeMinimalPDF("concurrent page")
