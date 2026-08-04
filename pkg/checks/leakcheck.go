@@ -19,9 +19,8 @@ import (
 
 // Defaults for the [test.IsFreeOfSecrets] attrs table.
 const (
-	defaultLeakBinary      = "betterleaks"
-	defaultLeakTimeoutSecs = 120
-	defaultLeakMaxProcs    = 3
+	defaultLeakBinary   = "betterleaks"
+	defaultLeakMaxProcs = 3
 	// leakMaxLinesShown caps the line numbers listed per rule in one message.
 	leakMaxLinesShown = 5
 )
@@ -39,7 +38,7 @@ type leakAttrs struct {
 func leakAttrsFrom(tc *config.TestConfig) leakAttrs {
 	a := leakAttrs{
 		binary:         defaultLeakBinary,
-		timeoutSeconds: defaultLeakTimeoutSecs,
+		timeoutSeconds: config.DefaultSecretsTimeoutSeconds,
 		maxProcs:       defaultLeakMaxProcs,
 	}
 	if tc == nil || tc.Attrs == nil {

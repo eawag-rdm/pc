@@ -5,10 +5,10 @@ import (
 	"regexp"
 )
 
-// defaultSecretsTimeoutSeconds mirrors defaultLeakTimeoutSecs in pkg/checks
-// (config cannot import checks); used to cross-check the server timeout when
-// the attr is not set explicitly.
-const defaultSecretsTimeoutSeconds = 120
+// DefaultSecretsTimeoutSeconds is the default [test.IsFreeOfSecrets]
+// timeoutSeconds; the leak check reads it from here (config cannot import
+// checks), so there is exactly one copy.
+const DefaultSecretsTimeoutSeconds = 120
 
 // ValidateChecksConfig fails fast when a [test.*] section the checks dereference
 // at scan time is missing or wrong-typed (nil-pointer on a missing section,
@@ -76,8 +76,10 @@ func ValidateChecksConfig(cfg *Config) error {
 		// The secret scan runs inside a server analysis request but cannot see its
 		// deadline (check functions take no context), so a scan timeout longer than
 		// the request timeout could keep the scanner running past the analysis
-		// deadline. Reject that combination up front.
-		timeoutSeconds := int64(defaultSecretsTimeoutSeconds)
+		// deadline. Reject that combination up front. Deliberately validated even
+		// while enabled = false: a bad combination should fail at config load,
+		// not on the day the dormant scan is reactivated.
+		timeoutSeconds := int64(DefaultSecretsTimeoutSeconds)
 		if leaks.Attrs != nil {
 			if n, isInt := leaks.Attrs["timeoutSeconds"].(int64); isInt {
 				timeoutSeconds = n

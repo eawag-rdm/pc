@@ -41,6 +41,18 @@ var BY_REPOSITORY_SECRETS = []func(repository structs.Repository, config config.
 	checks.IsFreeOfSecrets,
 }
 
+// secretScanEnabled mirrors the leak check's own enabled gate so the pipeline
+// neither counts nor announces a dormant secret scan (the check would return
+// nil immediately anyway).
+func secretScanEnabled(config config.Config) bool {
+	tc := config.Tests["IsFreeOfSecrets"]
+	if tc == nil || tc.Attrs == nil {
+		return false
+	}
+	enabled, ok := tc.Attrs["enabled"].(bool)
+	return ok && enabled
+}
+
 var BY_FILE_ON_ARCHIVE_FILE_LIST = []func(file structs.File, config config.Config) []structs.Message{
 	checks.HasOnlyASCII,
 	checks.HasNoWhiteSpace,
@@ -469,7 +481,7 @@ func ApplyAllChecks(ctx context.Context, config config.Config, files []structs.F
 	messages = append(messages, ApplyChecksFilteredByFile(ctx, config, BY_FILE, files)...)
 	messages = append(messages, ApplyChecksFilteredByFileOnArchiveFileList(ctx, config, BY_FILE_ON_ARCHIVE_FILE_LIST, files)...)
 	messages = append(messages, ApplyChecksFilteredByFileOnArchive(ctx, config, BY_FILE_ON_ARCHIVE, files)...)
-	if len(files) > 0 {
+	if len(files) > 0 && secretScanEnabled(config) {
 		messages = append(messages, ApplyChecksFilteredByRepository(ctx, config, BY_REPOSITORY_SECRETS, files)...)
 	}
 	if checksAcrossFiles {
@@ -509,8 +521,8 @@ func ApplyAllChecksWithProgress(ctx context.Context, config config.Config, files
 		}
 	}
 
-	// Count the repository-scoped secret scan (runs whenever there are files)
-	if len(files) > 0 {
+	// Count the repository-scoped secret scan (only when enabled and files exist)
+	if len(files) > 0 && secretScanEnabled(config) {
 		totalTests += len(BY_REPOSITORY_SECRETS)
 	}
 
@@ -559,8 +571,8 @@ func ApplyAllChecksWithProgress(ctx context.Context, config config.Config, files
 		}
 	}
 
-	// Step 4: Repository-scoped secret scan (always runs when there are files)
-	if len(files) > 0 {
+	// Step 4: Repository-scoped secret scan (when enabled and files exist)
+	if len(files) > 0 && secretScanEnabled(config) {
 		if progressCallback != nil {
 			progressCallback(testsRun, totalTests, "Running secret scan...")
 		}
