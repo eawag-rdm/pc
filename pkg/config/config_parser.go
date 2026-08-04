@@ -354,8 +354,14 @@ func ParseConfig(filename string) (*Config, error) {
 							cc.Attrs[k] = val
 						case bool:
 							cc.Attrs[k] = val
+						case int64:
+							cc.Attrs[k] = val
 						case []interface{}:
 							cc.Attrs[k] = parseStringSlice(val)
+						default:
+							// Fail fast instead of silently dropping the attr
+							// (an integer attr used to vanish here).
+							return nil, fmt.Errorf("[collector.%s] attrs.%s has unsupported type %T", name, k, v)
 						}
 					}
 				}

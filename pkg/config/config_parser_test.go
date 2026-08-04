@@ -406,6 +406,33 @@ func TestParseServerConfig(t *testing.T) {
 	})
 }
 
+func TestParseCollectorAttrTypes(t *testing.T) {
+	t.Run("IntegerAttrKept", func(t *testing.T) {
+		configFile := createTempConfigFile(t, `
+		[collector.LocalCollector]
+		attrs = {maxFolderDepth = 3, maxFileCount = 500, includeFolders = true}
+		`)
+		defer os.Remove(configFile)
+		config, err := ParseConfig(configFile)
+		assert.NoError(t, err)
+		attrs := config.Collectors["LocalCollector"].Attrs
+		assert.Equal(t, int64(3), attrs["maxFolderDepth"])
+		assert.Equal(t, int64(500), attrs["maxFileCount"])
+		assert.Equal(t, true, attrs["includeFolders"])
+	})
+
+	t.Run("UnsupportedTypeFailsFast", func(t *testing.T) {
+		configFile := createTempConfigFile(t, `
+		[collector.LocalCollector]
+		attrs = {maxFolderDepth = 1.5}
+		`)
+		defer os.Remove(configFile)
+		_, err := ParseConfig(configFile)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "maxFolderDepth")
+	})
+}
+
 func TestParseMaxArchiveMemberCount(t *testing.T) {
 	t.Run("Configured", func(t *testing.T) {
 		configFile := createTempConfigFile(t, `
