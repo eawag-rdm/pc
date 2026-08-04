@@ -14,6 +14,7 @@ import (
 	pdfium "github.com/klippa-app/go-pdfium"
 	pdfium_errors "github.com/klippa-app/go-pdfium/errors"
 	"github.com/klippa-app/go-pdfium/requests"
+	"github.com/klippa-app/go-pdfium/responses"
 	"github.com/klippa-app/go-pdfium/webassembly"
 	"github.com/tetratelabs/wazero"
 
@@ -134,24 +135,48 @@ func ReadPDF(data []byte, limits PDFLimits) (pages [][]byte, truncated bool, err
 	if err != nil {
 		return nil, false, err
 	}
-	defer instance.Close()
 
 	deadline := time.Now().Add(timeout)
 
 	// Watchdog: Kill interrupts in-flight wasm (CloseOnContextDone above).
+	// Kill is deliberately lock-free in go-pdfium and races the instance's
+	// own cleanup calls, so the two sides are serialized here: whichever
+	// takes the mutex first wins, and the document/instance Close pair is
+	// skipped entirely once Kill ran (Kill already invalidates the worker,
+	// which frees the pool slot).
+	var doc *responses.OpenDocument
+	var watchdogMu sync.Mutex
+	var killed, finished bool
 	watchdogDone := make(chan struct{})
-	defer close(watchdogDone)
+	defer func() {
+		watchdogMu.Lock()
+		finished = true
+		doClose := !killed
+		watchdogMu.Unlock()
+		close(watchdogDone)
+		if doClose {
+			if doc != nil {
+				_, _ = instance.FPDF_CloseDocument(&requests.FPDF_CloseDocument{Document: doc.Document})
+			}
+			instance.Close()
+		}
+	}()
 	go func() {
 		select {
 		case <-watchdogDone:
-		case <-time.After(time.Until(deadline)):
-			_ = instance.Kill()
+		case <-time.After(timeout):
+			watchdogMu.Lock()
+			if !finished {
+				killed = true
+				_ = instance.Kill()
+			}
+			watchdogMu.Unlock()
 		}
 	}()
 
 	expired := func() bool { return !time.Now().Before(deadline) }
 
-	doc, err := instance.OpenDocument(&requests.OpenDocument{File: &data})
+	docRes, err := instance.OpenDocument(&requests.OpenDocument{File: &data})
 	if err != nil {
 		if errors.Is(err, pdfium_errors.ErrPassword) {
 			return nil, false, ErrPDFPassword
@@ -161,7 +186,7 @@ func ReadPDF(data []byte, limits PDFLimits) (pages [][]byte, truncated bool, err
 		}
 		return nil, false, err
 	}
-	defer instance.FPDF_CloseDocument(&requests.FPDF_CloseDocument{Document: doc.Document})
+	doc = docRes
 
 	countRes, err := instance.FPDF_GetPageCount(&requests.FPDF_GetPageCount{Document: doc.Document})
 	if err != nil {
