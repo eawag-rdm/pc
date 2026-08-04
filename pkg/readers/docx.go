@@ -1,49 +1,65 @@
 package readers
 
 import (
+	"io"
 	"os"
 
 	"github.com/eawag-rdm/pc/pkg/structs"
 	"github.com/fumiama/go-docx"
 )
 
-func ReadDOCXFile(file structs.File) ([][]byte, error) {
-	// Create an instance of the reader by opening a target file
+// ReadDOCX extracts per-paragraph/table text from a docx container. The
+// declared-size gate runs before parsing and is the real memory bound here:
+// go-docx fully materializes the document DOM (and media) before iteration,
+// so the text cap only trims the returned content.
+func ReadDOCX(r io.ReaderAt, size int64, limits ArchiveLimits) (content [][]byte, truncated bool, err error) {
+	if _, err := ooxmlZipReader(r, size, limits); err != nil {
+		return nil, false, err
+	}
+	doc, err := docx.Parse(r, size)
+	if err != nil {
+		return nil, false, err
+	}
+	if doc == nil {
+		return [][]byte{}, false, nil
+	}
+
+	textCap := limits.MaxMemberSize
+	var total int64
+	content = [][]byte{}
+	for _, it := range doc.Document.Body.Items {
+		var block []byte
+		switch v := it.(type) {
+		case *docx.Paragraph:
+			block = []byte(v.String())
+		case *docx.Table:
+			block = []byte(v.String())
+		default:
+			continue
+		}
+		if total+int64(len(block)) > textCap {
+			truncated = true
+			break
+		}
+		content = append(content, block)
+		total += int64(len(block))
+	}
+
+	return content, truncated, nil
+}
+
+// ReadDOCXFile is the path-based wrapper around ReadDOCX; the *os.File keeps
+// the container streaming from disk exactly as before. The truncated flag is
+// forwarded (the dormant secret-scan consumer will want it on reactivation).
+func ReadDOCXFile(file structs.File, limits ArchiveLimits) ([][]byte, bool, error) {
 	f, err := os.Open(file.Path)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer f.Close()
-
-	fileinfo, err := f.Stat()
+	fi, err := f.Stat()
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-
-	size := fileinfo.Size()
-	doc, err := docx.Parse(f, size)
-	if err != nil {
-		return nil, err
-	}
-
-	// Validate document pointer
-	if doc == nil {
-		return [][]byte{}, nil
-	}
-
-	DOCXContent := [][]byte{}
-	for _, it := range doc.Document.Body.Items {
-		switch it.(type) {
-		case *docx.Paragraph, *docx.Table:
-			// transform it to string
-			switch v := it.(type) {
-			case *docx.Paragraph:
-				DOCXContent = append(DOCXContent, []byte(v.String()))
-			case *docx.Table:
-				DOCXContent = append(DOCXContent, []byte(v.String()))
-			}
-		}
-	}
-
-	return DOCXContent, nil
+	return ReadDOCX(f, fi.Size(), limits)
 }

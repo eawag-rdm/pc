@@ -1,7 +1,10 @@
 package checks
 
 import (
+	"archive/zip"
+	"bytes"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -663,6 +666,97 @@ func newKeywordConfig(maxContentScan, maxArchiveFile, maxTotalArchiveMem int64) 
 				},
 			},
 		},
+	}
+}
+
+func TestOOXMLGateEmitsSkipAck(t *testing.T) {
+	// A container whose zip index declares far more than the limits allow is
+	// rejected before parsing, with an acknowledgement.
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	w, err := zw.CreateRaw(&zip.FileHeader{
+		Name:               "xl/worksheets/sheet1.xml",
+		Method:             zip.Deflate,
+		UncompressedSize64: 1 << 40,
+		CompressedSize64:   8,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write([]byte{0x07, 0xff, 0xff, 0xff, 0, 0, 0, 0}); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "bomb.xlsx")
+	if err := os.WriteFile(path, buf.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := newKeywordConfig(1024*1024*1024, 10*1024*1024, 100*1024*1024)
+	msgs := IsFreeOfKeywords(structs.File{Path: path, Name: "bomb.xlsx"}, cfg)
+	found := false
+	for _, m := range msgs {
+		if m.Skipped && strings.Contains(m.Content, "container declares more data") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected declared-size gate ack, got %v", msgs)
+	}
+}
+
+func TestOOXMLParseErrorEmitsSkipAck(t *testing.T) {
+	// Valid zip, not a valid xlsx: parse fails AFTER the container opened ->
+	// acknowledgement instead of the former silent warning.
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	w, err := zw.Create("not-an-xlsx.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write([]byte("hello")); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "odd.xlsx")
+	if err := os.WriteFile(path, buf.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := newKeywordConfig(1024*1024*1024, 10*1024*1024, 100*1024*1024)
+	msgs := IsFreeOfKeywords(structs.File{Path: path, Name: "odd.xlsx"}, cfg)
+	found := false
+	for _, m := range msgs {
+		if m.Skipped && strings.Contains(m.Content, "could not be parsed") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected parse-error ack, got %v", msgs)
+	}
+}
+
+func TestOOXMLMisnamedTextFileStillScanned(t *testing.T) {
+	// A CSV misnamed .xlsx does not open as zip -> falls through to the text
+	// flow and its content keeps being keyword-scanned (no silent coverage loss).
+	path := filepath.Join(t.TempDir(), "data.xlsx")
+	if err := os.WriteFile(path, []byte("col1,col2\npassword,value\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := newKeywordConfig(1024*1024*1024, 10*1024*1024, 100*1024*1024)
+	msgs := IsFreeOfKeywords(structs.File{Path: path, Name: "data.xlsx"}, cfg)
+	found := false
+	for _, m := range msgs {
+		if !m.Skipped && strings.Contains(m.Content, "Possible credentials") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("misnamed text file must still be keyword-scanned, got %v", msgs)
 	}
 }
 

@@ -10,7 +10,7 @@ import (
 
 func TestReadDOCXFile(t *testing.T) {
 	xlsxFile := structs.File{Path: "../../testdata/test.docx", Name: "test.docx", Size: 0, Suffix: ".docx"}
-	content, err := ReadDOCXFile(xlsxFile)
+	content, _, err := ReadDOCXFile(xlsxFile, testOOXMLLimits)
 	if err != nil {
 		t.Fatalf("Failed to read XLSX file: %v", err)
 	}

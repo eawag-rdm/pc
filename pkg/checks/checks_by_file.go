@@ -2,6 +2,7 @@ package checks
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -333,6 +334,17 @@ func IsFreeOfKeywords(file structs.File, config config.Config) []structs.Message
 		return messages
 	}
 
+	// Known OOXML containers route by extension BEFORE the text sniff:
+	// deterministic, saves the sniff read, and a container that happens to
+	// pass the printable heuristic is never raw-scanned. scanOOXMLFile falls
+	// through (handled = false) when the file does not open as a zip, so a
+	// text file misnamed .xlsx keeps being scanned as text below.
+	if kind := ooxmlKind(file.Path); kind != "" {
+		if msgs, handled := scanOOXMLFile(file, config, kind); handled {
+			return append(messages, msgs...)
+		}
+	}
+
 	isText, err := isTextFile(file.Path)
 	if err != nil {
 		return messages
@@ -471,26 +483,67 @@ func matchPatternsListLowered(patternList []string, body, loweredBody []byte) st
 	return ""
 }
 
-// tryReadBinary extracts scannable text from known binary container formats
-// (xlsx/docx). For a genuine binary file (not a supported container or archive)
-// it returns a skip acknowledgement Message so every output surfaces that the
-// file's content was not scanned (spec §6); the returned Message is nil otherwise.
+// ooxmlKind reports the OOXML container kind for a path ("" if none).
+// Case-insensitive: .XLSX routes like .xlsx.
+func ooxmlKind(path string) string {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".xlsx":
+		return "xlsx"
+	case ".docx":
+		return "docx"
+	}
+	return ""
+}
+
+// scanOOXMLFile extracts and keyword-scans a top-level OOXML container.
+// handled = false means the file did not open as a zip container at all and
+// the caller's generic text/binary flow should decide instead.
+func scanOOXMLFile(file structs.File, config config.Config, kind string) ([]structs.Message, bool) {
+	limits := archiveLimits(config)
+	var content [][]byte
+	var truncated bool
+	var err error
+	if kind == "xlsx" {
+		content, truncated, err = readers.ReadXLSXFile(file, limits)
+	} else {
+		content, truncated, err = readers.ReadDOCXFile(file, limits)
+	}
+	if errors.Is(err, readers.ErrOOXMLNotZip) {
+		return nil, false
+	}
+
+	var messages []structs.Message
+	if errors.Is(err, readers.ErrOOXMLDeclaredSize) {
+		reason := fmt.Sprintf("Skipped content scan of file: container declares more data than allowed (member limit %d bytes, total limit %d bytes).", limits.MaxMemberSize, limits.MaxTotalMemory)
+		return append(messages, structs.Message{Content: reason, Source: file, Skipped: true, Reason: reason}), true
+	}
+	if err != nil {
+		output.GlobalLogger.FileWarning(file.GetDisplayName(), "Error reading %s file '%s': %v", kind, file.Path, err)
+		reason := "Skipped content scan of file: container could not be parsed."
+		return append(messages, structs.Message{Content: reason, Source: file, Skipped: true, Reason: reason}), true
+	}
+	if truncated {
+		// Partial content WAS scanned - walk-cap wording, not "Skipped".
+		reason := fmt.Sprintf("Stopped content scan of file: extracted text exceeds %d bytes; scanned the first part only.", limits.MaxMemberSize)
+		messages = append(messages, structs.Message{Content: reason, Source: file, Skipped: true, Reason: reason})
+	}
+
+	lowered := lowerAll(content)
+	for _, argumentSet := range config.Tests["IsFreeOfKeywords"].KeywordArguments {
+		var keywordList = argumentSet["keywords"].([]string)
+		var info = argumentSet["info"].(string)
+		if ret := isFreeOfKeywordsCoreLowered(file, keywordList, info, content, lowered, true); ret != nil {
+			messages = append(messages, ret...)
+		}
+	}
+	return messages, true
+}
+
+// tryReadBinary acknowledges genuine binary files (not archives - those go
+// through the archive checks). OOXML containers are routed before the text
+// sniff and never reach this point.
 func tryReadBinary(file structs.File) ([][]byte, *structs.Message) {
-	if strings.HasSuffix(file.Path, ".xlsx") {
-		content, err := readers.ReadXLSXFile(file)
-		if err != nil {
-			output.GlobalLogger.FileWarning(file.GetDisplayName(), "Error reading XLSX file '%s': %v", file.Path, err)
-			return [][]byte{}, nil // Return empty instead of panicking
-		}
-		return content, nil
-	} else if strings.HasSuffix(file.Path, ".docx") {
-		content, err := readers.ReadDOCXFile(file)
-		if err != nil {
-			output.GlobalLogger.FileWarning(file.GetDisplayName(), "Error reading DOCX file '%s': %v", file.Path, err)
-			return [][]byte{}, nil // Return empty instead of panicking
-		}
-		return content, nil
-	} else if !readers.IsSupportedArchive(file.Name) {
+	if !readers.IsSupportedArchive(file.Name) {
 		skip := structs.Message{
 			Content: "Binary file detected",
 			Source:  file,
