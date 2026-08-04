@@ -125,16 +125,18 @@ func ReadPDF(data []byte, limits PDFLimits) (pages [][]byte, truncated bool, err
 	if timeout <= 0 {
 		timeout = DefaultPDFTimeout
 	}
-	deadline := time.Now().Add(timeout)
 
 	// Acquisition blocks without a deadline of its own: pool wait is
 	// backpressure, not extraction time - a queue must not surface as a
-	// spurious "timed out" ack.
+	// spurious "timed out" ack. The clock therefore starts only after an
+	// instance is held.
 	instance, err := pool.GetInstanceWithContext(context.Background())
 	if err != nil {
 		return nil, false, err
 	}
 	defer instance.Close()
+
+	deadline := time.Now().Add(timeout)
 
 	// Watchdog: Kill interrupts in-flight wasm (CloseOnContextDone above).
 	watchdogDone := make(chan struct{})
