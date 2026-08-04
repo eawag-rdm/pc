@@ -217,6 +217,10 @@ func extractArchivesForLeakScan(cfg config.Config, tc *config.TestConfig, archiv
 		archDir := filepath.Join(tmpDir, fmt.Sprintf("a%03d", ai))
 		if err := os.Mkdir(archDir, 0o700); err != nil {
 			output.GlobalLogger.FileWarning(archive.GetDisplayName(), "IsFreeOfSecrets: cannot create temp dir for archive '%s': %v", archive.Name, err)
+			// Keep the acknowledgements recorded so far and release the archive
+			// handles now (iteration will not continue for this archive).
+			*messages = append(*messages, it.SkipMessages()...)
+			it.Close()
 			continue
 		}
 		idx := 0

@@ -592,6 +592,18 @@ func TestTarGzWalkCapSingleHugeMember(t *testing.T) {
 	assert.Less(t, nfi.walkCounter.count, int64(64*1024), "only tar headers may be decompressed")
 }
 
+func TestIteratorCloseEarly(t *testing.T) {
+	nfi := InitArchiveIterator("../../testdata/archives/ten_valid_files.zip", "ten_valid_files.zip",
+		ArchiveLimits{MaxMemberSize: 1024 * 1024, MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 1000}, nil, nil)
+	assert.True(t, nfi.HasFilesToUnpack())
+
+	nfi.Close()
+	assert.Nil(t, nfi.zipReader, "Close must release the archive handle")
+	assert.False(t, nfi.HasNext(), "Close must end iteration")
+	assert.False(t, nfi.Next())
+	nfi.Close() // idempotent
+}
+
 func TestArchiveIterator_MembersDecompressedAndChargedOnce(t *testing.T) {
 	// Regression for the zip/7z double-read bug: the look-ahead buffer was never
 	// consumed, so every member was decompressed twice and charged twice against

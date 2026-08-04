@@ -216,6 +216,69 @@ func TestIsFreeOfSecretsArchiveExtraction(t *testing.T) {
 	}
 }
 
+func TestExtractArchivesMkdirFailureKeepsAcks(t *testing.T) {
+	dir := t.TempDir()
+	zipPath := filepath.Join(dir, "data.zip")
+	zf, err := os.Create(zipPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zw := zip.NewWriter(zf)
+	// Oversized member FIRST so its skip ack is recorded while the iterator
+	// buffers the first scannable member (i.e. before the Mkdir failure).
+	big, err := zw.Create("big.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := big.Write([]byte(strings.Repeat("y", 4096))); err != nil {
+		t.Fatal(err)
+	}
+	small, err := zw.Create("small.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := small.Write([]byte("token = abc\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := zf.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	tmpDir := t.TempDir()
+	// A FILE where the archive's extraction dir would go makes Mkdir fail.
+	if err := os.WriteFile(filepath.Join(tmpDir, "a000"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := leakTestConfig("unused", &config.GeneralConfig{
+		MaxArchiveFileSize:     1024, // big.txt exceeds this -> ack recorded
+		MaxTotalArchiveMemory:  100 * 1024 * 1024,
+		MaxContentScanFileSize: 1024 * 1024,
+	})
+	archive := structs.File{Path: zipPath, Name: "data.zip", Size: structs.GetFileSize(zipPath), IsArchive: true}
+
+	var messages []structs.Message
+	sources := map[string]structs.File{}
+	paths := extractArchivesForLeakScan(cfg, cfg.Tests["IsFreeOfSecrets"], []structs.File{archive}, tmpDir, sources, &messages)
+
+	if len(paths) != 0 {
+		t.Errorf("no members can be extracted when the temp dir cannot be created, got %v", paths)
+	}
+	foundAck := false
+	for _, m := range messages {
+		src, ok := m.Source.(structs.File)
+		if m.Skipped && ok && strings.Contains(src.Name, "big.txt") {
+			foundAck = true
+		}
+	}
+	if !foundAck {
+		t.Errorf("Mkdir failure must not drop already-recorded skip acknowledgements, got %v", messages)
+	}
+}
+
 func TestCondenseLeakFindingsMemberMapping(t *testing.T) {
 	member := structs.ToFileWithDisplay("/data/data.zip", "inner/secret.txt", "inner/secret.txt", 12, "", "data.zip")
 	sources := map[string]structs.File{"/tmp/pc-leakcheck-x/a000/0000_secret.txt": member}

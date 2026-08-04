@@ -264,6 +264,7 @@ func IsArchiveFreeOfKeywords(file structs.File, config config.Config) []structs.
 		MaxTotalMemory: totalMemory,
 		MaxMemberCount: memberCount,
 	}, whitelist, blacklist)
+	defer archiveIterator.Close()
 	if !archiveIterator.HasFilesToUnpack() {
 		// Even with no scannable members, the iterator may have skipped members
 		// (too large / over memory budget). Surface those acknowledgements.

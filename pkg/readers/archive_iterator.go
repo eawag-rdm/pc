@@ -626,7 +626,12 @@ func (u *UnpackedFileIterator) findFirstZip() bool {
 	return u.bufferNextZip()
 }
 
-func (u *UnpackedFileIterator) close() {
+// Close releases the underlying archive handles and ends iteration.
+// Idempotent. Called automatically when iteration runs to its end; exported so
+// consumers that exit early (error paths, future context cancellation) can
+// release file descriptors deterministically instead of waiting for GC.
+func (u *UnpackedFileIterator) Close() {
+	u.iterationEnded = true
 	if u.tarFile != nil {
 		u.tarFile.Close()
 		u.tarFile = nil
@@ -648,7 +653,7 @@ func (u *UnpackedFileIterator) close() {
 
 func (u *UnpackedFileIterator) HasNext() bool {
 	if u.iterationEnded {
-		u.close()
+		u.Close()
 	}
 	return !u.iterationEnded
 }
@@ -679,7 +684,7 @@ func (u *UnpackedFileIterator) HasFilesToUnpack() bool {
 	}
 	// Consumers never call HasNext after a false here, so release fds now.
 	if !found {
-		u.close()
+		u.Close()
 	}
 	return found
 }
@@ -711,7 +716,7 @@ func (u *UnpackedFileIterator) Next() bool {
 
 	if err != nil {
 		u.iterationEnded = true
-		u.close()
+		u.Close()
 		return false
 	}
 
