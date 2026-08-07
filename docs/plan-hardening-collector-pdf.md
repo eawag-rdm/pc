@@ -198,11 +198,10 @@ H1 -> H2 -> H3 -> H4 -> H5 -> H6 -> C4 -> A1 -> A2 -> C7 -> C8 -> P1 -> P2 -> P3
 Still parked: [general] fail-fast migration commit (from C3); C5/C6 (dormant
 betterleaks path); fast/slow check split (own plan).
 
-QUEUED (operator request 2026-08-05, after PDF lands): rework how checks load
-and apply whitelist/blacklist filters. Today three separate mechanisms exist -
-utils.skipFileCheck (regex per check), the archive iterator's literal matcher
-(fileGoodToUnpack), and leakcheck's own compiled regex filter - with different
-matching semantics. Needs its own design + review pass.
+QUEUED -> PLANNED: the whitelist/blacklist rework (operator request
+2026-08-05) is now specified in docs/plan-check-rules-and-dispatch.md, which
+also covers per-file check parameters, filter-collision checks and the
+work-package rebuild (operator request 2026-08-07). Awaiting review.
 
 ## Open item for the operator
 
