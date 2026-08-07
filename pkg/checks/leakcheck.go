@@ -194,10 +194,25 @@ func IsFreeOfSecrets(repo structs.Repository, cfg config.Config) []structs.Messa
 	return messages
 }
 
+// isExtractedTextMember reports whether the iterator hands this member over
+// as extracted text rather than raw bytes (pdf/xlsx/docx containers).
+func isExtractedTextMember(memberName string) bool {
+	if readers.OOXMLKind(memberName) != "" {
+		return true
+	}
+	return strings.EqualFold(filepath.Ext(memberName), ".pdf")
+}
+
 // extractArchivesForLeakScan writes the size-gated text members of each
 // archive to tmpDir, registers them in sources, and returns their paths.
 // Iterator skip acknowledgements (member too large / memory budget reached)
 // are appended to messages.
+//
+// NOTE: this iterator is independent of the keyword check's, so container
+// members (pdf/xlsx/docx) are extracted a second time when both checks run,
+// and the per-archive PDF time budget applies per iterator (two passes = two
+// budgets). Acceptable while the secret scan stays opt-in; sharing one
+// extraction across checks needs the fast/slow check split.
 func extractArchivesForLeakScan(cfg config.Config, tc *config.TestConfig, archives []structs.File, tmpDir string, sources map[string]structs.File, messages *[]structs.Message) []string {
 	limits := archiveLimits(cfg)
 
@@ -221,7 +236,15 @@ func extractArchivesForLeakScan(cfg config.Config, tc *config.TestConfig, archiv
 		for it.HasNext() {
 			it.Next()
 			memberName, content, memberSize := it.UnpackedFile()
-			tmpPath := filepath.Join(archDir, fmt.Sprintf("%04d_%s", idx, leakTempName.ReplaceAllString(path.Base(memberName), "_")))
+			base := leakTempName.ReplaceAllString(path.Base(memberName), "_")
+			// Container members (pdf/xlsx/docx) arrive as EXTRACTED TEXT, so
+			// the temp copy must not keep an extension claiming otherwise -
+			// a scanner that skips binary formats by extension would skip
+			// the very text we extracted for it.
+			if isExtractedTextMember(memberName) {
+				base += ".txt"
+			}
+			tmpPath := filepath.Join(archDir, fmt.Sprintf("%04d_%s", idx, base))
 			idx++
 			if err := os.WriteFile(tmpPath, content, 0o600); err != nil {
 				output.GlobalLogger.FileWarning(archive.GetDisplayName(), "IsFreeOfSecrets: cannot write temp copy of '%s': %v", memberName, err)
