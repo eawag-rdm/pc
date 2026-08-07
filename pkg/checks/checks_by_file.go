@@ -544,6 +544,16 @@ func pdfLimits(cfg config.Config) readers.PDFLimits {
 	}
 }
 
+// totalTextLen sums extracted page blocks (nil placeholders keep page
+// numbering aligned, so len(pages) alone says nothing about content).
+func totalTextLen(pages [][]byte) int {
+	n := 0
+	for _, p := range pages {
+		n += len(p)
+	}
+	return n
+}
+
 // pdfTooLargeReason acknowledges documents past the sandbox input gate;
 // shared by the pre-read Stat gate and the ReadPDF sentinel mapping.
 var pdfTooLargeReason = fmt.Sprintf("Skipped content scan of file: PDF exceeds %d bytes (sandbox memory limit).", int64(readers.MaxPDFInputBytes))
@@ -609,6 +619,9 @@ func scanPDFFile(file structs.File, config config.Config) ([]structs.Message, bo
 	switch {
 	case errors.Is(err, readers.ErrPDFTooLarge):
 		return ack(pdfTooLargeReason), true
+	case errors.Is(err, readers.ErrPDFRuntime):
+		output.GlobalLogger.FileWarning(file.GetDisplayName(), "PDF engine unavailable: %v", err)
+		return ack("Skipped content scan of file: PDF engine unavailable."), true
 	case errors.Is(err, readers.ErrPDFPassword):
 		return ack("Skipped content scan of file: PDF is password-protected."), true
 	case errors.Is(err, readers.ErrPDFTimeout):
@@ -620,6 +633,11 @@ func scanPDFFile(file structs.File, config config.Config) ([]structs.Message, bo
 	if truncated {
 		reason := fmt.Sprintf("Stopped content scan of file: PDF exceeds %d pages or %d extracted bytes; scanned the first part only.", limits.MaxPages, limits.MaxTextBytes)
 		messages = append(messages, structs.Message{Content: reason, Source: file, Skipped: true, Reason: reason})
+	}
+	if totalTextLen(pages) == 0 {
+		// Scanned/image-only PDF: the highest-risk shape (secrets live in
+		// the image), so it must not read as "scanned and clean".
+		return ack("Skipped content scan of file: PDF contains no extractable text (image-only or scanned)."), true
 	}
 
 	lowered := lowerAll(pages)

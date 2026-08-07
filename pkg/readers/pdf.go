@@ -76,6 +76,11 @@ var (
 	// ErrPDFTooLarge marks documents rejected by the MaxPDFInputBytes gate
 	// before any extraction work (distinct ack: "parse error" would mislead).
 	ErrPDFTooLarge = errors.New("pdf too large for sandbox")
+	// ErrPDFRuntime marks a wasm runtime that failed to initialize (compile
+	// failure, unwritable cache, OOM). The failure is memoized, so without a
+	// distinct sentinel every PDF in the run would report a bogus parse
+	// error instead of the one real cause.
+	ErrPDFRuntime = errors.New("pdf engine unavailable")
 )
 
 // pdfRuntime is the lazily-initialized shared wasm runtime. A run without
@@ -158,7 +163,7 @@ func ReadPDF(data []byte, limits PDFLimits) (pages [][]byte, truncated bool, err
 	}
 	pool, err := pdfPool()
 	if err != nil {
-		return nil, false, err
+		return nil, false, fmt.Errorf("%w: %v", ErrPDFRuntime, err)
 	}
 
 	timeout := limits.Timeout

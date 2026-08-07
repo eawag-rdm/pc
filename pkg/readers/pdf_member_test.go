@@ -159,8 +159,39 @@ func TestPDFMemberImageOnlyNotYielded(t *testing.T) {
 	got := drainMembers(u)
 	assert.NotContains(t, got, "scan.pdf")
 	assert.Contains(t, got, "readme.txt")
-	assert.Empty(t, u.SkipMessages())
 	assert.Equal(t, int64(len(got["readme.txt"])), u.totalMemoryUsed, "empty PDF must charge nothing")
+
+	// Must be acknowledged, not silently dropped: an unscanned scan is not
+	// the same report as a scanned-and-clean document.
+	msgs := u.SkipMessages()
+	assert.Len(t, msgs, 1)
+	assert.Contains(t, msgs[0].Content, "no extractable text")
+}
+
+func TestContentRoutedPDFMemberScanned(t *testing.T) {
+	// The extension is the attacker's to choose: a genuine PDF named
+	// without .pdf must still be extracted, not dropped as binary.
+	pdf := writeMinimalPDF("secret token in a renamed pdf")
+	path := writeZipFixture(t, []zipMember{
+		{"attachment", pdf},
+		{"report.pdf ", pdf}, // trailing space: extractors normalize it away
+	})
+	u := InitArchiveIterator(path, "fixture.zip", testMemberLimits, nil, nil)
+	got := drainMembers(u)
+	assert.Contains(t, string(got["attachment"]), "secret token")
+	assert.Contains(t, string(got["report.pdf "]), "secret token")
+}
+
+func TestContentRoutedNonPDFStaysSilent(t *testing.T) {
+	// Binary member that merely contains the magic bytes: routed, fails to
+	// parse, and must stay as silent as any other binary member.
+	junk := append(bytes.Repeat([]byte{0x00, 0x13}, 64), []byte("%PDF-1.4 not really")...)
+	junk = append(junk, bytes.Repeat([]byte{0x42, 0x00}, 512)...)
+	path := writeZipFixture(t, []zipMember{{"blob.bin", junk}})
+	u := InitArchiveIterator(path, "fixture.zip", testMemberLimits, nil, nil)
+	got := drainMembers(u)
+	assert.NotContains(t, got, "blob.bin")
+	assert.Empty(t, u.SkipMessages(), "content-routed non-PDF must not add ack noise")
 }
 
 func TestPDFMemberMisnamedBinarySilent(t *testing.T) {

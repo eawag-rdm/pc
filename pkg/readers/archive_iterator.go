@@ -72,8 +72,11 @@ type UnpackedFileIterator struct {
 	skipMessages []structs.Message
 
 	// sniffBuf is per-member scratch for content-type detection (iterator is
-	// single-goroutine); avoids one allocation per member.
+	// single-goroutine); avoids one allocation per member. sniffLen is how
+	// much of it the last sniff filled, so callers can reuse those bytes
+	// instead of re-reading them.
 	sniffBuf [512]byte
+	sniffLen int
 
 	// walkCounter bounds decompressed bytes for tar.gz walks (nil otherwise).
 	walkCounter *countingReader
@@ -370,10 +373,22 @@ func (u *UnpackedFileIterator) tryBufferMember(name string, declared int64, r io
 		return u.tryBufferOOXMLMember(name, declared, r, kind)
 	}
 	if strings.EqualFold(filepath.Ext(name), ".pdf") {
-		return u.tryBufferPDFMember(name, declared, r)
+		return u.tryBufferPDFMember(name, declared, r, nil, true)
 	}
 	isText, content, overrun, err := u.sniffThenRead(r, declared)
-	if err != nil || !isText {
+	if err != nil {
+		return false
+	}
+	if !isText {
+		// Content-routed PDF: a genuine PDF whose name lacks the .pdf
+		// extension (stripped, or "report.pdf " with a trailing space that
+		// extractors normalize away) classifies as binary and would be
+		// dropped silently - the extension is the attacker's to choose.
+		// The sniff bytes are reused, so this costs nothing extra; members
+		// that then fail to parse stay silent exactly like binaries today.
+		if prefix := u.sniffBuf[:u.sniffLen]; bytes.Contains(prefix, PDFMagic) {
+			return u.tryBufferPDFMember(name, declared, r, prefix, false)
+		}
 		return false
 	}
 	if overrun {
@@ -472,21 +487,30 @@ func (u *UnpackedFileIterator) tryBufferOOXMLMember(name string, declared int64,
 // as ONE concatenated block (page attribution is lost for members - same
 // documented trade-off as OOXML sheet indexing). The magic is sniffed from a
 // small prefix BEFORE committing to the full member read, so a binary member
-// merely named .pdf costs at most pdfMagicWindow decompressed bytes, like the
+// merely named .pdf costs at most PDFMagicWindow decompressed bytes, like the
 // generic sniff path. Extracted text is charged to the archive budget and the
 // extraction cap is the remaining budget; a per-archive wall-clock budget
 // (maxArchivePDFTime) bounds crafted many-PDF archives.
-func (u *UnpackedFileIterator) tryBufferPDFMember(name string, declared int64, r io.Reader) bool {
+//
+// consumed carries bytes already read from r (the caller's sniff). byName is
+// true when the .pdf extension routed the member here: content-routed members
+// that turn out not to parse stay silent, exactly like the binary members
+// they would otherwise have been.
+func (u *UnpackedFileIterator) tryBufferPDFMember(name string, declared int64, r io.Reader, consumed []byte, byName bool) bool {
 	if u.maxPDFPages <= 0 {
 		return false // fail closed, silently: iterator built without a page limit
 	}
 
 	prefix := make([]byte, min(declared, PDFMagicWindow))
-	pn, err := io.ReadFull(r, prefix)
-	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
-		return false // unreadable container member
+	copy(prefix, consumed)
+	if int64(len(consumed)) < int64(len(prefix)) {
+		pn, err := io.ReadFull(r, prefix[len(consumed):])
+		if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+			return false // unreadable container member
+		}
+		// Short delivery still gets scanned (see readDeclaredMember).
+		prefix = prefix[:len(consumed)+pn]
 	}
-	prefix = prefix[:pn] // short delivery still gets scanned (see readDeclaredMember)
 	readRest := func() []byte {
 		data, ok := readDeclaredMember(r, declared, prefix)
 		if !ok {
@@ -545,7 +569,18 @@ func (u *UnpackedFileIterator) tryBufferPDFMember(name string, declared int64, r
 	case errors.Is(err, ErrPDFTooLarge):
 		u.recordSkip(name, fmt.Sprintf("Skipped content scan of archive member: PDF exceeds %d bytes (sandbox memory limit).", int64(MaxPDFInputBytes)), declared)
 		return false
+	case errors.Is(err, ErrPDFRuntime):
+		// One honest archive-level cause beats one bogus per-member parse
+		// failure for every PDF in the archive.
+		if !u.pdfBudgetAckSent {
+			u.pdfBudgetAckSent = true
+			u.recordArchiveSkip("Stopped PDF extraction for archive: PDF engine unavailable; PDF members not scanned.")
+		}
+		return false
 	case err != nil:
+		if !byName {
+			return false // content-routed non-PDF: silent, like any binary member
+		}
 		output.GlobalLogger.FileWarning(u.ArchiveName, "Cannot parse PDF member '%s' -> %v", name, err)
 		u.recordSkip(name, "Skipped content scan of archive member: PDF could not be parsed.", declared)
 		return false
@@ -561,6 +596,9 @@ func (u *UnpackedFileIterator) tryBufferPDFMember(name string, declared int64, r
 	}
 	text := bytes.Join(nonEmpty, []byte("\n"))
 	if len(text) == 0 {
+		// Scanned/image-only PDF: the highest-risk shape (secrets live in the
+		// image), so it must not read as "scanned and clean".
+		u.recordSkip(name, "Skipped content scan of archive member: PDF contains no extractable text (image-only or scanned).", declared)
 		return false
 	}
 	if truncated {
@@ -599,6 +637,7 @@ func unpackTar(u *UnpackedFileIterator) bool {
 // depth against library bugs).
 func (u *UnpackedFileIterator) sniffThenRead(rc io.Reader, declared int64) (isText bool, content []byte, overrun bool, err error) {
 	n, err := io.ReadFull(rc, u.sniffBuf[:])
+	u.sniffLen = n
 	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
 		return false, nil, false, err
 	}
