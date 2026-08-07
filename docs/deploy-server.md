@@ -120,7 +120,13 @@ image bundles the
 **PDF engine cache.** The committed compose sets `XDG_CACHE_HOME=/var/lib/pc`
 (the persistent named volume) so the sandboxed PDF engine's one-time wasm
 compilation (~3 s) is cached across container recreations; without it every
-fresh container pays the compile on its first PDF.
+fresh container pays the compile on its first PDF. Cache directories are
+keyed by wazero version (`wazero-v<X>-<arch>-<os>`, ~19 MB each) and old
+versions are never pruned - clear stale siblings after dependency bumps.
+Dev-machine gotcha: `go test` binaries resolve the wazero version to "dev",
+so that cache key survives wazero upgrades and can serve native code
+compiled by the OLD wazero - run `rm -rf ~/.cache/pc/wazero` after bumping
+wazero (release builds key correctly and are unaffected).
 
 **RAM-backed `/tmp` (tmpfs).** The committed compose mounts `/tmp` as tmpfs
 (2 GB): the secret scan extracts archive members there before scanning, so
