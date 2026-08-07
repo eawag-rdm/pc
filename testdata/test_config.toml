@@ -42,9 +42,9 @@
 # Max unpack-candidate members per archive for content checks
 maxArchiveMemberCount = 1000
 # Page ceiling per PDF (longer PDFs are skipped whole)
-maxPDFPages = 25
+maxPDFPages = 10
 # Max PDF size in bytes (larger PDFs are not read)
-maxPDFFileSize = 5242880
+maxPDFFileSize = 1048576
 summaryIntroText = "Test config intro text."
 summaryMaxIssuesBeforeTruncation = 5
 summaryMinGroupSizeForTruncation = 3

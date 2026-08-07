@@ -45,10 +45,10 @@ maxArchiveFileSize = 10485760
 maxTotalArchiveMemory = 536870912
 # Max unpack-candidate members per archive for content checks (0 = default 1000, not unlimited)
 maxArchiveMemberCount = 1000
-# Page ceiling per PDF; a longer PDF is skipped whole (0 = default 25, not unlimited)
-maxPDFPages = 25
-# Max PDF size (bytes) - 5MB; a larger PDF is not read at all (0 = default, not unlimited)
-maxPDFFileSize = 5242880
+# Page ceiling per PDF; a longer PDF is skipped whole (0 = default 10, not unlimited)
+maxPDFPages = 10
+# Max PDF size (bytes) - 1MB; a larger PDF is not read at all (0 = default, not unlimited)
+maxPDFFileSize = 1048576
 # Maximum size for files that read content (like IsFreeOfKeywords) (bytes) - 20MB
 maxContentScanFileSize = 20971520
 # Introductory text shown at the top of the summary (set to "" to disable)

@@ -41,8 +41,8 @@ const (
 	DefaultMaxTotalArchiveMemory  = 100 * 1024 * 1024  // per archive (bytes)
 	DefaultMaxArchiveMemberCount  = 1000               // unpack candidates per archive
 	DefaultMaxContentScanFileSize = 1024 * 1024 * 1024 // whole-file content scan gate (bytes)
-	DefaultMaxPDFPages            = 25                 // page ceiling per PDF; a longer document is skipped WHOLE, not truncated
-	DefaultMaxPDFFileSize         = 5 * 1024 * 1024    // PDF admission gate (bytes); larger PDFs are not read at all
+	DefaultMaxPDFPages            = 10                 // page ceiling per PDF; a longer document is skipped WHOLE, not truncated
+	DefaultMaxPDFFileSize         = 1024 * 1024        // PDF admission gate (bytes); larger PDFs are not read at all
 )
 
 type GeneralConfig struct {

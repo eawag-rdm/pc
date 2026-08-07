@@ -125,8 +125,8 @@ if you want a literal-match safety net for those.
 maxArchiveFileSize     = 10485760   # max size per file inside an archive (bytes)
 maxTotalArchiveMemory  = 536870912  # total memory budget for archive processing
 maxArchiveMemberCount  = 1000       # max unpack-candidate members per archive
-maxPDFPages            = 25         # page ceiling per PDF (longer = skipped whole)
-maxPDFFileSize         = 5242880    # max PDF size in bytes (larger = not read)
+maxPDFPages            = 10         # page ceiling per PDF (longer = skipped whole)
+maxPDFFileSize         = 1048576    # max PDF size in bytes (larger = not read)
 maxContentScanFileSize = 20971520   # max size for content-scanned files
 ```
 
@@ -140,7 +140,7 @@ over-long extractions are truncated with an acknowledgement (the truncated
 part is still scanned). PDFs are text-extracted (sandboxed PDFium) and
 keyword-scanned page by page - findings cite the page.
 
-`maxPDFFileSize` (default 5 MB) and `maxPDFPages` (default 25) are
+`maxPDFFileSize` (default 1 MB) and `maxPDFPages` (default 10) are
 **admission gates, not truncation points**: a PDF over either limit is
 **not scanned at all** and gets a skip acknowledgement naming the limit it
 hit. Nothing partial is reported, so a scanned PDF is always a
