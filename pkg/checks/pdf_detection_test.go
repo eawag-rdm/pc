@@ -80,26 +80,63 @@ func TestKeywordDetectedInPDFWithPageNumber(t *testing.T) {
 	}
 }
 
-func TestPDFPageCapStopsDetection(t *testing.T) {
-	file := writePDFFixture(t, buildTestPDF("page one", "page two", "password on page three"))
+func TestPDFOverPageCountSkippedWhole(t *testing.T) {
+	// Over the ceiling the whole document is skipped: the keyword on page 1
+	// must NOT be reported either, and the ack must say so.
+	file := writePDFFixture(t, buildTestPDF("password on page one", "page two", "page three"))
 	cfg := keywordConfig([]string{"password"})
 	cfg.General.MaxPDFPages = 2
 
 	msgs := IsFreeOfKeywords(file, cfg)
-	foundKeyword, foundStop := false, false
+	foundKeyword, foundSkip := false, false
 	for _, m := range msgs {
 		if !m.Skipped && strings.Contains(m.Content, "password") {
 			foundKeyword = true
 		}
-		if m.Skipped && strings.Contains(m.Content, "Stopped content scan") {
-			foundStop = true
+		if m.Skipped && strings.Contains(m.Content, "maximum page count") {
+			foundSkip = true
 		}
 	}
 	if foundKeyword {
-		t.Errorf("keyword past the page cap must not be found, got %v", msgs)
+		t.Errorf("no page may be scanned in an over-length PDF, got %v", msgs)
 	}
-	if !foundStop {
-		t.Errorf("expected truncation acknowledgement, got %v", msgs)
+	if !foundSkip {
+		t.Errorf("expected page-count skip acknowledgement, got %v", msgs)
+	}
+
+	// At the ceiling the document scans normally.
+	cfg.General.MaxPDFPages = 3
+	found := false
+	for _, m := range IsFreeOfKeywords(file, cfg) {
+		if !m.Skipped && strings.Contains(m.Content, "password") {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("a PDF exactly at the page ceiling must be scanned")
+	}
+}
+
+func TestPDFOverSizeLimitSkipped(t *testing.T) {
+	data := buildTestPDF("password inside a big pdf")
+	file := writePDFFixture(t, data)
+	cfg := keywordConfig([]string{"password"})
+	cfg.General.MaxPDFFileSize = int64(len(data)) - 1
+
+	foundKeyword, foundSkip := false, false
+	for _, m := range IsFreeOfKeywords(file, cfg) {
+		if !m.Skipped && strings.Contains(m.Content, "password") {
+			foundKeyword = true
+		}
+		if m.Skipped && strings.Contains(m.Content, "maximum PDF size") {
+			foundSkip = true
+		}
+	}
+	if foundKeyword {
+		t.Error("an over-size PDF must not be scanned")
+	}
+	if !foundSkip {
+		t.Error("expected size skip acknowledgement")
 	}
 }
 
@@ -229,28 +266,54 @@ func TestKeywordDetectedInArchivedPDF(t *testing.T) {
 	}
 }
 
-func TestArchivedPDFPageCapStopsDetection(t *testing.T) {
+func TestArchivedPDFOverPageCountSkippedWhole(t *testing.T) {
 	archive := buildPDFArchive(t, "zip", []pdfArchiveMember{
-		{"long.pdf", buildTestPDF("page one", "password on page two")},
+		{"long.pdf", buildTestPDF("password on page one", "page two")},
 	})
 	cfg := keywordConfig([]string{"password"})
 	cfg.General.MaxPDFPages = 1
 
 	msgs := IsArchiveFreeOfKeywords(archive, cfg)
-	foundKeyword, foundStop := false, false
+	foundKeyword, foundSkip := false, false
 	for _, m := range msgs {
 		if !m.Skipped && strings.Contains(strings.ToLower(m.Content), "password") {
 			foundKeyword = true
 		}
-		if m.Skipped && strings.Contains(m.Content, "Stopped content scan of archive member") {
-			foundStop = true
+		if m.Skipped && strings.Contains(m.Content, "maximum page count") {
+			foundSkip = true
 		}
 	}
 	if foundKeyword {
-		t.Errorf("keyword past the page cap must not be found, got %v", msgs)
+		t.Errorf("no page may be scanned in an over-length PDF member, got %v", msgs)
 	}
-	if !foundStop {
-		t.Errorf("expected member truncation ack, got %v", msgs)
+	if !foundSkip {
+		t.Errorf("expected member page-count skip ack, got %v", msgs)
+	}
+}
+
+func TestArchivedPDFOverSizeLimitSkipped(t *testing.T) {
+	pdf := buildTestPDF("password in a big member")
+	archive := buildPDFArchive(t, "zip", []pdfArchiveMember{
+		{"big.pdf", pdf},
+		{"keep.txt", []byte("still scanned\n")},
+	})
+	cfg := keywordConfig([]string{"password"})
+	cfg.General.MaxPDFFileSize = int64(len(pdf)) - 1
+
+	foundKeyword, foundSkip := false, false
+	for _, m := range IsArchiveFreeOfKeywords(archive, cfg) {
+		if !m.Skipped && strings.Contains(strings.ToLower(m.Content), "password") {
+			foundKeyword = true
+		}
+		if m.Skipped && strings.Contains(m.Content, "maximum PDF size") {
+			foundSkip = true
+		}
+	}
+	if foundKeyword {
+		t.Error("an over-size PDF member must not be scanned")
+	}
+	if !foundSkip {
+		t.Error("expected member size skip acknowledgement")
 	}
 }
 

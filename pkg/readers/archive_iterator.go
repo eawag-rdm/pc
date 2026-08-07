@@ -27,7 +27,8 @@ type ArchiveLimits struct {
 	MaxMemberSize  int64 // per-member size ceiling (bytes)
 	MaxTotalMemory int64 // per-archive decompressed-content budget (bytes)
 	MaxMemberCount int   // unpack-candidate ceiling (stored here; enforced from C4)
-	MaxPDFPages    int   // pages extracted per PDF member (0 = PDF members skipped)
+	MaxPDFPages    int   // page ceiling per PDF member; over it the member is skipped whole (0 = PDF members skipped)
+	MaxPDFFileSize int64 // PDF member admission gate (bytes); over it the member is not read
 }
 
 type UnpackedFileIterator struct {
@@ -58,6 +59,7 @@ type UnpackedFileIterator struct {
 	// and the per-archive wall-clock budget that bounds crafted many-PDF
 	// archives (the per-member timeout alone would amplify to hours).
 	maxPDFPages      int
+	maxPDFFileSize   int64
 	pdfWallTime      time.Duration
 	pdfBudgetAckSent bool
 
@@ -135,6 +137,7 @@ func InitArchiveIterator(archivePath string, archiveName string, limits ArchiveL
 		maxTotalMemory:     limits.MaxTotalMemory,
 		maxMemberCount:     limits.MaxMemberCount,
 		maxPDFPages:        limits.MaxPDFPages,
+		maxPDFFileSize:     limits.MaxPDFFileSize,
 		processedFileCount: 0,
 
 		tarFile:        nil,
@@ -497,8 +500,16 @@ func (u *UnpackedFileIterator) tryBufferOOXMLMember(name string, declared int64,
 // that turn out not to parse stay silent, exactly like the binary members
 // they would otherwise have been.
 func (u *UnpackedFileIterator) tryBufferPDFMember(name string, declared int64, r io.Reader, consumed []byte, byName bool) bool {
-	if u.maxPDFPages <= 0 {
-		return false // fail closed, silently: iterator built without a page limit
+	if u.maxPDFPages <= 0 || u.maxPDFFileSize <= 0 {
+		return false // fail closed, silently: iterator built without PDF limits
+	}
+	// Declared size is known from the header, so an over-limit PDF member is
+	// turned away before any of it is decompressed.
+	if declared > u.maxPDFFileSize {
+		if byName {
+			u.recordSkip(name, fmt.Sprintf("Skipped content scan of archive member: PDF exceeds the maximum PDF size (%d bytes); not scanned.", u.maxPDFFileSize), declared)
+		}
+		return false
 	}
 
 	prefix := make([]byte, min(declared, PDFMagicWindow))
@@ -552,6 +563,7 @@ func (u *UnpackedFileIterator) tryBufferPDFMember(name string, declared int64, r
 		return false
 	}
 	limits := PDFLimits{
+		MaxFileBytes: u.maxPDFFileSize,
 		MaxPages:     u.maxPDFPages,
 		MaxTextBytes: min(u.MaxMemberSize, u.maxTotalMemory-u.totalMemoryUsed),
 		// Clamped to what is left, so maxArchivePDFTime is a real ceiling
@@ -573,7 +585,10 @@ func (u *UnpackedFileIterator) tryBufferPDFMember(name string, declared int64, r
 		u.recordSkip(name, "Skipped content scan of archive member: PDF extraction timed out.", declared)
 		return false
 	case errors.Is(err, ErrPDFTooLarge):
-		u.recordSkip(name, fmt.Sprintf("Skipped content scan of archive member: PDF exceeds %d bytes (sandbox memory limit).", int64(MaxPDFInputBytes)), declared)
+		u.recordSkip(name, fmt.Sprintf("Skipped content scan of archive member: PDF exceeds the maximum PDF size (%d bytes); not scanned.", u.maxPDFFileSize), declared)
+		return false
+	case errors.Is(err, ErrPDFTooManyPages):
+		u.recordSkip(name, fmt.Sprintf("Skipped content scan of archive member: PDF exceeds the maximum page count (%d); not scanned.", u.maxPDFPages), declared)
 		return false
 	case errors.Is(err, ErrPDFRuntime):
 		// One honest archive-level cause beats one bogus per-member parse

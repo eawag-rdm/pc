@@ -44,6 +44,7 @@ var testMemberLimits = ArchiveLimits{
 	MaxTotalMemory: 100 * 1024 * 1024,
 	MaxMemberCount: 1000,
 	MaxPDFPages:    500,
+	MaxPDFFileSize: 5 * 1024 * 1024,
 }
 
 // drainIterator returns yielded member names keyed to their content.

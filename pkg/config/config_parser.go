@@ -41,14 +41,16 @@ const (
 	DefaultMaxTotalArchiveMemory  = 100 * 1024 * 1024  // per archive (bytes)
 	DefaultMaxArchiveMemberCount  = 1000               // unpack candidates per archive
 	DefaultMaxContentScanFileSize = 1024 * 1024 * 1024 // whole-file content scan gate (bytes)
-	DefaultMaxPDFPages            = 500                // pages scanned per PDF (covers full theses; appendices carry the secrets)
+	DefaultMaxPDFPages            = 25                 // page ceiling per PDF; a longer document is skipped WHOLE, not truncated
+	DefaultMaxPDFFileSize         = 5 * 1024 * 1024    // PDF admission gate (bytes); larger PDFs are not read at all
 )
 
 type GeneralConfig struct {
 	MaxArchiveFileSize               int64  // Maximum size for individual files in archives (bytes)
 	MaxTotalArchiveMemory            int64  // Maximum total memory for archive processing (bytes)
 	MaxArchiveMemberCount            int    // Max unpack-candidate members per archive for content checks (0 = default, not unlimited; enforced from C4)
-	MaxPDFPages                      int    // Pages scanned per PDF (0 = default, not unlimited)
+	MaxPDFPages                      int    // Page ceiling per PDF; over it nothing is extracted (0 = default, not unlimited)
+	MaxPDFFileSize                   int64  // PDF admission gate in bytes; over it nothing is read (0 = default, not unlimited)
 	MaxContentScanFileSize           int64  // Maximum size for files that read content (like IsFreeOfKeywords) (bytes)
 	SummaryIntroText                 string // Introductory text shown at the top of the summary
 	SummaryMaxIssuesBeforeTruncation int    // Number of issues to show before truncating
@@ -63,6 +65,15 @@ func (g *GeneralConfig) EffectiveMaxPDFPages() int {
 		return DefaultMaxPDFPages
 	}
 	return g.MaxPDFPages
+}
+
+// EffectiveMaxPDFFileSize applies the documented default to non-positive
+// values (same single-defaulting-site convention; 0 never means unlimited).
+func (g *GeneralConfig) EffectiveMaxPDFFileSize() int64 {
+	if g.MaxPDFFileSize <= 0 {
+		return DefaultMaxPDFFileSize
+	}
+	return g.MaxPDFFileSize
 }
 
 // ArchiveLimits returns the effective per-archive unpacking limits, applying
@@ -164,6 +175,7 @@ func ParseConfig(filename string) (*Config, error) {
 			MaxTotalArchiveMemory:            DefaultMaxTotalArchiveMemory,
 			MaxArchiveMemberCount:            DefaultMaxArchiveMemberCount,
 			MaxPDFPages:                      DefaultMaxPDFPages,
+			MaxPDFFileSize:                   DefaultMaxPDFFileSize,
 			MaxContentScanFileSize:           DefaultMaxContentScanFileSize,
 			SummaryIntroText:                 DefaultSummaryIntroText,
 			SummaryMaxIssuesBeforeTruncation: DefaultSummaryMaxIssuesBeforeTruncation,
@@ -249,6 +261,12 @@ func ParseConfig(filename string) (*Config, error) {
 		}
 		if c.General.MaxPDFPages < 0 {
 			return nil, fmt.Errorf("[general] maxPDFPages must be >= 0, got %d", c.General.MaxPDFPages)
+		}
+		if err := generalInt64(generalData, "maxPDFFileSize", &c.General.MaxPDFFileSize); err != nil {
+			return nil, err
+		}
+		if c.General.MaxPDFFileSize < 0 {
+			return nil, fmt.Errorf("[general] maxPDFFileSize must be >= 0, got %d", c.General.MaxPDFFileSize)
 		}
 		if summaryIntroText, ok := generalData["summaryIntroText"].(string); ok {
 			c.General.SummaryIntroText = summaryIntroText
@@ -447,6 +465,21 @@ func serverInt(m map[string]interface{}, key string, dst *int) error {
 // generalInt reads a [general] integer key with the fail-fast convention.
 func generalInt(m map[string]interface{}, key string, dst *int) error {
 	return tomlInt("general", m, key, dst)
+}
+
+// generalInt64 is generalInt for byte-size keys, which exceed int range on
+// 32-bit builds and so keep their int64 width.
+func generalInt64(m map[string]interface{}, key string, dst *int64) error {
+	v, ok := m[key]
+	if !ok {
+		return nil
+	}
+	iv, ok := v.(int64)
+	if !ok {
+		return fmt.Errorf("[general] %s must be an integer, got %T", key, v)
+	}
+	*dst = iv
+	return nil
 }
 
 // serverBool sets *dst when key holds a bool; errors if present but not a bool.

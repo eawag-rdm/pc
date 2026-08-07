@@ -65,7 +65,7 @@ func writeMinimalPDF(texts ...string) []byte {
 	return buf.Bytes()
 }
 
-var testPDFLimits = PDFLimits{MaxPages: 500, MaxTextBytes: 10 * 1024 * 1024, Timeout: 30 * time.Second}
+var testPDFLimits = PDFLimits{MaxFileBytes: 5 * 1024 * 1024, MaxPages: 500, MaxTextBytes: 10 * 1024 * 1024, Timeout: 30 * time.Second}
 
 func TestReadPDFExtractsPerPageText(t *testing.T) {
 	data := writeMinimalPDF("alpha secret on page one", "beta token on page two")
@@ -77,17 +77,36 @@ func TestReadPDFExtractsPerPageText(t *testing.T) {
 	assert.Contains(t, string(pages[1]), "beta token")
 }
 
-func TestReadPDFPageCap(t *testing.T) {
+func TestReadPDFPageCapRejectsWholeDocument(t *testing.T) {
+	// All-or-nothing: over the ceiling, NOTHING is extracted - a partial
+	// scan would report a long document as checked when most of it wasn't.
 	data := writeMinimalPDF("page one text", "page two text", "page three hidden", "page four hidden", "page five hidden")
 	limits := testPDFLimits
 	limits.MaxPages = 2
 	pages, truncated, err := ReadPDF(data, limits)
+	assert.ErrorIs(t, err, ErrPDFTooManyPages)
+	assert.Nil(t, pages, "no page may be extracted from an over-length document")
+	assert.False(t, truncated)
+
+	// Exactly at the ceiling is still scanned in full.
+	limits.MaxPages = 5
+	pages, truncated, err = ReadPDF(data, limits)
 	assert.NoError(t, err)
-	assert.True(t, truncated, "pages beyond the cap must truncate")
-	assert.Len(t, pages, 2)
-	joined := string(bytes.Join(pages, []byte(" ")))
-	assert.Contains(t, joined, "page one")
-	assert.NotContains(t, joined, "hidden", "content past the page cap must not be extracted")
+	assert.False(t, truncated)
+	assert.Len(t, pages, 5)
+}
+
+func TestReadPDFFileSizeGate(t *testing.T) {
+	data := writeMinimalPDF("some text")
+	limits := testPDFLimits
+	limits.MaxFileBytes = int64(len(data)) - 1
+	_, _, err := ReadPDF(data, limits)
+	assert.ErrorIs(t, err, ErrPDFTooLarge)
+
+	limits.MaxFileBytes = int64(len(data)) // exactly at the gate passes
+	pages, _, err := ReadPDF(data, limits)
+	assert.NoError(t, err)
+	assert.Len(t, pages, 1)
 }
 
 func TestReadPDFTextCap(t *testing.T) {
@@ -130,10 +149,12 @@ func TestReadPDFMalformed(t *testing.T) {
 
 func TestReadPDFFailClosedLimits(t *testing.T) {
 	data := writeMinimalPDF("text")
-	_, _, err := ReadPDF(data, PDFLimits{MaxPages: 0, MaxTextBytes: 1024})
+	_, _, err := ReadPDF(data, PDFLimits{MaxFileBytes: 1 << 20, MaxPages: 0, MaxTextBytes: 1024})
 	assert.Error(t, err)
-	_, _, err = ReadPDF(data, PDFLimits{MaxPages: 10, MaxTextBytes: 0})
+	_, _, err = ReadPDF(data, PDFLimits{MaxFileBytes: 1 << 20, MaxPages: 10, MaxTextBytes: 0})
 	assert.Error(t, err)
+	_, _, err = ReadPDF(data, PDFLimits{MaxFileBytes: 0, MaxPages: 10, MaxTextBytes: 1024})
+	assert.Error(t, err, "a zero size limit must fail closed, never mean unlimited")
 }
 
 func TestReadPDFTooLargeFailsFast(t *testing.T) {

@@ -424,6 +424,7 @@ func archiveLimits(cfg config.Config) readers.ArchiveLimits {
 		MaxTotalMemory: totalMemory,
 		MaxMemberCount: memberCount,
 		MaxPDFPages:    cfg.General.EffectiveMaxPDFPages(),
+		MaxPDFFileSize: cfg.General.EffectiveMaxPDFFileSize(),
 	}
 }
 
@@ -538,6 +539,7 @@ func scanOOXMLFile(file structs.File, config config.Config, kind string) ([]stru
 func pdfLimits(cfg config.Config) readers.PDFLimits {
 	memberSize, _, _ := cfg.General.ArchiveLimits()
 	return readers.PDFLimits{
+		MaxFileBytes: cfg.General.EffectiveMaxPDFFileSize(),
 		MaxPages:     cfg.General.EffectiveMaxPDFPages(),
 		MaxTextBytes: memberSize,
 		Timeout:      readers.DefaultPDFTimeout,
@@ -554,9 +556,11 @@ func totalTextLen(pages [][]byte) int {
 	return n
 }
 
-// pdfTooLargeReason acknowledges documents past the sandbox input gate;
+// pdfTooLargeReason acknowledges documents past the configured size gate;
 // shared by the pre-read Stat gate and the ReadPDF sentinel mapping.
-var pdfTooLargeReason = fmt.Sprintf("Skipped content scan of file: PDF exceeds %d bytes (sandbox memory limit).", int64(readers.MaxPDFInputBytes))
+func pdfTooLargeReason(limit int64) string {
+	return fmt.Sprintf("Skipped content scan of file: PDF exceeds the maximum PDF size (%d bytes); not scanned.", limit)
+}
 
 // scanPDFFile extracts and keyword-scans a top-level PDF. handled = false
 // means the bytes carry no PDF magic (PDFium accepts "%PDF" at any offset up
@@ -590,14 +594,18 @@ func scanPDFFile(file structs.File, config config.Config) ([]structs.Message, bo
 		return nil, false
 	}
 
+	limits := pdfLimits(config)
+
 	// Stat failure is fail-closed: without a size the oversize gate cannot
 	// run, and an unbounded read is exactly what it exists to prevent.
 	st, serr := f.Stat()
 	if serr != nil {
 		return readAck(serr), true
 	}
-	if st.Size() > readers.MaxPDFInputBytes {
-		return ack(pdfTooLargeReason), true
+	// Gate on size before reading the body at all: an over-limit PDF costs
+	// one stat, not a full read.
+	if st.Size() > limits.MaxFileBytes {
+		return ack(pdfTooLargeReason(limits.MaxFileBytes)), true
 	}
 	// Exact-size buffer, filled in one read: bytes.Buffer.ReadFrom would
 	// reallocate to 2x and memcpy the whole document (it always grows by
@@ -612,13 +620,14 @@ func scanPDFFile(file structs.File, config config.Config) ([]structs.Message, bo
 		data = data[:len(head)+rest] // file shrank between stat and read
 	}
 
-	limits := pdfLimits(config)
 	pages, truncated, err := readers.ReadPDF(data, limits)
 
 	var messages []structs.Message
 	switch {
 	case errors.Is(err, readers.ErrPDFTooLarge):
-		return ack(pdfTooLargeReason), true
+		return ack(pdfTooLargeReason(limits.MaxFileBytes)), true
+	case errors.Is(err, readers.ErrPDFTooManyPages):
+		return ack(fmt.Sprintf("Skipped content scan of file: PDF exceeds the maximum page count (%d); not scanned.", limits.MaxPages)), true
 	case errors.Is(err, readers.ErrPDFRuntime):
 		output.GlobalLogger.FileWarning(file.GetDisplayName(), "PDF engine unavailable: %v", err)
 		return ack("Skipped content scan of file: PDF engine unavailable."), true

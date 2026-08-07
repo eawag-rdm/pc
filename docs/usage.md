@@ -125,7 +125,8 @@ if you want a literal-match safety net for those.
 maxArchiveFileSize     = 10485760   # max size per file inside an archive (bytes)
 maxTotalArchiveMemory  = 536870912  # total memory budget for archive processing
 maxArchiveMemberCount  = 1000       # max unpack-candidate members per archive
-maxPDFPages            = 500        # pages scanned per PDF
+maxPDFPages            = 25         # page ceiling per PDF (longer = skipped whole)
+maxPDFFileSize         = 5242880    # max PDF size in bytes (larger = not read)
 maxContentScanFileSize = 20971520   # max size for content-scanned files
 ```
 
@@ -137,15 +138,29 @@ text-extracted and keyword-scanned both at top level and inside archives;
 their zip index is checked against the same limits before parsing, and
 over-long extractions are truncated with an acknowledgement (the truncated
 part is still scanned). PDFs are text-extracted (sandboxed PDFium) and
-keyword-scanned page by page - findings cite the page; the first
-`maxPDFPages` pages are scanned (default 500, deterministic), extracted text
-shares the `maxArchiveFileSize` cap, and a 30 s per-file backstop skips
-pathological files with an acknowledgement. Password-protected and unparsable
-PDFs get skip acknowledgements. PDFs inside archives are extracted the same
-way (page attribution is lost - the member's text is scanned as one block,
-like xlsx/docx members); extracted text counts against the archive memory
-budget, and cumulative PDF extraction time per archive is capped at 120 s -
-further PDF members are then skipped with one acknowledgement. Archives with more than
+keyword-scanned page by page - findings cite the page.
+
+`maxPDFFileSize` (default 5 MB) and `maxPDFPages` (default 25) are
+**admission gates, not truncation points**: a PDF over either limit is
+**not scanned at all** and gets a skip acknowledgement naming the limit it
+hit. Nothing partial is reported, so a scanned PDF is always a
+fully-scanned PDF. Both gates are cheap - size is checked from the file
+header before the body is read, and the page count costs about 1% of an
+extraction, so long documents are rejected almost for free. **Tune these to
+your data**: raising them scans more documents at proportionally more CPU;
+leaving them low means long reports go unchecked (their acknowledgements
+are the record of that).
+
+Within an admitted PDF, extracted text shares the `maxArchiveFileSize` cap
+(over-long extractions are truncated with an acknowledgement, and the
+truncated part is still scanned) and a 30 s per-file backstop skips
+pathological files. Password-protected, image-only/scanned, and unparsable
+PDFs each get their own skip acknowledgement. PDFs inside archives obey the
+same two gates and are extracted the same way (page attribution is lost -
+the member's text is scanned as one block, like xlsx/docx members);
+extracted text counts against the archive memory budget, and cumulative PDF
+extraction time per archive is capped at 120 s - further PDF members are
+then skipped with one acknowledgement. Archives with more than
 `maxArchiveMemberCount` unpack candidates get a skip acknowledgement instead of
 a content scan (0 is not unlimited — it means the default of 1000).
 

@@ -516,6 +516,54 @@ func TestParseMaxPDFPages(t *testing.T) {
 	})
 }
 
+func TestParseMaxPDFFileSize(t *testing.T) {
+	t.Run("Configured", func(t *testing.T) {
+		configFile := createTempConfigFile(t, `
+		[general]
+		maxPDFFileSize = 1234567
+		`)
+		defer os.Remove(configFile)
+		config, err := ParseConfig(configFile)
+		assert.NoError(t, err)
+		assert.Equal(t, int64(1234567), config.General.MaxPDFFileSize)
+	})
+	t.Run("MissingUsesDefault", func(t *testing.T) {
+		configFile := createTempConfigFile(t, `
+		[general]
+		`)
+		defer os.Remove(configFile)
+		config, err := ParseConfig(configFile)
+		assert.NoError(t, err)
+		assert.Equal(t, int64(DefaultMaxPDFFileSize), config.General.MaxPDFFileSize)
+	})
+	t.Run("NegativeFailsFast", func(t *testing.T) {
+		configFile := createTempConfigFile(t, `
+		[general]
+		maxPDFFileSize = -1
+		`)
+		defer os.Remove(configFile)
+		_, err := ParseConfig(configFile)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "maxPDFFileSize")
+	})
+	t.Run("WrongTypeFailsFast", func(t *testing.T) {
+		configFile := createTempConfigFile(t, `
+		[general]
+		maxPDFFileSize = "5MB"
+		`)
+		defer os.Remove(configFile)
+		_, err := ParseConfig(configFile)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "maxPDFFileSize")
+	})
+	t.Run("EffectiveZeroDefaults", func(t *testing.T) {
+		g := &GeneralConfig{}
+		assert.Equal(t, int64(DefaultMaxPDFFileSize), g.EffectiveMaxPDFFileSize())
+		g.MaxPDFFileSize = 99
+		assert.Equal(t, int64(99), g.EffectiveMaxPDFFileSize())
+	})
+}
+
 // TestArchiveLimits verifies the single defaulting site for per-archive
 // unpacking limits: non-positive values (e.g. from hand-built GeneralConfig
 // structs that never pass ParseConfig) map to the documented defaults.

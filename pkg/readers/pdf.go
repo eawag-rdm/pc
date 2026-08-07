@@ -23,14 +23,18 @@ import (
 )
 
 // PDFLimits bounds PDF text extraction. Like ArchiveLimits it fails closed:
-// non-positive page or byte limits mean nothing is extracted.
+// non-positive limits mean nothing is extracted.
 //
-// The three layers each bound what only they can: MaxPages is the sole
-// deterministic CPU bound (scanned PDFs extract ~0 bytes and never trip byte
-// caps), MaxTextBytes kills dense-text amplification, and Timeout is the
-// backstop against pathological files (kept internal so results stay
-// deterministic for everything else).
+// MaxFileBytes and MaxPages are ADMISSION gates, not truncation points: a
+// document over either is skipped whole, with an acknowledgement, so a
+// report never mixes "fully scanned" with "scanned as far as we got". Both
+// are checked before any page is touched (the page count costs ~1% of an
+// extraction), which is what keeps a long document cheap to reject.
+// MaxTextBytes does truncate - it guards dense-text amplification within an
+// already-admitted document - and Timeout is the backstop against
+// pathological files (kept internal so results stay deterministic).
 type PDFLimits struct {
+	MaxFileBytes int64
 	MaxPages     int
 	MaxTextBytes int64
 	Timeout      time.Duration
@@ -73,9 +77,13 @@ var (
 	// partial content is returned - partial-on-timeout would make findings
 	// depend on machine speed.
 	ErrPDFTimeout = errors.New("pdf extraction timed out")
-	// ErrPDFTooLarge marks documents rejected by the MaxPDFInputBytes gate
-	// before any extraction work (distinct ack: "parse error" would mislead).
-	ErrPDFTooLarge = errors.New("pdf too large for sandbox")
+	// ErrPDFTooLarge marks documents rejected by the size gate before any
+	// extraction work (distinct ack: "parse error" would mislead).
+	ErrPDFTooLarge = errors.New("pdf too large")
+	// ErrPDFTooManyPages marks documents past the page ceiling. Nothing is
+	// extracted: a page cap that truncated would report a long document as
+	// scanned when most of it never was.
+	ErrPDFTooManyPages = errors.New("pdf has too many pages")
 	// ErrPDFRuntime marks a wasm runtime that failed to initialize (compile
 	// failure, unwritable cache, OOM). The failure is memoized, so without a
 	// distinct sentinel every PDF in the run would report a bogus parse
@@ -163,12 +171,13 @@ func ReadPDF(data []byte, limits PDFLimits) (pages [][]byte, truncated bool, err
 // held the instance, and charging it would let one package's PDFs consume
 // another's budget - on a shared server, another tenant's.
 func readPDF(data []byte, limits PDFLimits) (pages [][]byte, truncated bool, extractTime time.Duration, err error) {
-	if limits.MaxPages <= 0 || limits.MaxTextBytes <= 0 {
+	if limits.MaxPages <= 0 || limits.MaxTextBytes <= 0 || limits.MaxFileBytes <= 0 {
 		return nil, false, 0, fmt.Errorf("pdf limits must be positive")
 	}
 	// Before pool init: an oversized document must not be what first pays
-	// the runtime compile.
-	if int64(len(data)) > MaxPDFInputBytes {
+	// the runtime compile. MaxPDFInputBytes is the sandbox backstop; the
+	// configured gate is normally far stricter.
+	if int64(len(data)) > min(limits.MaxFileBytes, MaxPDFInputBytes) {
 		return nil, false, 0, ErrPDFTooLarge
 	}
 	pool, err := pdfPool()
@@ -251,11 +260,13 @@ func readPDF(data []byte, limits PDFLimits) (pages [][]byte, truncated bool, ext
 		}
 		return nil, false, 0, err
 	}
-	scanPages := countRes.PageCount
-	if scanPages > limits.MaxPages {
-		scanPages = limits.MaxPages
-		truncated = true
+	// All-or-nothing: reject before loading a single page. The count is
+	// ~1% of an extraction, so a long document is cheap to turn away, and
+	// the caller never has to reason about a partially-scanned report.
+	if countRes.PageCount > limits.MaxPages {
+		return nil, false, 0, fmt.Errorf("%w: %d pages", ErrPDFTooManyPages, countRes.PageCount)
 	}
+	scanPages := countRes.PageCount
 
 	var total int64
 	for i := 0; i < scanPages; i++ {
