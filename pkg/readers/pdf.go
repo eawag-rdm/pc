@@ -40,6 +40,19 @@ type PDFLimits struct {
 // constant, not config - a knob would tune nondeterminism into the scan.
 const DefaultPDFTimeout = 30 * time.Second
 
+// maxArchivePDFTime bounds cumulative PDF extraction wall-time per archive
+// iterator: without it a crafted archive of many pathological members
+// amplifies the per-member timeout to hours inside one check item. Constant,
+// not config, same determinism stance as DefaultPDFTimeout. Covers ~6000
+// median-cost or ~50 heavy legitimate PDFs per archive (benchmarked).
+const maxArchivePDFTime = 4 * DefaultPDFTimeout
+
+// pdfMagic / pdfMagicWindow: PDFium accepts the "%PDF" magic at any offset
+// up to 1024, so 1028 bytes is the exact window (matches scanPDFFile's).
+var pdfMagic = []byte("%PDF")
+
+const pdfMagicWindow = 1028
+
 // pdfWasmMemoryLimitPages caps each sandbox instance at 1 GiB (64 KiB pages).
 // Document bytes are copied into wasm memory, so the input gate below keeps
 // admissible documents at half this ceiling, leaving the other half for

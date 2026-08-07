@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/bodgit/sevenzip"
 	"github.com/eawag-rdm/pc/pkg/optimization"
@@ -26,6 +27,7 @@ type ArchiveLimits struct {
 	MaxMemberSize  int64 // per-member size ceiling (bytes)
 	MaxTotalMemory int64 // per-archive decompressed-content budget (bytes)
 	MaxMemberCount int   // unpack-candidate ceiling (stored here; enforced from C4)
+	MaxPDFPages    int   // pages extracted per PDF member (0 = PDF members skipped)
 }
 
 type UnpackedFileIterator struct {
@@ -51,6 +53,13 @@ type UnpackedFileIterator struct {
 	maxTotalMemory     int64
 	maxMemberCount     int
 	processedFileCount int
+
+	// PDF member extraction: page limit (0 = fail closed, skip PDF members)
+	// and the per-archive wall-clock budget that bounds crafted many-PDF
+	// archives (the per-member timeout alone would amplify to hours).
+	maxPDFPages      int
+	pdfWallTime      time.Duration
+	pdfBudgetAckSent bool
 
 	// candidateCount tracks unpack candidates (regular, size > 0, name-filter
 	// pass) for the tar family, where counting is only possible inline during
@@ -122,6 +131,7 @@ func InitArchiveIterator(archivePath string, archiveName string, limits ArchiveL
 		totalMemoryUsed:    0,
 		maxTotalMemory:     limits.MaxTotalMemory,
 		maxMemberCount:     limits.MaxMemberCount,
+		maxPDFPages:        limits.MaxPDFPages,
 		processedFileCount: 0,
 
 		tarFile:        nil,
@@ -353,10 +363,14 @@ func (u *UnpackedFileIterator) bufferNextTar() bool {
 // read -> ack-or-buffer -> charge tail. It fills the look-ahead buffer and
 // returns true when the member qualified. Read errors and non-text members
 // are skipped silently (the caller's loop continues); overruns get an ack.
-// OOXML members route by extension BEFORE the sniff (they classify as binary).
+// OOXML and PDF members route by extension BEFORE the sniff (they classify
+// as binary).
 func (u *UnpackedFileIterator) tryBufferMember(name string, declared int64, r io.Reader) bool {
 	if kind := OOXMLKind(name); kind != "" {
 		return u.tryBufferOOXMLMember(name, declared, r, kind)
+	}
+	if strings.EqualFold(filepath.Ext(name), ".pdf") {
+		return u.tryBufferPDFMember(name, declared, r)
 	}
 	isText, content, overrun, err := u.sniffThenRead(r, declared)
 	if err != nil || !isText {
@@ -424,6 +438,110 @@ func (u *UnpackedFileIterator) tryBufferOOXMLMember(name string, declared int64,
 	}
 	if truncated {
 		u.recordSkip(name, fmt.Sprintf("Stopped content scan of archive member: extracted text exceeds %d bytes; scanned the first part only.", limits.MaxMemberSize), declared)
+	}
+	u.bufferedFilename = name
+	u.bufferedFileContent = text
+	u.bufferedFileSize = len(text)
+	u.updateMemoryUsage(len(text))
+	return true
+}
+
+// tryBufferPDFMember extracts the text of a PDF archive member and buffers it
+// as ONE concatenated block (page attribution is lost for members - same
+// documented trade-off as OOXML sheet indexing). The magic is sniffed from a
+// small prefix BEFORE committing to the full member read, so a binary member
+// merely named .pdf costs at most pdfMagicWindow decompressed bytes, like the
+// generic sniff path. Extracted text is charged to the archive budget and the
+// extraction cap is the remaining budget; a per-archive wall-clock budget
+// (maxArchivePDFTime) bounds crafted many-PDF archives.
+func (u *UnpackedFileIterator) tryBufferPDFMember(name string, declared int64, r io.Reader) bool {
+	if u.maxPDFPages <= 0 {
+		return false // fail closed, silently: iterator built without a page limit
+	}
+
+	prefix := make([]byte, min(declared, pdfMagicWindow))
+	if _, err := io.ReadFull(r, prefix); err != nil {
+		return false // truncated or unreadable container member
+	}
+	readRest := func() []byte {
+		data := make([]byte, declared)
+		copy(data, prefix)
+		if _, err := io.ReadFull(r, data[len(prefix):]); err != nil {
+			return nil
+		}
+		return data
+	}
+
+	if !bytes.Contains(prefix, pdfMagic) {
+		// Misnamed member: classify the prefix like the sniff path would.
+		n := min(len(prefix), len(u.sniffBuf))
+		if n == 0 || !strings.HasPrefix(http.DetectContentType(prefix[:n]), "text/") {
+			return false // binary: bail without decompressing the rest
+		}
+		data := readRest()
+		if data == nil {
+			return false
+		}
+		u.bufferedFilename = name
+		u.bufferedFileContent = data
+		u.bufferedFileSize = len(data)
+		u.updateMemoryUsage(len(data))
+		return true
+	}
+
+	// Genuine PDF: the wall-clock budget only gates extraction, never the
+	// misnamed-text fallback above. One archive-level ack, then silence.
+	if u.pdfWallTime > maxArchivePDFTime {
+		if !u.pdfBudgetAckSent {
+			u.pdfBudgetAckSent = true
+			u.recordArchiveSkip(fmt.Sprintf("Stopped PDF extraction for archive: cumulative PDF extraction time exceeds %s; remaining PDF members not scanned.", maxArchivePDFTime))
+		}
+		return false
+	}
+
+	data := readRest()
+	if data == nil {
+		return false
+	}
+	limits := PDFLimits{
+		MaxPages:     u.maxPDFPages,
+		MaxTextBytes: min(u.MaxMemberSize, u.maxTotalMemory-u.totalMemoryUsed),
+		Timeout:      DefaultPDFTimeout,
+	}
+	start := time.Now()
+	pageBlocks, truncated, err := ReadPDF(data, limits)
+	u.pdfWallTime += time.Since(start)
+
+	switch {
+	case errors.Is(err, ErrPDFPassword):
+		u.recordSkip(name, "Skipped content scan of archive member: PDF is password-protected.", declared)
+		return false
+	case errors.Is(err, ErrPDFTimeout):
+		u.recordSkip(name, "Skipped content scan of archive member: PDF extraction timed out.", declared)
+		return false
+	case errors.Is(err, ErrPDFTooLarge):
+		u.recordSkip(name, fmt.Sprintf("Skipped content scan of archive member: PDF exceeds %d bytes (sandbox memory limit).", int64(MaxPDFInputBytes)), declared)
+		return false
+	case err != nil:
+		output.GlobalLogger.FileWarning(u.ArchiveName, "Cannot parse PDF member '%s' -> %v", name, err)
+		u.recordSkip(name, "Skipped content scan of archive member: PDF could not be parsed.", declared)
+		return false
+	}
+
+	// Drop empty placeholder pages before joining: an n-page image-only PDF
+	// would otherwise yield n-1 newline bytes and dodge the empty check.
+	nonEmpty := pageBlocks[:0]
+	for _, p := range pageBlocks {
+		if len(p) > 0 {
+			nonEmpty = append(nonEmpty, p)
+		}
+	}
+	text := bytes.Join(nonEmpty, []byte("\n"))
+	if len(text) == 0 {
+		return false
+	}
+	if truncated {
+		u.recordSkip(name, fmt.Sprintf("Stopped content scan of archive member: PDF exceeds %d pages or %d extracted bytes; scanned the first part only.", limits.MaxPages, limits.MaxTextBytes), declared)
 	}
 	u.bufferedFilename = name
 	u.bufferedFileContent = text

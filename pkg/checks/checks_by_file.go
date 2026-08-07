@@ -423,6 +423,7 @@ func archiveLimits(cfg config.Config) readers.ArchiveLimits {
 		MaxMemberSize:  memberSize,
 		MaxTotalMemory: totalMemory,
 		MaxMemberCount: memberCount,
+		MaxPDFPages:    cfg.General.EffectiveMaxPDFPages(),
 	}
 }
 

@@ -141,7 +141,11 @@ keyword-scanned page by page - findings cite the page; the first
 `maxPDFPages` pages are scanned (default 500, deterministic), extracted text
 shares the `maxArchiveFileSize` cap, and a 30 s per-file backstop skips
 pathological files with an acknowledgement. Password-protected and unparsable
-PDFs get skip acknowledgements. Archives with more than
+PDFs get skip acknowledgements. PDFs inside archives are extracted the same
+way (page attribution is lost - the member's text is scanned as one block,
+like xlsx/docx members); extracted text counts against the archive memory
+budget, and cumulative PDF extraction time per archive is capped at 120 s -
+further PDF members are then skipped with one acknowledgement. Archives with more than
 `maxArchiveMemberCount` unpack candidates get a skip acknowledgement instead of
 a content scan (0 is not unlimited — it means the default of 1000).
 

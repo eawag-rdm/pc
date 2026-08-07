@@ -1,8 +1,12 @@
 package checks
 
 import (
+	"archive/tar"
+	"archive/zip"
 	"bytes"
+	"compress/gzip"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -128,6 +132,159 @@ func TestMisnamedTextPDFFallsBack(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("text file misnamed .pdf must still be keyword-scanned, got %v", msgs)
+	}
+}
+
+type pdfArchiveMember struct {
+	name string
+	data []byte
+}
+
+func buildPDFArchive(t *testing.T, format string, members []pdfArchiveMember) structs.File {
+	t.Helper()
+	var buf bytes.Buffer
+	switch format {
+	case "zip":
+		zw := zip.NewWriter(&buf)
+		for _, m := range members {
+			w, err := zw.Create(m.name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := w.Write(m.data); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := zw.Close(); err != nil {
+			t.Fatal(err)
+		}
+	case "tar", "tar.gz":
+		var out io.Writer = &buf
+		var gw *gzip.Writer
+		if format == "tar.gz" {
+			gw = gzip.NewWriter(&buf)
+			out = gw
+		}
+		tw := tar.NewWriter(out)
+		for _, m := range members {
+			if err := tw.WriteHeader(&tar.Header{Name: m.name, Mode: 0o600, Size: int64(len(m.data)), Typeflag: tar.TypeReg}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := tw.Write(m.data); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := tw.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if gw != nil {
+			if err := gw.Close(); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	name := "package." + format
+	path := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(path, buf.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return structs.File{Path: path, Name: name, IsArchive: true}
+}
+
+func TestKeywordDetectedInArchivedPDF(t *testing.T) {
+	for _, format := range []string{"zip", "tar", "tar.gz"} {
+		t.Run(format, func(t *testing.T) {
+			archive := buildPDFArchive(t, format, []pdfArchiveMember{
+				{"docs/secret.pdf", buildTestPDF("clean cover page", "the password lives here")},
+				{"decoy.txt", []byte("nothing to see here\n")},
+			})
+			msgs := IsArchiveFreeOfKeywords(archive, keywordConfig([]string{"password"}))
+			found := false
+			for _, m := range msgs {
+				if m.Skipped {
+					continue
+				}
+				src, ok := m.Source.(structs.File)
+				if !ok {
+					continue
+				}
+				if src.Name == "docs/secret.pdf" && strings.Contains(strings.ToLower(m.Content), "password") {
+					found = true
+					if src.ArchiveName == "" {
+						t.Errorf("PDF finding must be attributed to the archive, got %+v", src)
+					}
+				}
+			}
+			if !found {
+				t.Errorf("[%s] keyword in archived PDF must be detected, got %v", format, msgs)
+			}
+
+			none := IsArchiveFreeOfKeywords(archive, keywordConfig([]string{"zzz-not-present"}))
+			for _, m := range none {
+				if !m.Skipped {
+					t.Errorf("[%s] no finding expected for absent keyword, got %v", format, m)
+				}
+			}
+		})
+	}
+}
+
+func TestArchivedPDFPageCapStopsDetection(t *testing.T) {
+	archive := buildPDFArchive(t, "zip", []pdfArchiveMember{
+		{"long.pdf", buildTestPDF("page one", "password on page two")},
+	})
+	cfg := keywordConfig([]string{"password"})
+	cfg.General.MaxPDFPages = 1
+
+	msgs := IsArchiveFreeOfKeywords(archive, cfg)
+	foundKeyword, foundStop := false, false
+	for _, m := range msgs {
+		if !m.Skipped && strings.Contains(strings.ToLower(m.Content), "password") {
+			foundKeyword = true
+		}
+		if m.Skipped && strings.Contains(m.Content, "Stopped content scan of archive member") {
+			foundStop = true
+		}
+	}
+	if foundKeyword {
+		t.Errorf("keyword past the page cap must not be found, got %v", msgs)
+	}
+	if !foundStop {
+		t.Errorf("expected member truncation ack, got %v", msgs)
+	}
+}
+
+func TestArchivedMisnamedTextPDFStillScanned(t *testing.T) {
+	archive := buildPDFArchive(t, "zip", []pdfArchiveMember{
+		{"notes.pdf", []byte("plain text with a password inside\n")},
+	})
+	msgs := IsArchiveFreeOfKeywords(archive, keywordConfig([]string{"password"}))
+	found := false
+	for _, m := range msgs {
+		if !m.Skipped && strings.Contains(strings.ToLower(m.Content), "password") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("text member misnamed .pdf must still be keyword-scanned, got %v", msgs)
+	}
+}
+
+func TestArchivedMalformedPDFEmitsMemberAck(t *testing.T) {
+	junk := append([]byte("%PDF-1.4\n"), bytes.Repeat([]byte{0x13, 0x00, 0x42}, 2048)...)
+	archive := buildPDFArchive(t, "zip", []pdfArchiveMember{
+		{"broken.pdf", junk},
+		{"decoy.txt", []byte("nothing to see here\n")},
+	})
+	msgs := IsArchiveFreeOfKeywords(archive, keywordConfig([]string{"password"}))
+	found := false
+	for _, m := range msgs {
+		if m.Skipped && strings.Contains(m.Content, "PDF could not be parsed") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("malformed PDF member must produce a parse skip ack, got %v", msgs)
 	}
 }
 
