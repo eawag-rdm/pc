@@ -601,6 +601,13 @@ func (u *UnpackedFileIterator) tryBufferPDFMember(name string, declared int64, r
 		}
 	}
 	text := bytes.Join(nonEmpty, []byte("\n"))
+	if int64(len(text)) > limits.MaxTextBytes {
+		// The join separators are not part of the extracted text ReadPDF
+		// capped, so without this the charge could exceed the remaining
+		// budget by one byte per page.
+		text = text[:limits.MaxTextBytes]
+		truncated = true
+	}
 	if len(text) == 0 {
 		// Scanned/image-only PDF: the highest-risk shape (secrets live in the
 		// image), so it must not read as "scanned and clean".
