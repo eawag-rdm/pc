@@ -288,7 +288,55 @@ func TestArchivedMalformedPDFEmitsMemberAck(t *testing.T) {
 	}
 }
 
+func TestPDFMagicWindowBoundary(t *testing.T) {
+	// PDFium accepts the magic at offsets up to 1024 and rejects 1025, so
+	// the routing window must be exactly 1028 bytes: narrower would be a
+	// prepend-evasion hole, wider would send the engine files it cannot
+	// read. Findings from the PDF path cite a page; the generic fallthrough
+	// never does, which is how the routing decision is observable. (Either
+	// way the keyword is found here - the fixture's content streams are
+	// uncompressed, so the fallthrough still catches it. A real PDF with
+	// Flate streams would hide it, which is why the window matters.)
+	for _, tc := range []struct {
+		offset     int
+		viaPDFPath bool
+	}{{1024, true}, {1025, false}} {
+		t.Run(fmt.Sprintf("offset%d", tc.offset), func(t *testing.T) {
+			data := append(bytes.Repeat([]byte{' '}, tc.offset), buildTestPDF("hidden password here")...)
+			file := writePDFFixture(t, data)
+			msgs := IsFreeOfKeywords(file, keywordConfig([]string{"password"}))
+			citedPage := false
+			for _, m := range msgs {
+				if !m.Skipped && strings.Contains(m.Content, "(page ") {
+					citedPage = true
+				}
+			}
+			if citedPage != tc.viaPDFPath {
+				t.Errorf("magic at offset %d: extracted via PDF path=%v, want %v (msgs %v)", tc.offset, citedPage, tc.viaPDFPath, msgs)
+			}
+		})
+	}
+}
+
+func TestImageOnlyPDFEmitsSkipAck(t *testing.T) {
+	// No extractable text: must not read as "scanned and clean".
+	file := writePDFFixture(t, buildTestPDF("", ""))
+	msgs := IsFreeOfKeywords(file, keywordConfig([]string{"password"}))
+	found := false
+	for _, m := range msgs {
+		if m.Skipped && strings.Contains(m.Content, "no extractable text") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("image-only PDF must be acknowledged, got %v", msgs)
+	}
+}
+
 func TestUnreadablePDFEmitsSkipAck(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("chmod 0 does not block root")
+	}
 	file := writePDFFixture(t, buildTestPDF("some text"))
 	if err := os.Chmod(file.Path, 0); err != nil {
 		t.Fatal(err)

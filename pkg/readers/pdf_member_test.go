@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"hash/crc32"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -315,18 +316,30 @@ func TestOverDeclaredMembersStillScanned(t *testing.T) {
 	assert.Contains(t, string(got["notes.txt"]), "plain secret text")
 }
 
+// TestZeroPDFArchiveKeepsRuntimeLazy re-executes itself in a child process
+// so the assertion runs in a process that has NEVER touched a PDF. Checking
+// the flag in-process is worthless: any earlier test in the package has
+// already initialized the pool, which silently turned the previous version
+// of this test into a no-op.
 func TestZeroPDFArchiveKeepsRuntimeLazy(t *testing.T) {
-	// Order-safe: only asserts iteration itself never flips the flag, no
-	// matter what other tests already did.
-	before := pdfRuntimeInitialized()
-	path := writeZipFixture(t, []zipMember{
-		{"readme.txt", []byte("plain text\n")},
-		{"data.csv", []byte("a,b\n1,2\n")},
-	})
-	u := InitArchiveIterator(path, "fixture.zip", testMemberLimits, nil, nil)
-	got := drainMembers(u)
-	assert.Len(t, got, 2)
-	if !before {
-		assert.False(t, pdfRuntimeInitialized(), "PDF-free archive iteration must not initialize the runtime")
+	if os.Getenv("PC_LAZY_PDF_CHILD") == "1" {
+		path := writeZipFixture(t, []zipMember{
+			{"readme.txt", []byte("plain text\n")},
+			{"data.csv", []byte("a,b\n1,2\n")},
+		})
+		u := InitArchiveIterator(path, "fixture.zip", testMemberLimits, nil, nil)
+		got := drainMembers(u)
+		assert.Len(t, got, 2)
+		if pdfRuntimeInitialized() {
+			t.Fatal("PDF-free archive iteration must not initialize the wasm runtime")
+		}
+		return
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=TestZeroPDFArchiveKeepsRuntimeLazy", "-test.v")
+	cmd.Env = append(os.Environ(), "PC_LAZY_PDF_CHILD=1")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("child run failed: %v\n%s", err, out)
 	}
 }
