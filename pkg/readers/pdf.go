@@ -47,11 +47,13 @@ const DefaultPDFTimeout = 30 * time.Second
 // median-cost or ~50 heavy legitimate PDFs per archive (benchmarked).
 const maxArchivePDFTime = 4 * DefaultPDFTimeout
 
-// pdfMagic / pdfMagicWindow: PDFium accepts the "%PDF" magic at any offset
-// up to 1024, so 1028 bytes is the exact window (matches scanPDFFile's).
-var pdfMagic = []byte("%PDF")
+// PDFMagic / PDFMagicWindow: PDFium accepts the "%PDF" magic at any offset
+// up to 1024, so 1028 bytes is the exact window - verified against the
+// engine at both boundaries (offset 1024 parses, 1025 does not). Shared so
+// the file-level and member-level sniffs cannot drift apart.
+var PDFMagic = []byte("%PDF")
 
-const pdfMagicWindow = 1028
+const PDFMagicWindow = 1028
 
 // pdfWasmMemoryLimitPages caps each sandbox instance at 1 GiB (64 KiB pages).
 // Document bytes are copied into wasm memory, so the input gate below keeps

@@ -459,7 +459,7 @@ func (u *UnpackedFileIterator) tryBufferPDFMember(name string, declared int64, r
 		return false // fail closed, silently: iterator built without a page limit
 	}
 
-	prefix := make([]byte, min(declared, pdfMagicWindow))
+	prefix := make([]byte, min(declared, PDFMagicWindow))
 	if _, err := io.ReadFull(r, prefix); err != nil {
 		return false // truncated or unreadable container member
 	}
@@ -472,7 +472,7 @@ func (u *UnpackedFileIterator) tryBufferPDFMember(name string, declared int64, r
 		return data
 	}
 
-	if !bytes.Contains(prefix, pdfMagic) {
+	if !bytes.Contains(prefix, PDFMagic) {
 		// Misnamed member: classify the prefix like the sniff path would.
 		n := min(len(prefix), len(u.sniffBuf))
 		if n == 0 || !strings.HasPrefix(http.DetectContentType(prefix[:n]), "text/") {

@@ -570,30 +570,37 @@ func scanPDFFile(file structs.File, config config.Config) ([]structs.Message, bo
 	}
 	defer f.Close()
 
-	head := make([]byte, 1028)
+	head := make([]byte, readers.PDFMagicWindow)
 	n, err := io.ReadFull(f, head)
 	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
 		return readAck(err), true
 	}
 	head = head[:n]
-	if !bytes.Contains(head, []byte("%PDF")) {
+	if !bytes.Contains(head, readers.PDFMagic) {
 		return nil, false
 	}
 
-	var buf bytes.Buffer
-	if st, serr := f.Stat(); serr == nil {
-		// Gate before the body read: a doomed oversize document must not
-		// pay the full-file I/O just to be rejected by ReadPDF.
-		if st.Size() > readers.MaxPDFInputBytes {
-			return ack(pdfTooLargeReason), true
+	// Stat failure is fail-closed: without a size the oversize gate cannot
+	// run, and an unbounded read is exactly what it exists to prevent.
+	st, serr := f.Stat()
+	if serr != nil {
+		return readAck(serr), true
+	}
+	if st.Size() > readers.MaxPDFInputBytes {
+		return ack(pdfTooLargeReason), true
+	}
+	// Exact-size buffer, filled in one read: bytes.Buffer.ReadFrom would
+	// reallocate to 2x and memcpy the whole document (it always grows by
+	// MinRead past the end).
+	data := make([]byte, st.Size())
+	copy(data, head)
+	if int64(len(head)) < st.Size() {
+		rest, err := io.ReadFull(f, data[len(head):])
+		if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+			return readAck(err), true
 		}
-		buf.Grow(int(st.Size()))
+		data = data[:len(head)+rest] // file shrank between stat and read
 	}
-	buf.Write(head)
-	if _, err := buf.ReadFrom(f); err != nil {
-		return readAck(err), true
-	}
-	data := buf.Bytes()
 
 	limits := pdfLimits(config)
 	pages, truncated, err := readers.ReadPDF(data, limits)
