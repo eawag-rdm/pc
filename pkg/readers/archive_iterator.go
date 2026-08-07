@@ -538,7 +538,8 @@ func (u *UnpackedFileIterator) tryBufferPDFMember(name string, declared int64, r
 
 	// Genuine PDF: the wall-clock budget only gates extraction, never the
 	// misnamed-text fallback above. One archive-level ack, then silence.
-	if u.pdfWallTime > maxArchivePDFTime {
+	remainingBudget := maxArchivePDFTime - u.pdfWallTime
+	if remainingBudget <= 0 {
 		if !u.pdfBudgetAckSent {
 			u.pdfBudgetAckSent = true
 			u.recordArchiveSkip(fmt.Sprintf("Stopped PDF extraction for archive: cumulative PDF extraction time exceeds %s; remaining PDF members not scanned.", maxArchivePDFTime))
@@ -553,11 +554,16 @@ func (u *UnpackedFileIterator) tryBufferPDFMember(name string, declared int64, r
 	limits := PDFLimits{
 		MaxPages:     u.maxPDFPages,
 		MaxTextBytes: min(u.MaxMemberSize, u.maxTotalMemory-u.totalMemoryUsed),
-		Timeout:      DefaultPDFTimeout,
+		// Clamped to what is left, so maxArchivePDFTime is a real ceiling
+		// rather than a floor the last member can overshoot by a full
+		// DefaultPDFTimeout.
+		Timeout: min(DefaultPDFTimeout, remainingBudget),
 	}
-	start := time.Now()
-	pageBlocks, truncated, err := ReadPDF(data, limits)
-	u.pdfWallTime += time.Since(start)
+	// Charge extraction only: pool queue time belongs to whoever held the
+	// instance, and charging it here would let a busy pool silently consume
+	// this archive's scan budget.
+	pageBlocks, truncated, extractTime, err := readPDF(data, limits)
+	u.pdfWallTime += extractTime
 
 	switch {
 	case errors.Is(err, ErrPDFPassword):

@@ -153,17 +153,27 @@ func pdfRuntimeInitialized() bool {
 // scanning); the timeout aborts with ErrPDFTimeout and no content. Unreadable
 // single pages are skipped, the rest of the document still scans.
 func ReadPDF(data []byte, limits PDFLimits) (pages [][]byte, truncated bool, err error) {
+	pages, truncated, _, err = readPDF(data, limits)
+	return pages, truncated, err
+}
+
+// readPDF additionally reports how long extraction itself took, EXCLUDING
+// the pool wait. Callers that meter cumulative PDF time (the archive
+// iterator) must charge only this: queue time belongs to whichever archive
+// held the instance, and charging it would let one package's PDFs consume
+// another's budget - on a shared server, another tenant's.
+func readPDF(data []byte, limits PDFLimits) (pages [][]byte, truncated bool, extractTime time.Duration, err error) {
 	if limits.MaxPages <= 0 || limits.MaxTextBytes <= 0 {
-		return nil, false, fmt.Errorf("pdf limits must be positive")
+		return nil, false, 0, fmt.Errorf("pdf limits must be positive")
 	}
 	// Before pool init: an oversized document must not be what first pays
 	// the runtime compile.
 	if int64(len(data)) > MaxPDFInputBytes {
-		return nil, false, ErrPDFTooLarge
+		return nil, false, 0, ErrPDFTooLarge
 	}
 	pool, err := pdfPool()
 	if err != nil {
-		return nil, false, fmt.Errorf("%w: %v", ErrPDFRuntime, err)
+		return nil, false, 0, fmt.Errorf("%w: %v", ErrPDFRuntime, err)
 	}
 
 	timeout := limits.Timeout
@@ -177,10 +187,12 @@ func ReadPDF(data []byte, limits PDFLimits) (pages [][]byte, truncated bool, err
 	// instance is held.
 	instance, err := pool.GetInstanceWithContext(context.Background())
 	if err != nil {
-		return nil, false, err
+		return nil, false, 0, err
 	}
 
-	deadline := time.Now().Add(timeout)
+	start := time.Now()
+	defer func() { extractTime = time.Since(start) }()
+	deadline := start.Add(timeout)
 
 	// Watchdog: Kill interrupts in-flight wasm (CloseOnContextDone above).
 	// Kill is deliberately lock-free in go-pdfium and races the instance's
@@ -223,21 +235,21 @@ func ReadPDF(data []byte, limits PDFLimits) (pages [][]byte, truncated bool, err
 	docRes, err := instance.OpenDocument(&requests.OpenDocument{File: &data})
 	if err != nil {
 		if errors.Is(err, pdfium_errors.ErrPassword) {
-			return nil, false, ErrPDFPassword
+			return nil, false, 0, ErrPDFPassword
 		}
 		if expired() {
-			return nil, false, ErrPDFTimeout
+			return nil, false, 0, ErrPDFTimeout
 		}
-		return nil, false, err
+		return nil, false, 0, err
 	}
 	doc = docRes
 
 	countRes, err := instance.FPDF_GetPageCount(&requests.FPDF_GetPageCount{Document: doc.Document})
 	if err != nil {
 		if expired() {
-			return nil, false, ErrPDFTimeout
+			return nil, false, 0, ErrPDFTimeout
 		}
-		return nil, false, err
+		return nil, false, 0, err
 	}
 	scanPages := countRes.PageCount
 	if scanPages > limits.MaxPages {
@@ -248,14 +260,14 @@ func ReadPDF(data []byte, limits PDFLimits) (pages [][]byte, truncated bool, err
 	var total int64
 	for i := 0; i < scanPages; i++ {
 		if expired() {
-			return nil, false, ErrPDFTimeout
+			return nil, false, 0, ErrPDFTimeout
 		}
 		tp, err := instance.FPDFText_LoadPage(&requests.FPDFText_LoadPage{
 			Page: requests.Page{ByIndex: &requests.PageByIndex{Document: doc.Document, Index: i}},
 		})
 		if err != nil {
 			if expired() {
-				return nil, false, ErrPDFTimeout
+				return nil, false, 0, ErrPDFTimeout
 			}
 			// Unreadable page: scan the rest, but keep its placeholder so
 			// later findings still cite the right "page N".
@@ -300,5 +312,5 @@ func ReadPDF(data []byte, limits PDFLimits) (pages [][]byte, truncated bool, err
 		}
 	}
 
-	return pages, truncated, nil
+	return pages, truncated, 0, nil
 }

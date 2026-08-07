@@ -10,8 +10,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
+
+	"github.com/eawag-rdm/pc/pkg/structs"
 )
 
 type zipMember struct {
@@ -134,7 +137,7 @@ func TestPDFMemberWallClockBudgetBreaker(t *testing.T) {
 		{"b.pdf", writeMinimalPDF("second pdf")},
 	})
 	u := InitArchiveIterator(path, "fixture.zip", testMemberLimits, nil, nil)
-	u.pdfWallTime = maxArchivePDFTime + 1 // budget already exhausted
+	u.pdfWallTime = maxArchivePDFTime // budget already exhausted
 	got := drainMembers(u)
 	assert.NotContains(t, got, "a.pdf")
 	assert.NotContains(t, got, "b.pdf")
@@ -143,9 +146,25 @@ func TestPDFMemberWallClockBudgetBreaker(t *testing.T) {
 	msgs := u.SkipMessages()
 	assert.Len(t, msgs, 1, "exactly one archive-level ack, then silence")
 	assert.Contains(t, msgs[0].Content, "Stopped PDF extraction for archive")
-	src, ok := msgs[0].Source.(interface{ GetDisplayName() string })
+	src, ok := msgs[0].Source.(structs.File)
 	assert.True(t, ok)
-	_ = src
+	assert.Equal(t, "fixture.zip", src.Name, "budget ack is archive-level")
+	assert.Empty(t, src.ArchiveName, "archive-level source carries no parent archive")
+}
+
+func TestPDFMemberTimeoutClampedToRemainingBudget(t *testing.T) {
+	// With almost no budget left the member's own timeout must shrink to
+	// what remains, so maxArchivePDFTime is a ceiling and not a floor that
+	// the last member overshoots by a full DefaultPDFTimeout.
+	path := writeZipFixture(t, []zipMember{{"slow.pdf", writeMinimalPDF("some text")}})
+	u := InitArchiveIterator(path, "fixture.zip", testMemberLimits, nil, nil)
+	u.pdfWallTime = maxArchivePDFTime - time.Nanosecond
+
+	start := time.Now()
+	drainMembers(u)
+	assert.Less(t, time.Since(start), DefaultPDFTimeout, "member must not get a fresh full timeout")
+	assert.LessOrEqual(t, u.pdfWallTime, maxArchivePDFTime+DefaultPDFTimeout,
+		"cumulative time stays bounded by the budget")
 }
 
 func TestPDFMemberImageOnlyNotYielded(t *testing.T) {
