@@ -387,16 +387,38 @@ func (u *UnpackedFileIterator) tryBufferMember(name string, declared int64, r io
 	return true
 }
 
+// readDeclaredMember reads up to declared bytes, optionally after a prefix
+// already consumed from r, and returns what actually arrived. A member that
+// delivers LESS than its header declares is common in 7z and is also a
+// scan-evasion vector in zip (a one-byte over-declaration would otherwise
+// make the member vanish silently while extractors still hand the recipient
+// the complete file), so short delivery yields the partial content instead
+// of discarding it - the same stance sniffThenRead takes for text members.
+// ok is false only for a hard read error.
+func readDeclaredMember(r io.Reader, declared int64, prefix []byte) ([]byte, bool) {
+	data := make([]byte, declared)
+	copy(data, prefix)
+	if int64(len(prefix)) >= declared {
+		return data, true
+	}
+	n, err := io.ReadFull(r, data[len(prefix):])
+	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+		return nil, false
+	}
+	return data[:len(prefix)+n], true
+}
+
 // tryBufferOOXMLMember extracts the text of an xlsx/docx archive member and
 // buffers it as ONE concatenated block (per-sheet indexing is lost for
 // members - documented trade-off). Extracted text is what gets charged to the
 // archive memory budget; the extraction cap is the remaining budget, so
 // shared-string amplification cannot blow past it.
 func (u *UnpackedFileIterator) tryBufferOOXMLMember(name string, declared int64, r io.Reader, kind string) bool {
-	data := make([]byte, declared)
-	if _, err := io.ReadFull(r, data); err != nil {
-		return false // truncated or unreadable container member
+	data, ok := readDeclaredMember(r, declared, nil)
+	if !ok {
+		return false // unreadable container member
 	}
+	declared = int64(len(data)) // header may have over-declared; use what arrived
 
 	limits := ArchiveLimits{
 		MaxMemberSize:  min(u.MaxMemberSize, u.maxTotalMemory-u.totalMemoryUsed),
@@ -460,13 +482,14 @@ func (u *UnpackedFileIterator) tryBufferPDFMember(name string, declared int64, r
 	}
 
 	prefix := make([]byte, min(declared, PDFMagicWindow))
-	if _, err := io.ReadFull(r, prefix); err != nil {
-		return false // truncated or unreadable container member
+	pn, err := io.ReadFull(r, prefix)
+	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+		return false // unreadable container member
 	}
+	prefix = prefix[:pn] // short delivery still gets scanned (see readDeclaredMember)
 	readRest := func() []byte {
-		data := make([]byte, declared)
-		copy(data, prefix)
-		if _, err := io.ReadFull(r, data[len(prefix):]); err != nil {
+		data, ok := readDeclaredMember(r, declared, prefix)
+		if !ok {
 			return nil
 		}
 		return data

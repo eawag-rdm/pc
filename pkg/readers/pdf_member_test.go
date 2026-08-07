@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/zlib"
 	"fmt"
+	"hash/crc32"
 	"os"
 	"path/filepath"
 	"strings"
@@ -219,6 +220,49 @@ func TestPDFMemberChargeAffectsNextMember(t *testing.T) {
 	msgs := u.SkipMessages()
 	assert.Len(t, msgs, 1)
 	assert.Contains(t, msgs[0].Content, "would exceed total archive memory limit")
+}
+
+// writeLyingZip stores members whose header over-declares the uncompressed
+// size by one byte - extractors hand the recipient the complete file, so a
+// silent skip here would be pure scan evasion.
+func writeLyingZip(t *testing.T, members []zipMember) string {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for _, m := range members {
+		w, err := zw.CreateRaw(&zip.FileHeader{
+			Name:               m.name,
+			Method:             zip.Store,
+			CRC32:              crc32.ChecksumIEEE(m.data),
+			CompressedSize64:   uint64(len(m.data)),
+			UncompressedSize64: uint64(len(m.data)) + 1,
+		})
+		assert.NoError(t, err)
+		_, err = w.Write(m.data)
+		assert.NoError(t, err)
+	}
+	assert.NoError(t, zw.Close())
+	path := filepath.Join(t.TempDir(), "lying.zip")
+	assert.NoError(t, os.WriteFile(path, buf.Bytes(), 0o600))
+	return path
+}
+
+func TestOverDeclaredMembersStillScanned(t *testing.T) {
+	xlsx, err := os.ReadFile("../../testdata/test.xlsx")
+	assert.NoError(t, err)
+
+	path := writeLyingZip(t, []zipMember{
+		{"report.pdf", writeMinimalPDF("archived secret token here")},
+		{"sheet.xlsx", xlsx},
+		{"notes.txt", []byte("plain secret text\n")},
+	})
+	u := InitArchiveIterator(path, "lying.zip", testMemberLimits, nil, nil)
+	got := drainMembers(u)
+
+	// Every member's real bytes are intact; over-declaring must not hide them.
+	assert.Contains(t, string(got["report.pdf"]), "archived secret token")
+	assert.Contains(t, strings.ToLower(string(got["sheet.xlsx"])), "column2")
+	assert.Contains(t, string(got["notes.txt"]), "plain secret text")
 }
 
 func TestZeroPDFArchiveKeepsRuntimeLazy(t *testing.T) {
