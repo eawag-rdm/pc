@@ -17,8 +17,8 @@ import (
 // alertQueueSize bounds the in-memory backlog of pending alert emails. The
 // analyze endpoint is rate-limited (global 20/h by default) and server faults
 // are rare, so this is never reached in practice; if it ever is, Notify spills
-// the alert to a detached send rather than dropping it (every fault must be
-// reported).
+// the alert to a detached send rather than dropping it (no fault that passes
+// the cooldown gate is ever dropped, see alertDedup).
 const alertQueueSize = 256
 
 // alertDialTimeout bounds a single SMTP delivery (dial + handshake + send) so a
@@ -36,6 +36,85 @@ type alertPayload struct {
 	PackageID string
 	Code      string
 	Time      time.Time
+	// Suppressed is how many further occurrences the cooldown swallowed since
+	// the previous delivered alert for this package (0 when none). It is set by
+	// Notify at gate-pass time, never by the caller.
+	Suppressed int
+}
+
+// alertCooldownWindow is how long a gate-passed resource_unreadable alert mutes
+// further alerts for the SAME package. A dataset with a missing/dead file in
+// storage produces one such fault per request, so without a window a single
+// broken package mails the admin list on every retry. One hour is short enough
+// that a genuinely new outage is still reported promptly.
+const alertCooldownWindow = time.Hour
+
+// dedupEntry is one package's cooldown state: when its last alert was delivered
+// and how many occurrences have been swallowed since.
+type dedupEntry struct {
+	last       time.Time
+	suppressed int
+}
+
+// alertDedup is the cooldown gate for the ONE noisy fault class,
+// resource_unreadable (§7c). It is deliberately its own tiny structure with its
+// OWN mutex: alerter.mu carries the delicate "no enqueued alert is ever
+// stranded" invariant and must not take on a second duty.
+type alertDedup struct {
+	mu      sync.Mutex
+	entries map[string]*dedupEntry
+
+	// now is injectable so the window test needs no sleep. A nil now means
+	// time.Now, so a hand-built alerter (as in tests) still has a working gate.
+	now func() time.Time
+}
+
+// allow reports whether an alert for key may be delivered now and, when it may,
+// how many occurrences were suppressed since the previous delivery. The counter
+// is read AND reset at gate-pass time because delivery is asynchronous: a count
+// carried past the gate would be double-reported.
+func (d *alertDedup) allow(key string) (bool, int) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	now := time.Now()
+	if d.now != nil {
+		now = d.now()
+	}
+
+	e, ok := d.entries[key]
+	if !ok {
+		if d.entries == nil {
+			d.entries = make(map[string]*dedupEntry)
+		}
+		d.pruneLocked(now)
+		d.entries[key] = &dedupEntry{last: now}
+		return true, 0
+	}
+	if now.Sub(e.last) < alertCooldownWindow {
+		e.suppressed++
+		return false, 0
+	}
+	suppressed := e.suppressed
+	e.suppressed = 0
+	e.last = now
+	return true, suppressed
+}
+
+// pruneLocked drops entries that are neither muting a package RIGHT NOW nor
+// holding an unreported tally, so the map stays bounded by exactly those two
+// sets. An expired entry with suppressed == 0 would let its next alert through
+// anyway, so forgetting it changes no outcome; an expired entry with a nonzero
+// tally is KEPT, because deleting it would discard a mid-storm count that its
+// own next fault is about to report. It runs only on the miss path (first fault
+// of a package, or its first after an expiry), which is exactly when the map may
+// have grown stale. Caller must hold d.mu.
+func (d *alertDedup) pruneLocked(now time.Time) {
+	for k, e := range d.entries {
+		if e.suppressed == 0 && now.Sub(e.last) >= alertCooldownWindow {
+			delete(d.entries, k)
+		}
+	}
 }
 
 // alerter emails the admin list when the server returns a server-fault response
@@ -43,11 +122,26 @@ type alertPayload struct {
 // only when [server.smtp] is configured (Host set and To non-empty); otherwise
 // newAlerter returns nil and Notify is a no-op. A single worker goroutine
 // serializes deliveries so at most one SMTP connection is open at a time.
+//
+// Reporting invariant: every fault passes the gate, EXCEPT that
+// resource_unreadable passes at most once per package per alertCooldownWindow
+// (an empty package id fails open: it bypasses the gate rather than sharing an
+// anonymous bucket). The window arms at gate-pass, not at delivery: delivery is
+// asynchronous and best-effort, so a failed SMTP send does not reopen it.
+// Swallowed occurrences are tallied and reported with the next alert that passes
+// for that package; a tally with no next alert (storm over, or shutdown) is lost
+// by design. Nothing else is ever deduplicated - internal_error, including a
+// recovered panic, is an unknown fault and an alerting system must not drop it.
 type alerter struct {
 	from   string
 	to     []string
 	addr   string // host:port
 	logger *slog.Logger
+
+	// dedup is the resource_unreadable cooldown gate. It is a value (not a
+	// pointer) with lazy state so an alerter built field-by-field - as the tests
+	// do - always has a working gate.
+	dedup alertDedup
 
 	// send performs one delivery. It is a field so tests can substitute a fake;
 	// production uses smtpSend (a plain relay, no auth).
@@ -146,7 +240,14 @@ func (a *alerter) deliver(p alertPayload) {
 }
 
 // Notify enqueues an alert without blocking the caller (the request goroutine).
-// It is non-blocking, nil-safe (alerts disabled), and never drops a fault.
+// It is non-blocking, nil-safe (alerts disabled), and never drops a fault other
+// than a resource_unreadable repeat inside its package's cooldown window (see
+// the alerter reporting invariant for what the gate does and does not cover).
+//
+// The gate is consulted FIRST, entirely outside the mu critical section below
+// (see alertDedup for why it guards itself). A swallowed occurrence leaves an
+// admin_alert_suppressed log line, so the tally is observable before the next
+// alert reports it.
 //
 // The "observe not-stopped" and "enqueue" steps are taken together under mu, so
 // they are atomic w.r.t. Close flipping stopped (see the alerter.mu invariant).
@@ -160,6 +261,18 @@ func (a *alerter) deliver(p alertPayload) {
 func (a *alerter) Notify(p alertPayload) {
 	if a == nil {
 		return
+	}
+	if p.Code == CodeResourceUnreadable && p.PackageID != "" {
+		pass, suppressed := a.dedup.allow(p.PackageID)
+		if !pass {
+			a.logger.LogAttrs(context.Background(), slog.LevelInfo, "admin_alert_suppressed",
+				slog.String("request_id", p.RequestID),
+				slog.String("code", p.Code),
+				slog.String("package_id", p.PackageID),
+			)
+			return
+		}
+		p.Suppressed = suppressed
 	}
 	a.mu.Lock()
 	if a.stopped {
@@ -187,8 +300,10 @@ func (a *alerter) Notify(p alertPayload) {
 // closeOnce it first sets stopped=true under mu and THEN closes stop: setting the
 // flag before closing stop is what makes any concurrent Notify either enqueue
 // strictly before shutdown (and be drained by the worker) or, once it observes
-// stopped, deliver out-of-band - so no alert is ever lost (see the alerter.mu
-// invariant). It closes stop (NOT queue), so a Notify that races Close can never
+// stopped, deliver out-of-band - so no alert that passed the cooldown gate is
+// ever lost (see the alerter.mu invariant). Shutdown does not touch the gate:
+// its state simply dies with the process, and the first fault after a restart
+// alerts again. It closes stop (NOT queue), so a Notify that races Close can never
 // send on a closed channel. Safe to call on a nil *alerter and idempotent:
 // closeOnce guards the flag-set and close, and the bounded wait keeps shutdown
 // from blocking on a slow relay.
@@ -290,6 +405,11 @@ func (a *alerter) buildMessage(p alertPayload) string {
 	crlf("method:      " + method)
 	crlf("path:        " + path)
 	crlf("package_id:  " + packageID)
+	if p.Suppressed > 0 {
+		// Only resource_unreadable is ever gated, so this line appears only there.
+		// The value is an int, so it cannot carry CRLF.
+		crlf(fmt.Sprintf("suppressed:  %d further occurrences since last alert", p.Suppressed))
+	}
 	crlf("")
 	crlf("The full cause and stack trace are in the server logs, keyed by request_id.")
 	return b.String()

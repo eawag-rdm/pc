@@ -7,31 +7,6 @@ import (
 	"time"
 )
 
-// recordingAlerter returns a live alerter whose send records every delivered
-// payload to the returned channel instead of mailing it. The worker is started
-// with the fake send already wired (built directly, like newTestAlerter), so
-// there is no race with a default smtpSend assignment.
-func recordingAlerter(t *testing.T) (*alerter, <-chan alertPayload) {
-	t.Helper()
-	got := make(chan alertPayload, 8)
-	a := &alerter{
-		from:   "alerts@example.org",
-		to:     []string{"admin@example.org"},
-		addr:   "smtp.example.org:25",
-		logger: discardLogger(),
-		send: func(p alertPayload) error {
-			got <- p
-			return nil
-		},
-		queue: make(chan alertPayload, alertQueueSize),
-		stop:  make(chan struct{}),
-		done:  make(chan struct{}),
-	}
-	go a.worker()
-	t.Cleanup(a.Close)
-	return a, got
-}
-
 // expectOneAlert asserts exactly one alert arrives on got with the expected
 // code, and that no second alert follows within a short settle window.
 func expectOneAlert(t *testing.T, got <-chan alertPayload, wantCode string) {
@@ -79,7 +54,7 @@ func TestRenderError_AlertsOnlyOnServerFaults(t *testing.T) {
 	}
 	for _, tc := range alerts {
 		t.Run(tc.name, func(t *testing.T) {
-			a, got := recordingAlerter(t)
+			a, got := newRecordingAlerter(t, nil)
 
 			req := httptest.NewRequest("POST", "/api/v1/analyze", nil)
 			req = withRequestContext(req, "REQ-"+tc.code, DefaultContactMessage)
@@ -95,6 +70,43 @@ func TestRenderError_AlertsOnlyOnServerFaults(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestRenderError_CooldownGateSeesPackageID pins the ACTIVATION path of the
+// resource_unreadable cooldown: renderError keys the alert on getPackageID(r),
+// which answers only when the access-log middleware installed the package-id
+// holder and the handler wrote into it. Without that plumbing every payload
+// carries "" - which fails open past the gate - and the cooldown is silently a
+// no-op. Two faults for the same package must therefore yield exactly ONE alert,
+// carrying the package id.
+func TestRenderError_CooldownGateSeesPackageID(t *testing.T) {
+	now := time.Date(2026, 8, 10, 9, 0, 0, 0, time.UTC)
+	a, got := newRecordingAlerter(t, &now)
+
+	fault := func() {
+		req := httptest.NewRequest("POST", "/api/v1/analyze", nil)
+		req = withRequestContext(req, "REQ-COOLDOWN", DefaultContactMessage)
+		req = req.WithContext(withAlerter(req.Context(), a))
+		// Exactly what AccessLog installs and Analyze writes in production.
+		req = withPackageIDHolder(req)
+		setPackageID(req, "broken-pkg")
+		writeError(httptest.NewRecorder(), req, CodeResourceUnreadable)
+	}
+
+	fault()
+	now = now.Add(time.Minute)
+	fault()
+
+	select {
+	case p := <-got:
+		if p.PackageID != "broken-pkg" {
+			t.Errorf("alert PackageID = %q, want \"broken-pkg\" (the holder must reach renderError)", p.PackageID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected one resource_unreadable alert, got none")
+	}
+	// The second fault is inside the window: the gate must have swallowed it.
+	expectNoAlert(t, got)
 }
 
 // TestRenderError_NoAlerterIsNoOp asserts renderError does not panic and simply
@@ -119,7 +131,7 @@ func TestRenderError_NoAlerterIsNoOp(t *testing.T) {
 // onto the original request before writeError runs. Exactly-once matters: a
 // second direct Notify would double-send.
 func TestRecover_PanicFiresExactlyOneAlert(t *testing.T) {
-	a, got := recordingAlerter(t)
+	a, got := newRecordingAlerter(t, nil)
 
 	h := &Handler{logger: discardLogger(), contactMsg: DefaultContactMessage, alerter: a}
 

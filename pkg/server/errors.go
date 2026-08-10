@@ -53,7 +53,7 @@ var errorCatalogue = map[string]catalogueEntry{
 	CodeServiceBusy:        {http.StatusServiceUnavailable, "The analysis service is busy right now. Please try again in a minute. If this keeps happening, contact us."},
 	CodeServiceNotReady:    {http.StatusServiceUnavailable, "The service isn't ready yet (the data repository or storage is unavailable). Please try again shortly."},
 	CodeServerRestarting:   {http.StatusServiceUnavailable, "The service is restarting. Please try again in a moment."},
-	CodeCKANUnavailable:    {http.StatusBadGateway, "We can't reach the data repository right now. This is usually temporary - please try again shortly."},
+	CodeCKANUnavailable:    {http.StatusBadGateway, "The data repository is unavailable or returned an unusable response. This is usually temporary - please try again shortly."},
 	CodeMalformedResource:  {http.StatusUnprocessableEntity, "A resource in this dataset is malformed and can't be processed. Please check the dataset and try again."},
 	CodeAnalysisTimeout:    {http.StatusGatewayTimeout, "The analysis took too long and was stopped. Please try again; if it keeps happening, contact us."},
 	CodeResourceUnreadable: {http.StatusInternalServerError, "A file in this dataset couldn't be read from storage."},
@@ -148,7 +148,9 @@ func renderError(w http.ResponseWriter, r *http.Request, code string, messageOve
 	// responses ONLY (internal_error - including a recovered panic - and
 	// resource_unreadable). 4xx and the other 5xx codes (analysis_timeout,
 	// ckan_unavailable, service_busy, ...) are not server faults and never alert.
-	// Notify is non-blocking and nil-safe (a nil alerter = alerts disabled).
+	// Notify is non-blocking and nil-safe (a nil alerter = alerts disabled) and
+	// applies the resource_unreadable cooldown itself, so this gate stays a pure
+	// "is this a server fault?" test.
 	if code == CodeInternalError || code == CodeResourceUnreadable {
 		a := alerterFromContext(r.Context())
 		a.Notify(alertPayload{

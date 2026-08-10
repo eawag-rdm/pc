@@ -1,6 +1,9 @@
 package server
 
 import (
+	"bytes"
+	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
@@ -12,8 +15,11 @@ import (
 // newTestAlerter builds an alerter with the worker started but a caller-supplied
 // send already wired, so the fake send is in place BEFORE the worker can read it
 // (no race with newAlerter's default a.send = a.smtpSend assignment). It mirrors
-// the production struct exactly except for the send substitution.
-func newTestAlerter(t *testing.T, send func(alertPayload) error) *alerter {
+// the production struct exactly except for the send substitution. A non-nil
+// clock makes the cooldown gate read that variable instead of the wall clock, so
+// the window can be crossed without sleeping; it is installed before the worker
+// starts. Close is idempotent, so the cleanup is safe next to an explicit Close.
+func newTestAlerter(t *testing.T, send func(alertPayload) error, clock *time.Time) *alerter {
 	t.Helper()
 	a := &alerter{
 		from:   "alerts@example.org",
@@ -25,8 +31,24 @@ func newTestAlerter(t *testing.T, send func(alertPayload) error) *alerter {
 		stop:   make(chan struct{}),
 		done:   make(chan struct{}),
 	}
+	if clock != nil {
+		a.dedup.now = func() time.Time { return *clock }
+	}
 	go a.worker()
+	t.Cleanup(a.Close)
 	return a
+}
+
+// newRecordingAlerter is newTestAlerter with a send that records every delivered
+// payload to the returned channel instead of mailing it.
+func newRecordingAlerter(t *testing.T, clock *time.Time) (*alerter, <-chan alertPayload) {
+	t.Helper()
+	got := make(chan alertPayload, 8)
+	a := newTestAlerter(t, func(p alertPayload) error {
+		got <- p
+		return nil
+	}, clock)
+	return a, got
 }
 
 // TestNewAlerter_DisabledReturnsNil asserts admin alerts are disabled (nil
@@ -100,7 +122,7 @@ func TestAlerter_NotifyDeliversPayload(t *testing.T) {
 	a := newTestAlerter(t, func(p alertPayload) error {
 		got <- p
 		return nil
-	})
+	}, nil)
 
 	want := alertPayload{RequestID: "REQ-42", Method: "GET", Path: "/x", PackageID: "the-pkg", Code: CodeResourceUnreadable, Time: time.Now()}
 	a.Notify(want)
@@ -126,7 +148,7 @@ func TestAlerter_CloseDrainsAndIsIdempotent(t *testing.T) {
 		delivered++
 		done <- struct{}{}
 		return nil
-	})
+	}, nil)
 
 	a.Notify(alertPayload{RequestID: "REQ-A", Code: CodeInternalError})
 	a.Notify(alertPayload{RequestID: "REQ-B", Code: CodeInternalError})
@@ -175,7 +197,7 @@ func TestAlerter_NotifyAfterCloseNoPanic(t *testing.T) {
 		default:
 		}
 		return nil
-	})
+	}, nil)
 
 	// Close first; then Notify must not panic on the (now-stopped) worker.
 	a.Close()
@@ -194,6 +216,251 @@ func TestAlerter_NotifyAfterCloseNoPanic(t *testing.T) {
 	defer mu.Unlock()
 	if len(got) != 1 || got[0].RequestID != want.RequestID {
 		t.Errorf("out-of-band delivery mismatch: got %+v, want one %q", got, want.RequestID)
+	}
+}
+
+// TestAlerter_ResourceUnreadableCooldown pins the noise cap: a package whose
+// file is missing from storage faults on EVERY request, so the admin list must
+// hear about it once per window - and the next delivered alert must report how
+// many occurrences were swallowed meanwhile.
+func TestAlerter_ResourceUnreadableCooldown(t *testing.T) {
+	now := time.Date(2026, 8, 10, 9, 0, 0, 0, time.UTC)
+	a, got := newRecordingAlerter(t, &now)
+
+	unreadable := func(reqID string) alertPayload {
+		return alertPayload{RequestID: reqID, Method: "POST", Path: "/api/v1/analyze",
+			PackageID: "broken-pkg", Code: CodeResourceUnreadable, Time: now}
+	}
+
+	// First fault delivers immediately, with nothing suppressed yet.
+	a.Notify(unreadable("REQ-1"))
+	first := receiveAlert(t, got)
+	if first.RequestID != "REQ-1" {
+		t.Errorf("first delivery = %q, want REQ-1", first.RequestID)
+	}
+	if first.Suppressed != 0 {
+		t.Errorf("first delivery Suppressed = %d, want 0", first.Suppressed)
+	}
+
+	// Two more inside the window: both swallowed, nothing delivered.
+	now = now.Add(10 * time.Minute)
+	a.Notify(unreadable("REQ-2"))
+	now = now.Add(10 * time.Minute)
+	a.Notify(unreadable("REQ-3"))
+	expectNoAlert(t, got)
+
+	// Past the window the next fault delivers again and reports the tally.
+	now = now.Add(alertCooldownWindow)
+	a.Notify(unreadable("REQ-4"))
+	second := receiveAlert(t, got)
+	if second.RequestID != "REQ-4" {
+		t.Errorf("second delivery = %q, want REQ-4", second.RequestID)
+	}
+	if second.Suppressed != 2 {
+		t.Errorf("second delivery Suppressed = %d, want 2", second.Suppressed)
+	}
+
+	// The counter is read AND reset at gate-pass time: the delivery after the
+	// following window must not re-report the same two.
+	now = now.Add(alertCooldownWindow)
+	a.Notify(unreadable("REQ-5"))
+	third := receiveAlert(t, got)
+	if third.Suppressed != 0 {
+		t.Errorf("third delivery Suppressed = %d, want 0 (counter must reset)", third.Suppressed)
+	}
+}
+
+// TestAlerter_CooldownIsPerPackage asserts the window is keyed on the package,
+// so one noisy dataset can never mute a DIFFERENT dataset's first fault. An
+// empty package id fails open: it bypasses the gate entirely rather than forming
+// one shared anonymous bucket.
+func TestAlerter_CooldownIsPerPackage(t *testing.T) {
+	now := time.Date(2026, 8, 10, 9, 0, 0, 0, time.UTC)
+	a, got := newRecordingAlerter(t, &now)
+
+	for _, pkg := range []string{"pkg-a", "pkg-b", "", ""} {
+		a.Notify(alertPayload{RequestID: "REQ-" + pkg, PackageID: pkg,
+			Code: CodeResourceUnreadable, Time: now})
+	}
+
+	seen := map[string]int{}
+	for i := 0; i < 4; i++ {
+		seen[receiveAlert(t, got).PackageID]++
+	}
+	if seen["pkg-a"] != 1 || seen["pkg-b"] != 1 {
+		t.Errorf("expected one delivery per distinct package, got %v", seen)
+	}
+	if seen[""] != 2 {
+		t.Errorf("expected both empty-package faults delivered (no shared bucket), got %d", seen[""])
+	}
+	expectNoAlert(t, got)
+}
+
+// TestAlertDedup_PruneDropsExpiredEntries pins pruneLocked: window-expired
+// entries are removed on the next miss-path insert, while in-window entries -
+// and expired entries still holding an unreported tally - survive. Guards
+// against an edit that evicts live entries (silently disabling the cooldown),
+// stops evicting at all, or drops a mid-storm count.
+func TestAlertDedup_PruneDropsExpiredEntries(t *testing.T) {
+	now := time.Date(2026, 8, 10, 9, 0, 0, 0, time.UTC)
+	d := &alertDedup{now: func() time.Time { return now }}
+
+	if pass, _ := d.allow("pkg-old"); !pass {
+		t.Fatal("first pkg-old alert must pass")
+	}
+	// pkg-tally arms its window and then swallows one occurrence, so it carries
+	// a tally nobody has reported yet.
+	if pass, _ := d.allow("pkg-tally"); !pass {
+		t.Fatal("first pkg-tally alert must pass")
+	}
+	if pass, _ := d.allow("pkg-tally"); pass {
+		t.Fatal("second pkg-tally alert is inside the window and must be suppressed")
+	}
+	now = now.Add(30 * time.Minute)
+	if pass, _ := d.allow("pkg-live"); !pass {
+		t.Fatal("first pkg-live alert must pass")
+	}
+
+	// 61 minutes after pkg-old armed its window (expired), 31 after pkg-live
+	// (still open). The pkg-new miss triggers the prune.
+	now = now.Add(31 * time.Minute)
+	if pass, _ := d.allow("pkg-new"); !pass {
+		t.Fatal("first pkg-new alert must pass")
+	}
+
+	d.mu.Lock()
+	_, oldKept := d.entries["pkg-old"]
+	_, liveKept := d.entries["pkg-live"]
+	_, tallyKept := d.entries["pkg-tally"]
+	d.mu.Unlock()
+	if oldKept {
+		t.Error("expired pkg-old entry must be pruned on the miss-path insert")
+	}
+	if !liveKept {
+		t.Error("in-window pkg-live entry must survive pruning")
+	}
+	if !tallyKept {
+		t.Fatal("expired pkg-tally entry holds an unreported tally and must survive pruning")
+	}
+
+	if pass, _ := d.allow("pkg-live"); pass {
+		t.Error("pkg-live is inside its window and must still be suppressed")
+	}
+	if pass, _ := d.allow("pkg-old"); !pass {
+		t.Error("pkg-old expired (and was pruned); its next alert must pass")
+	}
+	// The surviving entry must still report the count it was holding.
+	pass, suppressed := d.allow("pkg-tally")
+	if !pass {
+		t.Fatal("pkg-tally expired; its next alert must pass")
+	}
+	if suppressed != 1 {
+		t.Errorf("pkg-tally reported Suppressed = %d, want 1 (the tally must survive the prune)", suppressed)
+	}
+}
+
+// TestAlerter_SuppressedNotifyLogsLine asserts a swallowed alert is not silent:
+// the gate leaves one admin_alert_suppressed record naming the request, the code
+// and the muted package, so a storm is visible in the logs long before the next
+// delivered alert reports its tally.
+func TestAlerter_SuppressedNotifyLogsLine(t *testing.T) {
+	now := time.Date(2026, 8, 10, 9, 0, 0, 0, time.UTC)
+	a, got := newRecordingAlerter(t, &now)
+
+	var buf bytes.Buffer
+	var mu sync.Mutex
+	// Swapped in before any Notify: the worker reads a.logger only after it
+	// dequeues, which cannot happen until the first Notify enqueues.
+	a.logger = slog.New(slog.NewJSONHandler(&syncWriter{w: &buf, mu: &mu}, nil))
+
+	unreadable := func(reqID string) alertPayload {
+		return alertPayload{RequestID: reqID, Method: "POST", Path: "/api/v1/analyze",
+			PackageID: "broken-pkg", Code: CodeResourceUnreadable, Time: now}
+	}
+	a.Notify(unreadable("REQ-FIRST"))
+	receiveAlert(t, got)
+	now = now.Add(time.Minute)
+	a.Notify(unreadable("REQ-SWALLOWED"))
+	expectNoAlert(t, got)
+
+	mu.Lock()
+	out := buf.String()
+	mu.Unlock()
+	for _, want := range []string{
+		`"msg":"admin_alert_suppressed"`,
+		`"request_id":"REQ-SWALLOWED"`,
+		`"code":"` + CodeResourceUnreadable + `"`,
+		`"package_id":"broken-pkg"`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("suppression log missing %s; got %s", want, out)
+		}
+	}
+}
+
+// TestAlerter_InternalErrorNeverSuppressed pins the hard rule: only
+// resource_unreadable is deduplicated. Repeated internal_error alerts for the
+// same package - each potentially a DIFFERENT unknown fault - must all be
+// delivered.
+func TestAlerter_InternalErrorNeverSuppressed(t *testing.T) {
+	now := time.Date(2026, 8, 10, 9, 0, 0, 0, time.UTC)
+	a, got := newRecordingAlerter(t, &now)
+
+	const n = 3
+	for i := 0; i < n; i++ {
+		a.Notify(alertPayload{RequestID: fmt.Sprintf("REQ-%d", i), PackageID: "same-pkg",
+			Code: CodeInternalError, Time: now})
+	}
+	for i := 0; i < n; i++ {
+		p := receiveAlert(t, got)
+		if p.Suppressed != 0 {
+			t.Errorf("internal_error must never carry a suppression count, got %d", p.Suppressed)
+		}
+	}
+	expectNoAlert(t, got)
+}
+
+// receiveAlert waits for the next delivered alert.
+func receiveAlert(t *testing.T, got <-chan alertPayload) alertPayload {
+	t.Helper()
+	select {
+	case p := <-got:
+		return p
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected an alert delivery, got none")
+		return alertPayload{}
+	}
+}
+
+// TestAlerter_BuildMessage_SuppressedLine asserts the suppression tally is
+// rendered as exactly one extra line, and only when there is something to
+// report (an alert with nothing suppressed must look exactly as before).
+func TestAlerter_BuildMessage_SuppressedLine(t *testing.T) {
+	a := &alerter{
+		from:   "alerts@example.org",
+		to:     []string{"admin@example.org"},
+		addr:   "smtp.example.org:25",
+		logger: discardLogger(),
+	}
+	base := alertPayload{
+		RequestID: "REQ-SUP", Method: "POST", Path: "/api/v1/analyze",
+		PackageID: "broken-pkg", Code: CodeResourceUnreadable,
+		Time: time.Date(2026, 8, 10, 9, 0, 0, 0, time.UTC),
+	}
+
+	none := a.buildMessage(base)
+	if strings.Contains(none, "suppressed") {
+		t.Errorf("no suppression line expected for Suppressed=0; got:\n%s", none)
+	}
+
+	base.Suppressed = 7
+	some := a.buildMessage(base)
+	if !strings.Contains(some, "suppressed:  7 further occurrences since last alert") {
+		t.Errorf("missing suppression line; got:\n%s", some)
+	}
+	if strings.Count(some, "\r\n") != strings.Count(none, "\r\n")+1 {
+		t.Errorf("suppression must add exactly one line: none=%d some=%d",
+			strings.Count(none, "\r\n"), strings.Count(some, "\r\n"))
 	}
 }
 

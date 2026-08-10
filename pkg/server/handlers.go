@@ -593,6 +593,10 @@ func countSkipped(messages []structs.Message) int {
 //     -> resource_unreadable;
 //   - a transport/connection failure or a transport-level HTTP 5xx ->
 //     ckan_unavailable (CKAN really is unreachable/erroring);
+//   - an unusable response body (malformed JSON, no "result" object, past the
+//     size cap) -> ckan_unavailable too: CKAN answered with something we cannot
+//     use, which is an upstream condition, not a server fault (no admin alert).
+//     The log keeps the two apart via the unusable_body class;
 //   - explicit 401 -> invalid_token, 403 -> access_denied;
 //   - 429 (CKAN throttling the server) -> ckan_unavailable: an upstream
 //     availability condition, not a server fault - no internal_error, no
@@ -619,6 +623,10 @@ func mapCKANError(err error) (code, msg string) {
 	var ckanErr *collectors.CKANError
 	if errors.As(err, &ckanErr) {
 		if ckanErr.Transport {
+			return CodeCKANUnavailable, ""
+		}
+		if ckanErr.Unusable {
+			// The Detail stays out of the envelope; it goes to the outcome log.
 			return CodeCKANUnavailable, ""
 		}
 		switch ckanErr.StatusCode {
@@ -650,8 +658,10 @@ func mapCKANError(err error) (code, msg string) {
 }
 
 // logCKANOutcome emits the CKAN-upstream-outcome slog event (spec §8): the HTTP
-// status (or the transport-error class) and the call latency, keyed by
-// request_id. It never logs the token or the package-id-carrying URL.
+// status (or the error class - "transport" for no response, "unusable_body" for
+// a response that arrived but cannot be used, "resource_unreadable",
+// "collector") and the call latency, keyed by request_id. It never logs the
+// token or the package-id-carrying URL.
 func (h *Handler) logCKANOutcome(ctx context.Context, packageID string, err error, latency time.Duration) {
 	attrs := []slog.Attr{
 		slog.String("request_id", GetRequestIDFromContext(ctx)),
@@ -666,9 +676,18 @@ func (h *Handler) logCKANOutcome(ctx context.Context, packageID string, err erro
 	default:
 		var ckanErr *collectors.CKANError
 		if errors.As(err, &ckanErr) {
-			if ckanErr.Transport {
+			switch {
+			case ckanErr.Transport:
 				attrs = append(attrs, slog.String("transport_error_class", "transport"))
-			} else {
+			case ckanErr.Unusable:
+				// Distinct from "transport": CKAN was reachable and answered, but
+				// the answer was garbage. Ops must be able to tell the two apart.
+				// The Detail is a fixed, non-secret string chosen by the collector.
+				attrs = append(attrs,
+					slog.String("transport_error_class", "unusable_body"),
+					slog.String("ckan_error_detail", ckanErr.Detail),
+				)
+			default:
 				attrs = append(attrs, slog.Int("ckan_status", ckanErr.StatusCode))
 			}
 		} else {

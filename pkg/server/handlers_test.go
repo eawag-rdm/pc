@@ -1136,6 +1136,81 @@ func TestHandler_Analyze_TransportError(t *testing.T) {
 	}
 }
 
+// TestHandler_Analyze_UnusableCKANBody asserts a CKAN 200 whose body cannot be
+// used (malformed JSON, or valid JSON with no "result" object) is treated as an
+// UPSTREAM condition, not a server fault: 502 ckan_unavailable, no admin alert,
+// and a ckan_upstream_outcome log line whose class is unusable_body - distinct
+// from the "transport" class, so ops can tell "CKAN is down" from "CKAN is
+// speaking garbage". Before F7 this path produced internal_error (500) and
+// mailed the admin list.
+func TestHandler_Analyze_UnusableCKANBody(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		// wantDetail is the collector's fixed, non-secret diagnostic. It is
+		// spelled out here because it belongs to the log contract (ops dashboards
+		// read it), not just to an internal constant in pkg/collectors.
+		wantDetail string
+	}{
+		{"malformed JSON", `{"success":true,"result":{`, "malformed JSON in package_show response"},
+		{"no result object", `{"success":true}`, "package_show response has no 'result' object"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ckan := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				io.WriteString(w, tt.body)
+			}))
+			defer ckan.Close()
+
+			var buf bytes.Buffer
+			var mu sync.Mutex
+			logger := slog.New(slog.NewJSONHandler(&syncWriter{w: &buf, mu: &mu}, nil))
+			handler := NewHandler(ckanPCConfig(ckan.URL), Config{}, logger)
+
+			a, alerts := newRecordingAlerter(t, nil)
+
+			body := bytes.NewBufferString(`{"package_id":"garbage-pkg"}`)
+			req := httptest.NewRequest("POST", "/api/v1/analyze", body)
+			req = withRequestContext(req, "REQ-UNUSABLE", DefaultContactMessage)
+			req = req.WithContext(withAlerter(req.Context(), a))
+			req = req.WithContext(context.WithValue(req.Context(), CKANTokenKey, "tok"))
+			rr := httptest.NewRecorder()
+			handler.Analyze(rr, req)
+
+			if rr.Code != http.StatusBadGateway {
+				t.Errorf("expected 502, got %d (body: %s)", rr.Code, rr.Body.String())
+			}
+			envelope := rr.Body.String() // captured before decodeEnvelope consumes it
+			resp := decodeEnvelope(t, rr)
+			if resp.Error.Code != CodeCKANUnavailable {
+				t.Errorf("expected code %q, got %q", CodeCKANUnavailable, resp.Error.Code)
+			}
+			// The diagnostic is for ops, not for the client: it must stay out of
+			// the envelope, which carries the fixed catalogue message.
+			if strings.Contains(envelope, tt.wantDetail) {
+				t.Errorf("envelope leaked the CKAN error detail %q; got %s", tt.wantDetail, envelope)
+			}
+
+			mu.Lock()
+			out := buf.String()
+			mu.Unlock()
+			if !strings.Contains(out, `"transport_error_class":"unusable_body"`) {
+				t.Errorf("expected the unusable_body log class in the CKAN outcome record; got %s", out)
+			}
+			if strings.Contains(out, `"transport_error_class":"transport"`) {
+				t.Errorf("an unusable body must not be logged as a transport failure; got %s", out)
+			}
+			if !strings.Contains(out, `"ckan_error_detail":"`+tt.wantDetail+`"`) {
+				t.Errorf("expected ckan_error_detail %q in the CKAN outcome record; got %s", tt.wantDetail, out)
+			}
+
+			// An upstream condition is not a server fault: no admin mail.
+			expectNoAlert(t, alerts)
+		})
+	}
+}
+
 // TestHandler_Analyze_MissingUpload_ResourceUnreadable asserts a url_type=
 // "upload" resource whose backing file is absent on disk maps to
 // resource_unreadable (500), not a panic or silent skip (§5).

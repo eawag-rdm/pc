@@ -352,7 +352,7 @@ Every failure uses one envelope:
 | 405 | `method_not_allowed` | Endpoint exists but not for this HTTP method (with `Allow` header) |
 | 422 | `malformed_resource` | A resource is malformed - missing both `url_type` and `url`, or an upload missing `name`/`url`/`size`. The message names the exact resource + package. |
 | 429 | `rate_limited` | Hourly request budget exceeded (with `Retry-After`); responses served from the result cache are refunded and count against a budget `cachedRequestLimitFactor`× larger |
-| 502 | `ckan_unavailable` | CKAN unreachable or unusable: transport failure, transport-level 5xx, CKAN throttling (429), oversized/truncated response, or no answer within `ckanRequestTimeoutSeconds` |
+| 502 | `ckan_unavailable` | CKAN unreachable or unusable: transport failure, transport-level 5xx, CKAN throttling (429), oversized/truncated/malformed response (bad JSON or no `result` object), or no answer within `ckanRequestTimeoutSeconds` |
 | 503 | `service_busy` | Concurrency limit reached (no queueing) |
 | 503 | `service_not_ready` | CKAN or storage mount unavailable (`/ready`) |
 | 503 | `server_restarting` | Server is draining during a graceful shutdown |

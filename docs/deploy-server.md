@@ -171,6 +171,16 @@ Notes:
 - The access log emits **one record per request** with `request_id`, method,
   path, `package_id`, status and `latency_ms`.
 - The token / `Authorization` header is **never** logged.
+- The `ckan_upstream_outcome` record carries either `ckan_status` (CKAN
+  answered with a usable body) or `transport_error_class`: `transport` (no
+  response at all), `unusable_body` (a response arrived but cannot be used -
+  malformed JSON, no `result` object, or past the size cap),
+  `resource_unreadable`, or `collector`. For `unusable_body` an extra
+  `ckan_error_detail` field names which of the three it was (a fixed string; it
+  never carries body content, a URL or the token).
+- **Dashboard change:** the oversized-response case used to be logged as class
+  `transport` and is now `unusable_body` - update any query keyed on the old
+  value.
 - `client_ip` is logged only when `logClientIP = true` (it is personal data
   under the Swiss revFADP; documented purpose is abuse/security, and retention
   is bounded by the Docker log driver settings above).
@@ -245,10 +255,20 @@ accepts mail from the container's network.
 - **Which responses trigger mail:** only `internal_error` (including a recovered
   panic) and `resource_unreadable`. 4xx responses and the other 5xx codes
   (`analysis_timeout`, `ckan_unavailable`, `service_busy`, `service_not_ready`,
-  `server_restarting`) are **not** server faults and never alert. **Every** such
-  fault is reported - there is no rate cap or dedup.
+  `server_restarting`) are **not** server faults and never alert. Every
+  `internal_error` is reported - no rate cap, no dedup. `resource_unreadable`
+  is reported **at most once per package per hour**: a broken file in storage
+  faults on every retry of the same package, so repeats inside the window are
+  swallowed and tallied; the next alert for that package carries a
+  `suppressed: N further occurrences since last alert` line.
+- **Limits of the cooldown:** each swallowed occurrence still leaves an
+  `admin_alert_suppressed` log line, so a storm is visible in the logs; a tally
+  that never gets a follow-up alert (the fault stops, or the server shuts down)
+  is lost; and the window lives in memory only, so after a restart the first
+  fault for a package alerts again.
 - **The mail carries no secrets.** It contains only the `request_id`, the error
-  `code`, and the request `method`, `path` and `package_id` - never the token,
+  `code`, the request `method`, `path` and `package_id`, and (for
+  `resource_unreadable`) the suppressed-occurrence count - never the token,
   CKAN URL, raw upstream body, internal file paths or a stack trace. The full
   cause and stack stay in the server logs, keyed by the same `request_id`.
 

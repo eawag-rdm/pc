@@ -22,7 +22,7 @@ import (
 // maxCKANResponseBytes caps how much of a CKAN package_show response is read.
 // Package metadata for even very large packages is a few MB of JSON; the cap
 // only guards against a misbehaving/compromised upstream streaming unbounded
-// data into memory. A response exceeding it is treated as a transport failure
+// data into memory. A response exceeding it is treated as an unusable response
 // (mapped to ckan_unavailable), like any other unusable reply. It is a var
 // (not a const) so tests can lower it without allocating the full default.
 var maxCKANResponseBytes int64 = 50 << 20 // 50 MiB
@@ -52,22 +52,49 @@ func (e *MalformedResourceError) Error() string { return e.Msg }
 // WITHOUT re-fetching. It distinguishes:
 //   - a transport/connection failure (Transport == true, StatusCode == 0) →
 //     mapped to ckan_unavailable;
+//   - a response that DID arrive but is unusable - malformed JSON, no "result"
+//     object, or a body past the size cap (Unusable == true) → also
+//     ckan_unavailable, but a distinct upstream condition: CKAN is reachable and
+//     speaking garbage, which is not the same fault as CKAN being down;
 //   - an HTTP status (StatusCode set), including a CKAN Action API body that
 //     reports success:false even on HTTP 200 (StatusFromBody == true) →
 //     mapped by status (404 → package_not_found, 401 → invalid_token,
 //     403 → access_denied, 5xx → ckan_unavailable).
 //
 // The error message is deliberately non-secret: it never embeds the token or
-// the package-id-carrying URL, only the status code.
+// the package-id-carrying URL, only the status code and (for Unusable) a static
+// Detail string chosen from the unusableDetail* constants below.
+//
+// The discriminators are checked in the fixed order Transport > Unusable >
+// StatusCode (here in Error() and in the server's mapping/logging switches);
+// no constructor sets more than one of them.
 type CKANError struct {
 	StatusCode     int  // HTTP status; for a success:false body this is the effective status (e.g. 404)
 	Transport      bool // true for a transport/connection error (no HTTP response)
 	StatusFromBody bool // true when StatusCode was derived from a success:false body, not the HTTP status
+	Unusable       bool // true when a response arrived but is not usable (malformed JSON, no result, oversized)
+	// Detail is a safe, static diagnostic for the Unusable case, surfaced by
+	// Error() so the CLI (which has no server log to fall back on) still says
+	// WHAT was wrong with the response. It never carries a URL, a token or any
+	// upstream body content.
+	Detail string
 }
 
+// unusableDetail* is the closed set of CKANError.Detail values. Keeping them
+// as named constants makes the "static, nothing interpolated" guarantee
+// enumerable: a new unusable case must add a constant here, not a format call.
+const (
+	unusableDetailOversized     = "package_show response exceeded the size limit"
+	unusableDetailMalformedJSON = "malformed JSON in package_show response"
+	unusableDetailNoResult      = "package_show response has no 'result' object"
+)
+
 func (e *CKANError) Error() string {
-	if e.Transport {
+	switch {
+	case e.Transport:
 		return "ckan request failed: transport error"
+	case e.Unusable:
+		return "ckan response was unusable: " + e.Detail
 	}
 	return fmt.Sprintf("ckan request failed with status %d", e.StatusCode)
 }
@@ -173,8 +200,10 @@ func Request(ctx context.Context, url, ckanToken string, verifyTLS bool) (string
 		return "", &CKANError{Transport: true}
 	}
 	if int64(len(bodyBytes)) > maxCKANResponseBytes {
+		// A response DID arrive - it is simply too big to use. That is an unusable
+		// body, not a transport failure (nothing failed at the socket level).
 		output.GlobalLogger.Warning("CKAN response exceeded the %d byte limit and was rejected", maxCKANResponseBytes)
-		return "", &CKANError{Transport: true}
+		return "", &CKANError{Unusable: true, Detail: unusableDetailOversized}
 	}
 
 	// HTTP 200 may still carry a CKAN Action API failure (success:false). Parse
@@ -459,13 +488,21 @@ func CkanPackageShow(ctx context.Context, package_id string, config config.Confi
 	if err != nil {
 		return nil, err
 	}
+	// A 200 whose body is not the document we asked for is an UPSTREAM condition,
+	// not a fault of ours: CKAN answered, but with something unusable. Never wrap
+	// the parse error (it can quote the body) - the Detail is a fixed string.
 	jsonMap, err := JSONToMap(jsonStr)
 	if err != nil {
-		return nil, fmt.Errorf("could not parse CKAN response as JSON: %w", err)
+		// Log what the parser objected to (an offset/single char, never body
+		// content) so the discarded cause is not lost; the returned Detail is
+		// the fixed string.
+		output.GlobalLogger.Warning("CKAN package_show response could not be parsed as JSON: %v", err)
+		return nil, &CKANError{Unusable: true, Detail: unusableDetailMalformedJSON}
 	}
 	result, ok := jsonMap["result"].(map[string]interface{})
 	if !ok {
-		return nil, fmt.Errorf("ckan response has no 'result' object")
+		output.GlobalLogger.Warning("CKAN package_show response has no 'result' object")
+		return nil, &CKANError{Unusable: true, Detail: unusableDetailNoResult}
 	}
 	return result, nil
 }

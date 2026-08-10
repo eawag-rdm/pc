@@ -776,8 +776,10 @@ func TestRequestBodyReadFailure(t *testing.T) {
 }
 
 // TestRequestOversizedBody asserts that a response body exceeding
-// maxCKANResponseBytes is rejected as a transport *CKANError instead of being
-// read into memory unbounded.
+// maxCKANResponseBytes is rejected as an UNUSABLE *CKANError instead of being
+// read into memory unbounded. It is deliberately not a transport error: a
+// response did arrive (nothing failed at the socket level), it is simply
+// unusable - the server maps both to ckan_unavailable but logs them apart.
 func TestRequestOversizedBody(t *testing.T) {
 	saved := maxCKANResponseBytes
 	maxCKANResponseBytes = 1024
@@ -791,17 +793,91 @@ func TestRequestOversizedBody(t *testing.T) {
 
 	_, err := Request(context.Background(), srv.URL+"/api/3/action/package_show?id=secret-pkg", "secret-token", false)
 	if err == nil {
-		t.Fatalf("expected a transport error, got nil")
+		t.Fatalf("expected an error, got nil")
 	}
 	var ckanErr *CKANError
 	if !errors.As(err, &ckanErr) {
 		t.Fatalf("expected *CKANError, got %T (%v)", err, err)
 	}
-	if !ckanErr.Transport {
-		t.Errorf("expected Transport=true, got %+v", ckanErr)
+	if !ckanErr.Unusable {
+		t.Errorf("expected Unusable=true, got %+v", ckanErr)
+	}
+	if ckanErr.Transport {
+		t.Errorf("an oversized body is not a transport failure, got %+v", ckanErr)
+	}
+	if ckanErr.Detail == "" {
+		t.Error("expected a Detail diagnostic for the CLI, got none")
+	}
+	if !strings.Contains(err.Error(), ckanErr.Detail) {
+		t.Errorf("Error() must carry the Detail; got %q, want it to contain %q", err.Error(), ckanErr.Detail)
 	}
 	if strings.Contains(err.Error(), "secret-token") || strings.Contains(err.Error(), "secret-pkg") {
-		t.Errorf("transport CKANError leaked a secret/URL: %q", err.Error())
+		t.Errorf("unusable CKANError leaked a secret/URL: %q", err.Error())
+	}
+}
+
+// TestCkanPackageShowUnusableBody asserts a CKAN 200 whose body cannot be used -
+// malformed JSON, or valid JSON with no "result" object - surfaces a structured
+// *CKANError{Unusable:true} rather than a bare fmt.Errorf. This is what lets the
+// server classify it as an upstream condition (ckan_unavailable, no admin
+// alert). Error() must carry the safe Detail (the CLI prints it and has no
+// server log to fall back on) and must leak neither the token nor the URL.
+func TestCkanPackageShowUnusableBody(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       string
+		wantDetail string
+	}{
+		{"malformed JSON", `{"success":true,"result":{`, "malformed JSON in package_show response"},
+		{"no result object", `{"success":true}`, "package_show response has no 'result' object"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				io.WriteString(w, tt.body)
+			}))
+			defer srv.Close()
+
+			cfg := config.Config{
+				Collectors: map[string]*config.CollectorConfig{
+					"CkanCollector": {Attrs: map[string]interface{}{
+						"url":               srv.URL,
+						"token":             "secret-token",
+						"verify":            false,
+						"ckan_storage_path": "",
+					}},
+				},
+			}
+
+			_, err := CkanPackageShow(context.Background(), "secret-pkg", cfg)
+			if err == nil {
+				t.Fatalf("expected an error for an unusable body, got nil")
+			}
+			var ckanErr *CKANError
+			if !errors.As(err, &ckanErr) {
+				t.Fatalf("expected *CKANError, got %T (%v)", err, err)
+			}
+			if !ckanErr.Unusable {
+				t.Errorf("expected Unusable=true, got %+v", ckanErr)
+			}
+			if ckanErr.Transport {
+				t.Errorf("an unusable body is not a transport failure, got %+v", ckanErr)
+			}
+			if ckanErr.StatusCode != 0 {
+				t.Errorf("expected no status code on an unusable body, got %d", ckanErr.StatusCode)
+			}
+			if ckanErr.Detail != tt.wantDetail {
+				t.Errorf("Detail = %q, want %q", ckanErr.Detail, tt.wantDetail)
+			}
+			if !strings.Contains(err.Error(), tt.wantDetail) {
+				t.Errorf("Error() = %q, want it to carry the detail %q", err.Error(), tt.wantDetail)
+			}
+			if strings.Contains(err.Error(), "secret-token") || strings.Contains(err.Error(), "secret-pkg") ||
+				strings.Contains(err.Error(), srv.URL) {
+				t.Errorf("unusable CKANError leaked a secret/URL: %q", err.Error())
+			}
+		})
 	}
 }
 
