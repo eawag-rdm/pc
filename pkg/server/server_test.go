@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -136,6 +137,23 @@ func TestNew_MissingChecksConfig_FailsAtBoot(t *testing.T) {
 	}
 }
 
+// newTestServerConfigWithRequestTimeout builds a server Config whose pc.toml
+// sets [server] requestTimeoutSeconds, for tests that pin timeout arithmetic.
+func newTestServerConfigWithRequestTimeout(t *testing.T, seconds int) Config {
+	t.Helper()
+	path := t.TempDir() + "/pc.toml"
+	contents := "" +
+		"[server]\n" +
+		fmt.Sprintf("requestTimeoutSeconds = %d\n", seconds) +
+		testChecksTOML +
+		"[collector.CkanCollector]\n" +
+		"attrs = {url = \"http://127.0.0.1:1\", token = \"\", verify = false, ckan_storage_path = \"" + t.TempDir() + "\"}\n"
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	return Config{Address: "127.0.0.1:0", ConfigPath: path}
+}
+
 // TestNew_WriteTimeout_ExceedsRequestTimeout asserts that the constructed
 // http.Server's WriteTimeout is derived from the configured
 // requestTimeoutSeconds and is strictly LONGER than it (by writeTimeoutMargin).
@@ -144,19 +162,7 @@ func TestNew_MissingChecksConfig_FailsAtBoot(t *testing.T) {
 // analysis_timeout (504) envelope and the client would see a dropped connection.
 func TestNew_WriteTimeout_ExceedsRequestTimeout(t *testing.T) {
 	const requestTimeoutSeconds = 600 // raised above the old hardcoded 300s
-	dir := t.TempDir()
-	path := dir + "/pc.toml"
-	contents := "" +
-		"[server]\n" +
-		"requestTimeoutSeconds = 600\n" +
-		testChecksTOML +
-		"[collector.CkanCollector]\n" +
-		"attrs = {url = \"http://127.0.0.1:1\", token = \"\", verify = false, ckan_storage_path = \"" + t.TempDir() + "\"}\n"
-	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-
-	srv, err := New(Config{Address: "127.0.0.1:0", ConfigPath: path})
+	srv, err := New(newTestServerConfigWithRequestTimeout(t, requestTimeoutSeconds))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -183,6 +189,35 @@ func TestNew_WriteTimeout_DefaultRequestTimeout(t *testing.T) {
 	if want := defaultRequestTimeout + writeTimeoutMargin; srv.httpServer.WriteTimeout != want {
 		t.Errorf("WriteTimeout = %s, want default+margin = %s", srv.httpServer.WriteTimeout, want)
 	}
+}
+
+// TestServer_DrainTimeout asserts that the shutdown drain bound tracks the
+// configured request timeout (plus writeTimeoutMargin) instead of a hardcoded
+// constant: with the default it is 330s, and raising requestTimeoutSeconds
+// raises the drain with it. A fixed drain would cut a long analysis short.
+func TestServer_DrainTimeout(t *testing.T) {
+	t.Run("default", func(t *testing.T) {
+		cfg := newTestServerConfig(t, "127.0.0.1:0", "http://127.0.0.1:1", t.TempDir())
+		srv, err := New(cfg)
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		if got, want := srv.DrainTimeout(), 330*time.Second; got != want {
+			t.Errorf("DrainTimeout = %s, want %s", got, want)
+		}
+	})
+
+	t.Run("custom request timeout", func(t *testing.T) {
+		srv, err := New(newTestServerConfigWithRequestTimeout(t, 600))
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		// 630s pinned literally: re-deriving from writeTimeoutMargin would let
+		// an edited margin pass unnoticed.
+		if got, want := srv.DrainTimeout(), 630*time.Second; got != want {
+			t.Errorf("DrainTimeout = %s, want requestTimeout+margin = %s", got, want)
+		}
+	})
 }
 
 // TestServer_BindFailure_ReturnsError asserts that ListenAndServe returns a

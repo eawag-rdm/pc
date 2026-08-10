@@ -105,7 +105,7 @@ committed compose does), or use `"8080:8080"` to expose it directly.
 storage share at the path that **equals** `[collector.CkanCollector.attrs]
 ckan_storage_path` in `pc.toml`. The committed compose also sets
 `restart: unless-stopped`, the `/health` healthcheck (§2), the log rotation
-(§4) and `stop_grace_period: 330s` (§7).
+(§4) and `stop_grace_period: 340s` (§7).
 
 **Secret scanner (betterleaks).** *Dormant since 2026-08-04: the scan ships
 disabled (`enabled = false`) because it is too slow for our latency target;
@@ -201,7 +201,7 @@ location / {
     proxy_set_header X-Real-IP $remote_addr;            # the limiter key source
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto $scheme;
-    proxy_read_timeout 300s;                            # ≥ requestTimeoutSeconds
+    proxy_read_timeout 330s;                            # ≥ requestTimeoutSeconds + 30s
 }
 ```
 
@@ -265,14 +265,18 @@ On `SIGTERM` / `SIGINT` the server:
 1. flips into **draining** mode - new `POST /api/v1/analyze` requests are
    rejected with `503 server_restarting`;
 2. stops accepting new connections and **waits for in-flight analyses to
-   finish**, bounded by a drain timeout that is larger than
-   `requestTimeoutSeconds` (so a running analysis can complete);
+   finish**, bounded by a drain timeout of `requestTimeoutSeconds + 30s`
+   (**330s** at the default 300s), so a running analysis can hit its own
+   deadline and still flush its `504` envelope;
 3. exits.
 
 `/health` and `/ready` continue to answer during the drain. Make sure your
-orchestrator's stop grace period is at least as long as `requestTimeoutSeconds`
-(default 300s) plus a small margin, e.g. `docker stop --time 330`, so analyses
-are not killed mid-flight.
+orchestrator's stop grace period is longer than that drain timeout, e.g.
+`docker stop --time 340` (the committed compose sets
+`stop_grace_period: 340s`), so analyses are not killed mid-flight. Raise both
+together whenever you raise `requestTimeoutSeconds`. The drain is best-effort:
+an analysis that ignores its deadline is still cut off by the orchestrator's
+`SIGKILL` backstop.
 
 If the listen address cannot be bound at startup (port in use, bad address),
 the process **exits non-zero immediately** rather than hanging.

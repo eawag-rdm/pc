@@ -18,7 +18,16 @@ import (
 // fully flush its own analysis_timeout (504) envelope AFTER the analysis context
 // deadline fires but BEFORE the socket's write deadline tears the connection
 // down - so the client receives the clean 504 instead of a dropped connection.
+// The shutdown drain bound (DrainTimeout) deliberately uses the same margin via
+// paddedRequestTimeout: retune it here and both move together.
 const writeTimeoutMargin = 30 * time.Second
+
+// paddedRequestTimeout is the single source of the "request timeout + flush
+// margin" arithmetic shared by the socket WriteTimeout and DrainTimeout, so the
+// drain-covers-WriteTimeout invariant cannot drift apart by edit.
+func paddedRequestTimeout(cfg *config.Config) time.Duration {
+	return configuredRequestTimeout(cfg) + writeTimeoutMargin
+}
 
 // Server wraps the HTTP server with PC functionality
 type Server struct {
@@ -153,7 +162,7 @@ func New(cfg Config) (*Server, error) {
 	// strictly longer so that 504 can be fully written before the socket deadline
 	// tears the connection down. A hardcoded value would break this invariant once
 	// an operator raises requestTimeoutSeconds above it.
-	writeTimeout := configuredRequestTimeout(pcConfig) + writeTimeoutMargin
+	writeTimeout := paddedRequestTimeout(pcConfig)
 
 	return &Server{
 		httpServer: &http.Server{
@@ -169,6 +178,15 @@ func New(cfg Config) (*Server, error) {
 		serverCfg: cfg,
 		handler:   handler,
 	}, nil
+}
+
+// DrainTimeout returns the bound the Shutdown context should use: the SAME
+// configured request timeout the handler and the socket WriteTimeout are built
+// from, plus the flush margin, so an analysis that observes its deadline can
+// still flush its 504 envelope before the drain gives up. A hardcoded value
+// would silently under-drain once an operator raises requestTimeoutSeconds.
+func (s *Server) DrainTimeout() time.Duration {
+	return paddedRequestTimeout(s.pcConfig)
 }
 
 // ListenAndServe starts the HTTP server

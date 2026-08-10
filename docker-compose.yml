@@ -76,9 +76,8 @@ services:
       retries: 3
       start_period: 5s
 
-    # The server traps SIGTERM and drains in-flight analyses (up to ~330s). Give
-    # Docker time to let a running analysis finish on stop/restart.
-    stop_grace_period: 60s
+    # drain (requestTimeoutSeconds + 30s) + 10s slack; raise together. Best-effort - SIGKILL is the backstop.
+    stop_grace_period: 340s
 
     # Logs are JSON on stdout; Docker handles rotation (spec §8).
     logging:

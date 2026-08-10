@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"github.com/eawag-rdm/pc/pkg/config"
 	"github.com/eawag-rdm/pc/pkg/server"
@@ -53,8 +52,10 @@ func main() {
 
 	// Set up graceful shutdown (§9). A SIGINT/SIGTERM triggers Shutdown, which
 	// flips the draining flag (new requests get server_restarting) and drains
-	// in-flight analyses. The drain timeout is generously larger than the
-	// analysis request timeout so a running analysis can finish.
+	// in-flight analyses. srv.DrainTimeout() is derived from the configured
+	// request timeout, so the drain outlasts any analysis that observes its
+	// deadline (cancellation is polled between files/checks; the orchestrator's
+	// SIGKILL remains the backstop).
 	shutdownComplete := make(chan struct{})
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
@@ -63,7 +64,7 @@ func main() {
 		<-quit
 		log.Println("Server is shutting down...")
 
-		ctx, cancel := context.WithTimeout(context.Background(), shutdownDrainTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), srv.DrainTimeout())
 		defer cancel()
 
 		if err := srv.Shutdown(ctx); err != nil {
@@ -86,12 +87,6 @@ func main() {
 	<-shutdownComplete
 	log.Println("Server stopped")
 }
-
-// shutdownDrainTimeout bounds how long graceful shutdown waits for in-flight
-// analyses to finish. It is intentionally larger than the default analysis
-// request timeout (300s, spec §2) so a running analysis can complete during a
-// restart.
-const shutdownDrainTimeout = 330 * time.Second
 
 func printUsage() {
 	log.Println("PC Server - REST API for Package Checker")
