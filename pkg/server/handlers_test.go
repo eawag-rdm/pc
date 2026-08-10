@@ -750,6 +750,72 @@ func TestHandler_Analyze_ResultCache(t *testing.T) {
 	}
 }
 
+// TestHandler_Analyze_CancelledChecks_NotCached pins the cache-poisoning guard
+// itself: once the request context has fired, runAnalysis must not write a cache
+// entry - otherwise a result the handler rejects as 503/504 would be served to
+// every later request until CKAN bumps metadata_modified. The handler's
+// afterChecks seam fires the context right after the checks phase, making the
+// cancellation deterministic (no sleeps). Real truncation is NOT exercised here:
+// the fixture has zero resources, so nothing is cut short - only the guard is.
+func TestHandler_Analyze_CancelledChecks_NotCached(t *testing.T) {
+	ckan := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"success":true,"result":{"name":"cancel-cache-pkg","metadata_modified":"2026-07-28T10:00:00.000000","resources":[]}}`)
+	}))
+	defer ckan.Close()
+
+	handler := NewHandler(ckanPCConfig(ckan.URL), Config{}, discardLogger())
+	cache, err := newResultCache(t.TempDir(), "test-fp", 10, 0)
+	if err != nil {
+		t.Fatalf("newResultCache: %v", err)
+	}
+	handler.cache = cache
+
+	body := bytes.NewBufferString(`{"package_id":"cancel-cache-pkg"}`)
+	req := httptest.NewRequest("POST", "/api/v1/analyze", body)
+	req = withRequestContext(req, "REQ-CANCEL-CACHE", DefaultContactMessage)
+	req = req.WithContext(context.WithValue(req.Context(), CKANTokenKey, "tok"))
+	ctx, cancel := context.WithCancel(req.Context())
+	defer cancel()
+	req = req.WithContext(ctx)
+
+	// The CKAN fetch succeeds; the context dies only once the checks are done.
+	handler.afterChecks = cancel
+
+	rr := httptest.NewRecorder()
+	handler.Analyze(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 on cancellation during checks, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+	if resp := decodeEnvelope(t, rr); resp.Error.Code != CodeServiceBusy {
+		t.Errorf("expected %q, got %q", CodeServiceBusy, resp.Error.Code)
+	}
+
+	if _, ok := cache.get("cancel-cache-pkg", "2026-07-28T10:00:00.000000"); ok {
+		t.Error("cancelled analysis must not write a cache entry")
+	}
+
+	// A later request for the same (unchanged) package must re-analyse, not be
+	// served the rejected body. Fresh handler over the same cache, so each
+	// handler's seam is set once and never mutated.
+	handler2 := NewHandler(ckanPCConfig(ckan.URL), Config{}, discardLogger())
+	handler2.cache = cache
+	rr2 := analyzeWithToken(handler2, "cancel-cache-pkg", "tok")
+	if rr2.Code != http.StatusOK {
+		t.Fatalf("second: expected 200, got %d (body: %s)", rr2.Code, rr2.Body.String())
+	}
+	if got := rr2.Header().Get("X-PC-Cache"); got != "miss" {
+		t.Errorf("second: X-PC-Cache = %q, want miss", got)
+	}
+
+	// Positive control: this fixture IS cacheable - the uncancelled run stored an
+	// entry, so the no-entry assertion after the cancelled run was not vacuous.
+	if _, ok := cache.get("cancel-cache-pkg", "2026-07-28T10:00:00.000000"); !ok {
+		t.Error("expected a cache entry after the successful analysis")
+	}
+}
+
 // TestHandler_Analyze_TokenForwarding pins the server's CKAN auth contract
 // (spec §2): a request Bearer token is forwarded to CKAN verbatim; a request
 // WITHOUT a token produces an anonymous upstream call (no Authorization

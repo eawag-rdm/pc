@@ -105,6 +105,11 @@ type Handler struct {
 	// nil when [server.smtp] is disabled (no host or no recipients); Notify/Close
 	// are nil-safe, so a nil alerter is simply a no-op.
 	alerter *alerter
+
+	// afterChecks is a test-only seam (nil in production) run immediately after
+	// the checks phase; formatting and diagnostics conversion still follow. It
+	// runs under analysisMu and must not call back into the handler.
+	afterChecks func()
 }
 
 // NewHandler creates a new handler with the given configuration. The slog
@@ -451,6 +456,10 @@ func (h *Handler) runAnalysis(ctx context.Context, packageID, token string) (bod
 	md := metadata.CkanMetadataFromJSON(result)
 	messages := append(metadata.RunChecks(md), utils.ApplyAllChecks(ctx, pcConfigCopy, files, true)...)
 
+	if h.afterChecks != nil {
+		h.afterChecks()
+	}
+
 	// Server-mode response discipline (spec §3/§8: no internal paths, no raw
 	// diagnostics). The buffered GlobalLogger diagnostics are split by audience:
 	// the full raw detail (paths, causes) goes to the server log keyed by
@@ -472,13 +481,18 @@ func (h *Handler) runAnalysis(ctx context.Context, packageID, token string) (bod
 	}
 
 	// Store the successful result for future identical-freshness requests.
+	// Only when the context still lives: a fired one may mean ApplyAllChecks
+	// stopped between files and messages are partial; the handler renders 504/503
+	// instead of this body either way, so it must never become the cached one.
 	// Best-effort: a cache write failure is logged but never fails the request.
-	if cacheErr := h.cache.put(packageID, metadataModified, jsonResult); cacheErr != nil {
-		h.logger.LogAttrs(ctx, slog.LevelWarn, "result_cache_write_failed",
-			slog.String("request_id", GetRequestIDFromContext(ctx)),
-			slog.String("package_id", packageID),
-			slog.String("error", cacheErr.Error()),
-		)
+	if ctx.Err() == nil {
+		if cacheErr := h.cache.put(packageID, metadataModified, jsonResult); cacheErr != nil {
+			h.logger.LogAttrs(ctx, slog.LevelWarn, "result_cache_write_failed",
+				slog.String("request_id", GetRequestIDFromContext(ctx)),
+				slog.String("package_id", packageID),
+				slog.String("error", cacheErr.Error()),
+			)
+		}
 	}
 	return jsonResult, len(files), countSkipped(messages), false, "", ""
 }
