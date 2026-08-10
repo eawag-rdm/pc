@@ -623,8 +623,8 @@ func makePDFCKAN(t *testing.T) (*httptest.Server, *config.Config) {
 // a PDF-bearing package through the real handler. It must be green under
 // `go test -race`: the per-request reset (PDFTracker.Reset / GlobalLogger.Clear),
 // the AddFileIfPDF append during checks, and the snapshot read for the response
-// body are serialized by analysisMu, so there is no unsynchronized read of
-// PDFTracker.Files and no cross-request data bleed (§6, §9).
+// body are serialized by analysisMu, so there is no unsynchronized read of the
+// tracker's file slice and no cross-request data bleed (§6, §9).
 func TestHandler_Analyze_ConcurrentPDF_RaceClean(t *testing.T) {
 	ckan, pcConfig := makePDFCKAN(t)
 	defer ckan.Close()

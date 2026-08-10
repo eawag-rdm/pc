@@ -10,6 +10,7 @@ import (
 	"runtime/pprof"
 	"time"
 
+	"github.com/eawag-rdm/pc/internal/analysis"
 	"github.com/eawag-rdm/pc/pkg/collectors"
 	"github.com/eawag-rdm/pc/pkg/config"
 	"github.com/eawag-rdm/pc/pkg/helpers"
@@ -20,7 +21,6 @@ import (
 	plainformatter "github.com/eawag-rdm/pc/pkg/output/plain"
 	"github.com/eawag-rdm/pc/pkg/output/tui"
 	"github.com/eawag-rdm/pc/pkg/structs"
-	"github.com/eawag-rdm/pc/pkg/utils"
 )
 
 func main() {
@@ -186,9 +186,9 @@ func main() {
 				app.UpdateProgress(0, 1, "Starting scan...")
 
 				// Run scanning with progress updates
-				messages := append(metadata.RunChecks(metadataResult), utils.ApplyAllChecksWithProgress(context.Background(), *generalConfig, files, true, func(current, total int, message string) {
+				messages := analysis.Run(context.Background(), *generalConfig, files, metadataResult, func(current, total int, message string) {
 					app.UpdateProgress(current, total, message)
-				})...)
+				})
 
 				// Create JSON formatter and generate output
 				formatter := jsonformatter.NewJSONFormatter()
@@ -196,7 +196,7 @@ func main() {
 				// Get collector name from config
 				collectorName := generalConfig.Operation["main"].Collector
 
-				jsonResult, err := formatter.FormatResults(*folder_or_url, collectorName, messages, len(files), helpers.PDFTracker.Files)
+				jsonResult, err := formatter.FormatResults(*folder_or_url, collectorName, messages, len(files), helpers.PDFTracker.SnapshotFiles())
 				if err != nil {
 					scanErrors <- fmt.Errorf("formatting error: %v", err)
 					return
@@ -248,14 +248,14 @@ func main() {
 		}
 	} else {
 		// Non-TUI mode: run regular scan
-		messages := append(metadata.RunChecks(metadataResult), utils.ApplyAllChecks(context.Background(), *generalConfig, files, true)...)
+		messages := analysis.Run(context.Background(), *generalConfig, files, metadataResult, nil)
 
 		// Get collector name from config
 		collectorName := generalConfig.Operation["main"].Collector
 
 		// Generate JSON result (needed for HTML and JSON output)
 		formatter := jsonformatter.NewJSONFormatter()
-		jsonResult, err := formatter.FormatResults(*folder_or_url, collectorName, messages, len(files), helpers.PDFTracker.Files)
+		jsonResult, err := formatter.FormatResults(*folder_or_url, collectorName, messages, len(files), helpers.PDFTracker.SnapshotFiles())
 		if err != nil {
 			outputError("formatting_error", fmt.Sprintf("Error formatting output: %v", err))
 			return
@@ -276,7 +276,7 @@ func main() {
 			fmt.Println(jsonResult)
 		} else if *plainOutput {
 			plainFormatter := plainformatter.NewPlainFormatter()
-			plainResult := plainFormatter.FormatResults(*folder_or_url, collectorName, messages, len(files), helpers.PDFTracker.Files)
+			plainResult := plainFormatter.FormatResults(*folder_or_url, collectorName, messages, len(files), helpers.PDFTracker.SnapshotFiles())
 			fmt.Print(plainResult)
 		}
 		// If only --no-tui (with or without --html), no stdout output beyond HTML message

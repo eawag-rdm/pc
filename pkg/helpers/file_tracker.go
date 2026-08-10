@@ -8,14 +8,16 @@ import (
 )
 
 type FileTracker struct {
-	Files  []string
+	// files is unexported on purpose: it is mutated under mu, so an exported
+	// field would be a racy bypass of SnapshotFiles.
+	files  []string
 	Header string
 	mu     sync.Mutex
 }
 
 func NewFileTracker(header string) *FileTracker {
 	return &FileTracker{
-		Files:  make([]string, 0),
+		files:  make([]string, 0),
 		Header: header,
 	}
 }
@@ -24,9 +26,9 @@ func (ft *FileTracker) AddFileIfPDF(note string, file structs.File) {
 	ft.mu.Lock()
 	defer ft.mu.Unlock()
 	if file.Suffix == ".pdf" {
-		ft.Files = append(ft.Files, note+file.Name)
+		ft.files = append(ft.files, note+file.Name)
 	} else if strings.HasSuffix(file.Name, ".pdf") {
-		ft.Files = append(ft.Files, note+file.Name)
+		ft.files = append(ft.files, note+file.Name)
 	}
 }
 
@@ -36,17 +38,16 @@ func (ft *FileTracker) AddFileIfPDF(note string, file structs.File) {
 func (ft *FileTracker) Reset() {
 	ft.mu.Lock()
 	defer ft.mu.Unlock()
-	ft.Files = make([]string, 0)
+	ft.files = make([]string, 0)
 }
 
 // SnapshotFiles returns a copy of the tracked files taken under the tracker's
-// lock. Callers (e.g. the server building a response body) must use this rather
-// than reading ft.Files directly: ft.Files is mutated under ft.mu by Reset and
-// AddFileIfPDF, so an unsynchronized field read would be a data race.
+// lock. It is the only way out of the tracker: ft.files is mutated under ft.mu
+// by Reset and AddFileIfPDF, so any unsynchronized read would be a data race.
 func (ft *FileTracker) SnapshotFiles() []string {
 	ft.mu.Lock()
 	defer ft.mu.Unlock()
-	return append([]string(nil), ft.Files...)
+	return append([]string(nil), ft.files...)
 }
 
 var PDFTracker = NewFileTracker("=== PDF Files ===")

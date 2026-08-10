@@ -507,6 +507,9 @@ func noFilesNotice() structs.Message {
 // work coarsely: once its deadline fires (the server's whole-analysis timeout)
 // or it is cancelled, the loops stop between files - a file in progress
 // finishes, no new one starts. CLI callers pass context.Background().
+//
+// Intended entry point is internal/analysis.Run (progress == nil branch), which
+// pairs this with the metadata checks; call it rather than this directly.
 func ApplyAllChecks(ctx context.Context, config config.Config, files []structs.File, checksAcrossFiles bool) []structs.Message {
 	var messages []structs.Message
 
@@ -528,6 +531,12 @@ func ApplyAllChecks(ctx context.Context, config config.Config, files []structs.F
 	return messages
 }
 
+// ApplyAllChecksWithProgress is the progress-reporting twin of ApplyAllChecks
+// (same check groups, same messages) for the TUI. Its file phase is
+// SINGLE-THREADED by construction: per-test progress accounting needs a
+// sequential walk, so the server must never be routed here - it would serialise
+// every analysis silently. Intended caller is internal/analysis.Run (progress
+// != nil branch); everything else takes ApplyAllChecks.
 func ApplyAllChecksWithProgress(ctx context.Context, config config.Config, files []structs.File, checksAcrossFiles bool, progressCallback ProgressCallback) []structs.Message {
 	var messages []structs.Message
 

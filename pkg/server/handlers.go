@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/eawag-rdm/pc/internal/analysis"
 	"github.com/eawag-rdm/pc/pkg/collectors"
 	"github.com/eawag-rdm/pc/pkg/config"
 	"github.com/eawag-rdm/pc/pkg/helpers"
@@ -18,7 +19,6 @@ import (
 	"github.com/eawag-rdm/pc/pkg/output"
 	jsonformatter "github.com/eawag-rdm/pc/pkg/output/json"
 	"github.com/eawag-rdm/pc/pkg/structs"
-	"github.com/eawag-rdm/pc/pkg/utils"
 )
 
 // maxAnalyzeBodyBytes caps the request body. The body is a tiny JSON object
@@ -454,7 +454,7 @@ func (h *Handler) runAnalysis(ctx context.Context, packageID, token string) (bod
 	// checks phase too - the handler then maps the expired context to
 	// analysis_timeout (504).
 	md := metadata.CkanMetadataFromJSON(result)
-	messages := append(metadata.RunChecks(md), utils.ApplyAllChecks(ctx, pcConfigCopy, files, true)...)
+	messages := analysis.Run(ctx, pcConfigCopy, files, md, nil)
 
 	if h.afterChecks != nil {
 		h.afterChecks()

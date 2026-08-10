@@ -20,12 +20,12 @@ func TestNewFileTracker(t *testing.T) {
 		t.Errorf("Expected header '%s', got '%s'", header, tracker.Header)
 	}
 
-	if tracker.Files == nil {
+	if tracker.files == nil {
 		t.Error("Files slice not initialized")
 	}
 
-	if len(tracker.Files) != 0 {
-		t.Errorf("Expected empty files slice, got %d items", len(tracker.Files))
+	if len(tracker.files) != 0 {
+		t.Errorf("Expected empty files slice, got %d items", len(tracker.files))
 	}
 }
 
@@ -41,13 +41,13 @@ func TestFileTracker_AddFileIfPDF_WithSuffix(t *testing.T) {
 
 	tracker.AddFileIfPDF("Note: ", pdfFile)
 
-	if len(tracker.Files) != 1 {
-		t.Fatalf("Expected 1 file, got %d", len(tracker.Files))
+	if len(tracker.files) != 1 {
+		t.Fatalf("Expected 1 file, got %d", len(tracker.files))
 	}
 
 	expected := "Note: document.pdf"
-	if tracker.Files[0] != expected {
-		t.Errorf("Expected '%s', got '%s'", expected, tracker.Files[0])
+	if tracker.files[0] != expected {
+		t.Errorf("Expected '%s', got '%s'", expected, tracker.files[0])
 	}
 }
 
@@ -63,13 +63,13 @@ func TestFileTracker_AddFileIfPDF_WithoutSuffix(t *testing.T) {
 
 	tracker.AddFileIfPDF("Note: ", pdfFile)
 
-	if len(tracker.Files) != 1 {
-		t.Fatalf("Expected 1 file, got %d", len(tracker.Files))
+	if len(tracker.files) != 1 {
+		t.Fatalf("Expected 1 file, got %d", len(tracker.files))
 	}
 
 	expected := "Note: document.pdf"
-	if tracker.Files[0] != expected {
-		t.Errorf("Expected '%s', got '%s'", expected, tracker.Files[0])
+	if tracker.files[0] != expected {
+		t.Errorf("Expected '%s', got '%s'", expected, tracker.files[0])
 	}
 }
 
@@ -85,8 +85,8 @@ func TestFileTracker_AddFileIfPDF_NonPDF(t *testing.T) {
 
 	tracker.AddFileIfPDF("Note: ", textFile)
 
-	if len(tracker.Files) != 0 {
-		t.Errorf("Expected 0 files for non-PDF, got %d", len(tracker.Files))
+	if len(tracker.files) != 0 {
+		t.Errorf("Expected 0 files for non-PDF, got %d", len(tracker.files))
 	}
 }
 
@@ -103,8 +103,8 @@ func TestFileTracker_AddFileIfPDF_CaseInsensitive(t *testing.T) {
 	tracker.AddFileIfPDF("", pdfFile)
 
 	// Current implementation is case-sensitive, so this should not match
-	if len(tracker.Files) != 0 {
-		t.Errorf("Expected 0 files for uppercase PDF (case-sensitive), got %d", len(tracker.Files))
+	if len(tracker.files) != 0 {
+		t.Errorf("Expected 0 files for uppercase PDF (case-sensitive), got %d", len(tracker.files))
 	}
 }
 
@@ -122,15 +122,15 @@ func TestFileTracker_AddFileIfPDF_MultipleFiles(t *testing.T) {
 		tracker.AddFileIfPDF(fmt.Sprintf("File%d: ", i+1), file)
 	}
 
-	if len(tracker.Files) != 2 {
-		t.Fatalf("Expected 2 PDF files, got %d", len(tracker.Files))
+	if len(tracker.files) != 2 {
+		t.Fatalf("Expected 2 PDF files, got %d", len(tracker.files))
 	}
 
 	// Check specific files were added
 	expectedFiles := []string{"File1: doc1.pdf", "File3: doc3.pdf"}
 	for i, expected := range expectedFiles {
-		if tracker.Files[i] != expected {
-			t.Errorf("File %d: expected '%s', got '%s'", i, expected, tracker.Files[i])
+		if tracker.files[i] != expected {
+			t.Errorf("File %d: expected '%s', got '%s'", i, expected, tracker.files[i])
 		}
 	}
 }
@@ -145,7 +145,7 @@ func TestPDFTracker_GlobalInstance(t *testing.T) {
 		t.Errorf("Expected header '=== PDF Files ===', got '%s'", PDFTracker.Header)
 	}
 
-	if PDFTracker.Files == nil {
+	if PDFTracker.files == nil {
 		t.Error("PDFTracker Files slice not initialized")
 	}
 }
@@ -157,12 +157,12 @@ func TestFileTracker_EdgeCases(t *testing.T) {
 	emptyFile := structs.File{Name: "", Suffix: ".pdf"}
 	tracker.AddFileIfPDF("Empty: ", emptyFile)
 
-	if len(tracker.Files) != 1 {
-		t.Errorf("Expected 1 file even with empty name, got %d", len(tracker.Files))
+	if len(tracker.files) != 1 {
+		t.Errorf("Expected 1 file even with empty name, got %d", len(tracker.files))
 	}
 
-	if tracker.Files[0] != "Empty: " {
-		t.Errorf("Expected 'Empty: ', got '%s'", tracker.Files[0])
+	if tracker.files[0] != "Empty: " {
+		t.Errorf("Expected 'Empty: ', got '%s'", tracker.files[0])
 	}
 
 	// Test with file that ends with 'pdf' but not '.pdf'
@@ -170,8 +170,8 @@ func TestFileTracker_EdgeCases(t *testing.T) {
 	notPdfFile := structs.File{Name: "mypdf", Suffix: ""}
 	tracker2.AddFileIfPDF("", notPdfFile)
 
-	if len(tracker2.Files) != 0 {
-		t.Errorf("Expected 0 files for name ending in 'pdf' but not '.pdf', got %d", len(tracker2.Files))
+	if len(tracker2.files) != 0 {
+		t.Errorf("Expected 0 files for name ending in 'pdf' but not '.pdf', got %d", len(tracker2.files))
 	}
 
 	// Test with file that contains .pdf but doesn't end with it
@@ -179,8 +179,8 @@ func TestFileTracker_EdgeCases(t *testing.T) {
 	containsPdfFile := structs.File{Name: "file.pdf.backup", Suffix: ".backup"}
 	tracker3.AddFileIfPDF("", containsPdfFile)
 
-	if len(tracker3.Files) != 0 {
-		t.Errorf("Expected 0 files for name containing '.pdf' but not ending with it, got %d", len(tracker3.Files))
+	if len(tracker3.files) != 0 {
+		t.Errorf("Expected 0 files for name containing '.pdf' but not ending with it, got %d", len(tracker3.files))
 	}
 }
 
@@ -203,7 +203,7 @@ func TestFileTracker_ConcurrentAccess(t *testing.T) {
 
 	wg.Wait()
 
-	if len(tracker.Files) != numGoroutines {
-		t.Errorf("Expected %d files, got %d", numGoroutines, len(tracker.Files))
+	if len(tracker.files) != numGoroutines {
+		t.Errorf("Expected %d files, got %d", numGoroutines, len(tracker.files))
 	}
 }
