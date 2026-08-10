@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -868,5 +869,59 @@ func TestRequestEscapesPackageID(t *testing.T) {
 	_, _ = CkanCollector(context.Background(), "a b", cfg)
 	if !strings.Contains(gotRawQuery, "id=a+b") {
 		t.Errorf("expected escaped query id=a+b, got raw query %q", gotRawQuery)
+	}
+}
+
+// TestRequestReusesConnection asserts consecutive CKAN calls share one client and
+// therefore reuse the pooled connection instead of dialing (and handshaking)
+// again per request.
+func TestRequestReusesConnection(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"success":true,"result":{"resources":[]}}`)
+	}))
+	defer srv.Close()
+
+	url := srv.URL + "/api/3/action/package_show?id=pkg"
+	doRequest := func() bool {
+		var reused bool
+		ctx := httptrace.WithClientTrace(context.Background(), &httptrace.ClientTrace{
+			GotConn: func(info httptrace.GotConnInfo) { reused = info.Reused },
+		})
+		if _, err := Request(ctx, url, "", false); err != nil {
+			t.Fatalf("Request failed: %v", err)
+		}
+		return reused
+	}
+
+	if doRequest() {
+		t.Errorf("first request unexpectedly reused a connection")
+	}
+	if !doRequest() {
+		t.Errorf("second request dialed a new connection; the transport is not shared")
+	}
+}
+
+// TestRequestVerifyTLSSelectsVerifyingClient pins the client selection in
+// Request: against a self-signed server, verifyTLS=true must fail certificate
+// verification while verifyTLS=false must succeed. An inverted selection would
+// silently disable verification in production.
+func TestRequestVerifyTLSSelectsVerifyingClient(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"success":true,"result":{"resources":[]}}`)
+	}))
+	defer srv.Close()
+
+	url := srv.URL + "/api/3/action/package_show?id=pkg"
+
+	_, err := Request(context.Background(), url, "", true)
+	var ckanErr *CKANError
+	if !errors.As(err, &ckanErr) || !ckanErr.Transport {
+		t.Fatalf("verifyTLS=true against a self-signed cert: want transport CKANError, got %v", err)
+	}
+
+	if _, err := Request(context.Background(), url, "", false); err != nil {
+		t.Fatalf("verifyTLS=false against a self-signed cert: want success, got %v", err)
 	}
 }

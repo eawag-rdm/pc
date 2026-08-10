@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/eawag-rdm/pc/pkg/config"
 	"github.com/eawag-rdm/pc/pkg/output"
@@ -99,6 +100,27 @@ func ckanActionErrorStatus(body map[string]interface{}) (status int, errType str
 	return status, errType, true
 }
 
+// newCkanTransport builds the transport shared by all CKAN calls with the given
+// TLS verification mode. Keeping connections idle between calls avoids a fresh
+// TCP+TLS handshake per package_show, which dominates the request cost.
+func newCkanTransport(verifyTLS bool) *http.Transport {
+	return &http.Transport{
+		TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: !verifyTLS,
+		},
+		IdleConnTimeout:     90 * time.Second,
+		MaxIdleConnsPerHost: 4,
+	}
+}
+
+// One client per TLS verification mode, shared process-wide: a per-call client
+// would discard its connection pool (and leak idle connections) on every CKAN
+// request.
+var (
+	ckanClientVerify   = &http.Client{Transport: newCkanTransport(true)}
+	ckanClientNoVerify = &http.Client{Transport: newCkanTransport(false)}
+)
+
 // Request performs the single CKAN package_show GET. The supplied context bounds
 // the in-flight call: when its deadline fires (the server's hard requestTimeout,
 // spec §2) or it is cancelled (client disconnect), client.Do and the subsequent
@@ -107,15 +129,9 @@ func ckanActionErrorStatus(body map[string]interface{}) (status int, errType str
 // ckan_unavailable / 504 by the server).
 func Request(ctx context.Context, url, ckanToken string, verifyTLS bool) (string, error) {
 
-	transport := &http.Transport{
-		TLSClientConfig: &tls.Config{
-			InsecureSkipVerify: !verifyTLS,
-			// If verifyTLS=false => InsecureSkipVerify=true
-		},
-	}
-
-	client := &http.Client{
-		Transport: transport,
+	client := ckanClientNoVerify
+	if verifyTLS {
+		client = ckanClientVerify
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
