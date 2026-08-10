@@ -2,12 +2,15 @@ package readers
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
+	pdfium "github.com/klippa-app/go-pdfium"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -186,8 +189,178 @@ func benchmarkReadPDF(b *testing.B, pageCount int) {
 func BenchmarkReadPDFSinglePage(b *testing.B) { benchmarkReadPDF(b, 1) }
 func BenchmarkReadPDF50Pages(b *testing.B)    { benchmarkReadPDF(b, 50) }
 
+// fakePDFPool stands in for the wasm pool: the retry test must not build a
+// real runtime (and must not hand the shared one to later tests).
+type fakePDFPool struct{}
+
+func (*fakePDFPool) GetInstance(time.Duration) (pdfium.Pdfium, error) { return nil, nil }
+
+// Errors rather than handing out a nil instance: if a test ever leaked this
+// fake past its cleanup, a real extraction fails loudly instead of nil-deref.
+func (*fakePDFPool) GetInstanceWithContext(context.Context) (pdfium.Pdfium, error) {
+	return nil, errors.New("fake pool has no instances")
+}
+func (*fakePDFPool) Close() error { return nil }
+
+// savePDFRuntime hijacks the package-level runtime the real-PDF tests share,
+// so its callers must never run parallel. Every field this test touches is
+// saved and restored one by one (the struct holds a mutex, so it cannot be
+// copied), under that mutex.
+func savePDFRuntime(t *testing.T) {
+	t.Helper()
+	savedInit, savedBase := initFn, pdfInitCooldown
+	savedReady := pdfRuntime.ready.Load()
+	savedInitialized := pdfRuntime.initialized.Load()
+	pdfRuntime.mu.Lock()
+	savedPool, savedErr := pdfRuntime.pool, pdfRuntime.err
+	savedAttempt, savedCooldown := pdfRuntime.lastAttempt, pdfRuntime.cooldown
+	pdfRuntime.mu.Unlock()
+	t.Cleanup(func() {
+		initFn, pdfInitCooldown = savedInit, savedBase
+		pdfRuntime.mu.Lock()
+		pdfRuntime.pool, pdfRuntime.err = savedPool, savedErr
+		pdfRuntime.lastAttempt, pdfRuntime.cooldown = savedAttempt, savedCooldown
+		pdfRuntime.mu.Unlock()
+		// After pool: ready points at pdfRuntime.pool.
+		pdfRuntime.ready.Store(savedReady)
+		pdfRuntime.initialized.Store(savedInitialized)
+	})
+}
+
+// resetPDFRuntime starts from an uninitialized runtime whatever earlier tests
+// left behind.
+func resetPDFRuntime() {
+	pdfRuntime.ready.Store(nil)
+	pdfRuntime.mu.Lock()
+	defer pdfRuntime.mu.Unlock()
+	pdfRuntime.pool, pdfRuntime.err = nil, nil
+	pdfRuntime.lastAttempt, pdfRuntime.cooldown = time.Time{}, 0
+}
+
+// pdfRuntimeSnapshot reads the memoized failure state under the mutex.
+func pdfRuntimeSnapshot() (time.Duration, error) {
+	pdfRuntime.mu.Lock()
+	defer pdfRuntime.mu.Unlock()
+	return pdfRuntime.cooldown, pdfRuntime.err
+}
+
+// expirePDFCooldown rewinds lastAttempt past the current cooldown; the clock
+// is never waited on.
+func expirePDFCooldown() {
+	pdfRuntime.mu.Lock()
+	defer pdfRuntime.mu.Unlock()
+	pdfRuntime.lastAttempt = time.Now().Add(-2 * pdfRuntime.cooldown)
+}
+
+func setPDFCooldown(d time.Duration) {
+	pdfRuntime.mu.Lock()
+	defer pdfRuntime.mu.Unlock()
+	pdfRuntime.cooldown = d
+}
+
+func TestPDFRuntimeRetriesFailedInitAfterCooldown(t *testing.T) {
+	savePDFRuntime(t)
+	resetPDFRuntime()
+	// Well under the cap so the doubling is observable.
+	pdfInitCooldown = 10 * time.Second
+
+	calls := 0
+	initErr := errors.New("wasm init failed")
+	initFn = func() (pdfium.Pool, error) {
+		calls++
+		return nil, initErr
+	}
+
+	_, err := pdfPool()
+	assert.ErrorIs(t, err, initErr)
+	assert.Equal(t, 1, calls)
+	cooldown, _ := pdfRuntimeSnapshot()
+	assert.Equal(t, pdfInitCooldown, cooldown)
+	assert.True(t, pdfRuntimeInitialized(), "a failed attempt still counts as started")
+
+	// Inside the cooldown: same error, no per-file init retry storm.
+	_, err = pdfPool()
+	assert.ErrorIs(t, err, initErr)
+	assert.Equal(t, 1, calls, "init must not be retried inside the cooldown")
+
+	// Callers keep seeing the runtime sentinel, unchanged by the retry logic.
+	_, _, rerr := ReadPDF(writeMinimalPDF("some text"), testPDFLimits)
+	assert.ErrorIs(t, rerr, ErrPDFRuntime)
+	assert.Equal(t, 1, calls)
+
+	// Cooldown elapsed: exactly one more attempt, and the backoff doubles.
+	expirePDFCooldown()
+	_, err = pdfPool()
+	assert.ErrorIs(t, err, initErr)
+	assert.Equal(t, 2, calls)
+	cooldown, _ = pdfRuntimeSnapshot()
+	assert.Equal(t, 2*pdfInitCooldown, cooldown, "backoff doubles per consecutive failure")
+
+	// The backoff is capped, not unbounded.
+	setPDFCooldown(pdfInitCooldownMax)
+	expirePDFCooldown()
+	_, err = pdfPool()
+	assert.ErrorIs(t, err, initErr)
+	assert.Equal(t, 3, calls)
+	cooldown, _ = pdfRuntimeSnapshot()
+	assert.Equal(t, pdfInitCooldownMax, cooldown)
+
+	// A retry that succeeds serves the pool, clears the stale error and
+	// disarms the backoff.
+	want := &fakePDFPool{}
+	initFn = func() (pdfium.Pool, error) {
+		calls++
+		return want, nil
+	}
+	expirePDFCooldown()
+	pool, err := pdfPool()
+	assert.NoError(t, err)
+	assert.Same(t, want, pool)
+	cooldown, memo := pdfRuntimeSnapshot()
+	assert.NoError(t, memo, "a successful retry must clear the memoized failure")
+	assert.Zero(t, cooldown, "a successful retry must reset the backoff")
+	assert.Equal(t, 4, calls)
+
+	// Initialized: pure fast path from here on.
+	pool, err = pdfPool()
+	assert.NoError(t, err)
+	assert.Same(t, want, pool)
+	assert.Equal(t, 4, calls, "an initialized runtime must never re-init")
+}
+
+func TestPDFRuntimeNilPoolIsAFailure(t *testing.T) {
+	// An init returning (nil, nil) must never be published: readers would
+	// deref a nil pool. It is memoized and backed off like any other failure.
+	savePDFRuntime(t)
+	resetPDFRuntime()
+	pdfInitCooldown = 10 * time.Second
+
+	calls := 0
+	initFn = func() (pdfium.Pool, error) {
+		calls++
+		return nil, nil
+	}
+
+	pool, err := pdfPool()
+	assert.Nil(t, pool)
+	assert.ErrorContains(t, err, "no pool")
+	assert.Equal(t, 1, calls)
+	assert.Nil(t, pdfRuntime.ready.Load(), "a nil pool must never be published")
+
+	cooldown, memo := pdfRuntimeSnapshot()
+	assert.Equal(t, err, memo, "the synthesized error must be memoized")
+	assert.Equal(t, pdfInitCooldown, cooldown, "a nil pool must arm the backoff")
+
+	// Memoized: inside the cooldown the same error is served, no retry.
+	pool, again := pdfPool()
+	assert.Nil(t, pool)
+	assert.Equal(t, err, again)
+	assert.Equal(t, 1, calls, "a nil pool must not be retried inside the cooldown")
+}
+
 func TestReadPDFConcurrentBatch(t *testing.T) {
-	// Pool + Once under concurrency: more goroutines than pool instances.
+	// Double-checked lazy init plus pool under concurrency: more goroutines
+	// than pool instances.
 	data := writeMinimalPDF("concurrent page")
 	done := make(chan error, 12)
 	for i := 0; i < 12; i++ {

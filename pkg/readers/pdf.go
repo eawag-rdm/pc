@@ -85,72 +85,144 @@ var (
 	// scanned when most of it never was.
 	ErrPDFTooManyPages = errors.New("pdf has too many pages")
 	// ErrPDFRuntime marks a wasm runtime that failed to initialize (compile
-	// failure, unwritable cache, OOM). The failure is memoized, so without a
-	// distinct sentinel every PDF in the run would report a bogus parse
-	// error instead of the one real cause.
+	// failure, unwritable cache, OOM). The failure is memoized until the
+	// retry cooldown elapses, so without a distinct sentinel every PDF in
+	// that window would report a bogus parse error instead of the one real
+	// cause.
 	ErrPDFRuntime = errors.New("pdf engine unavailable")
 )
 
+// pdfInitCooldown is the delay before a failed runtime init is retried; it
+// doubles per consecutive failure up to pdfInitCooldownMax. A failure is
+// memoized for that window so every later PDF gets the same error (skip ack)
+// instead of a per-file init retry storm, while a transient cause (resource
+// pressure) no longer disables PDF scanning until the process restarts.
+// A var so tests can shrink it.
+var pdfInitCooldown = 60 * time.Second
+
+const pdfInitCooldownMax = time.Hour
+
 // pdfRuntime is the lazily-initialized shared wasm runtime. A run without
-// PDFs never pays for it. The Once memoizes failures too: every later PDF
-// gets the same error (skip ack) instead of a per-file init retry storm.
+// PDFs never pays for it.
 var pdfRuntime struct {
-	once        sync.Once
+	ready       atomic.Pointer[pdfium.Pool] // fast path: no mutex once initialized
+	mu          sync.Mutex
 	pool        pdfium.Pool
 	err         error
+	lastAttempt time.Time
+	cooldown    time.Duration
+	cache       wazero.CompilationCache
 	initialized atomic.Bool
 }
 
+// initFn builds the pool; a var so tests can inject init failures.
+var initFn = defaultInit
+
+// pdfPool is on the hot path (once per PDF, from NumCPU workers), so the
+// initialized case must stay lock-free: only the retry path takes the mutex.
 func pdfPool() (pdfium.Pool, error) {
-	pdfRuntime.once.Do(func() {
-		runtimeConfig := wazero.NewRuntimeConfig().
-			// Kill() can only interrupt in-flight wasm with this set. The
-			// termination checkpoints wazero compiles in are NOT free:
-			// measured ~2.3x on pdfium's hot loops (~92 ms vs ~39 ms for a
-			// 50-page document). Deliberate trade - without it a
-			// pathological page pins a pool slot and OS thread forever,
-			// which the long-lived server cannot afford. If PDF-heavy CLI
-			// wall-clock ever matters, this flag is where half the time
-			// goes.
-			WithCloseOnContextDone(true).
-			WithMemoryLimitPages(pdfWasmMemoryLimitPages)
-		// Disk-backed compilation cache: without it every CLI run recompiles
-		// the module (~2.4 s); with it, warm init is <100 ms. wazero
-		// namespaces the directory by its own version and CPU features.
+	if p := pdfRuntime.ready.Load(); p != nil {
+		return *p, nil
+	}
+	return pdfPoolSlow()
+}
+
+func pdfPoolSlow() (pdfium.Pool, error) {
+	pdfRuntime.mu.Lock()
+	defer pdfRuntime.mu.Unlock()
+
+	// Another goroutine may have won the race while we waited.
+	if pdfRuntime.err == nil && pdfRuntime.pool != nil {
+		return pdfRuntime.pool, nil
+	}
+	now := time.Now()
+	if pdfRuntime.err != nil && now.Sub(pdfRuntime.lastAttempt) < pdfRuntime.cooldown {
+		return nil, pdfRuntime.err
+	}
+
+	pool, err := initFn()
+	// Stamped AFTER the attempt: a slow init must not burn its own cooldown
+	// (a failure taking longer than the window would be retried immediately).
+	pdfRuntime.lastAttempt = time.Now()
+	pdfRuntime.initialized.Store(true)
+	if err == nil && pool == nil {
+		err = errors.New("pdf runtime returned no pool")
+	}
+	if err != nil {
+		// webassembly.Init returns (nil, err) on every failure path and
+		// closes the wazero runtime itself, so a failed attempt leaves
+		// nothing here to close.
+		pdfRuntime.err = err
+		pdfRuntime.cooldown = min(max(2*pdfRuntime.cooldown, pdfInitCooldown), pdfInitCooldownMax)
+		return nil, err
+	}
+	// Clear the memoized failure and the backoff: a retry that succeeded must
+	// not keep serving the stale error, nor mis-arm a future re-init.
+	pdfRuntime.err = nil
+	pdfRuntime.cooldown = 0
+	// Publish the struct field, not a local: &pool would heap-allocate a cell
+	// per attempt. Same release/acquire ordering, readers deref only this.
+	pdfRuntime.pool = pool
+	pdfRuntime.ready.Store(&pdfRuntime.pool)
+	return pool, nil
+}
+
+// defaultInit builds the wasm pool. Caller MUST hold pdfRuntime.mu: it reads
+// and mutates pdfRuntime.cache.
+func defaultInit() (pdfium.Pool, error) {
+	runtimeConfig := wazero.NewRuntimeConfig().
+		// Kill() can only interrupt in-flight wasm with this set. The
+		// termination checkpoints wazero compiles in are NOT free:
+		// measured ~2.3x on pdfium's hot loops (~92 ms vs ~39 ms for a
+		// 50-page document). Deliberate trade - without it a
+		// pathological page pins a pool slot and OS thread forever,
+		// which the long-lived server cannot afford. If PDF-heavy CLI
+		// wall-clock ever matters, this flag is where half the time
+		// goes.
+		WithCloseOnContextDone(true).
+		WithMemoryLimitPages(pdfWasmMemoryLimitPages)
+	// Disk-backed compilation cache: without it every CLI run recompiles
+	// the module (~2.4 s); with it, warm init is <100 ms. wazero
+	// namespaces the directory by its own version and CPU features. Kept
+	// across attempts (caller holds the mutex): a cache owns the compiled
+	// code and outlives the runtime that used it, so a fresh one per retry
+	// would strand it.
+	if pdfRuntime.cache == nil {
 		if dir, err := os.UserCacheDir(); err == nil {
 			cache, cerr := wazero.NewCompilationCacheWithDir(filepath.Join(dir, "pc", "wazero"))
 			if cerr == nil {
-				runtimeConfig = runtimeConfig.WithCompilationCache(cache)
+				pdfRuntime.cache = cache
 			} else {
 				output.GlobalLogger.Warning("PDF: compilation cache unavailable (%v); compiling in memory", cerr)
 			}
 		}
-		pdfRuntime.pool, pdfRuntime.err = webassembly.Init(webassembly.Config{
-			RuntimeConfig: runtimeConfig,
-			MinIdle:       0,
-			MaxIdle:       1,
-			// Small fixed pool, NOT NumCPU: check workers block on
-			// acquisition as backpressure; instance memory scales with the
-			// largest in-flight document.
-			MaxTotal: min(4, runtime.NumCPU()),
-			// Default (false) destroys the instance per document - frees
-			// wasm memory every file; replacement costs single-digit ms.
-			ReuseWorkers: false,
-			// Empty FSConfig: the library default would mount the HOST ROOT
-			// into the sandbox. Input is bytes-only; no filesystem.
-			FSConfig: wazero.NewFSConfig(),
-			// pdfium chatter must not corrupt -json/TUI output.
-			Stdout: io.Discard,
-			Stderr: io.Discard,
-		})
-		pdfRuntime.initialized.Store(true)
+	}
+	if pdfRuntime.cache != nil {
+		runtimeConfig = runtimeConfig.WithCompilationCache(pdfRuntime.cache)
+	}
+	return webassembly.Init(webassembly.Config{
+		RuntimeConfig: runtimeConfig,
+		MinIdle:       0,
+		MaxIdle:       1,
+		// Small fixed pool, NOT NumCPU: check workers block on
+		// acquisition as backpressure; instance memory scales with the
+		// largest in-flight document.
+		MaxTotal: min(4, runtime.NumCPU()),
+		// Default (false) destroys the instance per document - frees
+		// wasm memory every file; replacement costs single-digit ms.
+		ReuseWorkers: false,
+		// Empty FSConfig: the library default would mount the HOST ROOT
+		// into the sandbox. Input is bytes-only; no filesystem.
+		FSConfig: wazero.NewFSConfig(),
+		// pdfium chatter must not corrupt -json/TUI output.
+		Stdout: io.Discard,
+		Stderr: io.Discard,
 	})
-	return pdfRuntime.pool, pdfRuntime.err
 }
 
 // pdfRuntimeInitialized reports whether the lazy runtime was ever started
 // (test hook for the zero-PDF-run guarantee). Atomic so the probe is safe
-// from any goroutine, without touching the Once.
+// from any goroutine, without taking the init mutex.
 func pdfRuntimeInitialized() bool {
 	return pdfRuntime.initialized.Load()
 }
