@@ -41,9 +41,10 @@ ARG PC_GID=10001
 # ca-certificates: the server calls the CKAN API over HTTPS.
 # (busybox wget, already in alpine, is used by the compose healthcheck.)
 # /var/lib/pc: writable state dir for the optional result cache
-# ([server] resultCacheDir). Mounted as a named volume in docker-compose so
-# cached analyses survive container rebuilds; owned by the pc user because the
-# container runs unprivileged.
+# ([server] resultCacheDir) and the wasm compilation cache. Mounted as a named
+# volume in docker-compose to give the wasm cache a persistent home and the
+# right ownership; the result cache itself is cleared at every server start.
+# Owned by the pc user because the container runs unprivileged.
 RUN apk add --no-cache ca-certificates && \
     addgroup -g "${PC_GID}" pc && \
     adduser -D -u "${PC_UID}" -G pc pc && \

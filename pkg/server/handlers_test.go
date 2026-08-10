@@ -688,7 +688,7 @@ func TestHandler_Analyze_ResultCache(t *testing.T) {
 	defer ckan.Close()
 
 	handler := NewHandler(ckanPCConfig(ckan.URL), Config{}, discardLogger())
-	cache, err := newResultCache(t.TempDir(), "test-fp", 10, 0)
+	cache, err := newResultCache(t.TempDir(), 10, 0)
 	if err != nil {
 		t.Fatalf("newResultCache: %v", err)
 	}
@@ -765,7 +765,7 @@ func TestHandler_Analyze_CancelledChecks_NotCached(t *testing.T) {
 	defer ckan.Close()
 
 	handler := NewHandler(ckanPCConfig(ckan.URL), Config{}, discardLogger())
-	cache, err := newResultCache(t.TempDir(), "test-fp", 10, 0)
+	cache, err := newResultCache(t.TempDir(), 10, 0)
 	if err != nil {
 		t.Fatalf("newResultCache: %v", err)
 	}

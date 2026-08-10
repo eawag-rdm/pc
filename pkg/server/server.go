@@ -37,7 +37,9 @@ type Server struct {
 	handler    *Handler
 }
 
-// New creates a new server instance
+// New creates a new server instance. Side effect when the result cache is
+// enabled ([server] resultCacheDir): the cache's entries subdirectory is
+// deleted and recreated here, and a failure to do so fails the construction.
 func New(cfg Config) (*Server, error) {
 	// Validate configuration
 	if err := cfg.Validate(); err != nil {
@@ -89,27 +91,26 @@ func New(cfg Config) (*Server, error) {
 	handler := NewHandler(pcConfig, cfg, logger)
 
 	// Optional per-package result cache (§ result caching): keyed on CKAN's
-	// metadata_modified with a config+version fingerprint, so a config edit or
-	// server upgrade invalidates every entry. The fingerprint hashes the RAW
-	// config file bytes - computed before any in-memory mutation, and cheap to
-	// keep deterministic.
+	// metadata_modified, and cleared here at startup. A changed config or
+	// binary reaches the server only through a restart, so the wipe is the one
+	// invalidation both need - no entry can outlive the process that wrote it.
+	// A wipe that fails is a hard startup failure (the error is already
+	// operator-actionable): booting on entries of unknown provenance would
+	// serve stale results for as long as metadata_modified stays put.
 	if s := pcConfig.Server; s.ResultCacheDir != "" {
-		cfgBytes, err := os.ReadFile(cfg.ConfigPath)
-		if err != nil {
-			return nil, fmt.Errorf("read config for result cache fingerprint: %w", err)
-		}
 		cache, err := newResultCache(
 			s.ResultCacheDir,
-			configFingerprint(cfgBytes),
 			s.ResultCacheMaxEntries,
 			time.Duration(s.ResultCacheMaxAgeHours)*time.Hour,
 		)
 		if err != nil {
-			return nil, fmt.Errorf("invalid PC config: %w", err)
+			return nil, fmt.Errorf("result cache startup: %v", err)
 		}
 		handler.cache = cache
 		logger.Info("result cache enabled",
 			slog.String("dir", s.ResultCacheDir),
+			slog.String("entries_dir", cache.dir),
+			slog.Bool("cleared", true),
 			slog.Int("max_entries", s.ResultCacheMaxEntries),
 			slog.Int("max_age_hours", s.ResultCacheMaxAgeHours),
 		)

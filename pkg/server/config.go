@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/mail"
 	"net/url"
+	"path/filepath"
 	"strings"
 
 	"github.com/eawag-rdm/pc/pkg/config"
@@ -104,6 +105,11 @@ func validateServerSettings(pcConfig *config.Config, addr string) error {
 	// Result cache: settings only matter when a cache dir is set (empty = the
 	// safe disabled default).
 	if s.ResultCacheDir != "" {
+		// Absolute only: the dir drives a startup delete of its entries subdir,
+		// which a relative path would resolve against the process working dir.
+		if !filepath.IsAbs(s.ResultCacheDir) {
+			return fmt.Errorf("server resultCacheDir %q must be an absolute path (its entries subdirectory is deleted at every start)", s.ResultCacheDir)
+		}
 		if s.ResultCacheMaxEntries <= 0 {
 			return fmt.Errorf("server resultCacheMaxEntries must be > 0 when resultCacheDir is set, got %d", s.ResultCacheMaxEntries)
 		}

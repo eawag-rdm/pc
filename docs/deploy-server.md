@@ -107,6 +107,14 @@ ckan_storage_path` in `pc.toml`. The committed compose also sets
 `restart: unless-stopped`, the `/health` healthcheck (§2), the log rotation
 (§4) and `stop_grace_period: 340s` (§7).
 
+**Result cache volume.** The `pc-cache` named volume (`/var/lib/pc`) holds the
+optional result cache when `[server] resultCacheDir` points inside it. Only the
+wasm cache below persists across recreations: the server deletes the cache's
+`entries/` subdirectory at every start and refuses to start if it cannot. Run
+**one server per `resultCacheDir`** - there is no lock, so a second instance
+(second replica, blue/green overlap) wipes the first one's entries at its boot;
+give each instance its own directory.
+
 **Secret scanner (betterleaks).** *Dormant since 2026-08-04: the scan ships
 disabled (`enabled = false`) because it is too slow for our latency target;
 the binary stays bundled and the check reactivates by flipping the attr.* The

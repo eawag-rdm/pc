@@ -283,6 +283,16 @@ func TestValidateServerSettings(t *testing.T) {
 		{name: "zero ckanRequestTimeout", addr: "127.0.0.1:8080", mutate: func(s *config.ServerConfig) { s.CkanRequestTimeoutSeconds = 0 }, wantErr: true},
 		{name: "ckanRequestTimeout above requestTimeout", addr: "127.0.0.1:8080", mutate: func(s *config.ServerConfig) { s.CkanRequestTimeoutSeconds = s.RequestTimeoutSeconds + 1 }, wantErr: true},
 		{name: "ckanRequestTimeout equal to requestTimeout valid", addr: "127.0.0.1:8080", mutate: func(s *config.ServerConfig) { s.CkanRequestTimeoutSeconds = s.RequestTimeoutSeconds }, wantErr: false},
+		// resultCacheDir drives a startup delete of its entries subdir, so a
+		// relative path (resolved against the process working dir) is rejected.
+		{name: "relative resultCacheDir", addr: "127.0.0.1:8080", mutate: func(s *config.ServerConfig) {
+			s.ResultCacheDir = "cache"
+			s.ResultCacheMaxEntries = 500
+		}, wantErr: true},
+		{name: "absolute resultCacheDir valid", addr: "127.0.0.1:8080", mutate: func(s *config.ServerConfig) {
+			s.ResultCacheDir = "/var/lib/pc/cache"
+			s.ResultCacheMaxEntries = 500
+		}, wantErr: false},
 		{name: "invalid CIDR in trustedProxies", addr: "127.0.0.1:8080", mutate: func(s *config.ServerConfig) { s.TrustedProxies = []string{"127.0.0.1"} }, wantErr: true},
 		{name: "valid CIDR list", addr: "127.0.0.1:8080", mutate: func(s *config.ServerConfig) { s.TrustedProxies = []string{"10.0.0.0/8", "::1/128"} }, wantErr: false},
 		{name: "invalid origin (no scheme)", addr: "127.0.0.1:8080", mutate: func(s *config.ServerConfig) { s.AllowedOrigins = []string{"app.example.org"} }, wantErr: true},

@@ -397,7 +397,7 @@ See `pc.toml.example` for the full commented list.
 | `logClientIP` | `true` | record the client IP in access logs |
 | `requestTimeoutSeconds` | 300 | hard bound for a WHOLE analysis (CKAN call + checks) → `analysis_timeout` (504) |
 | `ckanRequestTimeoutSeconds` | 10 | bound for the single CKAN `package_show` call → `ckan_unavailable` (502); must be ≤ `requestTimeoutSeconds` |
-| `resultCacheDir` | - (disabled) | directory for the per-package result cache; empty disables caching |
+| `resultCacheDir` | - (disabled) | absolute path of the per-package result cache directory; its reserved `entries/` subdir is wiped at every start (failure aborts the boot); empty disables caching |
 | `resultCacheMaxEntries` | 500 | max cached packages before oldest-entry eviction |
 | `resultCacheMaxAgeHours` | 0 (no limit) | max age of a cache entry; 0 disables the age limit |
 
@@ -414,11 +414,31 @@ package's CKAN `metadata_modified` timestamp - which the mandatory
 A repeat request for an unchanged package is served from the cache in a single
 CKAN round-trip (response header `X-PC-Cache: hit`/`miss`; the `package_show`
 still runs per request, so authorization is enforced exactly as without the
-cache). Entries self-invalidate when `pc.toml` or the server version changes
-or when the package changes in CKAN; `resultCacheMaxAgeHours` can additionally
-age entries out, but is off by default - CKAN's `metadata_modified` alone
-decides freshness. Cached files can contain private-package findings - keep
-the directory readable by the server user only.
+cache).
+
+Entries live in an `entries/` subdirectory that the server owns wholesale. The
+server reserves that one name inside `resultCacheDir` (a file or symlink
+sitting there aborts the boot instead of being deleted); everything else you
+keep in the directory is never touched. **The subdirectory is deleted and
+recreated on every server start**, so a changed `pc.toml` or a new binary can
+never be served stale results: both require a restart, and the restart empties
+the cache. If the clearing fails (read-only mount, wrong ownership after a
+rebuild) **the server refuses to start** and prints an error naming the
+directory - it never boots on entries it cannot prove it wrote. Run **one
+server per `resultCacheDir`**: a second instance would wipe the first one's
+entries at its boot.
+
+*Upgrading from a version before the `entries/` layout:* entries were written
+directly into `resultCacheDir` back then. Delete leftover `*.json` in that
+directory once after upgrading - the server neither reads nor removes them.
+
+Nothing in the directory is meant to survive a restart, so it needs no
+persistent storage - only ownership by the server user and private permissions
+(cached files can contain private-package findings). Every restart therefore
+starts cold: the first request per package pays a full scan again. Within a run
+an entry is reused until the package's `metadata_modified` changes in CKAN;
+`resultCacheMaxAgeHours` can additionally age entries out, but is off by
+default - CKAN's `metadata_modified` alone decides freshness.
 
 ### Admin email alerts (`[server.smtp]`)
 

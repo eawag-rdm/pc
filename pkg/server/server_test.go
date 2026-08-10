@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -134,6 +135,72 @@ func TestNew_MissingChecksConfig_FailsAtBoot(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "IsFreeOfKeywords") {
 		t.Errorf("startup error should name the missing section, got: %v", err)
+	}
+}
+
+// newTestServerConfigWithResultCache builds a server Config whose pc.toml sets
+// [server] resultCacheDir, for the boot-time cache tests.
+func newTestServerConfigWithResultCache(t *testing.T, cacheDir string) Config {
+	t.Helper()
+	path := t.TempDir() + "/pc.toml"
+	contents := "" +
+		"[server]\n" +
+		"resultCacheDir = \"" + cacheDir + "\"\n" +
+		testChecksTOML +
+		"[collector.CkanCollector]\n" +
+		"attrs = {url = \"http://127.0.0.1:1\", token = \"\", verify = false, ckan_storage_path = \"" + t.TempDir() + "\"}\n"
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	return Config{Address: "127.0.0.1:0", ConfigPath: path}
+}
+
+// TestNew_ResultCacheEnabled_ClearsEntriesAtBoot asserts the success path of the
+// same contract: with a healthy cache dir, New wires the cache into the handler
+// and the (cleared) entries subdir exists before the first request.
+func TestNew_ResultCacheEnabled_ClearsEntriesAtBoot(t *testing.T) {
+	cacheDir := t.TempDir()
+	srv, err := New(newTestServerConfigWithResultCache(t, cacheDir))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if srv.handler.cache == nil {
+		t.Fatal("a configured resultCacheDir must leave the handler with a cache")
+	}
+	entriesDir := filepath.Join(cacheDir, entriesDirName)
+	if fi, statErr := os.Stat(entriesDir); statErr != nil || !fi.IsDir() {
+		t.Fatalf("%s must exist after boot (err=%v)", entriesDir, statErr)
+	}
+	if srv.handler.cache.dir != entriesDir {
+		t.Errorf("cache dir = %q, want %q", srv.handler.cache.dir, entriesDir)
+	}
+}
+
+// TestNew_ResultCacheWipeFailure_FailsAtBoot asserts the cache's hard-fail
+// contract reaches the operator: when the entries subdir cannot be cleared,
+// New refuses to build the server (cmd/pc-server turns that into a log.Fatalf
+// on stderr) instead of booting on entries of unknown provenance.
+func TestNew_ResultCacheWipeFailure_FailsAtBoot(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	cacheDir := t.TempDir()
+	cfg := newTestServerConfigWithResultCache(t, cacheDir)
+	// r-x: the entries subdir cannot be created (nor removed once it exists).
+	if err := os.Chmod(cacheDir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(cacheDir, 0o700) })
+
+	_, err := New(cfg)
+	if err == nil {
+		t.Fatal("expected New to fail at boot when the result cache cannot be cleared")
+	}
+	if !strings.Contains(err.Error(), cacheDir) {
+		t.Errorf("startup error should name the cache directory, got: %v", err)
+	}
+	if !strings.HasPrefix(err.Error(), "result cache startup: ") {
+		t.Errorf("startup error should carry New's category prefix, got: %v", err)
 	}
 }
 

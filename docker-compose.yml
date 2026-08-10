@@ -46,11 +46,13 @@ services:
       #    equal [collector.CkanCollector].attrs.ckan_storage_path in pc.toml.
       #    Left side: where the network share is mounted on the host.
       - /home/christian/eric_related/ckan_docker/eric/data/ckan:/nfsmount/ckan/default:ro
-      # 3) Result cache - persistent named volume (survives container
-      #    rebuilds). Only used when [server] resultCacheDir is set; it must
-      #    then point INSIDE this target, e.g.
-      #    resultCacheDir = "/var/lib/pc/cache". A named volume (not a bind
-      #    mount) keeps the cached analyses - which can contain
+      # 3) Server state - named volume. Holds the result cache (only used when
+      #    [server] resultCacheDir is set; it must then point INSIDE this
+      #    target, e.g. resultCacheDir = "/var/lib/pc/cache") and the wasm
+      #    cache below, which IS meant to persist across container recreations.
+      #    The result cache is not: the server wipes its entries subdir at
+      #    every start (and refuses to start if it cannot). A named volume (not
+      #    a bind mount) keeps the cached analyses - which can contain
       #    private-package findings - inside Docker-managed storage with the
       #    container user's ownership.
       - pc-cache:/var/lib/pc
