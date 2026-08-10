@@ -48,7 +48,7 @@ const (
 type GeneralConfig struct {
 	MaxArchiveFileSize               int64  // Maximum size for individual files in archives (bytes)
 	MaxTotalArchiveMemory            int64  // Maximum total memory for archive processing (bytes)
-	MaxArchiveMemberCount            int    // Max unpack-candidate members per archive for content checks (0 = default, not unlimited; enforced from C4)
+	MaxArchiveMemberCount            int    // Max members per archive: content scan counts unpack candidates, name walk counts all entries (0 = default, not unlimited)
 	MaxPDFPages                      int    // Page ceiling per PDF; over it nothing is extracted (0 = default, not unlimited)
 	MaxPDFFileSize                   int64  // PDF admission gate in bytes; over it nothing is read (0 = default, not unlimited)
 	MaxContentScanFileSize           int64  // Maximum size for files that read content (like IsFreeOfKeywords) (bytes)

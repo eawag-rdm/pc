@@ -124,7 +124,7 @@ if you want a literal-match safety net for those.
 [general]
 maxArchiveFileSize     = 10485760   # max size per file inside an archive (bytes)
 maxTotalArchiveMemory  = 536870912  # total memory budget for archive processing
-maxArchiveMemberCount  = 1000       # max unpack-candidate members per archive
+maxArchiveMemberCount  = 1000       # max members per archive (both archive walks)
 maxPDFPages            = 10         # page ceiling per PDF (longer = skipped whole)
 maxPDFFileSize         = 1048576    # max PDF size in bytes (larger = not read)
 maxContentScanFileSize = 20971520   # max size for content-scanned files
@@ -160,9 +160,18 @@ same two gates and are extracted the same way (page attribution is lost -
 the member's text is scanned as one block, like xlsx/docx members);
 extracted text counts against the archive memory budget, and cumulative PDF
 extraction time per archive is capped at 120 s - further PDF members are
-then skipped with one acknowledgement. Archives with more than
-`maxArchiveMemberCount` unpack candidates get a skip acknowledgement instead of
-a content scan (0 is not unlimited — it means the default of 1000).
+then skipped with one acknowledgement.
+
+`maxArchiveMemberCount` bounds both archive walks, each counting what it
+processes: the content scan counts unpack candidates (members past the name
+filter with content to read), the member-name checks count every archive entry,
+directories included. Over the limit the content scan stops and acknowledges the
+archive (members already scanned stay reported), while the name-check walk
+checks nothing and emits one skip acknowledgement. For `.tar.gz` both walks are
+additionally bounded by the decompression budget (4x `maxTotalArchiveMemory`),
+because listing members decompresses through their bodies and a member count
+alone never stops a gzip bomb. 0 is not unlimited — it means the default of
+1000.
 
 Files over `maxContentScanFileSize` are reported as *skipped* rather than
 content-scanned. Archive members over the per-file or total-memory budget are

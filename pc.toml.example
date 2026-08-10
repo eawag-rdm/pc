@@ -43,7 +43,7 @@
 maxArchiveFileSize = 10485760
 # Maximum total memory for archive processing (bytes) - 500MB
 maxTotalArchiveMemory = 536870912
-# Max unpack-candidate members per archive for content checks (0 = default 1000, not unlimited)
+# Max members per archive: content scan counts unpack candidates, name walk counts all entries (0 = default 1000, not unlimited)
 maxArchiveMemberCount = 1000
 # Page ceiling per PDF; a longer PDF is skipped whole (0 = default 10, not unlimited)
 maxPDFPages = 10

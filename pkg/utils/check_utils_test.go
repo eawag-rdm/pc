@@ -1,10 +1,16 @@
 package utils
 
 import (
+	"archive/zip"
 	"context"
+	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
+	"github.com/eawag-rdm/pc/pkg/checks"
 	"github.com/eawag-rdm/pc/pkg/optimization"
 	"github.com/eawag-rdm/pc/pkg/structs"
 
@@ -340,5 +346,64 @@ func TestApplyChecksFilteredByFile(t *testing.T) {
 				t.Errorf("%v: ApplyChecksFilteredByFile() = %v; want %v", test.name, result, test.expected)
 			}
 		})
+	}
+}
+
+// buildNamedZip writes a zip whose members all carry a check-triggering name.
+func buildNamedZip(t *testing.T, names []string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "members.zip")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create zip: %v", err)
+	}
+	zw := zip.NewWriter(f)
+	for _, name := range names {
+		w, err := zw.Create(name)
+		if err != nil {
+			t.Fatalf("create member: %v", err)
+		}
+		if _, err := w.Write([]byte("x")); err != nil {
+			t.Fatalf("write member: %v", err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("close zip: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close file: %v", err)
+	}
+	return path
+}
+
+// TestArchiveFileListChecks_WalkCapSkipsArchive: an archive past the member
+// limit yields exactly one skip acknowledgement and NO checks over its partial
+// member list; the same archive under the limit is checked normally.
+func TestArchiveFileListChecks_WalkCapSkipsArchive(t *testing.T) {
+	path := buildNamedZip(t, []string{"a file.txt", "b file.txt", "c file.txt"})
+	archive := structs.File{Path: path, Name: "members.zip", DisplayName: "members.zip", IsArchive: true}
+	nameChecks := []func(file structs.File, config config.Config) []structs.Message{checks.HasNoWhiteSpace}
+
+	const memberLimit = 2
+	capped := config.Config{General: &config.GeneralConfig{MaxArchiveMemberCount: memberLimit}}
+	msgs := ApplyChecksFilteredByFileOnArchiveFileList(context.Background(), capped, nameChecks, []structs.File{archive})
+	if len(msgs) != 1 {
+		t.Fatalf("expected exactly the archive skip acknowledgement, got %d: %v", len(msgs), msgs)
+	}
+	if !msgs[0].Skipped || msgs[0].Reason == "" {
+		t.Errorf("walk-cap message must be a skip acknowledgement with a reason: %+v", msgs[0])
+	}
+	if !strings.Contains(msgs[0].Reason, fmt.Sprintf("more than %d members", memberLimit)) {
+		t.Errorf("skip reason must name the configured member limit: %q", msgs[0].Reason)
+	}
+	if src, ok := msgs[0].Source.(structs.File); !ok || src.Name != archive.Name {
+		t.Errorf("walk-cap message must be attributed to the archive, got %+v", msgs[0].Source)
+	}
+
+	// Same archive, limit above the member count: the member names are checked.
+	uncapped := config.Config{General: &config.GeneralConfig{MaxArchiveMemberCount: 10}}
+	msgs = ApplyChecksFilteredByFileOnArchiveFileList(context.Background(), uncapped, nameChecks, []structs.File{archive})
+	if len(msgs) != 3 {
+		t.Fatalf("expected one whitespace issue per member, got %d: %v", len(msgs), msgs)
 	}
 }

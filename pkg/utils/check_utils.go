@@ -292,13 +292,45 @@ func processArchiveFileList(ctx context.Context, cfg config.Config, checks []fun
 	})
 }
 
+// archiveWalkLimits derives the file-list walk bounds from the single defaulting
+// site, so a hand-built config (General nil or zero fields) gets the documented
+// defaults instead of "unlimited".
+func archiveWalkLimits(cfg config.Config) (maxMembers int, maxTotalMemory int64) {
+	general := cfg.General
+	if general == nil {
+		general = &config.GeneralConfig{}
+	}
+	_, totalMemory, memberCount := general.ArchiveLimits()
+	return memberCount, totalMemory
+}
+
+// archiveWalkSkipMessage acknowledges an archive whose member list busts the
+// walk bounds, mirroring the content path's member-count skip. It must be a
+// Message, not a logger warning: warnings collapse into the generic unscanned
+// acknowledgement in server responses, hiding the reason.
+func archiveWalkSkipMessage(archiveFile structs.File, maxMembers int) structs.Message {
+	reason := fmt.Sprintf("Skipped name checks of archive members: the archive holds more than %d members, or listing it would decompress more data than the archive walk budget allows.", maxMembers)
+	return structs.Message{
+		Content:  reason,
+		Source:   archiveFile,
+		TestName: "ArchiveFileList",
+		Skipped:  true,
+		Reason:   reason,
+	}
+}
+
 func archiveFileListChecks(ctx context.Context, cfg config.Config, checks []func(file structs.File, config config.Config) []structs.Message, archiveFile structs.File) []structs.Message {
 	var messages []structs.Message
 
-	fileList, err := readers.ReadArchiveFileList(archiveFile)
+	maxMembers, maxTotalMemory := archiveWalkLimits(cfg)
+	fileList, truncated, err := readers.ReadArchiveFileList(archiveFile, maxMembers, maxTotalMemory)
 	if err != nil {
 		output.GlobalLogger.FileWarning(archiveFile.GetDisplayName(), "Error (archive filelist checks) reading archive file list of '%s' -> %v", archiveFile.Name, err)
 		return messages
+	}
+	if truncated {
+		// The list is partial by construction: run no checks on it.
+		return append(messages, archiveWalkSkipMessage(archiveFile, maxMembers))
 	}
 
 	for _, archivedFile := range fileList {
