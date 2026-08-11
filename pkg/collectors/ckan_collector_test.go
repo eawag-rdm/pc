@@ -192,6 +192,7 @@ func TestGetCKANResources(t *testing.T) {
 	expectedFile := structs.File{
 		Path:        "https://opendata.eawag.ch/dataset/3c2ff3ab-151c-44a4-8769-fba684663020/resource/8bf5b5f2-75a0-4a6a-a484-8b4dacd324bc/download/finalreportlakeice.pdf",
 		Name:        "finalreportlakeice.pdf",
+		RelPath:     "finalreportlakeice.pdf",
 		DisplayName: "finalreportlakeice.pdf",
 		Size:        8655745,
 		Suffix:      ".pdf",
@@ -199,6 +200,77 @@ func TestGetCKANResources(t *testing.T) {
 
 	if files[0] != expectedFile {
 		t.Errorf("expected file %+v, got %+v", expectedFile, files[0])
+	}
+}
+
+// TestCkanCollectorRelPath asserts a resource's RelPath is its CKAN name
+// (the namespace is flat) and that it survives the FileStore rewrite, which
+// replaces Path with the local blob path. A resource with an empty name falls
+// back to the URL basename, for RelPath exactly as for Name.
+func TestCkanCollectorRelPath(t *testing.T) {
+	root := t.TempDir()
+
+	// blobFor creates the FileStore blob a resource id shards to.
+	blobFor := func(t *testing.T, resID string) string {
+		t.Helper()
+		dir := filepath.Join(root, "resources", resID[:3], resID[3:6])
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("failed to create dirs: %v", err)
+		}
+		blob := filepath.Join(dir, resID[6:])
+		if err := os.WriteFile(blob, []byte("hello"), 0o644); err != nil {
+			t.Fatalf("failed to write file: %v", err)
+		}
+		return blob
+	}
+	resURL := func(resID, filename string) string {
+		return "https://opendata.eawag.ch/dataset/d/resource/" + resID + "/download/" + filename
+	}
+
+	const namedID = "f46e74be-1c61-4866-81da-9282c37c0c42"
+	const unnamedID = "a1b2c3d4-1c61-4866-81da-9282c37c0c42"
+	namedBlob := blobFor(t, namedID)
+	unnamedBlob := blobFor(t, unnamedID)
+
+	jsonMap := buildCKANJSON("my-package", []map[string]interface{}{
+		{"url_type": "upload", "name": "data file.csv", "url": resURL(namedID, "data%20file.csv"), "size": float64(5)},
+		{"url_type": "upload", "name": "", "url": resURL(unnamedID, "blob.csv"), "size": float64(5)},
+	})
+	result := jsonMap["result"].(map[string]interface{})
+
+	cfg := config.Config{Collectors: map[string]*config.CollectorConfig{
+		"CkanCollector": {Attrs: map[string]interface{}{"ckan_storage_path": root}},
+	}}
+
+	files, err := CkanFilesFromResult(result, cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(files) != 2 {
+		t.Fatalf("expected 2 files, got %d", len(files))
+	}
+
+	tests := []struct {
+		name     string
+		file     structs.File
+		wantPath string
+		wantRel  string
+	}{
+		{"named resource", files[0], namedBlob, "data file.csv"},
+		{"empty resource name falls back to the URL base", files[1], unnamedBlob, "blob.csv"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.file.Path != tt.wantPath {
+				t.Errorf("Path = %q, want the FileStore blob path %q", tt.file.Path, tt.wantPath)
+			}
+			if tt.file.RelPath != tt.wantRel {
+				t.Errorf("RelPath = %q, want %q", tt.file.RelPath, tt.wantRel)
+			}
+			if tt.file.RelPath != tt.file.Name {
+				t.Errorf("RelPath = %q, want it to equal Name %q", tt.file.RelPath, tt.file.Name)
+			}
+		})
 	}
 }
 

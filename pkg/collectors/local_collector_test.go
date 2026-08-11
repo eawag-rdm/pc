@@ -160,6 +160,76 @@ func TestLocalCollectorFolderDepth(t *testing.T) {
 	})
 }
 
+// TestLocalCollectorRelPath asserts RelPath carries the slash-separated path
+// relative to the scanned root, for the unlimited and the depth-limited walk
+// alike; a top-level entry's RelPath equals its Name.
+func TestLocalCollectorRelPath(t *testing.T) {
+	root := depthTestTree(t)
+
+	// Keyed by RelPath, which is unique within a scan (Name is not); the value
+	// pins the basename that goes with it.
+	assertRelPaths := func(t *testing.T, files []structs.File, want map[string]string) {
+		t.Helper()
+		got := make(map[string]string, len(files))
+		for _, f := range files {
+			if prev, dup := got[f.RelPath]; dup {
+				t.Fatalf("RelPath %q collected twice (names %q and %q)", f.RelPath, prev, f.Name)
+			}
+			got[f.RelPath] = f.Name
+		}
+		if len(got) != len(want) {
+			t.Fatalf("expected %d entries, got %v", len(want), got)
+		}
+		for rel, name := range want {
+			if got[rel] != name {
+				t.Errorf("entry %q: Name = %q, want %q", rel, got[rel], name)
+			}
+		}
+	}
+
+	t.Run("unlimited walk", func(t *testing.T) {
+		files, err := LocalCollector(root, depthTestConfig(map[string]interface{}{"includeFolders": true}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertRelPaths(t, files, map[string]string{
+			"f0.txt":       "f0.txt",
+			"d1":           "d1",
+			"d1/f1.txt":    "f1.txt",
+			"d1/d2":        "d2",
+			"d1/d2/f2.txt": "f2.txt",
+		})
+	})
+
+	t.Run("depth-limited walk", func(t *testing.T) {
+		files, err := LocalCollector(root, depthTestConfig(map[string]interface{}{"maxFolderDepth": int64(1)}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertRelPaths(t, files, map[string]string{
+			"f0.txt":    "f0.txt",
+			"d1":        "d1",
+			"d1/f1.txt": "f1.txt",
+			"d1/d2":     "d2",
+		})
+	})
+
+	// The root prefix is cut at a separator boundary only, so scanning "." does
+	// not eat the leading dot of a dotfile.
+	t.Run("dotfile under a relative root", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, ".hidden"), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Chdir(dir)
+		files, err := LocalCollector(".", depthTestConfig(nil))
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertRelPaths(t, files, map[string]string{".hidden": ".hidden"})
+	})
+}
+
 func TestLocalCollectorMaxFileCount(t *testing.T) {
 	root := depthTestTree(t)
 	files, err := LocalCollector(root, depthTestConfig(map[string]interface{}{"includeFolders": true, "maxFileCount": int64(2)}))

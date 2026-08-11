@@ -98,7 +98,18 @@ func LocalCollector(path string, config config.Config) ([]structs.File, error) {
 	}
 
 	foundFiles := []structs.File{}
+	// Walk paths are built as root + separator + entry, so cutting this prefix
+	// yields the repo-relative path as a slice of the walk path - no allocation
+	// per entry, and never filepath.Rel (which allocates and canonicalizes).
+	// A "." root contributes no prefix at all: WalkDir cleans it away.
 	sep := string(os.PathSeparator)
+	rootPrefix := ""
+	if cleanPath != "." {
+		rootPrefix = cleanPath
+		if !strings.HasSuffix(rootPrefix, sep) {
+			rootPrefix += sep
+		}
+	}
 
 	err = filepath.WalkDir(cleanPath, func(currentPath string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -117,18 +128,19 @@ func LocalCollector(path string, config config.Config) ([]structs.File, error) {
 			return filepath.SkipAll
 		}
 
+		rel := filepath.ToSlash(strings.TrimPrefix(currentPath, rootPrefix))
+
 		if d.IsDir() {
 			if attrs.depth == 0 {
 				// Top-level-only mode: directories are neither listed nor entered.
 				return filepath.SkipDir
 			}
-			foundFiles = append(foundFiles, structs.ToFile(currentPath, d.Name(), -1, ""))
-			if attrs.depth > 0 {
-				rel := strings.TrimPrefix(strings.TrimPrefix(currentPath, cleanPath), sep)
-				if strings.Count(rel, sep) >= attrs.depth {
-					// Boundary-depth directory: listed but not descended.
-					return filepath.SkipDir
-				}
+			dir := structs.ToFile(currentPath, d.Name(), -1, "")
+			dir.RelPath = rel
+			foundFiles = append(foundFiles, dir)
+			if attrs.depth > 0 && strings.Count(rel, "/") >= attrs.depth {
+				// Boundary-depth directory: listed but not descended.
+				return filepath.SkipDir
 			}
 		} else {
 			// Add regular files
@@ -137,7 +149,9 @@ func LocalCollector(path string, config config.Config) ([]structs.File, error) {
 				output.GlobalLogger.Warning("Warning: could not get info for file %s: %v", currentPath, err)
 				return nil
 			}
-			foundFiles = append(foundFiles, structs.ToFile(currentPath, d.Name(), info.Size(), ""))
+			file := structs.ToFile(currentPath, d.Name(), info.Size(), "")
+			file.RelPath = rel
+			foundFiles = append(foundFiles, file)
 		}
 
 		return nil

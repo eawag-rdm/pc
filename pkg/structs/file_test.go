@@ -47,5 +47,13 @@ func TestNewFile(t *testing.T) {
 		if got.Path != tt.want.Path || got.Name != tt.want.Name || got.Size != tt.want.Size || got.Suffix != tt.want.Suffix || got.IsArchive != tt.want.IsArchive {
 			t.Errorf("newFile(%q, %q, %d, %q) = %+v; want %+v", tt.fpath, tt.name, tt.size, tt.suffix, got, tt.want)
 		}
+		// Without a root the constructor knows, RelPath is the name - including
+		// the empty-name case, where Name itself is derived from the path base.
+		if got.RelPath != got.Name {
+			t.Errorf("newFile(%q, %q, %d, %q): RelPath = %q, want Name %q", tt.fpath, tt.name, tt.size, tt.suffix, got.RelPath, got.Name)
+		}
+		if got.RelPath != tt.want.Name {
+			t.Errorf("newFile(%q, %q, %d, %q): RelPath = %q, want %q", tt.fpath, tt.name, tt.size, tt.suffix, got.RelPath, tt.want.Name)
+		}
 	}
 }

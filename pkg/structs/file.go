@@ -11,8 +11,13 @@ type Repository struct {
 }
 
 type File struct {
-	Path        string
-	Name        string
+	Path string
+	Name string
+	// RelPath is the slash-separated path within the containing collection: the
+	// scan root for local files, the archive root for members, the flat resource
+	// name for CKAN (untrusted text - match on it, never join it onto a root).
+	// Defaults to Name where no root is known.
+	RelPath     string
 	DisplayName string // User-friendly name (CKAN resource name or filename)
 	Size        int64
 	Suffix      string
@@ -57,6 +62,7 @@ func ToFileWithDisplay(fpath string, name string, displayName string, size int64
 	return File{
 		Path:        fpath,
 		Name:        name,
+		RelPath:     name,
 		DisplayName: displayName,
 		Size:        size,
 		Suffix:      suffix,
