@@ -180,6 +180,34 @@ func TestIteratorEdgeCases(t *testing.T) {
 }
 
 func TestFiltersDuringArchiveIteration(t *testing.T) {
+	// FROZEN TABLE - scope: the ARCHIVE MEMBER FILTER only, i.e. the pattern
+	// lists handed to the iterator and read by fileGoodToUnpack ->
+	// matchLiteralPatterns -> FastMatcher.HasAnyMatch. The file-check filter
+	// site is a different mechanism, already migrated at HEAD; nothing here
+	// asserts anything about it.
+	//
+	// Every row asserts the member-filter semantics as they are TODAY:
+	// - literal substring, never a regex;
+	// - case-insensitive (both pattern and member name are lowered);
+	// - matched over the FULL member path, not the basename;
+	// - a non-empty blacklist DISABLES the whitelist - fileGoodToUnpack never
+	//   consults the whitelist once the blacklist is non-empty (this is not
+	//   "blacklist wins" per member: a whitelist-only verdict is unreachable);
+	// - an empty list entry is skipped by FastMatcher.HasAnyMatch, so it
+	//   matches nothing at all.
+	//
+	// Legal moves for the Selector migration commit:
+	// - the EXPECTATIONS of existing rows MAY change - that diff IS the
+	//   user-visible release note for the semantics change;
+	// - new rows MAY be appended at the end;
+	// - a row MAY be deleted ONLY when its input becomes unconstructible at
+	//   this layer (rejected at selector compile time), and the deleting
+	//   commit MUST re-assert that input's rejection in
+	//   TestArchiveFilterRejectsInvalidPatterns in this package (to be created
+	//   by that commit);
+	// - row names and row order are otherwise stable, and names describe the
+	//   INPUT, never the outcome.
+	//
 	// The one_of_each archives contain:
 	// - an empty file
 	// - a valid file with a size of 175 kB
@@ -188,6 +216,15 @@ func TestFiltersDuringArchiveIteration(t *testing.T) {
 	// - a binary file with a size of 1 MB
 	// - a valid file to whitelist
 	// - a valid file to blacklist
+	//
+	// The filter_semantics archives (built by
+	// testdata/archives/gen_filter_semantics.go) contain four small text
+	// members, chosen so that a literal reading and a regex reading of the
+	// same pattern disagree:
+	// - app.log             regex `.*\.log$` selects it, the literal never does
+	// - temp.*.txt          the only member holding the literal text `temp.*`
+	// - temporary_notes.txt regex `temp.*` selects it, the literal never does
+	// - UPPER_CASE.TXT      uppercase name, matched today by a lowercase pattern
 	baseTests := []struct {
 		name          string
 		baseFile      string
@@ -203,6 +240,33 @@ func TestFiltersDuringArchiveIteration(t *testing.T) {
 		{"Archive with blacklist filter", "one_of_each", 2 * 1024 * 1024, []string{}, []string{".blst"}, []string{"large_valid.txt", "very_large_but_valid.txt", "white/to_be_whitelisted.wlst"}},
 		{"Archive with overlapping filters", "one_of_each", 0.5 * 1024 * 1024, []string{}, []string{".blst"}, []string{"large_valid.txt", "white/to_be_whitelisted.wlst"}},
 		{"Archive with overlapping filters 2", "one_of_each", 10, []string{"wlst"}, []string{}, []string{}},
+		// Regex metacharacters are matched literally: no member path holds the
+		// text `.*\.log$`, so the whitelist admits nothing and the blacklist
+		// excludes nothing - app.log survives both.
+		{"Archive with whitelist `.*\\.log$`", "filter_semantics", 2 * 1024 * 1024, []string{`.*\.log$`}, []string{}, []string{}},
+		{"Archive with blacklist `.*\\.log$`", "filter_semantics", 2 * 1024 * 1024, []string{}, []string{`.*\.log$`}, []string{"app.log", "temp.*.txt", "temporary_notes.txt", "UPPER_CASE.TXT"}},
+		// `temp.*` reaches only the member that spells it out, never the one a
+		// regex would reach through `.*`.
+		{"Archive with whitelist `temp.*`", "filter_semantics", 2 * 1024 * 1024, []string{"temp.*"}, []string{}, []string{"temp.*.txt"}},
+		// A glob-shaped pattern is a valid literal here (and an invalid regex).
+		{"Archive with whitelist `*.txt`", "filter_semantics", 2 * 1024 * 1024, []string{"*.txt"}, []string{}, []string{"temp.*.txt"}},
+		// Matching is case-insensitive in both directions.
+		{"Archive with lowercase whitelist `upper_case`", "filter_semantics", 2 * 1024 * 1024, []string{"upper_case"}, []string{}, []string{"UPPER_CASE.TXT"}},
+		{"Archive with uppercase blacklist `TEMPORARY`", "filter_semantics", 2 * 1024 * 1024, []string{}, []string{"TEMPORARY"}, []string{"app.log", "temp.*.txt", "UPPER_CASE.TXT"}},
+		// Matching runs over the full member path, so a directory component is
+		// a usable pattern - a basename-only subject would admit nothing here.
+		{"Archive with whitelist on a directory component", "one_of_each", 2 * 1024 * 1024, []string{"white/"}, []string{}, []string{"white/to_be_whitelisted.wlst"}},
+		// Both lists set: the whitelist is not consulted at all, so `temp` does
+		// not restrict anything and every member outside the blacklist is
+		// admitted. The iterator takes raw lists, so this input is
+		// constructible here even though the config layer rejects both-set.
+		{"Archive with whitelist `temp` and blacklist `.log`", "filter_semantics", 2 * 1024 * 1024, []string{"temp"}, []string{".log"}, []string{"temp.*.txt", "temporary_notes.txt", "UPPER_CASE.TXT"}},
+		// An empty list entry is skipped by FastMatcher.HasAnyMatch, so it
+		// matches nothing: alone as a whitelist it admits nothing, alone as a
+		// blacklist it excludes nothing, and beside a real entry it is inert.
+		{"Archive with empty whitelist entry", "filter_semantics", 2 * 1024 * 1024, []string{""}, []string{}, []string{}},
+		{"Archive with empty blacklist entry", "filter_semantics", 2 * 1024 * 1024, []string{}, []string{""}, []string{"app.log", "temp.*.txt", "temporary_notes.txt", "UPPER_CASE.TXT"}},
+		{"Archive with empty and non-empty whitelist entries", "filter_semantics", 2 * 1024 * 1024, []string{"", "temp.*"}, []string{}, []string{"temp.*.txt"}},
 	}
 
 	var tests []struct {
