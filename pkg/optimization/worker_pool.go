@@ -89,10 +89,11 @@ func (wp *WorkerPool) worker(id int) {
 
 // FunctionName returns the bare name of a function value. It is the single
 // shared implementation for deriving check/test names (pkg/utils uses it too).
+// It runs per file x check on the filter path, so it slices the last dot segment
+// out of the symbol name instead of splitting it - the split allocated.
 func FunctionName(i interface{}) string {
 	fullName := runtime.FuncForPC(reflect.ValueOf(i).Pointer()).Name()
-	parts := strings.Split(fullName, ".")
-	return parts[len(parts)-1]
+	return fullName[strings.LastIndexByte(fullName, '.')+1:]
 }
 
 // processWorkItem applies all checks to a single file

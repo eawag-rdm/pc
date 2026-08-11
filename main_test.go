@@ -286,6 +286,61 @@ func TestInvalidConfig(t *testing.T) {
 	}
 }
 
+// TestInvalidFilterPattern asserts the second boot gate: a whitelist/blacklist
+// pattern that does not compile is refused before anything is scanned, with the
+// same config_error envelope a malformed config produces. Before the selector
+// rework a bad whitelist silently skipped every file instead.
+func TestInvalidFilterPattern(t *testing.T) {
+	tempDir := t.TempDir()
+
+	configPath := filepath.Join(tempDir, "bad_pattern.toml")
+	configContent := `[operation.main]
+collector = "LocalCollector"
+
+[test.IsFreeOfKeywords]
+keywordArguments = [
+    { keywords = ["password"], info = "Test security check" }
+]
+
+[test.IsValidName]
+keywordArguments = [
+    { disallowed_names = [".DS_Store"] }
+]
+
+[test.HasReadme]
+keywordArguments = [
+    { readme_names = ["readme.md"] }
+]
+
+[test.HasOnlyASCII]
+whitelist = ["("]
+
+[collector.LocalCollector]
+attrs = {includeFolders = true}
+`
+	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+		t.Fatalf("Failed to create config file: %v", err)
+	}
+
+	cmd := exec.Command(testBinaryPath, "-config", configPath, "-location", tempDir, "-no-tui", "-json")
+	output, _ := cmd.CombinedOutput()
+
+	var errorResult map[string]interface{}
+	if err := json.Unmarshal(output, &errorResult); err != nil {
+		t.Fatalf("Output is not valid JSON: %v\nOutput: %s", err, string(output))
+	}
+	errorMap, ok := errorResult["error"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("Expected a config_error envelope for an uncompilable pattern. Output: %s", string(output))
+	}
+	if errorMap["type"] != "config_error" {
+		t.Errorf("Error type should be 'config_error', got %v", errorMap["type"])
+	}
+	if msg, _ := errorMap["message"].(string); !strings.Contains(msg, "HasOnlyASCII") {
+		t.Errorf("Error message should name the offending [test.X] section, got %q", msg)
+	}
+}
+
 func TestNonexistentLocation(t *testing.T) {
 	tempDir := t.TempDir()
 

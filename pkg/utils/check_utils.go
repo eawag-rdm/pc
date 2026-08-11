@@ -2,10 +2,10 @@ package utils
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"regexp"
 	"runtime"
-	"strings"
+	"sort"
 	"sync"
 
 	"github.com/eawag-rdm/pc/pkg/checks"
@@ -14,6 +14,7 @@ import (
 	"github.com/eawag-rdm/pc/pkg/optimization"
 	"github.com/eawag-rdm/pc/pkg/output"
 	"github.com/eawag-rdm/pc/pkg/readers"
+	"github.com/eawag-rdm/pc/pkg/selector"
 	"github.com/eawag-rdm/pc/pkg/structs"
 )
 
@@ -59,47 +60,144 @@ var BY_FILE_ON_ARCHIVE_FILE_LIST = []func(file structs.File, config config.Confi
 	checks.IsValidName,
 }
 
-func matchRegexPatterns(list []string, str string) bool {
-	combinedPattern := strings.Join(list, "|")
-	combinedRegex, err := regexp.Compile(combinedPattern)
-	if err != nil {
-		output.GlobalLogger.Warning("Error compiling regex pattern '%s': %v", combinedPattern, err)
-		return false
-	}
-	return combinedRegex.MatchString(str)
+// CheckSelectors holds the file filter of every file-scope [test.X] section that
+// declares one, keyed by section name. It is compiled ONCE at startup by each
+// frontend and is read-only afterwards, so all workers share it without locking -
+// unlike the joined regex it replaces, which was recompiled per file x check.
+// The zero value filters nothing.
+type CheckSelectors struct {
+	byCheck map[string]*selector.Selector
 }
 
-// this function will decide if a check runs or skipped depending on the
-// configuration file whitelist and blacklist and the file being passed
-// the functiion will return true or false
-func skipFileCheck(config config.Config, fileCheck func(file structs.File, config config.Config) []structs.Message, file structs.File) bool {
-	checkName := optimization.FunctionName(fileCheck)
+// errBothLists rejects a section that sets both lists. LoadConfig's assesLists
+// rejects it too, but ParseConfig does not, and the two lists no longer have the
+// same precedence (exclude wins, not whitelist), so the constructor must not
+// silently pick one.
+var errBothLists = errors.New("both lists are set; use only one")
 
+// filterSection names the [test.X] section a file check filters on.
+func filterSection(check func(file structs.File, config config.Config) []structs.Message) string {
+	name := optimization.FunctionName(check)
 	// Handle special case: IsArchiveFreeOfKeywords uses IsFreeOfKeywords config
-	configName := checkName
-	if checkName == "IsArchiveFreeOfKeywords" {
-		configName = "IsFreeOfKeywords"
+	if name == "IsArchiveFreeOfKeywords" {
+		return "IsFreeOfKeywords"
 	}
-
-	if _, exists := config.Tests[configName]; !exists {
-		return false
-	}
-	if len(config.Tests[configName].Whitelist) > 0 {
-		return !matchRegexPatterns(config.Tests[configName].Whitelist, file.Name)
-	}
-
-	if len(config.Tests[configName].Blacklist) > 0 {
-		return matchRegexPatterns(config.Tests[configName].Blacklist, file.Name)
-	}
-	return false
+	return name
 }
 
-func ApplyChecksFilteredByFile(ctx context.Context, config config.Config, checks []func(file structs.File, config config.Config) []structs.Message, files []structs.File) []structs.Message {
+// fileFilterSections collects the sections file dispatch actually filters on.
+// Repository-scoped sections (IsFreeOfSecrets, HasReadme) are deliberately not
+// among them: skipFileCheck never consults those, and their lists belong to the
+// checks themselves - leakcheck compiles its own filter and tolerates patterns
+// this constructor rejects, so compiling them here would fail startup over a
+// pattern nothing on this path uses.
+func fileFilterSections() map[string]struct{} {
+	tables := [][]func(file structs.File, config config.Config) []structs.Message{
+		BY_FILE, BY_FILE_ON_ARCHIVE, BY_FILE_ON_ARCHIVE_FILE_LIST,
+	}
+	sections := make(map[string]struct{}, len(BY_FILE)+len(BY_FILE_ON_ARCHIVE)+len(BY_FILE_ON_ARCHIVE_FILE_LIST))
+	for _, table := range tables {
+		for _, check := range table {
+			sections[filterSection(check)] = struct{}{}
+		}
+	}
+	return sections
+}
+
+// CompileCheckSelectors compiles one selector per file-scope [test.X] section
+// that carries a whitelist or a blacklist: whitelist -> include, blacklist ->
+// exclude, matched case-sensitively against the file's base name. A section
+// without lists gets no entry, and its check is therefore never skipped.
+//
+// Each pattern is compiled on its own, never joined with "|": an inline flag
+// like (?i) now scopes to the entry that spells it instead of leaking into every
+// later entry of the list. Patterns that do not compile - and sections that set
+// both lists - fail startup here, aggregated and named by section, instead of
+// silently filtering everything (whitelist) or nothing (blacklist).
+func CompileCheckSelectors(cfg config.Config) (CheckSelectors, error) {
+	sections := fileFilterSections()
+	names := make([]string, 0, len(cfg.Tests))
+	for name, test := range cfg.Tests {
+		if test == nil || (len(test.Whitelist) == 0 && len(test.Blacklist) == 0) {
+			continue
+		}
+		if _, filters := sections[name]; !filters {
+			continue
+		}
+		names = append(names, name)
+	}
+	if len(names) == 0 {
+		return CheckSelectors{}, nil
+	}
+	sort.Strings(names) // map order is random; error order must not be
+
+	table := CheckSelectors{byCheck: make(map[string]*selector.Selector, len(names))}
+	var errs []error
+	for _, name := range names {
+		test := cfg.Tests[name]
+		if len(test.Whitelist) > 0 && len(test.Blacklist) > 0 {
+			errs = append(errs, &selector.CompileError{
+				Rule:   name,
+				Faults: []selector.Fault{{Field: "whitelist", Index: -1, Value: "blacklist", Err: errBothLists}},
+			})
+			continue
+		}
+		sel, err := selector.Compile(selector.Spec{
+			Rule:    name,
+			Include: test.Whitelist,
+			Exclude: test.Blacklist,
+		})
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		table.byCheck[name] = &sel
+	}
+	if len(errs) > 0 {
+		return CheckSelectors{}, errors.Join(errs...)
+	}
+	return table, nil
+}
+
+// resolve pairs each check of one dispatch call with its selector, ONCE per
+// call: nil means "this check is unfiltered", and a nil result means "none of
+// these checks is filtered". Reflection and the section lookup happen here, so
+// the per-file loop costs an index and a nil test.
+func (s CheckSelectors) resolve(checks []func(file structs.File, config config.Config) []structs.Message) []*selector.Selector {
+	if len(s.byCheck) == 0 {
+		return nil
+	}
+	sels := make([]*selector.Selector, len(checks))
+	filtered := false
+	for i, check := range checks {
+		if sel, ok := s.byCheck[filterSection(check)]; ok {
+			sels[i], filtered = sel, true
+		}
+	}
+	if !filtered {
+		return nil
+	}
+	return sels
+}
+
+// skipFileCheck decides whether the i-th check of a resolved dispatch runs for
+// this file. The subject is File.Name - the base name at file scope, the member
+// path inside archives.
+func skipFileCheck(sels []*selector.Selector, i int, file structs.File) bool {
+	if len(sels) == 0 || sels[i] == nil {
+		return false
+	}
+	return !sels[i].Match(file.Name)
+}
+
+func applyChecksFilteredByFile(ctx context.Context, config config.Config, selectors CheckSelectors, checks []func(file structs.File, config config.Config) []structs.Message, files []structs.File) []structs.Message {
 	// Use parallel processing for multiple files, sequential for small workloads
 	// Lowered threshold from 4 to 2 files to enable parallel processing sooner
 	if len(files) >= 2 && runtime.NumCPU() > 1 {
-		return applyChecksParallel(ctx, config, checks, files)
+		return applyChecksParallel(ctx, config, selectors, checks, files)
 	}
+
+	sels := selectors.resolve(checks)
 
 	// Sequential processing for small workloads
 	var messages = []structs.Message{}
@@ -111,16 +209,16 @@ func ApplyChecksFilteredByFile(ctx context.Context, config config.Config, checks
 		}
 		helpers.PDFTracker.AddFileIfPDF("", file)
 		// apply checks by file but only for file.Name
-		for _, check := range checks {
-			if skipFileCheck(config, check, file) {
+		for i, check := range checks {
+			if skipFileCheck(sels, i, file) {
 				continue
 			}
 			testName := optimization.FunctionName(check)
 			ret := optimization.SafeRunCheck(check, file, config, testName)
 			if ret != nil {
 				// Add test name to each message
-				for i := range ret {
-					ret[i].TestName = testName
+				for j := range ret {
+					ret[j].TestName = testName
 				}
 				messages = append(messages, ret...)
 			}
@@ -129,10 +227,11 @@ func ApplyChecksFilteredByFile(ctx context.Context, config config.Config, checks
 	return messages
 }
 
-// ApplyChecksFilteredByFileWithTestProgress reports progress per test (including skipped tests)
-func ApplyChecksFilteredByFileWithTestProgress(ctx context.Context, config config.Config, checks []func(file structs.File, config config.Config) []structs.Message, files []structs.File, progressCallback func(int)) []structs.Message {
+// applyChecksFilteredByFileWithTestProgress reports progress per test (including skipped tests)
+func applyChecksFilteredByFileWithTestProgress(ctx context.Context, config config.Config, selectors CheckSelectors, checks []func(file structs.File, config config.Config) []structs.Message, files []structs.File, progressCallback func(int)) []structs.Message {
 	var messages = []structs.Message{}
 	testsProcessed := 0
+	sels := selectors.resolve(checks)
 
 	for _, file := range files {
 		if ctx.Err() != nil {
@@ -141,14 +240,14 @@ func ApplyChecksFilteredByFileWithTestProgress(ctx context.Context, config confi
 		helpers.PDFTracker.AddFileIfPDF("", file)
 
 		// Process all checks for this file (including skipped ones)
-		for _, check := range checks {
+		for i, check := range checks {
 			// Count this test (whether run or skipped)
 			testsProcessed++
 			if progressCallback != nil {
 				progressCallback(testsProcessed)
 			}
 
-			if skipFileCheck(config, check, file) {
+			if skipFileCheck(sels, i, file) {
 				continue // Skip this test, but we already counted it
 			}
 
@@ -175,12 +274,12 @@ type checkWorkItem struct {
 
 // filterChecksForFiles builds the work list: one entry per file that has at
 // least one non-skipped check.
-func filterChecksForFiles(cfg config.Config, checks []func(file structs.File, config config.Config) []structs.Message, files []structs.File) []checkWorkItem {
+func filterChecksForFiles(sels []*selector.Selector, checks []func(file structs.File, config config.Config) []structs.Message, files []structs.File) []checkWorkItem {
 	workItems := make([]checkWorkItem, 0, len(files))
 	for _, file := range files {
-		var validChecks []func(structs.File, config.Config) []structs.Message
-		for _, check := range checks {
-			if !skipFileCheck(cfg, check, file) {
+		validChecks := make([]func(structs.File, config.Config) []structs.Message, 0, len(checks))
+		for i, check := range checks {
+			if !skipFileCheck(sels, i, file) {
 				validChecks = append(validChecks, check)
 			}
 		}
@@ -243,14 +342,14 @@ func runChecksPool(ctx context.Context, cfg config.Config, workItems []checkWork
 }
 
 // applyChecksParallel processes files concurrently using a worker pool.
-func applyChecksParallel(ctx context.Context, cfg config.Config, checks []func(file structs.File, config config.Config) []structs.Message, files []structs.File) []structs.Message {
+func applyChecksParallel(ctx context.Context, cfg config.Config, selectors CheckSelectors, checks []func(file structs.File, config config.Config) []structs.Message, files []structs.File) []structs.Message {
 	for _, file := range files {
 		helpers.PDFTracker.AddFileIfPDF("", file)
 	}
-	return runChecksPool(ctx, cfg, filterChecksForFiles(cfg, checks, files), runtime.NumCPU())
+	return runChecksPool(ctx, cfg, filterChecksForFiles(selectors.resolve(checks), checks, files), runtime.NumCPU())
 }
 
-func ApplyChecksFilteredByFileOnArchiveFileList(ctx context.Context, config config.Config, checks []func(file structs.File, config config.Config) []structs.Message, files []structs.File) []structs.Message {
+func applyChecksFilteredByFileOnArchiveFileList(ctx context.Context, config config.Config, selectors CheckSelectors, checks []func(file structs.File, config config.Config) []structs.Message, files []structs.File) []structs.Message {
 	// Filter to only archive files
 	var archiveFiles []structs.File
 	for _, file := range files {
@@ -263,9 +362,11 @@ func ApplyChecksFilteredByFileOnArchiveFileList(ctx context.Context, config conf
 		return []structs.Message{}
 	}
 
+	sels := selectors.resolve(checks)
+
 	// Use parallel processing for multiple archives
 	if len(archiveFiles) >= 2 && runtime.NumCPU() > 1 {
-		return applyArchiveFileListChecksParallel(ctx, config, checks, archiveFiles)
+		return applyArchiveFileListChecksParallel(ctx, config, sels, checks, archiveFiles)
 	}
 
 	// Sequential processing for single archive or single CPU
@@ -274,7 +375,7 @@ func ApplyChecksFilteredByFileOnArchiveFileList(ctx context.Context, config conf
 		if ctx.Err() != nil {
 			return messages
 		}
-		msgs := processArchiveFileList(ctx, config, checks, file)
+		msgs := processArchiveFileList(ctx, config, sels, checks, file)
 		messages = append(messages, msgs...)
 	}
 	return messages
@@ -286,9 +387,9 @@ func ApplyChecksFilteredByFileOnArchiveFileList(ctx context.Context, config conf
 // ReadArchiveFileList parses untrusted archive bytes, and on the parallel path
 // this function runs in a bare worker goroutine where an unrecovered panic
 // would kill the process.
-func processArchiveFileList(ctx context.Context, cfg config.Config, checks []func(file structs.File, config config.Config) []structs.Message, archiveFile structs.File) []structs.Message {
+func processArchiveFileList(ctx context.Context, cfg config.Config, sels []*selector.Selector, checks []func(file structs.File, config config.Config) []structs.Message, archiveFile structs.File) []structs.Message {
 	return optimization.SafeRun("Processing archive '"+archiveFile.Name+"'", archiveFile.GetDisplayName(), func() []structs.Message {
-		return archiveFileListChecks(ctx, cfg, checks, archiveFile)
+		return archiveFileListChecks(ctx, cfg, sels, checks, archiveFile)
 	})
 }
 
@@ -319,7 +420,7 @@ func archiveWalkSkipMessage(archiveFile structs.File, maxMembers int) structs.Me
 	}
 }
 
-func archiveFileListChecks(ctx context.Context, cfg config.Config, checks []func(file structs.File, config config.Config) []structs.Message, archiveFile structs.File) []structs.Message {
+func archiveFileListChecks(ctx context.Context, cfg config.Config, sels []*selector.Selector, checks []func(file structs.File, config config.Config) []structs.Message, archiveFile structs.File) []structs.Message {
 	var messages []structs.Message
 
 	maxMembers, maxTotalMemory := archiveWalkLimits(cfg)
@@ -341,16 +442,16 @@ func archiveFileListChecks(ctx context.Context, cfg config.Config, checks []func
 		}
 		helpers.PDFTracker.AddFileIfPDF(archiveFile.Name+" -> ", archivedFile)
 
-		for _, check := range checks {
-			if skipFileCheck(cfg, check, archivedFile) {
+		for i, check := range checks {
+			if skipFileCheck(sels, i, archivedFile) {
 				continue
 			}
 			testName := optimization.FunctionName(check)
 			ret := optimization.SafeRunCheck(check, archivedFile, cfg, testName)
 
 			if ret != nil {
-				for i := range ret {
-					ret[i].TestName = testName
+				for j := range ret {
+					ret[j].TestName = testName
 				}
 				messages = append(messages, ret...)
 			}
@@ -361,7 +462,7 @@ func archiveFileListChecks(ctx context.Context, cfg config.Config, checks []func
 
 // applyArchiveFileListChecksParallel processes archive file list checks in parallel across archives
 // Each archive is processed by a single worker, keeping files within each archive sequential
-func applyArchiveFileListChecksParallel(ctx context.Context, cfg config.Config, checks []func(file structs.File, config config.Config) []structs.Message, archiveFiles []structs.File) []structs.Message {
+func applyArchiveFileListChecksParallel(ctx context.Context, cfg config.Config, sels []*selector.Selector, checks []func(file structs.File, config config.Config) []structs.Message, archiveFiles []structs.File) []structs.Message {
 	numWorkers := runtime.NumCPU()
 	if len(archiveFiles) < numWorkers {
 		numWorkers = len(archiveFiles)
@@ -383,7 +484,7 @@ func applyArchiveFileListChecksParallel(ctx context.Context, cfg config.Config, 
 				// processing them so the result count stays consistent.
 				var messages []structs.Message
 				if ctx.Err() == nil {
-					messages = processArchiveFileList(ctx, cfg, checks, archiveFile)
+					messages = processArchiveFileList(ctx, cfg, sels, checks, archiveFile)
 				}
 				resultChan <- messages
 			}
@@ -411,7 +512,7 @@ func applyArchiveFileListChecksParallel(ctx context.Context, cfg config.Config, 
 	return allMessages
 }
 
-func ApplyChecksFilteredByFileOnArchive(ctx context.Context, config config.Config, checks []func(file structs.File, config config.Config) []structs.Message, files []structs.File) []structs.Message {
+func applyChecksFilteredByFileOnArchive(ctx context.Context, config config.Config, selectors CheckSelectors, checks []func(file structs.File, config config.Config) []structs.Message, files []structs.File) []structs.Message {
 	// Filter to only archive files
 	var archiveFiles []structs.File
 	for _, file := range files {
@@ -426,8 +527,10 @@ func ApplyChecksFilteredByFileOnArchive(ctx context.Context, config config.Confi
 
 	// Use parallel processing for archives as they are CPU-intensive
 	if len(archiveFiles) >= 2 && runtime.NumCPU() > 1 {
-		return applyArchiveChecksParallel(ctx, config, checks, archiveFiles)
+		return applyArchiveChecksParallel(ctx, config, selectors, checks, archiveFiles)
 	}
+
+	sels := selectors.resolve(checks)
 
 	// Sequential processing for single archives
 	var messages = []structs.Message{}
@@ -435,16 +538,16 @@ func ApplyChecksFilteredByFileOnArchive(ctx context.Context, config config.Confi
 		if ctx.Err() != nil {
 			return messages
 		}
-		for _, check := range checks {
-			if skipFileCheck(config, check, file) {
+		for i, check := range checks {
+			if skipFileCheck(sels, i, file) {
 				continue
 			}
 			testName := optimization.FunctionName(check)
 			ret := optimization.SafeRunCheck(check, file, config, testName)
 			if ret != nil {
 				// Add test name to each message
-				for i := range ret {
-					ret[i].TestName = testName
+				for j := range ret {
+					ret[j].TestName = testName
 				}
 				messages = append(messages, ret...)
 			}
@@ -455,12 +558,12 @@ func ApplyChecksFilteredByFileOnArchive(ctx context.Context, config config.Confi
 
 // applyArchiveChecksParallel processes archive files in parallel. Archive
 // extraction is memory-intensive, so it uses half the CPUs.
-func applyArchiveChecksParallel(ctx context.Context, cfg config.Config, checks []func(file structs.File, config config.Config) []structs.Message, files []structs.File) []structs.Message {
+func applyArchiveChecksParallel(ctx context.Context, cfg config.Config, selectors CheckSelectors, checks []func(file structs.File, config config.Config) []structs.Message, files []structs.File) []structs.Message {
 	numWorkers := runtime.NumCPU() / 2
 	if numWorkers < 1 {
 		numWorkers = 1
 	}
-	return runChecksPool(ctx, cfg, filterChecksForFiles(cfg, checks, files), numWorkers)
+	return runChecksPool(ctx, cfg, filterChecksForFiles(selectors.resolve(checks), checks, files), numWorkers)
 }
 
 func ApplyChecksFilteredByRepository(ctx context.Context, config config.Config, checks []func(repository structs.Repository, config config.Config) []structs.Message, files []structs.File) []structs.Message {
@@ -508,14 +611,16 @@ func noFilesNotice() structs.Message {
 // or it is cancelled, the loops stop between files - a file in progress
 // finishes, no new one starts. CLI callers pass context.Background().
 //
-// Intended entry point is internal/analysis.Run (progress == nil branch), which
-// pairs this with the metadata checks; call it rather than this directly.
-func ApplyAllChecks(ctx context.Context, config config.Config, files []structs.File, checksAcrossFiles bool) []structs.Message {
+// selectors must come from CompileCheckSelectors (its zero value filters
+// nothing); both frontends compile it once at startup. Intended entry point is
+// internal/analysis.Run (progress == nil branch), which pairs this with the
+// metadata checks; call it rather than this directly.
+func ApplyAllChecks(ctx context.Context, config config.Config, selectors CheckSelectors, files []structs.File, checksAcrossFiles bool) []structs.Message {
 	var messages []structs.Message
 
-	messages = append(messages, ApplyChecksFilteredByFile(ctx, config, BY_FILE, files)...)
-	messages = append(messages, ApplyChecksFilteredByFileOnArchiveFileList(ctx, config, BY_FILE_ON_ARCHIVE_FILE_LIST, files)...)
-	messages = append(messages, ApplyChecksFilteredByFileOnArchive(ctx, config, BY_FILE_ON_ARCHIVE, files)...)
+	messages = append(messages, applyChecksFilteredByFile(ctx, config, selectors, BY_FILE, files)...)
+	messages = append(messages, applyChecksFilteredByFileOnArchiveFileList(ctx, config, selectors, BY_FILE_ON_ARCHIVE_FILE_LIST, files)...)
+	messages = append(messages, applyChecksFilteredByFileOnArchive(ctx, config, selectors, BY_FILE_ON_ARCHIVE, files)...)
 	if len(files) > 0 && secretScanEnabled(config) {
 		messages = append(messages, ApplyChecksFilteredByRepository(ctx, config, BY_REPOSITORY_SECRETS, files)...)
 	}
@@ -535,9 +640,10 @@ func ApplyAllChecks(ctx context.Context, config config.Config, files []structs.F
 // (same check groups, same messages) for the TUI. Its file phase is
 // SINGLE-THREADED by construction: per-test progress accounting needs a
 // sequential walk, so the server must never be routed here - it would serialise
-// every analysis silently. Intended caller is internal/analysis.Run (progress
-// != nil branch); everything else takes ApplyAllChecks.
-func ApplyAllChecksWithProgress(ctx context.Context, config config.Config, files []structs.File, checksAcrossFiles bool, progressCallback ProgressCallback) []structs.Message {
+// every analysis silently. selectors is the same startup-built table
+// ApplyAllChecks takes. Intended caller is internal/analysis.Run (progress !=
+// nil branch); everything else takes ApplyAllChecks.
+func ApplyAllChecksWithProgress(ctx context.Context, config config.Config, selectors CheckSelectors, files []structs.File, checksAcrossFiles bool, progressCallback ProgressCallback) []structs.Message {
 	var messages []structs.Message
 
 	// Calculate total number of tests (including skipped tests)
@@ -579,7 +685,7 @@ func ApplyAllChecksWithProgress(ctx context.Context, config config.Config, files
 		progressCallback(testsRun, totalTests, "Running file checks...")
 	}
 
-	messages = append(messages, ApplyChecksFilteredByFileWithTestProgress(ctx, config, BY_FILE, files, func(current int) {
+	messages = append(messages, applyChecksFilteredByFileWithTestProgress(ctx, config, selectors, BY_FILE, files, func(current int) {
 		testsRun = current
 		if progressCallback != nil {
 			progressCallback(testsRun, totalTests, fmt.Sprintf("Running file tests... (%d/%d)", testsRun, totalTests))
@@ -590,7 +696,7 @@ func ApplyAllChecksWithProgress(ctx context.Context, config config.Config, files
 	if progressCallback != nil {
 		progressCallback(testsRun, totalTests, "Running archive file list tests...")
 	}
-	archiveListTests := ApplyChecksFilteredByFileOnArchiveFileList(ctx, config, BY_FILE_ON_ARCHIVE_FILE_LIST, files)
+	archiveListTests := applyChecksFilteredByFileOnArchiveFileList(ctx, config, selectors, BY_FILE_ON_ARCHIVE_FILE_LIST, files)
 	messages = append(messages, archiveListTests...)
 	// Update count for archive list tests (including skipped ones)
 	for _, file := range files {
@@ -603,7 +709,7 @@ func ApplyAllChecksWithProgress(ctx context.Context, config config.Config, files
 	if progressCallback != nil {
 		progressCallback(testsRun, totalTests, "Running archive content tests...")
 	}
-	archiveContentTests := ApplyChecksFilteredByFileOnArchive(ctx, config, BY_FILE_ON_ARCHIVE, files)
+	archiveContentTests := applyChecksFilteredByFileOnArchive(ctx, config, selectors, BY_FILE_ON_ARCHIVE, files)
 	messages = append(messages, archiveContentTests...)
 	// Update count for archive content tests (including skipped ones)
 	for _, file := range files {

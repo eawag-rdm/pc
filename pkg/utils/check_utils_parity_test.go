@@ -117,14 +117,19 @@ type progressCall struct {
 func assertEngineParity(t *testing.T, cfg config.Config, files []structs.File) {
 	t.Helper()
 
+	selectors, err := CompileCheckSelectors(cfg)
+	if err != nil {
+		t.Fatalf("compile check selectors: %v", err)
+	}
+
 	resetGlobalScanState()
-	plain := ApplyAllChecks(context.Background(), cfg, files, true)
+	plain := ApplyAllChecks(context.Background(), cfg, selectors, files, true)
 
 	// The callback runs on the caller's goroutine only (the progress engine's
 	// file phase is sequential), so an unguarded slice is safe here.
 	var calls []progressCall
 	resetGlobalScanState()
-	withProgress := ApplyAllChecksWithProgress(context.Background(), cfg, files, true, func(current, total int, _ string) {
+	withProgress := ApplyAllChecksWithProgress(context.Background(), cfg, selectors, files, true, func(current, total int, _ string) {
 		calls = append(calls, progressCall{current: current, total: total})
 	})
 

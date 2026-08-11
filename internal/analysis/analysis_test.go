@@ -12,6 +12,7 @@ import (
 	"github.com/eawag-rdm/pc/pkg/metadata"
 	"github.com/eawag-rdm/pc/pkg/output"
 	"github.com/eawag-rdm/pc/pkg/structs"
+	"github.com/eawag-rdm/pc/pkg/utils"
 )
 
 // buildFiles writes a tiny PDF-free file set that makes the file pipeline emit
@@ -55,6 +56,16 @@ func testConfig(t *testing.T) config.Config {
 	return *cfg
 }
 
+// selectorsFor compiles the file filters the way each frontend does at startup.
+func selectorsFor(t *testing.T, cfg config.Config) utils.CheckSelectors {
+	t.Helper()
+	selectors, err := utils.CompileCheckSelectors(cfg)
+	if err != nil {
+		t.Fatalf("compile check selectors: %v", err)
+	}
+	return selectors
+}
+
 // resetGlobalScanState clears the process-global state the checks accumulate
 // into, so each Run starts from the same point.
 func resetGlobalScanState() {
@@ -84,7 +95,7 @@ func TestRun_NilMetadata(t *testing.T) {
 	files := buildFiles(t)
 
 	resetGlobalScanState()
-	messages := Run(context.Background(), cfg, files, nil, nil)
+	messages := Run(context.Background(), cfg, selectorsFor(t, cfg), files, nil, nil)
 	resetGlobalScanState()
 
 	if countFileMessages(messages) == 0 {
@@ -110,7 +121,7 @@ func TestRun_MetadataMessagesFirst(t *testing.T) {
 	}
 
 	resetGlobalScanState()
-	messages := Run(context.Background(), cfg, files, md, nil)
+	messages := Run(context.Background(), cfg, selectorsFor(t, cfg), files, md, nil)
 	resetGlobalScanState()
 
 	if len(messages) <= len(want) {
@@ -150,7 +161,7 @@ func TestRun_ProgressRoutesToProgressEngine(t *testing.T) {
 	var calls []call
 
 	resetGlobalScanState()
-	messages := Run(context.Background(), cfg, files, nil, func(current, total int, message string) {
+	messages := Run(context.Background(), cfg, selectorsFor(t, cfg), files, nil, func(current, total int, message string) {
 		calls = append(calls, call{current: current, total: total, message: message})
 	})
 	resetGlobalScanState()

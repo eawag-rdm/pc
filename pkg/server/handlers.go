@@ -19,6 +19,7 @@ import (
 	"github.com/eawag-rdm/pc/pkg/output"
 	jsonformatter "github.com/eawag-rdm/pc/pkg/output/json"
 	"github.com/eawag-rdm/pc/pkg/structs"
+	"github.com/eawag-rdm/pc/pkg/utils"
 )
 
 // maxAnalyzeBodyBytes caps the request body. The body is a tiny JSON object
@@ -54,6 +55,10 @@ type Handler struct {
 	contactMsg string
 	// logClientIP gates whether the client IP is recorded in access logs.
 	logClientIP bool
+	// selectors holds the per-check file filters, compiled once at boot by New
+	// (a bad pattern refuses the boot). The zero value filters nothing, which is
+	// what handler-isolation tests construct.
+	selectors utils.CheckSelectors
 
 	// analysisMu is the single serialization gate (concurrency = 1, §4/§9). It
 	// serializes the part of Analyze that touches process-global state
@@ -454,7 +459,7 @@ func (h *Handler) runAnalysis(ctx context.Context, packageID, token string) (bod
 	// checks phase too - the handler then maps the expired context to
 	// analysis_timeout (504).
 	md := metadata.CkanMetadataFromJSON(result)
-	messages := analysis.Run(ctx, pcConfigCopy, files, md, nil)
+	messages := analysis.Run(ctx, pcConfigCopy, h.selectors, files, md, nil)
 
 	if h.afterChecks != nil {
 		h.afterChecks()

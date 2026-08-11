@@ -38,7 +38,7 @@ func TestApplyAllChecks_CancelledContext_ReturnsPromptly(t *testing.T) {
 
 	done := make(chan []structs.Message, 1)
 	go func() {
-		done <- ApplyAllChecks(ctx, config.Config{}, files, true)
+		done <- ApplyAllChecks(ctx, config.Config{}, CheckSelectors{}, files, true)
 	}()
 
 	select {
@@ -65,7 +65,7 @@ func TestApplyChecksFilteredByFile_PanickingCheck_Parallel(t *testing.T) {
 		return []structs.Message{{Content: "healthy ran", Source: file}}
 	}
 
-	messages := ApplyChecksFilteredByFile(context.Background(), config.Config{},
+	messages := applyChecksFilteredByFile(context.Background(), config.Config{}, CheckSelectors{},
 		[]func(structs.File, config.Config) []structs.Message{panicking, healthy}, files)
 
 	healthyCount := 0

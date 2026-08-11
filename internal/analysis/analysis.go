@@ -33,10 +33,14 @@ import (
 //
 // checksAcrossFiles is passed as true deliberately - the knob is retired from
 // production use, every caller wants the repository-wide checks.
-func Run(ctx context.Context, cfg config.Config, files []structs.File, md *metadata.Metadata, progress utils.ProgressCallback) []structs.Message {
+//
+// selectors carries the per-check file filters, compiled once at startup by each
+// frontend (utils.CompileCheckSelectors) so a bad pattern fails the boot rather
+// than a run; its zero value filters nothing.
+func Run(ctx context.Context, cfg config.Config, selectors utils.CheckSelectors, files []structs.File, md *metadata.Metadata, progress utils.ProgressCallback) []structs.Message {
 	messages := metadata.RunChecks(md)
 	if progress == nil {
-		return append(messages, utils.ApplyAllChecks(ctx, cfg, files, true)...)
+		return append(messages, utils.ApplyAllChecks(ctx, cfg, selectors, files, true)...)
 	}
-	return append(messages, utils.ApplyAllChecksWithProgress(ctx, cfg, files, true, progress)...)
+	return append(messages, utils.ApplyAllChecksWithProgress(ctx, cfg, selectors, files, true, progress)...)
 }

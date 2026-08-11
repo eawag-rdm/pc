@@ -11,6 +11,7 @@ import (
 
 	"github.com/eawag-rdm/pc/pkg/config"
 	"github.com/eawag-rdm/pc/pkg/output"
+	"github.com/eawag-rdm/pc/pkg/utils"
 )
 
 // writeTimeoutMargin is added to the configured request timeout to derive the
@@ -66,6 +67,14 @@ func New(cfg Config) (*Server, error) {
 		return nil, fmt.Errorf("invalid PC config: %w", err)
 	}
 
+	// Compile the per-check file filters once, here: a whitelist/blacklist
+	// pattern that does not compile is an operator error, so it refuses the boot
+	// instead of failing (and alerting on) every /analyze request.
+	selectors, err := utils.CompileCheckSelectors(*pcConfig)
+	if err != nil {
+		return nil, fmt.Errorf("invalid PC config: %w", err)
+	}
+
 	// Resolve the listen address from the [server] config (the server takes no
 	// flags) and fail fast if it - or any other [server] setting - is invalid,
 	// so a bad value is caught at boot rather than at bind time or per request.
@@ -89,6 +98,7 @@ func New(cfg Config) (*Server, error) {
 
 	// Create handler
 	handler := NewHandler(pcConfig, cfg, logger)
+	handler.selectors = selectors
 
 	// Optional per-package result cache (§ result caching): keyed on CKAN's
 	// metadata_modified, and cleared here at startup. A changed config or

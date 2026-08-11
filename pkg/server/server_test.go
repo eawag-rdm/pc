@@ -61,6 +61,34 @@ func waitListening(t *testing.T, addr string) {
 	}
 }
 
+// TestNew_RejectsInvalidFilterPattern asserts the boot gate for the per-check
+// file filters: a whitelist/blacklist pattern that does not compile refuses the
+// startup (the operator's config is wrong), instead of failing - and alerting
+// on - every /analyze request while /ready reports the server usable.
+func TestNew_RejectsInvalidFilterPattern(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/pc.toml"
+	contents := testChecksTOML +
+		"[test.HasOnlyASCII]\n" +
+		"whitelist = [\"(\"]\n" +
+		"[collector.CkanCollector]\n" +
+		"attrs = {url = \"http://127.0.0.1:1\", token = \"\", verify = false, ckan_storage_path = \"" + dir + "\"}\n"
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	srv, err := New(Config{Address: "127.0.0.1:0", ConfigPath: path})
+	if err == nil {
+		t.Fatal("New accepted a config whose filter pattern does not compile")
+	}
+	if srv != nil {
+		t.Error("New must not return a server when the config is invalid")
+	}
+	if !strings.Contains(err.Error(), "HasOnlyASCII") {
+		t.Errorf("error must name the offending [test.X] section: %v", err)
+	}
+}
+
 // TestNew_ScrubsConfigToken asserts the server blanks the CLI-only TOML
 // collector token at boot, so no server code path can ever authenticate an
 // upstream CKAN call with the operator's token (per-request Bearer tokens or

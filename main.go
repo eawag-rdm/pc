@@ -21,6 +21,7 @@ import (
 	plainformatter "github.com/eawag-rdm/pc/pkg/output/plain"
 	"github.com/eawag-rdm/pc/pkg/output/tui"
 	"github.com/eawag-rdm/pc/pkg/structs"
+	"github.com/eawag-rdm/pc/pkg/utils"
 )
 
 func main() {
@@ -98,6 +99,15 @@ func main() {
 	// Fail fast (like the server does at boot) when a [test.*] section the checks
 	// dereference at scan time is missing or wrong-typed.
 	if err := config.ValidateChecksConfig(generalConfig); err != nil {
+		outputError("config_error", fmt.Sprintf("Invalid config: %v", err))
+		return
+	}
+
+	// Same gate for the per-check file filters: compile every whitelist/blacklist
+	// once, here, so a bad pattern is an operator error before anything scans -
+	// not a silently unfiltered (or fully filtered) run.
+	selectors, err := utils.CompileCheckSelectors(*generalConfig)
+	if err != nil {
 		outputError("config_error", fmt.Sprintf("Invalid config: %v", err))
 		return
 	}
@@ -186,7 +196,7 @@ func main() {
 				app.UpdateProgress(0, 1, "Starting scan...")
 
 				// Run scanning with progress updates
-				messages := analysis.Run(context.Background(), *generalConfig, files, metadataResult, func(current, total int, message string) {
+				messages := analysis.Run(context.Background(), *generalConfig, selectors, files, metadataResult, func(current, total int, message string) {
 					app.UpdateProgress(current, total, message)
 				})
 
@@ -248,7 +258,7 @@ func main() {
 		}
 	} else {
 		// Non-TUI mode: run regular scan
-		messages := analysis.Run(context.Background(), *generalConfig, files, metadataResult, nil)
+		messages := analysis.Run(context.Background(), *generalConfig, selectors, files, metadataResult, nil)
 
 		// Get collector name from config
 		collectorName := generalConfig.Operation["main"].Collector
