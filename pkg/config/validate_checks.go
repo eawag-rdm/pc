@@ -14,9 +14,14 @@ const DefaultSecretsTimeoutSeconds = 120
 // ValidateChecksConfig fails fast when a [test.*] section the checks dereference
 // at scan time is missing or wrong-typed (nil-pointer on a missing section,
 // failed type assertion on a wrong-typed key - a panic mid-scan otherwise; see
-// optimization.SafeRun for the runtime guard). Both the server (at boot) and
+// utils.SafeRun for the runtime guard). Both the server (at boot) and
 // the CLI (after config load) call this so the operator gets one clear,
 // actionable error instead.
+//
+// Parameter typing is TRANSITIONALLY validated twice: here, and again in each
+// check's Bind when utils.Compile builds the plan. The two are folded into one
+// gate at R9; until then this one is what a repository check's lists depend on,
+// because a check that returns messages only cannot report a load error.
 func ValidateChecksConfig(cfg *Config) error {
 	if cfg == nil {
 		return fmt.Errorf("config is nil")

@@ -117,19 +117,16 @@ type progressCall struct {
 func assertEngineParity(t *testing.T, cfg config.Config, files []structs.File) {
 	t.Helper()
 
-	selectors, err := CompileCheckSelectors(cfg)
-	if err != nil {
-		t.Fatalf("compile check selectors: %v", err)
-	}
+	plan := compilePlan(t, cfg)
 
 	resetGlobalScanState()
-	plain := ApplyAllChecks(context.Background(), cfg, selectors, files, true)
+	plain := ApplyAllChecks(context.Background(), cfg, plan, files, true)
 
 	// The callback runs on the caller's goroutine only (the progress engine's
 	// file phase is sequential), so an unguarded slice is safe here.
 	var calls []progressCall
 	resetGlobalScanState()
-	withProgress := ApplyAllChecksWithProgress(context.Background(), cfg, selectors, files, true, func(current, total int, _ string) {
+	withProgress := ApplyAllChecksWithProgress(context.Background(), cfg, plan, files, true, func(current, total int, _ string) {
 		calls = append(calls, progressCall{current: current, total: total})
 	})
 
@@ -196,7 +193,7 @@ func assertProgressAccounting(t *testing.T, calls []progressCall) {
 // code (parallel vs per-test-progress) that can silently drift, so assert they
 // produce the same message multiset over the same file set.
 func TestApplyAllChecks_ProgressVariantParity(t *testing.T) {
-	cfg, err := config.ParseConfig("../../testdata/test_config.toml")
+	cfg, err := config.LoadConfig("../../testdata/test_config.toml")
 	if err != nil {
 		t.Fatalf("parse test config: %v", err)
 	}

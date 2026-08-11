@@ -23,7 +23,7 @@ func readmeTestConfig(names ...string) config.Config {
 }
 
 func TestIsReadme(t *testing.T) {
-	names := readmeNames(readmeTestConfig())
+	names := []string{"readme.md", "readme.txt"}
 	tests := []struct {
 		name     string
 		file     structs.File
@@ -54,11 +54,11 @@ func TestHasReadme_ConfiguredNames(t *testing.T) {
 	}}
 
 	// Default list does not recognize README.rst.
-	if msgs := HasReadme(repo, readmeTestConfig()); len(msgs) != 1 {
+	if msgs := runRepoRule(t, "HasReadme", readmeTestConfig(), repo); len(msgs) != 1 {
 		t.Errorf("expected 1 'no readme' message with default names, got %d", len(msgs))
 	}
 	// A configured list does.
-	if msgs := HasReadme(repo, readmeTestConfig("readme.rst")); len(msgs) != 0 {
+	if msgs := runRepoRule(t, "HasReadme", readmeTestConfig("readme.rst"), repo); len(msgs) != 0 {
 		t.Errorf("expected no message with configured readme.rst, got %d", len(msgs))
 	}
 }
@@ -137,7 +137,7 @@ func TestReadMeContainsTOC(t *testing.T) {
 				tt.repository.Files[0].Path = tempFile.Name()
 			}
 
-			result := ReadMeContainsTOC(tt.repository, readmeTestConfig())
+			result := runRepoRule(t, "ReadMeContainsTOC", readmeTestConfig(), tt.repository)
 			assert.Len(t, result, len(tt.expected))
 		})
 	}

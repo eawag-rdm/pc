@@ -3,6 +3,8 @@ package config
 import (
 	"fmt"
 	"os"
+	"sort"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 )
@@ -16,6 +18,24 @@ type TestConfig struct {
 	// attrs table). Values are stored verbatim; ValidateChecksConfig type-checks
 	// the keys each check dereferences so wrong-typed values fail at config load.
 	Attrs map[string]interface{}
+}
+
+// RuleSpec is the declarative form of one rule: a named instance of a check
+// with its own parameters and its own file selector. It holds strings and raw
+// TOML values only and knows nothing about the check it names - pkg/utils
+// compiles it against the check registry. The [[rule]] TOML surface lands in a
+// later commit; for now pkg/utils translates the legacy [test.X] sections into
+// these.
+type RuleSpec struct {
+	Name       string                 // unique, operator-chosen
+	Check      string                 // registered check name
+	Scope      []string               // empty: the check's own scopes
+	Subject    string                 // "name" (default) or "path"
+	Enabled    bool                   // a disabled rule is left out of the plan
+	IgnoreCase bool                   // selector case folding
+	Include    []string               // selector include patterns
+	Exclude    []string               // selector exclude patterns
+	Params     map[string]interface{} // check-specific, type-checked by its Bind
 }
 
 type CollectorConfig struct {
@@ -378,6 +398,19 @@ func ParseConfig(filename string) (*Config, error) {
 			}
 			c.Tests[name] = tc
 		}
+		// Every faulty section at once, in a stable order: map iteration is
+		// random, so reporting the first would name a different section per run
+		// and a config author would fix them one load at a time.
+		var faulty []string
+		for name, tc := range c.Tests {
+			if err := assesLists(tc.Blacklist, tc.Whitelist); err != nil {
+				faulty = append(faulty, name)
+			}
+		}
+		if len(faulty) > 0 {
+			sort.Strings(faulty)
+			return nil, fmt.Errorf("error in test %s: only one is allowed to have entries. Either the blacklist OR the whitelist", strings.Join(faulty, ", "))
+		}
 	}
 
 	if collectorData, ok := raw["collector"].(map[string]interface{}); ok {
@@ -552,20 +585,14 @@ func assesLists(blacklist []string, whitelist []string) error {
 	return nil
 }
 
-// LoadConfig loads the configuration from a TOML file and performs the necessary checks
+// LoadConfig loads the configuration from a TOML file. ParseConfig owns every
+// check the load performs, so both entry points accept and reject exactly the
+// same configs; this wrapper only names the file in the error.
 func LoadConfig(file string) (*Config, error) {
-	var config *Config
 	config, err := ParseConfig(file)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse config file '%s': %w", file, err)
 	}
-
-	for testName, test := range config.Tests {
-		if err := assesLists(test.Blacklist, test.Whitelist); err != nil {
-			return nil, fmt.Errorf("error in test %s: %v", testName, err)
-		}
-	}
-
 	return config, nil
 }
 

@@ -24,7 +24,7 @@ func TestConvertScanDiagnostics(t *testing.T) {
 	output.GlobalLogger.FileError("archive.zip", "Processing archive 'archive.zip' failed: internal error")
 	output.GlobalLogger.Warning("CKAN request failed with status code 500")
 
-	h := NewHandler(&config.Config{}, Config{}, discardLogger())
+	h := NewHandler(&config.Config{}, Config{}, discardLogger(), testPlan(&config.Config{}))
 	soft := h.convertScanDiagnostics(context.Background(), "pkg-x")
 
 	if len(soft) != 2 {

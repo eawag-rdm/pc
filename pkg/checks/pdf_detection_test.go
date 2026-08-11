@@ -61,7 +61,7 @@ func writePDFFixture(t *testing.T, data []byte) structs.File {
 
 func TestKeywordDetectedInPDFWithPageNumber(t *testing.T) {
 	file := writePDFFixture(t, buildTestPDF("clean first page", "the password lives here"))
-	msgs := IsFreeOfKeywords(file, keywordConfig([]string{"password"}))
+	msgs := runRule(t, "IsFreeOfKeywords", keywordConfig([]string{"password"}), ScopeFile, file)
 	found := false
 	for _, m := range msgs {
 		if !m.Skipped && strings.Contains(m.Content, "password") && strings.Contains(m.Content, "(page 2)") {
@@ -73,7 +73,7 @@ func TestKeywordDetectedInPDFWithPageNumber(t *testing.T) {
 	}
 
 	// Negative control.
-	for _, m := range IsFreeOfKeywords(file, keywordConfig([]string{"zzz-not-present"})) {
+	for _, m := range runRule(t, "IsFreeOfKeywords", keywordConfig([]string{"zzz-not-present"}), ScopeFile, file) {
 		if !m.Skipped {
 			t.Errorf("no finding expected for absent keyword, got %v", m)
 		}
@@ -87,7 +87,7 @@ func TestPDFOverPageCountSkippedWhole(t *testing.T) {
 	cfg := keywordConfig([]string{"password"})
 	cfg.General.MaxPDFPages = 2
 
-	msgs := IsFreeOfKeywords(file, cfg)
+	msgs := runRule(t, "IsFreeOfKeywords", cfg, ScopeFile, file)
 	foundKeyword, foundSkip := false, false
 	for _, m := range msgs {
 		if !m.Skipped && strings.Contains(m.Content, "password") {
@@ -107,7 +107,7 @@ func TestPDFOverPageCountSkippedWhole(t *testing.T) {
 	// At the ceiling the document scans normally.
 	cfg.General.MaxPDFPages = 3
 	found := false
-	for _, m := range IsFreeOfKeywords(file, cfg) {
+	for _, m := range runRule(t, "IsFreeOfKeywords", cfg, ScopeFile, file) {
 		if !m.Skipped && strings.Contains(m.Content, "password") {
 			found = true
 		}
@@ -124,7 +124,7 @@ func TestPDFOverSizeLimitSkipped(t *testing.T) {
 	cfg.General.MaxPDFFileSize = int64(len(data)) - 1
 
 	foundKeyword, foundSkip := false, false
-	for _, m := range IsFreeOfKeywords(file, cfg) {
+	for _, m := range runRule(t, "IsFreeOfKeywords", cfg, ScopeFile, file) {
 		if !m.Skipped && strings.Contains(m.Content, "password") {
 			foundKeyword = true
 		}
@@ -145,7 +145,7 @@ func TestPDFJunkPrefixStillParsed(t *testing.T) {
 	// prefix must not evade scanning.
 	data := append([]byte("JUNKJUNK"), buildTestPDF("hidden password here")...)
 	file := writePDFFixture(t, data)
-	msgs := IsFreeOfKeywords(file, keywordConfig([]string{"password"}))
+	msgs := runRule(t, "IsFreeOfKeywords", keywordConfig([]string{"password"}), ScopeFile, file)
 	found := false
 	for _, m := range msgs {
 		if !m.Skipped && strings.Contains(m.Content, "password") {
@@ -160,7 +160,7 @@ func TestPDFJunkPrefixStillParsed(t *testing.T) {
 func TestMisnamedTextPDFFallsBack(t *testing.T) {
 	// No PDF magic at all: the generic text flow must keep scanning it.
 	file := writePDFFixture(t, []byte("plain text with a password inside\n"))
-	msgs := IsFreeOfKeywords(file, keywordConfig([]string{"password"}))
+	msgs := runRule(t, "IsFreeOfKeywords", keywordConfig([]string{"password"}), ScopeFile, file)
 	found := false
 	for _, m := range msgs {
 		if !m.Skipped && strings.Contains(m.Content, "password") {
@@ -235,7 +235,7 @@ func TestKeywordDetectedInArchivedPDF(t *testing.T) {
 				{"docs/secret.pdf", buildTestPDF("clean cover page", "the password lives here")},
 				{"decoy.txt", []byte("nothing to see here\n")},
 			})
-			msgs := IsArchiveFreeOfKeywords(archive, keywordConfig([]string{"password"}))
+			msgs := runRule(t, "IsFreeOfKeywords", keywordConfig([]string{"password"}), ScopeArchiveMember, archive)
 			found := false
 			for _, m := range msgs {
 				if m.Skipped {
@@ -256,7 +256,7 @@ func TestKeywordDetectedInArchivedPDF(t *testing.T) {
 				t.Errorf("[%s] keyword in archived PDF must be detected, got %v", format, msgs)
 			}
 
-			none := IsArchiveFreeOfKeywords(archive, keywordConfig([]string{"zzz-not-present"}))
+			none := runRule(t, "IsFreeOfKeywords", keywordConfig([]string{"zzz-not-present"}), ScopeArchiveMember, archive)
 			for _, m := range none {
 				if !m.Skipped {
 					t.Errorf("[%s] no finding expected for absent keyword, got %v", format, m)
@@ -273,7 +273,7 @@ func TestArchivedPDFOverPageCountSkippedWhole(t *testing.T) {
 	cfg := keywordConfig([]string{"password"})
 	cfg.General.MaxPDFPages = 1
 
-	msgs := IsArchiveFreeOfKeywords(archive, cfg)
+	msgs := runRule(t, "IsFreeOfKeywords", cfg, ScopeArchiveMember, archive)
 	foundKeyword, foundSkip := false, false
 	for _, m := range msgs {
 		if !m.Skipped && strings.Contains(strings.ToLower(m.Content), "password") {
@@ -301,7 +301,7 @@ func TestArchivedPDFOverSizeLimitSkipped(t *testing.T) {
 	cfg.General.MaxPDFFileSize = int64(len(pdf)) - 1
 
 	foundKeyword, foundSkip := false, false
-	for _, m := range IsArchiveFreeOfKeywords(archive, cfg) {
+	for _, m := range runRule(t, "IsFreeOfKeywords", cfg, ScopeArchiveMember, archive) {
 		if !m.Skipped && strings.Contains(strings.ToLower(m.Content), "password") {
 			foundKeyword = true
 		}
@@ -321,7 +321,7 @@ func TestArchivedMisnamedTextPDFStillScanned(t *testing.T) {
 	archive := buildPDFArchive(t, "zip", []pdfArchiveMember{
 		{"notes.pdf", []byte("plain text with a password inside\n")},
 	})
-	msgs := IsArchiveFreeOfKeywords(archive, keywordConfig([]string{"password"}))
+	msgs := runRule(t, "IsFreeOfKeywords", keywordConfig([]string{"password"}), ScopeArchiveMember, archive)
 	found := false
 	for _, m := range msgs {
 		if !m.Skipped && strings.Contains(strings.ToLower(m.Content), "password") {
@@ -339,7 +339,7 @@ func TestArchivedMalformedPDFEmitsMemberAck(t *testing.T) {
 		{"broken.pdf", junk},
 		{"decoy.txt", []byte("nothing to see here\n")},
 	})
-	msgs := IsArchiveFreeOfKeywords(archive, keywordConfig([]string{"password"}))
+	msgs := runRule(t, "IsFreeOfKeywords", keywordConfig([]string{"password"}), ScopeArchiveMember, archive)
 	found := false
 	for _, m := range msgs {
 		if m.Skipped && strings.Contains(m.Content, "PDF could not be parsed") {
@@ -367,7 +367,7 @@ func TestPDFMagicWindowBoundary(t *testing.T) {
 		t.Run(fmt.Sprintf("offset%d", tc.offset), func(t *testing.T) {
 			data := append(bytes.Repeat([]byte{' '}, tc.offset), buildTestPDF("hidden password here")...)
 			file := writePDFFixture(t, data)
-			msgs := IsFreeOfKeywords(file, keywordConfig([]string{"password"}))
+			msgs := runRule(t, "IsFreeOfKeywords", keywordConfig([]string{"password"}), ScopeFile, file)
 			citedPage := false
 			for _, m := range msgs {
 				if !m.Skipped && strings.Contains(m.Content, "(page ") {
@@ -384,7 +384,7 @@ func TestPDFMagicWindowBoundary(t *testing.T) {
 func TestImageOnlyPDFEmitsSkipAck(t *testing.T) {
 	// No extractable text: must not read as "scanned and clean".
 	file := writePDFFixture(t, buildTestPDF("", ""))
-	msgs := IsFreeOfKeywords(file, keywordConfig([]string{"password"}))
+	msgs := runRule(t, "IsFreeOfKeywords", keywordConfig([]string{"password"}), ScopeFile, file)
 	found := false
 	for _, m := range msgs {
 		if m.Skipped && strings.Contains(m.Content, "no extractable text") {
@@ -404,7 +404,7 @@ func TestUnreadablePDFEmitsSkipAck(t *testing.T) {
 	if err := os.Chmod(file.Path, 0); err != nil {
 		t.Fatal(err)
 	}
-	msgs := IsFreeOfKeywords(file, keywordConfig([]string{"password"}))
+	msgs := runRule(t, "IsFreeOfKeywords", keywordConfig([]string{"password"}), ScopeFile, file)
 	found := false
 	for _, m := range msgs {
 		if m.Skipped && strings.Contains(m.Content, "could not be read") {
@@ -419,7 +419,7 @@ func TestUnreadablePDFEmitsSkipAck(t *testing.T) {
 func TestMalformedPDFEmitsSkipAck(t *testing.T) {
 	junk := append([]byte("%PDF-1.4\n"), bytes.Repeat([]byte{0x13, 0x00, 0x42}, 2048)...)
 	file := writePDFFixture(t, junk)
-	msgs := IsFreeOfKeywords(file, keywordConfig([]string{"password"}))
+	msgs := runRule(t, "IsFreeOfKeywords", keywordConfig([]string{"password"}), ScopeFile, file)
 	found := false
 	for _, m := range msgs {
 		if m.Skipped && strings.Contains(m.Content, "could not be parsed") {

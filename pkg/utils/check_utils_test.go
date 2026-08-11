@@ -3,7 +3,6 @@ package utils
 import (
 	"archive/zip"
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,8 +11,6 @@ import (
 	"testing"
 
 	"github.com/eawag-rdm/pc/pkg/checks"
-	"github.com/eawag-rdm/pc/pkg/optimization"
-	"github.com/eawag-rdm/pc/pkg/selector"
 	"github.com/eawag-rdm/pc/pkg/structs"
 
 	"github.com/eawag-rdm/pc/pkg/config"
@@ -25,10 +22,10 @@ import (
 func TestApplyAllChecks_NoFilesNotice(t *testing.T) {
 	cases := map[string]func() []structs.Message{
 		"ApplyAllChecks": func() []structs.Message {
-			return ApplyAllChecks(context.Background(), config.Config{}, CheckSelectors{}, nil, false)
+			return ApplyAllChecks(context.Background(), config.Config{}, nil, nil, false)
 		},
 		"ApplyAllChecksWithProgress": func() []structs.Message {
-			return ApplyAllChecksWithProgress(context.Background(), config.Config{}, CheckSelectors{}, nil, false, nil)
+			return ApplyAllChecksWithProgress(context.Background(), config.Config{}, nil, nil, false, nil)
 		},
 	}
 	for name, run := range cases {
@@ -54,43 +51,15 @@ func TestApplyAllChecks_NoFilesNotice(t *testing.T) {
 	}
 }
 
-func TestGetFunctionName(t *testing.T) {
-	tests := []struct {
-		input    interface{}
-		expected string
-	}{
-		{input: optimization.FunctionName, expected: "FunctionName"},
-		{input: reflect.ValueOf, expected: "ValueOf"},
-	}
-
-	for _, test := range tests {
-		result := optimization.FunctionName(test.input)
-		if result != test.expected {
-			t.Errorf("FunctionName(%v) = %v; want %v", test.input, result, test.expected)
-		}
-	}
-}
-
-// compileSelectors builds the startup selector table the dispatch functions
-// take. Selectors are never compiled at match time, so every filter test goes
-// through this constructor.
-func compileSelectors(t *testing.T, cfg config.Config) CheckSelectors {
+// admits compiles cfg and reports whether the file-scope rule of check admits
+// the file. Selectors are never compiled at match time, so every filter test
+// goes through the startup compile.
+func admits(t *testing.T, cfg config.Config, check string, file structs.File) bool {
 	t.Helper()
-	selectors, err := CompileCheckSelectors(cfg)
-	if err != nil {
-		t.Fatalf("compile check selectors: %v", err)
-	}
-	return selectors
+	return planRule(t, compilePlan(t, cfg), check, checks.ScopeFile).Match(file)
 }
 
-// filterFor compiles cfg and resolves it for a single check, exactly as every
-// dispatch function does once before its per-file loop.
-func filterFor(t *testing.T, cfg config.Config, check func(file structs.File, config config.Config) []structs.Message) []*selector.Selector {
-	t.Helper()
-	return compileSelectors(t, cfg).resolve([]func(file structs.File, config config.Config) []structs.Message{check})
-}
-
-func TestSkipFileCheck(t *testing.T) {
+func TestRuleAdmitsFile(t *testing.T) {
 
 	tests := []struct {
 		name         string
@@ -222,110 +191,17 @@ func TestSkipFileCheck(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			result := skipFileCheck(filterFor(t, test.config, checks.HasOnlyASCII), 0, test.file)
+			result := !admits(t, test.config, "HasOnlyASCII", test.file)
 			if result != test.expectedSkip {
-				t.Errorf("%v: skipFileCheck() = %v; want %v", test.name, result, test.expectedSkip)
+				t.Errorf("%v: rule skipped file = %v; want %v", test.name, result, test.expectedSkip)
 			}
 		})
 	}
 }
 
-// TestSkipFileCheck_ArchiveKeywordAlias pins the one hard-coded identity alias:
-// IsArchiveFreeOfKeywords is filtered by [test.IsFreeOfKeywords] (it dies with
-// the reflection-derived check identity in R7).
-func TestSkipFileCheck_ArchiveKeywordAlias(t *testing.T) {
-	cfg := config.Config{Tests: map[string]*config.TestConfig{
-		"IsFreeOfKeywords": {Blacklist: []string{`\.zip$`}},
-	}}
-
-	sels := filterFor(t, cfg, checks.IsArchiveFreeOfKeywords)
-	if !skipFileCheck(sels, 0, structs.File{Name: "data.zip"}) {
-		t.Error("IsArchiveFreeOfKeywords must be filtered by the IsFreeOfKeywords section")
-	}
-	if skipFileCheck(sels, 0, structs.File{Name: "data.tar"}) {
-		t.Error("a name outside the blacklist must not be skipped")
-	}
-}
-
-// TestCompileCheckSelectors_BadPatternsFailAtBoot pins the new contract: a
-// pattern that does not compile - or a section that sets both lists, whose
-// precedence changed - fails the startup compile instead of silently filtering
-// everything (whitelist) or nothing (blacklist). All faults are reported at
-// once, each named with its [test.X] section.
-func TestCompileCheckSelectors_BadPatternsFailAtBoot(t *testing.T) {
-	cases := map[string]config.Config{
-		"uncompilable whitelist": {Tests: map[string]*config.TestConfig{
-			"HasOnlyASCII": {Whitelist: []string{"("}},
-		}},
-		"uncompilable blacklist": {Tests: map[string]*config.TestConfig{
-			"HasOnlyASCII": {Blacklist: []string{"[a-"}},
-		}},
-		"empty pattern": {Tests: map[string]*config.TestConfig{
-			"HasOnlyASCII": {Blacklist: []string{"keep.txt", ""}},
-		}},
-		"both lists set": {Tests: map[string]*config.TestConfig{
-			"HasOnlyASCII": {Whitelist: []string{"keep.txt"}, Blacklist: []string{"drop.txt"}},
-		}},
-	}
-	for name, cfg := range cases {
-		t.Run(name, func(t *testing.T) {
-			selectors, err := CompileCheckSelectors(cfg)
-			if err == nil {
-				t.Fatal("expected a load error")
-			}
-			if len(selectors.byCheck) != 0 {
-				t.Error("a failed compile must yield no selector table")
-			}
-			var compileErr *selector.CompileError
-			if !errors.As(err, &compileErr) {
-				t.Fatalf("error must carry a *selector.CompileError, got %T: %v", err, err)
-			}
-			if compileErr.Rule != "HasOnlyASCII" {
-				t.Errorf("fault must name its config section, got %q", compileErr.Rule)
-			}
-		})
-	}
-
-	// Every faulty section is reported, not just the first.
-	many := config.Config{Tests: map[string]*config.TestConfig{
-		"HasNoWhiteSpace": {Whitelist: []string{"("}},
-		"IsValidName":     {Blacklist: []string{"["}},
-		"HasOnlyASCII":    {Blacklist: []string{`\.txt$`}},
-	}}
-	_, err := CompileCheckSelectors(many)
-	if err == nil {
-		t.Fatal("expected a load error")
-	}
-	for _, want := range []string{`"HasNoWhiteSpace"`, `"IsValidName"`} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("aggregated error must name section %s: %v", want, err)
-		}
-	}
-}
-
-// TestCompileCheckSelectors_IgnoresNonFileSections pins the scope of the boot
-// gate: only sections that file dispatch filters on are compiled. Repository-
-// scoped checks own their lists (leakcheck compiles its own filter and tolerates
-// patterns this constructor rejects), so a pattern under [test.IsFreeOfSecrets]
-// must not refuse the boot - nor become a file filter.
-func TestCompileCheckSelectors_IgnoresNonFileSections(t *testing.T) {
-	cfg := config.Config{Tests: map[string]*config.TestConfig{
-		"IsFreeOfSecrets": {Blacklist: []string{"", "x("}},
-		"HasReadme":       {Whitelist: []string{"["}},
-	}}
-	selectors, err := CompileCheckSelectors(cfg)
-	if err != nil {
-		t.Fatalf("a repository-scoped section must not fail the boot compile: %v", err)
-	}
-	if len(selectors.byCheck) != 0 {
-		t.Errorf("repository-scoped sections must not become file filters, got %d entries", len(selectors.byCheck))
-	}
-}
-
-// TestMatchPatterns pins the pattern semantics of a compiled check selector:
+// TestMatchPatterns pins the pattern semantics of a compiled rule selector:
 // unanchored RE2 over the file name, one compiled pattern per list entry (never
-// a joined expression). Expressed through skipFileCheck, where a whitelist miss
-// is a skip.
+// a joined expression).
 func TestMatchPatterns(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -406,64 +282,90 @@ func TestMatchPatterns(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			sels := filterFor(t, config.Config{Tests: map[string]*config.TestConfig{
+			cfg := config.Config{Tests: map[string]*config.TestConfig{
 				"HasOnlyASCII": {Whitelist: test.list},
-			}}, checks.HasOnlyASCII)
-			result := !skipFileCheck(sels, 0, structs.File{Name: test.str})
+			}}
+			result := admits(t, cfg, "HasOnlyASCII", structs.File{Name: test.str})
 			if result != test.expectedMatch {
 				t.Errorf("%v: selector match of %v against %q = %v; want %v", test.name, test.list, test.str, result, test.expectedMatch)
 			}
 		})
 	}
 }
-func mockCheckPass(file structs.File, config config.Config) []structs.Message {
+
+// mockEntry wraps a plain per-file function as a one-rule plan entry - the shape
+// every dispatch function takes - so a dispatch test can exercise the dispatch
+// rather than a real check.
+func mockEntry(name string, run func(structs.File) []structs.Message) checkRules {
+	def := checks.CheckDef{
+		Name: name,
+		// The dispatch asserts the scope it hands RunFile against these, so a
+		// mock has to declare the phases the dispatch tests drive it through.
+		Scopes: checks.ScopesOf(checks.ScopeFile, checks.ScopeArchiveFileList, checks.ScopeArchiveMember),
+		RunFile: func(file structs.File, _ checks.Scope, _ *checks.Batch, rules []*checks.BoundRule) []structs.Message {
+			var messages []structs.Message
+			for range rules {
+				messages = append(messages, run(file)...)
+			}
+			return messages
+		},
+	}
+	return checkRules{
+		def:   &def,
+		batch: &checks.Batch{},
+		rules: []*checks.BoundRule{{Rule: name}},
+	}
+}
+
+func mockCheckPass(file structs.File) []structs.Message {
 	return []structs.Message{{Content: "Check passed"}}
 }
 
-func mockCheckFail(file structs.File, config config.Config) []structs.Message {
+func mockCheckFail(file structs.File) []structs.Message {
 	return []structs.Message{{Content: "Check failed"}}
 }
 
 func TestApplyChecksFilteredByFile(t *testing.T) {
+	// A real file-scope check, on a name it would otherwise flag: an empty
+	// result proves the filter, not a silent check.
+	whitespaceEntries := func(t *testing.T, lists config.TestConfig) []checkRules {
+		t.Helper()
+		cfg := config.Config{Tests: map[string]*config.TestConfig{"HasNoWhiteSpace": &lists}}
+		plan := compilePlan(t, cfg)
+		for _, entry := range plan.scope(checks.ScopeFile) {
+			if entry.def.Name == "HasNoWhiteSpace" {
+				return []checkRules{entry}
+			}
+		}
+		t.Fatal("HasNoWhiteSpace has no file-scope rule")
+		return nil
+	}
+
 	tests := []struct {
 		name     string
-		config   config.Config
-		checks   []func(file structs.File, config config.Config) []structs.Message
+		entries  []checkRules
 		files    []structs.File
 		expected []structs.Message
 	}{
 		{
-			name: "Single file, single check pass",
-			config: config.Config{
-				Tests: map[string]*config.TestConfig{
-					"mockCheckPass": {},
-				},
-			},
-			checks:   []func(file structs.File, config config.Config) []structs.Message{mockCheckPass},
+			name:     "Single file, single check pass",
+			entries:  []checkRules{mockEntry("mockCheckPass", mockCheckPass)},
 			files:    []structs.File{{Name: "test.txt"}},
 			expected: []structs.Message{{Content: "Check passed", TestName: "mockCheckPass"}},
 		},
 		{
-			name: "Single file, single check fail",
-			config: config.Config{
-				Tests: map[string]*config.TestConfig{
-					"mockCheckFail": {},
-				},
-			},
-			checks:   []func(file structs.File, config config.Config) []structs.Message{mockCheckFail},
+			name:     "Single file, single check fail",
+			entries:  []checkRules{mockEntry("mockCheckFail", mockCheckFail)},
 			files:    []structs.File{{Name: "test.txt"}},
 			expected: []structs.Message{{Content: "Check failed", TestName: "mockCheckFail"}},
 		},
 		{
 			name: "Multiple files, multiple checks",
-			config: config.Config{
-				Tests: map[string]*config.TestConfig{
-					"mockCheckPass": {},
-					"mockCheckFail": {},
-				},
+			entries: []checkRules{
+				mockEntry("mockCheckPass", mockCheckPass),
+				mockEntry("mockCheckFail", mockCheckFail),
 			},
-			checks: []func(file structs.File, config config.Config) []structs.Message{mockCheckPass, mockCheckFail},
-			files:  []structs.File{{Name: "test1.txt"}, {Name: "test2.txt"}},
+			files: []structs.File{{Name: "test1.txt"}, {Name: "test2.txt"}},
 			expected: []structs.Message{
 				{Content: "Check passed", TestName: "mockCheckPass"},
 				{Content: "Check failed", TestName: "mockCheckFail"},
@@ -472,30 +374,14 @@ func TestApplyChecksFilteredByFile(t *testing.T) {
 			},
 		},
 		{
-			// A real file-scope check, on a name it would otherwise flag: an
-			// empty result proves the filter, not a silent check.
-			name: "Check skipped due to whitelist",
-			config: config.Config{
-				Tests: map[string]*config.TestConfig{
-					"HasNoWhiteSpace": {
-						Whitelist: []string{"other.txt"},
-					},
-				},
-			},
-			checks:   []func(file structs.File, config config.Config) []structs.Message{checks.HasNoWhiteSpace},
+			name:     "Check skipped due to whitelist",
+			entries:  whitespaceEntries(t, config.TestConfig{Whitelist: []string{"other.txt"}}),
 			files:    []structs.File{{Name: "test file.txt"}},
 			expected: []structs.Message{},
 		},
 		{
-			name: "Check skipped due to blacklist",
-			config: config.Config{
-				Tests: map[string]*config.TestConfig{
-					"HasNoWhiteSpace": {
-						Blacklist: []string{"test file.txt"},
-					},
-				},
-			},
-			checks:   []func(file structs.File, config config.Config) []structs.Message{checks.HasNoWhiteSpace},
+			name:     "Check skipped due to blacklist",
+			entries:  whitespaceEntries(t, config.TestConfig{Blacklist: []string{"test file.txt"}}),
 			files:    []structs.File{{Name: "test file.txt"}},
 			expected: []structs.Message{},
 		},
@@ -503,9 +389,9 @@ func TestApplyChecksFilteredByFile(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			result := applyChecksFilteredByFile(context.Background(), test.config, compileSelectors(t, test.config), test.checks, test.files)
+			result := applyChecksFilteredByFile(context.Background(), test.entries, test.files)
 			if !reflect.DeepEqual(result, test.expected) {
-				t.Errorf("%v: ApplyChecksFilteredByFile() = %v; want %v", test.name, result, test.expected)
+				t.Errorf("%v: applyChecksFilteredByFile() = %v; want %v", test.name, result, test.expected)
 			}
 		})
 	}
@@ -544,11 +430,17 @@ func buildNamedZip(t *testing.T, names []string) string {
 func TestArchiveFileListChecks_WalkCapSkipsArchive(t *testing.T) {
 	path := buildNamedZip(t, []string{"a file.txt", "b file.txt", "c file.txt"})
 	archive := structs.File{Path: path, Name: "members.zip", DisplayName: "members.zip", IsArchive: true}
-	nameChecks := []func(file structs.File, config config.Config) []structs.Message{checks.HasNoWhiteSpace}
+	plan := compilePlan(t, config.Config{})
+	var nameChecks []checkRules
+	for _, entry := range plan.scope(checks.ScopeArchiveFileList) {
+		if entry.def.Name == "HasNoWhiteSpace" {
+			nameChecks = append(nameChecks, entry)
+		}
+	}
 
 	const memberLimit = 2
 	capped := config.Config{General: &config.GeneralConfig{MaxArchiveMemberCount: memberLimit}}
-	msgs := applyChecksFilteredByFileOnArchiveFileList(context.Background(), capped, CheckSelectors{}, nameChecks, []structs.File{archive})
+	msgs := applyChecksFilteredByFileOnArchiveFileList(context.Background(), capped, nameChecks, []structs.File{archive})
 	if len(msgs) != 1 {
 		t.Fatalf("expected exactly the archive skip acknowledgement, got %d: %v", len(msgs), msgs)
 	}
@@ -564,7 +456,7 @@ func TestArchiveFileListChecks_WalkCapSkipsArchive(t *testing.T) {
 
 	// Same archive, limit above the member count: the member names are checked.
 	uncapped := config.Config{General: &config.GeneralConfig{MaxArchiveMemberCount: 10}}
-	msgs = applyChecksFilteredByFileOnArchiveFileList(context.Background(), uncapped, CheckSelectors{}, nameChecks, []structs.File{archive})
+	msgs = applyChecksFilteredByFileOnArchiveFileList(context.Background(), uncapped, nameChecks, []structs.File{archive})
 	if len(msgs) != 3 {
 		t.Fatalf("expected one whitespace issue per member, got %d: %v", len(msgs), msgs)
 	}

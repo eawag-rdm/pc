@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/eawag-rdm/pc/pkg/checks"
 	"github.com/eawag-rdm/pc/pkg/config"
 	"github.com/eawag-rdm/pc/pkg/helpers"
 	"github.com/eawag-rdm/pc/pkg/metadata"
@@ -56,14 +57,14 @@ func testConfig(t *testing.T) config.Config {
 	return *cfg
 }
 
-// selectorsFor compiles the file filters the way each frontend does at startup.
-func selectorsFor(t *testing.T, cfg config.Config) utils.CheckSelectors {
+// planFor compiles the rules the way each frontend does at startup.
+func planFor(t *testing.T, cfg config.Config) *utils.Plan {
 	t.Helper()
-	selectors, err := utils.CompileCheckSelectors(cfg)
+	plan, err := utils.Compile(&cfg, checks.NewRegistry())
 	if err != nil {
-		t.Fatalf("compile check selectors: %v", err)
+		t.Fatalf("compile rules: %v", err)
 	}
-	return selectors
+	return plan
 }
 
 // resetGlobalScanState clears the process-global state the checks accumulate
@@ -95,7 +96,7 @@ func TestRun_NilMetadata(t *testing.T) {
 	files := buildFiles(t)
 
 	resetGlobalScanState()
-	messages := Run(context.Background(), cfg, selectorsFor(t, cfg), files, nil, nil)
+	messages := Run(context.Background(), cfg, planFor(t, cfg), files, nil, nil)
 	resetGlobalScanState()
 
 	if countFileMessages(messages) == 0 {
@@ -121,7 +122,7 @@ func TestRun_MetadataMessagesFirst(t *testing.T) {
 	}
 
 	resetGlobalScanState()
-	messages := Run(context.Background(), cfg, selectorsFor(t, cfg), files, md, nil)
+	messages := Run(context.Background(), cfg, planFor(t, cfg), files, md, nil)
 	resetGlobalScanState()
 
 	if len(messages) <= len(want) {
@@ -161,7 +162,7 @@ func TestRun_ProgressRoutesToProgressEngine(t *testing.T) {
 	var calls []call
 
 	resetGlobalScanState()
-	messages := Run(context.Background(), cfg, selectorsFor(t, cfg), files, nil, func(current, total int, message string) {
+	messages := Run(context.Background(), cfg, planFor(t, cfg), files, nil, func(current, total int, message string) {
 		calls = append(calls, call{current: current, total: total, message: message})
 	})
 	resetGlobalScanState()

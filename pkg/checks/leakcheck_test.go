@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/eawag-rdm/pc/pkg/config"
+	"github.com/eawag-rdm/pc/pkg/selector"
 	"github.com/eawag-rdm/pc/pkg/structs"
 )
 
@@ -54,23 +55,6 @@ func leakTestConfig(binary string, generalOverride *config.GeneralConfig) config
 	}
 }
 
-func TestIsFreeOfSecretsDisabled(t *testing.T) {
-	repo := structs.Repository{Files: []structs.File{{Path: "/tmp/x", Name: "x"}}}
-
-	// No config section at all.
-	cfg := config.Config{General: &config.GeneralConfig{}, Tests: map[string]*config.TestConfig{}}
-	if msgs := IsFreeOfSecrets(repo, cfg); msgs != nil {
-		t.Fatalf("expected nil without config section, got %v", msgs)
-	}
-
-	// Section present but not enabled (attrs missing or enabled=false).
-	cfg = leakTestConfig("betterleaks", nil)
-	cfg.Tests["IsFreeOfSecrets"].Attrs["enabled"] = false
-	if msgs := IsFreeOfSecrets(repo, cfg); msgs != nil {
-		t.Fatalf("expected nil when disabled, got %v", msgs)
-	}
-}
-
 func TestIsFreeOfSecretsPlainFileFindings(t *testing.T) {
 	content := tempFile([]byte("stripe_key = \"sk_live_whatever\"\n"))
 	defer os.Remove(content)
@@ -84,7 +68,7 @@ func TestIsFreeOfSecretsPlainFileFindings(t *testing.T) {
 
 	cfg := leakTestConfig(bin, nil)
 	file := structs.File{Path: content, Name: "data.txt", Size: 10}
-	msgs := IsFreeOfSecrets(structs.Repository{Files: []structs.File{file}}, cfg)
+	msgs := runRepoRule(t, "IsFreeOfSecrets", cfg, structs.Repository{Files: []structs.File{file}})
 
 	if len(msgs) != 1 {
 		t.Fatalf("expected 1 condensed message, got %d: %v", len(msgs), msgs)
@@ -127,7 +111,7 @@ func TestIsFreeOfSecretsSizeGate(t *testing.T) {
 		{Path: small, Name: "small.txt", Size: 5},
 		{Path: big, Name: "big.txt", Size: 2048},
 	}
-	msgs := IsFreeOfSecrets(structs.Repository{Files: files}, cfg)
+	msgs := runRepoRule(t, "IsFreeOfSecrets", cfg, structs.Repository{Files: files})
 
 	if len(msgs) != 1 || !msgs[0].Skipped {
 		t.Fatalf("expected exactly one aggregate skip message, got %v", msgs)
@@ -189,7 +173,7 @@ func TestIsFreeOfSecretsArchiveExtraction(t *testing.T) {
 	cfg := leakTestConfig(bin, general)
 
 	archive := structs.File{Path: zipPath, Name: "data.zip", Size: structs.GetFileSize(zipPath), IsArchive: true}
-	msgs := IsFreeOfSecrets(structs.Repository{Files: []structs.File{archive}}, cfg)
+	msgs := runRepoRule(t, "IsFreeOfSecrets", cfg, structs.Repository{Files: []structs.File{archive}})
 
 	args, err := os.ReadFile(argsFile)
 	if err != nil {
@@ -267,7 +251,7 @@ func TestExtractArchivesMkdirFailureKeepsAcks(t *testing.T) {
 	var messages []structs.Message
 	sources := map[string]structs.File{}
 	// No lists in this config, so the scan's selector filters nothing.
-	paths := extractArchivesForLeakScan(cfg, nil, []structs.File{archive}, tmpDir, sources, &messages)
+	paths := extractArchivesForLeakScan(archiveLimits(cfg.General), nil, []structs.File{archive}, tmpDir, sources, &messages)
 
 	if len(paths) != 0 {
 		t.Errorf("no members can be extracted when the temp dir cannot be created, got %v", paths)
@@ -316,7 +300,7 @@ func TestLeakSelectorAdmission(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			sel, err := compileLeakSelector(&config.TestConfig{Whitelist: tt.whitelist, Blacklist: tt.blacklist})
+			sel, err := selector.CompileLegacyRegexLists("IsFreeOfSecrets", "path", tt.whitelist, tt.blacklist)
 			if err != nil {
 				t.Fatalf("compile failed: %v", err)
 			}
@@ -327,16 +311,16 @@ func TestLeakSelectorAdmission(t *testing.T) {
 	}
 }
 
-// TestLeakSelectorFailsClosed pins change (c): a filter that cannot be honoured
-// skips the WHOLE scan with one acknowledgement naming the section, instead of
-// scanning every file unfiltered.
+// TestLeakSelectorRejectedAtLoad pins change (c) in its new home: the lists that
+// cannot be honoured are refused at LOAD instead of skipping an already-started
+// scan. The scan itself no longer compiles anything, so there is no runtime
+// fail-closed branch left to test.
 //
-// None of these rows is reachable through a loaded config: ValidateChecksConfig
-// compiles the same lists with the same constructor, so a config carrying any of
-// them is refused at boot. They stay as defense in depth - the check must not
-// depend on someone else having validated its input, and hand-built configs
-// (tests, future callers) skip that boot gate.
-func TestLeakSelectorFailsClosed(t *testing.T) {
+// The gate is config.ValidateChecksConfig, NOT utils.Compile: the leak rule
+// ships disabled, and a disabled rule leaves the plan before its selectors are
+// compiled, so Compile has nothing to reject. That division of labour is pinned
+// from both sides - here and by utils.TestCompileKeepsDisabledSecretListsUncompiled.
+func TestLeakSelectorRejectedAtLoad(t *testing.T) {
 	tests := []struct {
 		name      string
 		whitelist []string
@@ -350,48 +334,33 @@ func TestLeakSelectorFailsClosed(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if _, err := compileLeakSelector(&config.TestConfig{Whitelist: tt.whitelist, Blacklist: tt.blacklist}); err == nil {
-				t.Fatal("expected a compile error")
+			// End to end through the boot gate, with the scan DISABLED - the
+			// shipped state - so the refusal is the one an operator would hit.
+			cfg := &config.Config{Tests: map[string]*config.TestConfig{
+				"IsFreeOfKeywords": {KeywordArguments: []map[string]interface{}{
+					{"keywords": []string{"password"}, "info": "found"},
+				}},
+				"IsValidName": {KeywordArguments: []map[string]interface{}{
+					{"disallowed_names": []string{".git"}},
+				}},
+				"HasReadme": {KeywordArguments: []map[string]interface{}{
+					{"readme_names": []string{"readme.md"}},
+				}},
+				"IsFreeOfSecrets": {
+					Whitelist: tt.whitelist,
+					Blacklist: tt.blacklist,
+					Attrs:     map[string]interface{}{"enabled": false},
+				},
+			}}
+			err := config.ValidateChecksConfig(cfg)
+			if err == nil {
+				t.Fatal("expected the boot gate to refuse the config")
 			}
-
-			content := tempFile([]byte("token = abc\n"))
-			defer os.Remove(content)
-			bin, argsFile := fakeScanner(t, "null")
-			cfg := leakTestConfig(bin, nil)
-			cfg.Tests["IsFreeOfSecrets"].Whitelist = tt.whitelist
-			cfg.Tests["IsFreeOfSecrets"].Blacklist = tt.blacklist
-
-			file := structs.File{Path: content, Name: "data.txt", RelPath: "data.txt", Size: 12}
-			msgs := IsFreeOfSecrets(structs.Repository{Files: []structs.File{file}}, cfg)
-
-			if len(msgs) != 1 || !msgs[0].Skipped {
-				t.Fatalf("expected exactly one skip message, got %v", msgs)
-			}
-			if !strings.Contains(msgs[0].Content, "[test.IsFreeOfSecrets]") {
-				t.Errorf("skip message should name the config section: %s", msgs[0].Content)
-			}
-			if _, err := os.Stat(argsFile); !os.IsNotExist(err) {
-				t.Errorf("the scanner must not run with an unusable filter (args file exists: %v)", err)
+			if !strings.Contains(err.Error(), "IsFreeOfSecrets") {
+				t.Errorf("the error must name the section: %v", err)
 			}
 		})
 	}
-
-	// Ordering pin: the filter is compiled AFTER the enabled gate, so a disabled
-	// check stays silent (and pays nothing) even with lists that cannot compile.
-	t.Run("disabled check never compiles its lists", func(t *testing.T) {
-		bin, argsFile := fakeScanner(t, "null")
-		cfg := leakTestConfig(bin, nil)
-		cfg.Tests["IsFreeOfSecrets"].Attrs["enabled"] = false
-		cfg.Tests["IsFreeOfSecrets"].Whitelist = []string{"["}
-
-		file := structs.File{Path: "/tmp/does-not-matter", Name: "x.txt", RelPath: "x.txt", Size: 12}
-		if msgs := IsFreeOfSecrets(structs.Repository{Files: []structs.File{file}}, cfg); msgs != nil {
-			t.Fatalf("a disabled check must produce no message at all, got %v", msgs)
-		}
-		if _, err := os.Stat(argsFile); !os.IsNotExist(err) {
-			t.Errorf("the scanner must not run for a disabled check (args file exists: %v)", err)
-		}
-	})
 }
 
 // TestLeakFilterGatesFilesAndMembers is the wiring test: ONE compiled selector
@@ -445,7 +414,7 @@ func TestLeakFilterGatesFilesAndMembers(t *testing.T) {
 		{Path: nested, Name: "creds.txt", RelPath: "sub/creds.txt", Size: structs.GetFileSize(nested)},
 		{Path: zipPath, Name: "data.zip", RelPath: "data.zip", Size: structs.GetFileSize(zipPath), IsArchive: true},
 	}
-	IsFreeOfSecrets(structs.Repository{Files: files}, cfg)
+	runRepoRule(t, "IsFreeOfSecrets", cfg, structs.Repository{Files: files})
 
 	raw, err := os.ReadFile(argsFile)
 	if err != nil {
@@ -496,14 +465,14 @@ func TestFormatLeakLinesCap(t *testing.T) {
 }
 
 func TestLeakAttrsDefaults(t *testing.T) {
-	a := leakAttrsFrom(&config.TestConfig{})
-	if a.enabled || a.binary != "betterleaks" || a.timeoutSeconds != 120 || a.maxProcs != 3 {
+	a := leakAttrsFrom(nil)
+	if a.binary != "betterleaks" || a.timeoutSeconds != 120 || a.maxProcs != 3 {
 		t.Errorf("unexpected defaults: %+v", a)
 	}
-	a = leakAttrsFrom(&config.TestConfig{Attrs: map[string]interface{}{
-		"enabled": true, "binary": "/opt/bl", "timeoutSeconds": int64(30), "maxProcs": int64(1),
-	}})
-	if !a.enabled || a.binary != "/opt/bl" || a.timeoutSeconds != 30 || a.maxProcs != 1 {
+	a = leakAttrsFrom(map[string]interface{}{
+		"binary": "/opt/bl", "timeoutSeconds": int64(30), "maxProcs": int64(1),
+	})
+	if a.binary != "/opt/bl" || a.timeoutSeconds != 30 || a.maxProcs != 1 {
 		t.Errorf("unexpected parsed attrs: %+v", a)
 	}
 }
@@ -565,7 +534,7 @@ func TestIsFreeOfSecretsRealBinary(t *testing.T) {
 	defer os.Remove(content)
 	cfg := leakTestConfig("betterleaks", nil)
 	file := structs.File{Path: content, Name: "config.txt", Size: structs.GetFileSize(content)}
-	msgs := IsFreeOfSecrets(structs.Repository{Files: []structs.File{file}}, cfg)
+	msgs := runRepoRule(t, "IsFreeOfSecrets", cfg, structs.Repository{Files: []structs.File{file}})
 	// Findings depend on scanner rules; assert only that no secret VALUE leaks
 	// into any message and no error/skip message appeared.
 	for _, m := range msgs {

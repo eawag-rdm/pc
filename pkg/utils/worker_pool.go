@@ -1,0 +1,196 @@
+package utils
+
+import (
+	"context"
+	"log"
+	"runtime"
+	"runtime/debug"
+	"sync"
+
+	"github.com/eawag-rdm/pc/pkg/checks"
+	"github.com/eawag-rdm/pc/pkg/output"
+	"github.com/eawag-rdm/pc/pkg/structs"
+)
+
+// workerPool manages concurrent processing of files
+type workerPool struct {
+	numWorkers int
+	workChan   chan workItem
+	resultChan chan workResult
+	wg         sync.WaitGroup
+	ctx        context.Context
+	cancel     context.CancelFunc
+}
+
+// workItem represents a unit of work to be processed: one file with the checks
+// that matched it, each carrying its own matched rules. It lives here rather
+// than in pkg/optimization because it holds bound rules, and pkg/checks already
+// imports that package.
+type workItem struct {
+	File   structs.File
+	Scope  checks.Scope
+	Checks []checkRules
+}
+
+// workResult represents the result of processing a work item
+type workResult struct {
+	Messages []structs.Message
+}
+
+// newWorkerPool creates a new worker pool with the specified number of workers
+func newWorkerPool(numWorkers int) *workerPool {
+	if numWorkers <= 0 {
+		numWorkers = runtime.NumCPU()
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	return &workerPool{
+		numWorkers: numWorkers,
+		workChan:   make(chan workItem, numWorkers*2), // Buffer to prevent blocking
+		resultChan: make(chan workResult, numWorkers*2),
+		ctx:        ctx,
+		cancel:     cancel,
+	}
+}
+
+// start initializes and starts all workers
+func (wp *workerPool) start() {
+	for i := 0; i < wp.numWorkers; i++ {
+		wp.wg.Add(1)
+		go wp.worker(i)
+	}
+}
+
+// worker processes work items from the work channel
+func (wp *workerPool) worker(id int) {
+	defer wp.wg.Done()
+
+	for {
+		select {
+		case <-wp.ctx.Done():
+			return
+		case work, ok := <-wp.workChan:
+			if !ok {
+				return
+			}
+
+			messages := wp.processWorkItem(work)
+
+			select {
+			case wp.resultChan <- workResult{
+				Messages: messages,
+			}:
+			case <-wp.ctx.Done():
+				return
+			}
+		}
+	}
+}
+
+// processWorkItem applies all checks to a single file
+// This ensures all checks for a single file run in the same worker to avoid IO conflicts
+func (wp *workerPool) processWorkItem(work workItem) []structs.Message {
+	var allMessages []structs.Message
+
+	// Run all checks for this file sequentially in the same worker
+	// This avoids IO conflicts from multiple goroutines reading the same file
+	for _, entry := range work.Checks {
+		messages := SafeRunCheck(entry, work.File, work.Scope)
+		if len(messages) > 0 {
+			// Add test name to each message
+			for i := range messages {
+				messages[i].TestName = entry.def.Name
+			}
+			allMessages = append(allMessages, messages...)
+		}
+	}
+
+	return allMessages
+}
+
+// logPanic reports a recovered check panic. The panic value and stack go to
+// stderr for the operator; the buffered GlobalLogger gets only a short,
+// path-free notice - tagged with subject (a display name) when the failure
+// concerns one file, so the server can acknowledge that file as unscanned.
+func logPanic(what, subject string, recovered interface{}) {
+	log.Printf("%s panicked: %v\n%s", what, recovered, debug.Stack())
+	if subject != "" {
+		output.GlobalLogger.FileError(subject, "%s failed: internal error", what)
+	} else {
+		output.GlobalLogger.Error("%s failed: internal error", what)
+	}
+}
+
+// SafeRun is the canonical panic guard around check execution: it runs fn and
+// converts a panic into a logged failure instead of letting it propagate. A
+// panic in a pool goroutine is not covered by any request-level recover, so
+// without this a single buggy check (or unreadable/crafted archive) kills the
+// whole process.
+func SafeRun(what, subject string, fn func() []structs.Message) (messages []structs.Message) {
+	defer func() {
+		if r := recover(); r != nil {
+			logPanic(what, subject, r)
+			messages = nil
+		}
+	}()
+	return fn()
+}
+
+// SafeRunCheck is SafeRun specialized for one check over one file. Its panic
+// label is built inside the recover branch, not handed in: concatenating it up
+// front cost a string and an allocation for every check that did NOT panic -
+// which is every check, on every file.
+func SafeRunCheck(entry checkRules, file structs.File, scope checks.Scope) (messages []structs.Message) {
+	defer func() {
+		if r := recover(); r != nil {
+			logPanic("Check "+entry.def.Name+" on file '"+file.Name+"'", file.GetDisplayName(), r)
+			messages = nil
+		}
+	}()
+	if !entry.def.Scopes.Has(scope) {
+		// Wrong-phase dispatch would silently swap the acquisition (a file's own
+		// content for an archive's members). The guard is one bit test; SafeRun's
+		// recover turns it into a logged internal error rather than bad results.
+		panic("check " + entry.def.Name + " does not serve scope " + scope.String())
+	}
+	return entry.def.RunFile(file, scope, entry.batch, entry.rules)
+}
+
+// submit adds a work item to the processing queue (blocks until space is available)
+func (wp *workerPool) submit(work workItem) bool {
+	// Check if context is cancelled first to avoid sending on closed channel
+	select {
+	case <-wp.ctx.Done():
+		return false
+	default:
+	}
+	// Now try to send
+	select {
+	case wp.workChan <- work:
+		return true
+	case <-wp.ctx.Done():
+		return false
+	}
+}
+
+// results returns the result channel for consuming processed results
+func (wp *workerPool) results() <-chan workResult {
+	return wp.resultChan
+}
+
+// stop gracefully shuts down the worker pool.
+//
+// INVARIANT: stop must not run concurrently with a blocked submit. submit's
+// select waits on both the work channel and the pool context; cancel()+close()
+// here can make BOTH cases ready, and if the runtime commits the send case the
+// process panics with "send on closed channel". Callers must ensure all submit
+// calls have returned before stop runs - the submit/collect handshake in
+// runChecksPool (collect exactly `submitted` results, which happens-after the
+// submitter goroutine's last Submit) provides this.
+func (wp *workerPool) stop() {
+	wp.cancel() // Cancel context first to stop accepting new work
+	close(wp.workChan)
+	wp.wg.Wait()
+	close(wp.resultChan)
+}

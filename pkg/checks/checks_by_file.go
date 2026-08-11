@@ -15,7 +15,6 @@ import (
 	"github.com/eawag-rdm/pc/pkg/optimization"
 	"github.com/eawag-rdm/pc/pkg/output"
 	"github.com/eawag-rdm/pc/pkg/readers"
-	"github.com/eawag-rdm/pc/pkg/selector"
 	"github.com/eawag-rdm/pc/pkg/structs"
 )
 
@@ -37,9 +36,9 @@ func init() {
 	}
 }
 
-// HasFileNameSpecialChars returns a non-empty slice if file.Name contains
+// hasFileNameSpecialChars returns a non-empty slice if file.Name contains
 // any invalid/special characters.
-func HasFileNameSpecialChars(file structs.File, cfg config.Config) []structs.Message {
+func hasFileNameSpecialChars(file structs.File) []structs.Message {
 	for i := 0; i < len(file.Name); i++ {
 		if invalidFileNameChars[file.Name[i]] {
 			return []structs.Message{{
@@ -51,55 +50,36 @@ func HasFileNameSpecialChars(file structs.File, cfg config.Config) []structs.Mes
 	return []structs.Message{}
 }
 
-func IsFileNameTooLong(file structs.File, config config.Config) []structs.Message {
+func isFileNameTooLong(file structs.File) []structs.Message {
 	if len(file.Name) > 64 {
 		return []structs.Message{{Content: "File name is too long.", Source: file}}
 	}
 	return []structs.Message{}
 }
 
-// streamingReadFile reads a file in chunks and applies pattern matching
-// This is more memory-efficient for large files
-// streamingReadFileList is an optimized version that takes a pattern slice directly
-func streamingReadFileList(filePath string, patternList []string) ([]string, error) {
+// streamChunks reads a file too large to hold in one piece and hands each chunk
+// to scan together with its lowercase copy. Chunks overlap by 2KB so a keyword
+// spanning a boundary is still found. The file is read ONCE however many rules
+// scan it.
+func streamChunks(filePath string, scan func(chunk, lowered []byte)) error {
 	const maxFileSize = 2 * 1024 * 1024 * 1024 // 2GB limit for streaming (increased)
 	const chunkSize = 1024 * 1024              // 1MB chunks (increased for better performance)
 
 	file, err := os.Open(filePath)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer file.Close()
 
 	// Check file size
 	fileInfo, err := file.Stat()
 	if err != nil {
-		return nil, err
+		return err
 	}
-
-	// Use fast matcher directly with pattern list
-	if len(patternList) == 0 {
-		return []string{}, nil
-	}
-
-	matcher := optimization.GetMatcher(patternList)
-
-	// For small files (under 1MB), read normally
-	if fileInfo.Size() < chunkSize {
-		content, err := io.ReadAll(file)
-		if err != nil {
-			return nil, err
-		}
-		matches := matcher.FindMatches(content)
-		return matches, nil
-	}
-
-	// For larger files, use streaming
 	if fileInfo.Size() > maxFileSize {
-		return nil, fmt.Errorf("file too large: %d bytes (max %d)", fileInfo.Size(), maxFileSize)
+		return fmt.Errorf("file too large: %d bytes (max %d)", fileInfo.Size(), maxFileSize)
 	}
 
-	foundMatches := make(map[string]struct{})
 	buffer := make([]byte, chunkSize)
 	overlap := make([]byte, 0, 4096) // Increased overlap for better pattern detection
 
@@ -111,12 +91,7 @@ func streamingReadFileList(filePath string, patternList []string) ([]string, err
 
 		// Combine overlap with new data
 		combined := append(overlap, buffer[:n]...)
-
-		// Check for patterns in combined data using fast matcher
-		matches := matcher.FindMatches(combined)
-		for _, match := range matches {
-			foundMatches[match] = struct{}{}
-		}
+		scan(combined, bytes.ToLower(combined))
 
 		// Keep last 2KB as overlap for next chunk to ensure patterns spanning chunks are caught
 		overlapSize := 2048
@@ -133,20 +108,13 @@ func streamingReadFileList(filePath string, patternList []string) ([]string, err
 			break
 		}
 		if err != nil {
-			return nil, err
+			return err
 		}
 	}
-
-	// Convert map to slice
-	result := make([]string, 0, len(foundMatches))
-	for match := range foundMatches {
-		result = append(result, match)
-	}
-
-	return result, nil
+	return nil
 }
 
-func HasOnlyASCII(file structs.File, config config.Config) []structs.Message {
+func hasOnlyASCII(file structs.File) []structs.Message {
 	var nonASCII string
 	for _, r := range file.Name {
 		if r > unicode.MaxASCII {
@@ -160,7 +128,7 @@ func HasOnlyASCII(file structs.File, config config.Config) []structs.Message {
 }
 
 // Return true if c is a space character; otherwise, return false.
-func HasNoWhiteSpace(file structs.File, config config.Config) []structs.Message {
+func hasNoWhiteSpace(file structs.File) []structs.Message {
 	for i := 0; i < len(file.Name); i++ {
 		if file.Name[i] == ' ' {
 			return []structs.Message{{Content: "File name contains spaces.", Source: file}}
@@ -234,7 +202,131 @@ func isTextFile(filePath string) (bool, error) {
 	return textRatio >= 0.95, nil
 }
 
-func IsArchiveFreeOfKeywords(file structs.File, config config.Config) []structs.Message {
+// keywordSet is one bound keyword parameter set: the matcher built at load and
+// the info string every finding of the set is reported with. Keyword lists are
+// never merged into one automaton - each match must stay attributable to its
+// own info string - so there is one matcher per set, not per rule.
+type keywordSet struct {
+	matcher *optimization.FastMatcher
+	info    string
+}
+
+// bindKeywords binds one keyword rule: its matchers, built here and never
+// looked up again. The scan bounds are the batch's, not the rule's - one
+// acquisition serves every rule.
+func bindKeywords(spec config.RuleSpec, _ *config.GeneralConfig) (*BoundRule, error) {
+	sets, err := paramSets(spec)
+	if err != nil {
+		return nil, err
+	}
+	bound := make([]keywordSet, 0, len(sets))
+	for i, set := range sets {
+		keywords, err := stringList(set, "keywords", i)
+		if err != nil {
+			return nil, err
+		}
+		info, err := stringParam(set, "info", i)
+		if err != nil {
+			return nil, err
+		}
+		if len(keywords) == 0 {
+			continue // an empty list matched nothing before and matches nothing now
+		}
+		bound = append(bound, keywordSet{matcher: optimization.GetMatcher(keywords), info: info})
+	}
+	return &BoundRule{
+		Rule: spec.Name,
+		apply: func(file structs.File, body, lowered [][]byte, report reporting) []structs.Message {
+			return scanKeywords(file, bound, body, lowered, report)
+		},
+	}, nil
+}
+
+// scanKeywords matches every bound set against every body entry and reports
+// each finding the way the acquisition demands.
+func scanKeywords(file structs.File, sets []keywordSet, body, lowered [][]byte, report reporting) []structs.Message {
+	var messages []structs.Message
+	for _, set := range sets {
+		for idx, entry := range body {
+			if len(entry) == 0 {
+				continue
+			}
+			matches := set.matcher.FindMatchesWithOriginalCaseLowered(entry, lowered[idx])
+			if len(matches) == 0 {
+				continue
+			}
+			if report == reportEach {
+				for _, match := range distinctMatches(matches) {
+					messages = append(messages, structs.Message{Content: set.info + " '" + match + "'", Source: file})
+				}
+				continue
+			}
+			found := joinMatches(matches)
+			switch report {
+			case reportIndexed:
+				messages = append(messages, structs.Message{Content: set.info + " '" + found + "' in sheet/paragraph/table " + fmt.Sprintf("%d", idx), Source: file})
+			case reportPaged:
+				messages = append(messages, structs.Message{Content: fmt.Sprintf("%s '%s' (page %d)", set.info, found, idx+1), Source: file})
+			default:
+				messages = append(messages, structs.Message{Content: set.info + " '" + found + "'", Source: file})
+			}
+		}
+	}
+	return messages
+}
+
+// joinMatches deduplicates the findings of one entry and formats them the way a
+// message lists them.
+func joinMatches(matches []string) string {
+	keywordSet := make(map[string]struct{})
+	var foundKeywordsStr string
+	for _, match := range matches {
+		if _, exists := keywordSet[match]; !exists {
+			if foundKeywordsStr != "" {
+				foundKeywordsStr += "', '"
+			}
+			foundKeywordsStr += match
+			keywordSet[match] = struct{}{}
+		}
+	}
+	return foundKeywordsStr
+}
+
+// distinctMatches drops repeated findings. The matcher already returns its
+// matches sorted and deduplicated, so this preserves that order and is a no-op
+// on its output; it stands as the guard for any other producer. Only the
+// streamed acquisition needs the findings one by one.
+func distinctMatches(matches []string) []string {
+	seen := make(map[string]struct{}, len(matches))
+	distinct := matches[:0:0]
+	for _, match := range matches {
+		if _, exists := seen[match]; exists {
+			continue
+		}
+		seen[match] = struct{}{}
+		distinct = append(distinct, match)
+	}
+	return distinct
+}
+
+// runKeywords is RunFile for the keyword check: the file's own content at file
+// scope, its members at archive-member scope. Either way the content is
+// acquired ONCE here and handed to every rule that matched.
+func runKeywords(file structs.File, scope Scope, batch *Batch, rules []*BoundRule) []structs.Message {
+	if scope == ScopeArchiveMember {
+		return keywordsInArchive(file, batch, rules)
+	}
+	return keywordsInFile(file, batch, rules)
+}
+
+// oversizeSkip acknowledges content the whole-file gate refuses, so every
+// output surfaces that it was not scanned.
+func oversizeSkip(file structs.File, subject string, size, limit int64) structs.Message {
+	reason := fmt.Sprintf("Skipped content scan of %s: file size (%d bytes) exceeds maximum (%d bytes).", subject, size, limit)
+	return structs.Message{Content: reason, Source: file, Skipped: true, Reason: reason}
+}
+
+func keywordsInArchive(file structs.File, batch *Batch, rules []*BoundRule) []structs.Message {
 	var messages []structs.Message
 
 	// Check if the archive file itself exceeds the configured maximum size for content scanning
@@ -245,50 +337,13 @@ func IsArchiveFreeOfKeywords(file structs.File, config config.Config) []structs.
 		return messages
 	}
 
-	if fileInfo.Size() > config.General.MaxContentScanFileSize {
-		// Archive too large for content scanning. Emit a skip acknowledgement so every
-		// output (CLI plain, TUI, JSON) surfaces that the archive was not scanned.
-		reason := fmt.Sprintf("Skipped content scan of archive: file size (%d bytes) exceeds maximum (%d bytes).", fileInfo.Size(), config.General.MaxContentScanFileSize)
-		messages = append(messages, structs.Message{
-			Content: reason,
-			Source:  file,
-			Skipped: true,
-			Reason:  reason,
-		})
-		return messages
+	// The acquisition reads its bounds from the batch: they belong to the whole
+	// (check, scope) entry, not to whichever rule happens to be first.
+	if fileInfo.Size() > batch.MaxContentScan {
+		return append(messages, oversizeSkip(file, "archive", fileInfo.Size(), batch.MaxContentScan))
 	}
 
-	// The member filter is translated from the raw [test.IsFreeOfKeywords]
-	// lists once per archive: ~8 us and ~12 KB, against ~80 ns saved per member
-	// over the old matcher, so it pays for itself from ~37 members on and costs
-	// nothing at all for the shipped empty lists (no pattern, no compile).
-	// Rules carrying their own selector compiled at startup remove it; that
-	// threading is the rules-migration commit's design, not this one's.
-	memberFilter, admitNone, err := selector.CompileLegacyLists(
-		"IsFreeOfKeywords",
-		config.Tests["IsFreeOfKeywords"].Whitelist,
-		config.Tests["IsFreeOfKeywords"].Blacklist,
-	)
-	// Fail CLOSED: an unusable filter cannot honour the operator's exclusions,
-	// so no member is scanned and the archive is acknowledged as skipped.
-	if err != nil {
-		output.GlobalLogger.FileWarning(file.GetDisplayName(), "IsArchiveFreeOfKeywords: %v", err)
-		reason := fmt.Sprintf("Skipped content scan of archive: the [test.IsFreeOfKeywords] member filter is unusable (%v).", err)
-		messages = append(messages, structs.Message{
-			Content: reason,
-			Source:  file,
-			Skipped: true,
-			Reason:  reason,
-		})
-		return messages
-	}
-	// A whitelist that selects nothing selects nothing: no member qualifies, and
-	// nothing was skipped that the operator did not exclude, so no ack either.
-	if admitNone {
-		return messages
-	}
-
-	archiveIterator := readers.InitArchiveIterator(file.Path, file.Name, archiveLimits(config), memberFilter)
+	archiveIterator := readers.InitArchiveIterator(file.Path, file.Name, batch.Limits, batch.Admit)
 	defer archiveIterator.Close()
 	if !archiveIterator.HasFilesToUnpack() {
 		// Even with no scannable members, the iterator may have skipped members
@@ -299,22 +354,39 @@ func IsArchiveFreeOfKeywords(file structs.File, config config.Config) []structs.
 
 	// Get the archive's display name for consistent output
 	archiveDisplayName := file.GetDisplayName()
+	// Whether the per-rule member gates still have to run is a property of what
+	// the iterator was given (batch.Admit), which Compile decided over the whole
+	// plan - never of how many rules this archive happened to match.
+	perRule := batch.PerRule
+	// One body per archive, not per member: apply reads it and never retains it.
+	body, lowered := make([][]byte, 1), make([][]byte, 1)
 
 	for archiveIterator.HasNext() {
 
 		archiveIterator.Next()
 		fileName, fileContent, fileSize := archiveIterator.UnpackedFile()
-		// Lower once per member; every keyword set scans the shared copy.
-		loweredContent := bytes.ToLower(fileContent)
+		// Lower once per member; every rule and every keyword set scans the
+		// shared copy.
+		body[0], lowered[0] = fileContent, bytes.ToLower(fileContent)
 
-		for _, argumentSet := range config.Tests["IsFreeOfKeywords"].KeywordArguments {
-			var keywordList = argumentSet["keywords"].([]string)
-			var info = argumentSet["info"].(string)
-			foundKeywordsStr := matchPatternsListLowered(keywordList, fileContent, loweredContent)
+		// The member's File is built only when a rule actually reports: it costs
+		// more than scanning a small member, and the scan itself does not need
+		// it (the member gate matches the member path directly). Every message a
+		// keyword rule produces is sourced at the file it was handed, so
+		// stamping Source afterwards is the same message.
+		var archivedFile structs.File
+		built := false
 
-			if foundKeywordsStr != "" {
-				// Create a File struct for the archived file with proper archive reference
-				archivedFile := structs.ToFileWithDisplay(
+		for _, rule := range rules {
+			if perRule && !rule.MatchMember(fileName) {
+				continue
+			}
+			found := rule.apply(archivedFile, body, lowered, reportJoined)
+			if len(found) == 0 {
+				continue
+			}
+			if !built {
+				archivedFile = structs.ToFileWithDisplay(
 					file.Path,          // path stays as archive path
 					fileName,           // name is the path within archive
 					fileName,           // display name
@@ -323,13 +395,13 @@ func IsArchiveFreeOfKeywords(file structs.File, config config.Config) []structs.
 					archiveDisplayName, // archive name reference
 				)
 				archivedFile.RelPath = fileName // the member path, verbatim
-				messages = append(messages, structs.Message{
-					Content: info + " '" + foundKeywordsStr + "'",
-					Source:  archivedFile,
-				})
+				built = true
 			}
+			for i := range found {
+				found[i].Source = archivedFile
+			}
+			messages = append(messages, tag(rule.Rule, found)...)
 		}
-
 	}
 
 	// Thread out skip acknowledgements collected while iterating archive members.
@@ -337,7 +409,7 @@ func IsArchiveFreeOfKeywords(file structs.File, config config.Config) []structs.
 	return messages
 }
 
-func IsFreeOfKeywords(file structs.File, config config.Config) []structs.Message {
+func keywordsInFile(file structs.File, batch *Batch, rules []*BoundRule) []structs.Message {
 	var messages []structs.Message
 
 	// Large file warning removed - processing continues without notification
@@ -349,18 +421,13 @@ func IsFreeOfKeywords(file structs.File, config config.Config) []structs.Message
 		return messages
 	}
 
+	limits := batch.Limits
+
 	// Check if file exceeds the configured maximum size for content scanning.
 	// Emit a skip acknowledgement Message so every output (CLI plain, TUI, JSON)
 	// surfaces that the file's content was not scanned.
-	if fileInfo.Size() > config.General.MaxContentScanFileSize {
-		reason := fmt.Sprintf("Skipped content scan of file: file size (%d bytes) exceeds maximum (%d bytes).", fileInfo.Size(), config.General.MaxContentScanFileSize)
-		messages = append(messages, structs.Message{
-			Content: reason,
-			Source:  file,
-			Skipped: true,
-			Reason:  reason,
-		})
-		return messages
+	if fileInfo.Size() > batch.MaxContentScan {
+		return append(messages, oversizeSkip(file, "file", fileInfo.Size(), batch.MaxContentScan))
 	}
 
 	// Known OOXML containers route by extension BEFORE the text sniff:
@@ -369,12 +436,12 @@ func IsFreeOfKeywords(file structs.File, config config.Config) []structs.Message
 	// through (handled = false) when the file does not open as a zip, so a
 	// text file misnamed .xlsx keeps being scanned as text below.
 	if kind := readers.OOXMLKind(file.Path); kind != "" {
-		if msgs, handled := scanOOXMLFile(file, config, kind); handled {
+		if msgs, handled := scanOOXMLFile(file, limits, rules, kind); handled {
 			return append(messages, msgs...)
 		}
 	}
 	if strings.EqualFold(filepath.Ext(file.Path), ".pdf") {
-		if msgs, handled := scanPDFFile(file, config); handled {
+		if msgs, handled := scanPDFFile(file, limits, rules); handled {
 			return append(messages, msgs...)
 		}
 	}
@@ -387,42 +454,18 @@ func IsFreeOfKeywords(file structs.File, config config.Config) []structs.Message
 	if isText {
 		// Use streaming for files larger than 1MB (reduced threshold for better performance)
 		if fileInfo.Size() > 1024*1024 {
-			for _, argumentSet := range config.Tests["IsFreeOfKeywords"].KeywordArguments {
-				var keywordList = argumentSet["keywords"].([]string)
-				var info = argumentSet["info"].(string)
-
-				foundMatches, err := streamingReadFileList(file.Path, keywordList)
-				if err != nil {
-					output.GlobalLogger.FileWarning(file.GetDisplayName(), "Error streaming file '%s': %v", file.Path, err)
-					continue
-				}
-
-				for _, match := range foundMatches {
-					messages = append(messages, structs.Message{
-						Content: info + " '" + match + "'",
-						Source:  file,
-					})
-				}
-			}
-		} else {
-			// Use regular reading for smaller files
-			content, err := os.ReadFile(file.Path)
-			if err != nil {
-				output.GlobalLogger.FileWarning(file.GetDisplayName(), "Error reading file '%s': %v", file.Path, err)
-				return messages
-			}
-			body := [][]byte{content}
-			lowered := lowerAll(body)
-
-			for _, argumentSet := range config.Tests["IsFreeOfKeywords"].KeywordArguments {
-				var keywordList = argumentSet["keywords"].([]string)
-				var info = argumentSet["info"].(string)
-
-				ret := isFreeOfKeywordsCoreLowered(file, keywordList, info, body, lowered, false)
-				if ret != nil {
-					messages = append(messages, ret...)
-				}
-			}
+			return append(messages, streamKeywords(file, rules)...)
+		}
+		// Use regular reading for smaller files
+		content, err := os.ReadFile(file.Path)
+		if err != nil {
+			output.GlobalLogger.FileWarning(file.GetDisplayName(), "Error reading file '%s': %v", file.Path, err)
+			return messages
+		}
+		body := [][]byte{content}
+		lowered := lowerAll(body)
+		for _, rule := range rules {
+			messages = append(messages, tag(rule.Rule, rule.apply(file, body, lowered, reportJoined))...)
 		}
 	} else {
 		// Handle binary files
@@ -431,29 +474,54 @@ func IsFreeOfKeywords(file structs.File, config config.Config) []structs.Message
 			messages = append(messages, *skipMsg)
 		}
 		lowered := lowerAll(body)
-		for _, argumentSet := range config.Tests["IsFreeOfKeywords"].KeywordArguments {
-			var keywordList = argumentSet["keywords"].([]string)
-			var info = argumentSet["info"].(string)
+		for _, rule := range rules {
+			messages = append(messages, tag(rule.Rule, rule.apply(file, body, lowered, reportIndexed))...)
+		}
+	}
+	return messages
+}
 
-			ret := isFreeOfKeywordsCoreLowered(file, keywordList, info, body, lowered, true)
-			if ret != nil {
-				messages = append(messages, ret...)
+// streamKeywords scans a text file too large to hold: it is read ONCE, chunk by
+// chunk, and every rule sees every chunk. Findings are deduplicated across
+// chunks, so a keyword on every line is still reported once.
+func streamKeywords(file structs.File, rules []*BoundRule) []structs.Message {
+	var messages []structs.Message
+	seen := make(map[string]struct{})
+	// One wrapper pair for the whole file, not one per chunk: apply borrows both
+	// and never retains them.
+	body, loweredBody := make([][]byte, 1), make([][]byte, 1)
+	err := streamChunks(file.Path, func(chunk, lowered []byte) {
+		body[0], loweredBody[0] = chunk, lowered
+		for _, rule := range rules {
+			for _, message := range tag(rule.Rule, rule.apply(file, body, loweredBody, reportEach)) {
+				// The key is the LOWERED message: findings carry the original
+				// case of the chunk they were found in, so "Admin" in one chunk
+				// and "ADMIN" in another are one finding, reported once.
+				key := rule.Rule + "\x1f" + strings.ToLower(message.Content)
+				if _, duplicate := seen[key]; duplicate {
+					continue
+				}
+				seen[key] = struct{}{}
+				messages = append(messages, message)
 			}
 		}
+	})
+	if err != nil {
+		output.GlobalLogger.FileWarning(file.GetDisplayName(), "Error streaming file '%s': %v", file.Path, err)
 	}
 	return messages
 }
 
 // archiveLimits packs the config-derived effective limits into the readers
 // struct (readers stays config-free, so the tuple crosses here).
-func archiveLimits(cfg config.Config) readers.ArchiveLimits {
-	memberSize, totalMemory, memberCount := cfg.General.ArchiveLimits()
+func archiveLimits(general *config.GeneralConfig) readers.ArchiveLimits {
+	memberSize, totalMemory, memberCount := general.ArchiveLimits()
 	return readers.ArchiveLimits{
 		MaxMemberSize:  memberSize,
 		MaxTotalMemory: totalMemory,
 		MaxMemberCount: memberCount,
-		MaxPDFPages:    cfg.General.EffectiveMaxPDFPages(),
-		MaxPDFFileSize: cfg.General.EffectiveMaxPDFFileSize(),
+		MaxPDFPages:    general.EffectiveMaxPDFPages(),
+		MaxPDFFileSize: general.EffectiveMaxPDFFileSize(),
 	}
 }
 
@@ -467,63 +535,21 @@ func lowerAll(body [][]byte) [][]byte {
 	return lowered
 }
 
-func IsFreeOfKeywordsCoreList(file structs.File, keywordList []string, info string, body [][]byte, isBinary bool) []structs.Message {
-	return isFreeOfKeywordsCoreLowered(file, keywordList, info, body, lowerAll(body), isBinary)
-}
-
-func isFreeOfKeywordsCoreLowered(file structs.File, keywordList []string, info string, body, lowered [][]byte, isBinary bool) []structs.Message {
-	var messages []structs.Message
-
-	for idx, entry := range body {
-		foundKeywordsStr := matchPatternsListLowered(keywordList, entry, lowered[idx])
-		if foundKeywordsStr != "" {
-			if isBinary {
-				messages = append(messages, structs.Message{Content: info + " '" + foundKeywordsStr + "' in sheet/paragraph/table " + fmt.Sprintf("%d", idx), Source: file})
-			} else {
-				messages = append(messages, structs.Message{Content: info + " '" + foundKeywordsStr + "'", Source: file})
-			}
-		}
+// IsFreeOfKeywordsCoreList scans one body with one keyword list, the shape the
+// keyword tests assert against.
+func isFreeOfKeywordsCoreList(file structs.File, keywordList []string, info string, body [][]byte, isBinary bool) []structs.Message {
+	report := reportJoined
+	if isBinary {
+		report = reportIndexed
 	}
-	return messages
-}
-
-// matchPatternsListLowered scans with a caller-provided lowercase copy of body,
-// so loops over several keyword sets lower the content once instead of per set.
-func matchPatternsListLowered(patternList []string, body, loweredBody []byte) string {
-	if len(body) == 0 || len(patternList) == 0 {
-		return ""
-	}
-
-	// Use fast matcher for pattern detection with original case preservation
-	matcher := optimization.GetMatcher(patternList)
-	foundMatches := matcher.FindMatchesWithOriginalCaseLowered(body, loweredBody)
-
-	if len(foundMatches) > 0 {
-		// Deduplicate and format results
-		keywordSet := make(map[string]struct{})
-		var foundKeywordsStr string
-
-		for _, match := range foundMatches {
-			if _, exists := keywordSet[match]; !exists {
-				if foundKeywordsStr != "" {
-					foundKeywordsStr += "', '"
-				}
-				foundKeywordsStr += match
-				keywordSet[match] = struct{}{}
-			}
-		}
-
-		return foundKeywordsStr
-	}
-
-	return ""
+	sets := []keywordSet{{matcher: optimization.GetMatcher(keywordList), info: info}}
+	return scanKeywords(file, sets, body, lowerAll(body), report)
 }
 
 // scanOOXMLFile extracts and keyword-scans a top-level OOXML container.
 // handled = false means the file did not open as a zip container at all and
 // the caller's generic text/binary flow should decide instead.
-func scanOOXMLFile(file structs.File, config config.Config, kind string) ([]structs.Message, bool) {
-	limits := archiveLimits(config)
+func scanOOXMLFile(file structs.File, limits readers.ArchiveLimits, rules []*BoundRule, kind string) ([]structs.Message, bool) {
 	var content [][]byte
 	var truncated bool
 	var err error
@@ -553,24 +579,19 @@ func scanOOXMLFile(file structs.File, config config.Config, kind string) ([]stru
 	}
 
 	lowered := lowerAll(content)
-	for _, argumentSet := range config.Tests["IsFreeOfKeywords"].KeywordArguments {
-		var keywordList = argumentSet["keywords"].([]string)
-		var info = argumentSet["info"].(string)
-		if ret := isFreeOfKeywordsCoreLowered(file, keywordList, info, content, lowered, true); ret != nil {
-			messages = append(messages, ret...)
-		}
+	for _, rule := range rules {
+		messages = append(messages, tag(rule.Rule, rule.apply(file, content, lowered, reportIndexed))...)
 	}
 	return messages, true
 }
 
 // pdfLimits packs the effective PDF extraction bounds: the new page knob,
 // the shared per-member text cap, and the internal wall-time backstop.
-func pdfLimits(cfg config.Config) readers.PDFLimits {
-	memberSize, _, _ := cfg.General.ArchiveLimits()
+func pdfLimits(limits readers.ArchiveLimits) readers.PDFLimits {
 	return readers.PDFLimits{
-		MaxFileBytes: cfg.General.EffectiveMaxPDFFileSize(),
-		MaxPages:     cfg.General.EffectiveMaxPDFPages(),
-		MaxTextBytes: memberSize,
+		MaxFileBytes: limits.MaxPDFFileSize,
+		MaxPages:     limits.MaxPDFPages,
+		MaxTextBytes: limits.MaxMemberSize,
 		Timeout:      readers.DefaultPDFTimeout,
 	}
 }
@@ -598,7 +619,7 @@ func pdfTooLargeReason(limit int64) string {
 // sniffed from the first 1028 bytes (1024 + the 4 magic bytes) BEFORE the
 // whole-file read, so a large non-PDF named .pdf costs ~1 KiB of I/O here
 // instead of a full read that gets discarded.
-func scanPDFFile(file structs.File, config config.Config) ([]structs.Message, bool) {
+func scanPDFFile(file structs.File, archiveLimits readers.ArchiveLimits, rules []*BoundRule) ([]structs.Message, bool) {
 	ack := func(reason string) []structs.Message {
 		return []structs.Message{{Content: reason, Source: file, Skipped: true, Reason: reason}}
 	}
@@ -623,7 +644,7 @@ func scanPDFFile(file structs.File, config config.Config) ([]structs.Message, bo
 		return nil, false
 	}
 
-	limits := pdfLimits(config)
+	limits := pdfLimits(archiveLimits)
 
 	// Stat failure is fail-closed: without a size the oversize gate cannot
 	// run, and an unbounded read is exactly what it exists to prevent.
@@ -679,20 +700,8 @@ func scanPDFFile(file structs.File, config config.Config) ([]structs.Message, bo
 	}
 
 	lowered := lowerAll(pages)
-	for _, argumentSet := range config.Tests["IsFreeOfKeywords"].KeywordArguments {
-		var keywordList = argumentSet["keywords"].([]string)
-		var info = argumentSet["info"].(string)
-		for idx, page := range pages {
-			if len(page) == 0 {
-				continue
-			}
-			if found := matchPatternsListLowered(keywordList, page, lowered[idx]); found != "" {
-				messages = append(messages, structs.Message{
-					Content: fmt.Sprintf("%s '%s' (page %d)", info, found, idx+1),
-					Source:  file,
-				})
-			}
-		}
+	for _, rule := range rules {
+		messages = append(messages, tag(rule.Rule, rule.apply(file, pages, lowered, reportPaged))...)
 	}
 	return messages, true
 }
@@ -713,17 +722,34 @@ func tryReadBinary(file structs.File) ([][]byte, *structs.Message) {
 	return [][]byte{}, nil
 }
 
-func IsValidName(file structs.File, config config.Config) []structs.Message {
-	var messages []structs.Message
-
-	for _, argumentSet := range config.Tests["IsValidName"].KeywordArguments {
-		invalidFileNames := argumentSet["disallowed_names"].([]string)
-		messages = append(messages, IsValidNameCore(file, invalidFileNames)...)
+// bindValidName binds one name rule: the disallowed-name lists of all its
+// parameter sets, type-checked here and never asserted again.
+func bindValidName(spec config.RuleSpec, general *config.GeneralConfig) (*BoundRule, error) {
+	sets, err := paramSets(spec)
+	if err != nil {
+		return nil, err
 	}
-	return messages
+	names := make([][]string, 0, len(sets))
+	for i, set := range sets {
+		disallowed, err := stringList(set, "disallowed_names", i)
+		if err != nil {
+			return nil, err
+		}
+		names = append(names, disallowed)
+	}
+	return &BoundRule{
+		Rule: spec.Name,
+		apply: func(file structs.File, _, _ [][]byte, _ reporting) []structs.Message {
+			var messages []structs.Message
+			for _, disallowed := range names {
+				messages = append(messages, isValidNameCore(file, disallowed)...)
+			}
+			return messages
+		},
+	}, nil
 }
 
-func IsValidNameCore(file structs.File, invalidFileNames []string) []structs.Message {
+func isValidNameCore(file structs.File, invalidFileNames []string) []structs.Message {
 
 	var folders []string
 	var name string

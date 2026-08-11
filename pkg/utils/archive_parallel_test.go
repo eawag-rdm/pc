@@ -4,7 +4,6 @@ import (
 	"context"
 	"testing"
 
-	"github.com/eawag-rdm/pc/pkg/config"
 	"github.com/eawag-rdm/pc/pkg/structs"
 )
 
@@ -12,24 +11,6 @@ import (
 // (with different extensions) are processed and their messages are preserved.
 // This test ensures the message truncation bug doesn't regress.
 func TestArchiveParallelProcessing(t *testing.T) {
-	// Create test configuration similar to production
-	cfg := config.Config{
-		General: &config.GeneralConfig{
-			MaxArchiveFileSize:     10485760,  // 10MB
-			MaxTotalArchiveMemory:  536870912, // 500MB
-			MaxContentScanFileSize: 20971520,  // 20MB
-		},
-		Tests: map[string]*config.TestConfig{
-			"IsFreeOfKeywords": {
-				Whitelist: []string{},
-				Blacklist: []string{},
-				KeywordArguments: []map[string]interface{}{
-					{"keywords": []string{"password", "secret"}, "info": "Test keywords detected"},
-				},
-			},
-		},
-	}
-
 	// Create mock archive files with the same base name but different extensions
 	files := []structs.File{
 		{Path: "test1.7z", Name: "test1.7z", IsArchive: true},
@@ -41,8 +22,8 @@ func TestArchiveParallelProcessing(t *testing.T) {
 		{Path: "regular.txt", Name: "regular.txt", IsArchive: false}, // Non-archive file
 	}
 
-	// Mock check function that always returns a message for archive files
-	mockArchiveCheck := func(file structs.File, config config.Config) []structs.Message {
+	// Mock check that always returns a message for archive files
+	mockArchiveCheck := mockEntry("mockArchiveCheck", func(file structs.File) []structs.Message {
 		if !file.IsArchive {
 			return []structs.Message{}
 		}
@@ -52,10 +33,10 @@ func TestArchiveParallelProcessing(t *testing.T) {
 				Source:  file,
 			},
 		}
-	}
+	})
 
 	// Test the function that specifically handles archives
-	messages := applyChecksFilteredByFileOnArchive(context.Background(), cfg, CheckSelectors{}, []func(structs.File, config.Config) []structs.Message{mockArchiveCheck}, files)
+	messages := applyChecksFilteredByFileOnArchive(context.Background(), []checkRules{mockArchiveCheck}, files)
 
 	// Verify that all archive files were processed
 	expectedArchiveCount := 6 // 6 archive files

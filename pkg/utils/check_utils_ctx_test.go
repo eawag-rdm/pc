@@ -38,7 +38,7 @@ func TestApplyAllChecks_CancelledContext_ReturnsPromptly(t *testing.T) {
 
 	done := make(chan []structs.Message, 1)
 	go func() {
-		done <- ApplyAllChecks(ctx, config.Config{}, CheckSelectors{}, files, true)
+		done <- ApplyAllChecks(ctx, config.Config{}, compilePlan(t, config.Config{}), files, true)
 	}()
 
 	select {
@@ -58,15 +58,14 @@ func TestApplyAllChecks_CancelledContext_ReturnsPromptly(t *testing.T) {
 func TestApplyChecksFilteredByFile_PanickingCheck_Parallel(t *testing.T) {
 	files := writeTempFiles(t, 3) // >= 2 files selects the parallel path
 
-	panicking := func(file structs.File, cfg config.Config) []structs.Message {
+	panicking := mockEntry("panicking", func(structs.File) []structs.Message {
 		panic("boom: simulated check bug")
-	}
-	healthy := func(file structs.File, cfg config.Config) []structs.Message {
+	})
+	healthy := mockEntry("healthy", func(file structs.File) []structs.Message {
 		return []structs.Message{{Content: "healthy ran", Source: file}}
-	}
+	})
 
-	messages := applyChecksFilteredByFile(context.Background(), config.Config{}, CheckSelectors{},
-		[]func(structs.File, config.Config) []structs.Message{panicking, healthy}, files)
+	messages := applyChecksFilteredByFile(context.Background(), []checkRules{panicking, healthy}, files)
 
 	healthyCount := 0
 	for _, m := range messages {

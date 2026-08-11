@@ -55,10 +55,11 @@ type Handler struct {
 	contactMsg string
 	// logClientIP gates whether the client IP is recorded in access logs.
 	logClientIP bool
-	// selectors holds the per-check file filters, compiled once at boot by New
-	// (a bad pattern refuses the boot). The zero value filters nothing, which is
-	// what handler-isolation tests construct.
-	selectors utils.CheckSelectors
+	// plan holds the bound rules of every check, compiled once at boot by New
+	// (a bad pattern or parameter refuses the boot). It is a REQUIRED
+	// constructor argument: a nil plan dispatches nothing, so every package
+	// would be reported - and cached as - clean.
+	plan *utils.Plan
 
 	// analysisMu is the single serialization gate (concurrency = 1, §4/§9). It
 	// serializes the part of Analyze that touches process-global state
@@ -118,8 +119,10 @@ type Handler struct {
 }
 
 // NewHandler creates a new handler with the given configuration. The slog
-// logger writes JSON access records to stdout.
-func NewHandler(pcConfig *config.Config, serverCfg Config, logger *slog.Logger) *Handler {
+// logger writes JSON access records to stdout. plan is the compiled rule set
+// (utils.Compile) and is REQUIRED: without it the dispatch runs no check at
+// all, and the result would be a clean report - cached as such.
+func NewHandler(pcConfig *config.Config, serverCfg Config, logger *slog.Logger, plan *utils.Plan) *Handler {
 	contact := DefaultContactMessage
 	logClientIP := true
 	var limiter *rateLimiter
@@ -162,6 +165,7 @@ func NewHandler(pcConfig *config.Config, serverCfg Config, logger *slog.Logger) 
 		pcConfig:         pcConfig,
 		serverCfg:        serverCfg,
 		logger:           logger,
+		plan:             plan,
 		contactMsg:       contact,
 		logClientIP:      logClientIP,
 		limiter:          limiter,
@@ -459,7 +463,7 @@ func (h *Handler) runAnalysis(ctx context.Context, packageID, token string) (bod
 	// checks phase too - the handler then maps the expired context to
 	// analysis_timeout (504).
 	md := metadata.CkanMetadataFromJSON(result)
-	messages := analysis.Run(ctx, pcConfigCopy, h.selectors, files, md, nil)
+	messages := analysis.Run(ctx, pcConfigCopy, h.plan, files, md, nil)
 
 	if h.afterChecks != nil {
 		h.afterChecks()

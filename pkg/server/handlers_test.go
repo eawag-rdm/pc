@@ -16,9 +16,31 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eawag-rdm/pc/pkg/checks"
 	"github.com/eawag-rdm/pc/pkg/config"
 	"github.com/eawag-rdm/pc/pkg/structs"
+	"github.com/eawag-rdm/pc/pkg/utils"
 )
+
+// testPlan compiles the rule plan NewHandler requires, the way server.New does
+// at boot. A handler test that never analyses still needs one: a nil plan would
+// dispatch nothing and report every package clean. Configs built without a
+// [general] section get the shipped defaults, which is what utils.Compile
+// refuses to invent for itself.
+func testPlan(pcConfig *config.Config) *utils.Plan {
+	cfg := config.Config{}
+	if pcConfig != nil {
+		cfg = *pcConfig
+	}
+	if cfg.General == nil {
+		cfg.General = &config.GeneralConfig{MaxContentScanFileSize: config.DefaultMaxContentScanFileSize}
+	}
+	plan, err := utils.Compile(&cfg, checks.NewRegistry())
+	if err != nil {
+		panic("server test plan: " + err.Error())
+	}
+	return plan
+}
 
 // discardLogger returns a slog logger that throws away output, for tests that
 // don't inspect the access log.
@@ -36,7 +58,7 @@ func withRequestContext(req *http.Request, requestID, contact string) *http.Requ
 }
 
 func TestHandler_Health(t *testing.T) {
-	handler := NewHandler(&config.Config{}, Config{}, discardLogger())
+	handler := NewHandler(&config.Config{}, Config{}, discardLogger(), testPlan(&config.Config{}))
 
 	req := httptest.NewRequest("GET", "/health", nil)
 	rr := httptest.NewRecorder()
@@ -74,7 +96,7 @@ func decodeEnvelope(t *testing.T, rr *httptest.ResponseRecorder) ErrorResponse {
 }
 
 func TestHandler_Analyze_MissingPackageID(t *testing.T) {
-	handler := NewHandler(&config.Config{}, Config{}, discardLogger())
+	handler := NewHandler(&config.Config{}, Config{}, discardLogger(), testPlan(&config.Config{}))
 
 	body := bytes.NewBufferString(`{}`)
 	req := httptest.NewRequest("POST", "/api/v1/analyze", body)
@@ -93,7 +115,7 @@ func TestHandler_Analyze_MissingPackageID(t *testing.T) {
 }
 
 func TestHandler_Analyze_InvalidJSON(t *testing.T) {
-	handler := NewHandler(&config.Config{}, Config{}, discardLogger())
+	handler := NewHandler(&config.Config{}, Config{}, discardLogger(), testPlan(&config.Config{}))
 
 	body := bytes.NewBufferString(`{invalid json}`)
 	req := httptest.NewRequest("POST", "/api/v1/analyze", body)
@@ -114,7 +136,7 @@ func TestHandler_Analyze_InvalidJSON(t *testing.T) {
 // TestHandler_Analyze_NoCKANURL: with no collector URL configured, the handler
 // fails internally (the URL is server-side only) and returns internal_error.
 func TestHandler_Analyze_NoCKANURL(t *testing.T) {
-	handler := NewHandler(&config.Config{}, Config{}, discardLogger())
+	handler := NewHandler(&config.Config{}, Config{}, discardLogger(), testPlan(&config.Config{}))
 
 	body := bytes.NewBufferString(`{"package_id": "test-package"}`)
 	req := httptest.NewRequest("POST", "/api/v1/analyze", body)
@@ -307,7 +329,7 @@ func TestHandler_Analyze_NoUploadResources_OK(t *testing.T) {
 	ckan := fakeCKAN(t, nil, nil)
 	defer ckan.Close()
 
-	handler := NewHandler(ckanPCConfig(ckan.URL), Config{}, discardLogger())
+	handler := NewHandler(ckanPCConfig(ckan.URL), Config{}, discardLogger(), testPlan(ckanPCConfig(ckan.URL)))
 
 	body := bytes.NewBufferString(`{"package_id": "empty-pkg"}`)
 	req := httptest.NewRequest("POST", "/api/v1/analyze", body)
@@ -393,7 +415,7 @@ func TestHandler_Analyze_NoTokenBleed(t *testing.T) {
 	defer ckan.Close()
 
 	pcConfig := ckanPCConfig(ckan.URL)
-	handler := NewHandler(pcConfig, Config{}, discardLogger())
+	handler := NewHandler(pcConfig, Config{}, discardLogger(), testPlan(pcConfig))
 
 	const n = 25
 	// pkgs[i] is the unique package id for request i; tokens[i] its expected
@@ -514,7 +536,7 @@ func TestHandler_Analyze_NoToken_PublicPath(t *testing.T) {
 	ckan := fakeCKAN(t, &mu, seen)
 	defer ckan.Close()
 
-	handler := NewHandler(ckanPCConfig(ckan.URL), Config{}, discardLogger())
+	handler := NewHandler(ckanPCConfig(ckan.URL), Config{}, discardLogger(), testPlan(ckanPCConfig(ckan.URL)))
 
 	body := bytes.NewBufferString(`{"package_id": "public-pkg"}`)
 	req := httptest.NewRequest("POST", "/api/v1/analyze", body)
@@ -551,7 +573,7 @@ func TestAccessLog_RecordsPackageID(t *testing.T) {
 	var buf bytes.Buffer
 	var mu sync.Mutex
 	logger := slog.New(slog.NewJSONHandler(&syncWriter{w: &buf, mu: &mu}, nil))
-	handler := NewHandler(ckanPCConfig(ckan.URL), Config{}, logger)
+	handler := NewHandler(ckanPCConfig(ckan.URL), Config{}, logger, testPlan(ckanPCConfig(ckan.URL)))
 
 	body := bytes.NewBufferString(`{"package_id": "log-me-pkg"}`)
 	req := httptest.NewRequest("POST", "/api/v1/analyze", body)
@@ -629,7 +651,7 @@ func TestHandler_Analyze_ConcurrentPDF_RaceClean(t *testing.T) {
 	ckan, pcConfig := makePDFCKAN(t)
 	defer ckan.Close()
 
-	handler := NewHandler(pcConfig, Config{}, discardLogger())
+	handler := NewHandler(pcConfig, Config{}, discardLogger(), testPlan(pcConfig))
 
 	const n = 50
 	var wg sync.WaitGroup
@@ -687,7 +709,7 @@ func TestHandler_Analyze_ResultCache(t *testing.T) {
 	}))
 	defer ckan.Close()
 
-	handler := NewHandler(ckanPCConfig(ckan.URL), Config{}, discardLogger())
+	handler := NewHandler(ckanPCConfig(ckan.URL), Config{}, discardLogger(), testPlan(ckanPCConfig(ckan.URL)))
 	cache, err := newResultCache(t.TempDir(), 10, 0)
 	if err != nil {
 		t.Fatalf("newResultCache: %v", err)
@@ -764,7 +786,7 @@ func TestHandler_Analyze_CancelledChecks_NotCached(t *testing.T) {
 	}))
 	defer ckan.Close()
 
-	handler := NewHandler(ckanPCConfig(ckan.URL), Config{}, discardLogger())
+	handler := NewHandler(ckanPCConfig(ckan.URL), Config{}, discardLogger(), testPlan(ckanPCConfig(ckan.URL)))
 	cache, err := newResultCache(t.TempDir(), 10, 0)
 	if err != nil {
 		t.Fatalf("newResultCache: %v", err)
@@ -799,7 +821,7 @@ func TestHandler_Analyze_CancelledChecks_NotCached(t *testing.T) {
 	// A later request for the same (unchanged) package must re-analyse, not be
 	// served the rejected body. Fresh handler over the same cache, so each
 	// handler's seam is set once and never mutated.
-	handler2 := NewHandler(ckanPCConfig(ckan.URL), Config{}, discardLogger())
+	handler2 := NewHandler(ckanPCConfig(ckan.URL), Config{}, discardLogger(), testPlan(ckanPCConfig(ckan.URL)))
 	handler2.cache = cache
 	rr2 := analyzeWithToken(handler2, "cancel-cache-pkg", "tok")
 	if rr2.Code != http.StatusOK {
@@ -838,7 +860,7 @@ func TestHandler_Analyze_TokenForwarding(t *testing.T) {
 	// Simulate an operator who put a real token in the TOML for CLI use.
 	cfg := ckanPCConfig(ckan.URL)
 	cfg.Collectors["CkanCollector"].Attrs["token"] = "toml-secret"
-	handler := NewHandler(cfg, Config{}, discardLogger())
+	handler := NewHandler(cfg, Config{}, discardLogger(), testPlan(cfg))
 
 	// Path 1: Bearer token present -> forwarded verbatim.
 	if rr := analyzeWithToken(handler, "pkg-with-token", "user-token"); rr.Code != http.StatusOK {
@@ -879,7 +901,7 @@ func TestHandler_Analyze_MetadataInResponse(t *testing.T) {
 			`"private":false,"status":"complete","resources":[]}}`,
 		&calls, &mu)
 	defer ckan.Close()
-	handler := NewHandler(ckanPCConfig(ckan.URL), Config{}, discardLogger())
+	handler := NewHandler(ckanPCConfig(ckan.URL), Config{}, discardLogger(), testPlan(ckanPCConfig(ckan.URL)))
 
 	rr := analyzeWithToken(handler, "meta-pkg", "tok")
 	if rr.Code != http.StatusOK {
@@ -951,7 +973,7 @@ func mustJSON(s string) string {
 func TestHandler_Analyze_ValidPackageNames(t *testing.T) {
 	ckan := fakeCKAN(t, nil, nil)
 	defer ckan.Close()
-	handler := NewHandler(ckanPCConfig(ckan.URL), Config{}, discardLogger())
+	handler := NewHandler(ckanPCConfig(ckan.URL), Config{}, discardLogger(), testPlan(ckanPCConfig(ckan.URL)))
 
 	valid := []string{
 		"my-dataset",
@@ -983,7 +1005,7 @@ func TestHandler_Analyze_InvalidPackageNames(t *testing.T) {
 		io.WriteString(w, `{"success":true,"result":{"resources":[]}}`)
 	}))
 	defer ckan.Close()
-	handler := NewHandler(ckanPCConfig(ckan.URL), Config{}, discardLogger())
+	handler := NewHandler(ckanPCConfig(ckan.URL), Config{}, discardLogger(), testPlan(ckanPCConfig(ckan.URL)))
 
 	invalid := []string{
 		"Has-Uppercase",
@@ -1063,7 +1085,7 @@ func TestHandler_Analyze_CKANOutcomeMapping(t *testing.T) {
 			var mu sync.Mutex
 			ckan := statusCKAN(t, tt.status, tt.body, &calls, &mu)
 			defer ckan.Close()
-			handler := NewHandler(ckanPCConfig(ckan.URL), Config{}, discardLogger())
+			handler := NewHandler(ckanPCConfig(ckan.URL), Config{}, discardLogger(), testPlan(ckanPCConfig(ckan.URL)))
 
 			rr := analyzeWithToken(handler, "some-pkg", "tok")
 			if rr.Code != tt.wantHTTP {
@@ -1102,7 +1124,7 @@ func TestHandler_Analyze_AnonymousForbidden(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			ckan := statusCKAN(t, http.StatusForbidden, ``, nil, nil)
 			defer ckan.Close()
-			handler := NewHandler(ckanPCConfig(ckan.URL), Config{}, discardLogger())
+			handler := NewHandler(ckanPCConfig(ckan.URL), Config{}, discardLogger(), testPlan(ckanPCConfig(ckan.URL)))
 
 			rr := analyzeWithToken(handler, "some-pkg", tt.token)
 			if rr.Code != tt.wantHTTP {
@@ -1124,7 +1146,7 @@ func TestHandler_Analyze_TransportError(t *testing.T) {
 	ckan.Close() // refuse connections
 
 	cfg := ckanPCConfig(url)
-	handler := NewHandler(cfg, Config{}, discardLogger())
+	handler := NewHandler(cfg, Config{}, discardLogger(), testPlan(cfg))
 
 	rr := analyzeWithToken(handler, "some-pkg", "tok")
 	if rr.Code != http.StatusBadGateway {
@@ -1166,7 +1188,7 @@ func TestHandler_Analyze_UnusableCKANBody(t *testing.T) {
 			var buf bytes.Buffer
 			var mu sync.Mutex
 			logger := slog.New(slog.NewJSONHandler(&syncWriter{w: &buf, mu: &mu}, nil))
-			handler := NewHandler(ckanPCConfig(ckan.URL), Config{}, logger)
+			handler := NewHandler(ckanPCConfig(ckan.URL), Config{}, logger, testPlan(ckanPCConfig(ckan.URL)))
 
 			a, alerts := newRecordingAlerter(t, nil)
 
@@ -1227,7 +1249,7 @@ func TestHandler_Analyze_MissingUpload_ResourceUnreadable(t *testing.T) {
 
 	cfg := ckanPCConfig(ckan.URL)
 	cfg.Collectors["CkanCollector"].Attrs["ckan_storage_path"] = t.TempDir()
-	handler := NewHandler(cfg, Config{}, discardLogger())
+	handler := NewHandler(cfg, Config{}, discardLogger(), testPlan(cfg))
 
 	rr := analyzeWithToken(handler, "upload-pkg", "tok")
 	if rr.Code != http.StatusInternalServerError {
@@ -1255,7 +1277,7 @@ func TestHandler_Analyze_TokenForwardedRaw(t *testing.T) {
 		io.WriteString(w, `{"success":true,"result":{"resources":[]}}`)
 	}))
 	defer ckan.Close()
-	handler := NewHandler(ckanPCConfig(ckan.URL), Config{}, discardLogger())
+	handler := NewHandler(ckanPCConfig(ckan.URL), Config{}, discardLogger(), testPlan(ckanPCConfig(ckan.URL)))
 
 	_ = analyzeWithToken(handler, "tok-pkg", "raw-ckan-token-123")
 
@@ -1275,7 +1297,7 @@ func TestHandler_Analyze_TokenForwardedRaw(t *testing.T) {
 // TestHandler_Analyze_BodyTooLarge asserts an oversized body is rejected as
 // invalid_request (the MaxBytesReader cap, §2).
 func TestHandler_Analyze_BodyTooLarge(t *testing.T) {
-	handler := NewHandler(&config.Config{}, Config{}, discardLogger())
+	handler := NewHandler(&config.Config{}, Config{}, discardLogger(), testPlan(&config.Config{}))
 
 	huge := `{"package_id":"` + strings.Repeat("a", 8000) + `"}`
 	req := httptest.NewRequest("POST", "/api/v1/analyze", bytes.NewBufferString(huge))
@@ -1312,7 +1334,7 @@ func TestHandler_Analyze_Timeout(t *testing.T) {
 
 	cfg := ckanPCConfig(ckan.URL)
 	cfg.Server.RequestTimeoutSeconds = 1
-	handler := NewHandler(cfg, Config{}, discardLogger())
+	handler := NewHandler(cfg, Config{}, discardLogger(), testPlan(cfg))
 
 	rr := analyzeWithToken(handler, "slow-pkg", "tok")
 	if rr.Code != http.StatusGatewayTimeout {
@@ -1341,7 +1363,7 @@ func TestHandler_Analyze_Timeout_HungUpstream(t *testing.T) {
 
 	cfg := ckanPCConfig(ckan.URL)
 	cfg.Server.RequestTimeoutSeconds = 1
-	handler := NewHandler(cfg, Config{}, discardLogger())
+	handler := NewHandler(cfg, Config{}, discardLogger(), testPlan(cfg))
 
 	done := make(chan *httptest.ResponseRecorder, 1)
 	start := time.Now()
@@ -1378,7 +1400,7 @@ func TestHandler_Analyze_ClientCancelled_ServiceBusy(t *testing.T) {
 	ckan := fakeCKAN(t, nil, nil)
 	defer ckan.Close()
 
-	handler := NewHandler(ckanPCConfig(ckan.URL), Config{}, discardLogger())
+	handler := NewHandler(ckanPCConfig(ckan.URL), Config{}, discardLogger(), testPlan(ckanPCConfig(ckan.URL)))
 
 	body := bytes.NewBufferString(`{"package_id":"cancel-pkg"}`)
 	req := httptest.NewRequest("POST", "/api/v1/analyze", body)
@@ -1417,7 +1439,7 @@ func TestHandler_Analyze_UnknownCKANType_InternalNoLeak(t *testing.T) {
 	ckan := statusCKAN(t, http.StatusOK, body, nil, nil)
 	defer ckan.Close()
 
-	handler := NewHandler(ckanPCConfig(ckan.URL), Config{}, discardLogger())
+	handler := NewHandler(ckanPCConfig(ckan.URL), Config{}, discardLogger(), testPlan(ckanPCConfig(ckan.URL)))
 
 	rr := analyzeWithToken(handler, "unknown-type-pkg", "tok")
 	if rr.Code != http.StatusInternalServerError {
@@ -1476,7 +1498,7 @@ func TestHandler_Analyze_MalformedResource_Surfaced(t *testing.T) {
 			}))
 			defer ckan.Close()
 
-			handler := NewHandler(ckanPCConfig(ckan.URL), Config{}, discardLogger())
+			handler := NewHandler(ckanPCConfig(ckan.URL), Config{}, discardLogger(), testPlan(ckanPCConfig(ckan.URL)))
 
 			rr := analyzeWithToken(handler, tc.pkg, "tok")
 			if rr.Code != http.StatusUnprocessableEntity {
@@ -1545,7 +1567,7 @@ func TestHandler_Analyze_SlowCKAN_TimesOutAsUnavailable(t *testing.T) {
 
 	pcConfig := ckanPCConfig(slow.URL)
 	pcConfig.Server.CkanRequestTimeoutSeconds = 1
-	handler := NewHandler(pcConfig, Config{}, discardLogger())
+	handler := NewHandler(pcConfig, Config{}, discardLogger(), testPlan(pcConfig))
 
 	body := bytes.NewBufferString(`{"package_id": "slow-pkg"}`)
 	req := httptest.NewRequest("POST", "/api/v1/analyze", body)

@@ -41,7 +41,7 @@ func TestReady_Healthy(t *testing.T) {
 	defer ckan.Close()
 
 	storage := t.TempDir()
-	handler := NewHandler(readyPCConfig(ckan.URL, storage), Config{}, discardLogger())
+	handler := NewHandler(readyPCConfig(ckan.URL, storage), Config{}, discardLogger(), testPlan(readyPCConfig(ckan.URL, storage)))
 
 	req := httptest.NewRequest("GET", "/ready", nil)
 	req = withRequestContext(req, "REQ-READY", DefaultContactMessage)
@@ -62,7 +62,7 @@ func TestReady_CKANDown(t *testing.T) {
 	ckan.Close()
 
 	storage := t.TempDir()
-	handler := NewHandler(readyPCConfig(url, storage), Config{}, discardLogger())
+	handler := NewHandler(readyPCConfig(url, storage), Config{}, discardLogger(), testPlan(readyPCConfig(url, storage)))
 
 	req := httptest.NewRequest("GET", "/ready", nil)
 	req = withRequestContext(req, "REQ-NOTREADY", DefaultContactMessage)
@@ -87,7 +87,7 @@ func TestReady_MountMissing(t *testing.T) {
 	defer ckan.Close()
 
 	missing := filepath.Join(t.TempDir(), "does-not-exist")
-	handler := NewHandler(readyPCConfig(ckan.URL, missing), Config{}, discardLogger())
+	handler := NewHandler(readyPCConfig(ckan.URL, missing), Config{}, discardLogger(), testPlan(readyPCConfig(ckan.URL, missing)))
 
 	req := httptest.NewRequest("GET", "/ready", nil)
 	req = withRequestContext(req, "REQ-NOMOUNT", DefaultContactMessage)
@@ -116,7 +116,7 @@ func TestReady_CancelledRequestContextDoesNotPoisonCache(t *testing.T) {
 	defer ckan.Close()
 
 	storage := t.TempDir()
-	handler := NewHandler(readyPCConfig(ckan.URL, storage), Config{}, discardLogger())
+	handler := NewHandler(readyPCConfig(ckan.URL, storage), Config{}, discardLogger(), testPlan(readyPCConfig(ckan.URL, storage)))
 
 	// A request whose context is already cancelled, mirroring an http.Server that
 	// cancelled r.Context() after the poller disconnected.

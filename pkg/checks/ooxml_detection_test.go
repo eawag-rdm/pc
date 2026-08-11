@@ -49,7 +49,7 @@ func TestKeywordDetectedInTopLevelOOXML(t *testing.T) {
 		t.Run(filepath.Base(tt.fixture), func(t *testing.T) {
 			cfg := keywordConfig([]string{tt.keyword})
 			file := structs.File{Path: tt.fixture, Name: filepath.Base(tt.fixture)}
-			msgs := IsFreeOfKeywords(file, cfg)
+			msgs := runRule(t, "IsFreeOfKeywords", cfg, ScopeFile, file)
 			found := false
 			for _, m := range msgs {
 				if !m.Skipped && strings.Contains(strings.ToLower(m.Content), tt.keyword) {
@@ -61,7 +61,7 @@ func TestKeywordDetectedInTopLevelOOXML(t *testing.T) {
 			}
 
 			// Negative control: an absent keyword yields no findings.
-			none := IsFreeOfKeywords(file, keywordConfig([]string{"zzz-not-present"}))
+			none := runRule(t, "IsFreeOfKeywords", keywordConfig([]string{"zzz-not-present"}), ScopeFile, file)
 			for _, m := range none {
 				if !m.Skipped {
 					t.Errorf("no finding expected for absent keyword, got %v", m)
@@ -148,7 +148,7 @@ func TestKeywordDetectedInArchivedOOXML(t *testing.T) {
 
 			// One keyword per container format, both must be found.
 			cfg := keywordConfig([]string{"column2", "page"})
-			msgs := IsArchiveFreeOfKeywords(archive, cfg)
+			msgs := runRule(t, "IsFreeOfKeywords", cfg, ScopeArchiveMember, archive)
 
 			foundXLSX, foundDOCX := false, false
 			for _, m := range msgs {
@@ -178,7 +178,7 @@ func TestKeywordDetectedInArchivedOOXML(t *testing.T) {
 			}
 
 			// Negative control: absent keyword yields no findings at all.
-			none := IsArchiveFreeOfKeywords(archive, keywordConfig([]string{"zzz-not-present"}))
+			none := runRule(t, "IsFreeOfKeywords", keywordConfig([]string{"zzz-not-present"}), ScopeArchiveMember, archive)
 			for _, m := range none {
 				if !m.Skipped {
 					t.Errorf("[%s] no finding expected for absent keyword, got %v", format, m)

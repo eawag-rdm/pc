@@ -124,7 +124,7 @@ func TestGetTokenFromContext_NoToken(t *testing.T) {
 // TestRequestContext_GeneratesIDAndHeader verifies the middleware generates a
 // request_id, exposes it via context, and echoes it in X-Request-Id.
 func TestRequestContext_GeneratesIDAndHeader(t *testing.T) {
-	handler := NewHandler(&config.Config{Server: &config.ServerConfig{ContactMessage: "C"}}, Config{}, discardLogger())
+	handler := NewHandler(&config.Config{Server: &config.ServerConfig{ContactMessage: "C"}}, Config{}, discardLogger(), testPlan(&config.Config{Server: &config.ServerConfig{ContactMessage: "C"}}))
 
 	var ctxID string
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -160,7 +160,7 @@ func TestAccessLog_NeverLogsToken(t *testing.T) {
 	var mu sync.Mutex
 	logger := slog.New(slog.NewJSONHandler(&syncWriter{w: &buf, mu: &mu}, nil))
 
-	handler := NewHandler(&config.Config{Server: &config.ServerConfig{LogClientIP: true}}, Config{}, logger)
+	handler := NewHandler(&config.Config{Server: &config.ServerConfig{LogClientIP: true}}, Config{}, logger, testPlan(&config.Config{Server: &config.ServerConfig{LogClientIP: true}}))
 
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Token is in the context, as it would be after ExtractToken.
@@ -212,9 +212,10 @@ func (s *syncWriter) Write(p []byte) (int, error) {
 
 // corsHandler builds a handler whose CORS allow-list contains origin.
 func corsHandler(origin string) *Handler {
-	return NewHandler(&config.Config{
+	cfg := &config.Config{
 		Server: &config.ServerConfig{AllowedOrigins: []string{origin}},
-	}, Config{}, discardLogger())
+	}
+	return NewHandler(cfg, Config{}, discardLogger(), testPlan(cfg))
 }
 
 // TestCORS_PreflightAllowedOrigin asserts an OPTIONS preflight from an allowed
@@ -344,7 +345,7 @@ func containsString(vs []string, s string) bool {
 // X-Request-Id header RequestContext sets) and it must equal the header value
 // (spec §3).
 func TestRecover_PanicBecomesInternalError(t *testing.T) {
-	h := NewHandler(&config.Config{Server: &config.ServerConfig{}}, Config{}, discardLogger())
+	h := NewHandler(&config.Config{Server: &config.ServerConfig{}}, Config{}, discardLogger(), testPlan(&config.Config{Server: &config.ServerConfig{}}))
 
 	boom := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		panic("kaboom")
@@ -391,7 +392,7 @@ func TestRecover_PanicBecomesInternalError(t *testing.T) {
 func TestRecover_PanicLogCarriesRequestID(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buf, nil))
-	h := NewHandler(&config.Config{Server: &config.ServerConfig{}}, Config{}, logger)
+	h := NewHandler(&config.Config{Server: &config.ServerConfig{}}, Config{}, logger, testPlan(&config.Config{Server: &config.ServerConfig{}}))
 
 	boom := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		panic("kaboom")
@@ -504,7 +505,7 @@ func TestEnforceKnownRoutes_KnownRoutePassesThrough(t *testing.T) {
 }
 
 func TestDraining_RejectsNewRequests(t *testing.T) {
-	h := NewHandler(&config.Config{Server: &config.ServerConfig{}}, Config{}, discardLogger())
+	h := NewHandler(&config.Config{Server: &config.ServerConfig{}}, Config{}, discardLogger(), testPlan(&config.Config{Server: &config.ServerConfig{}}))
 
 	called := false
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -563,7 +564,7 @@ func TestAccessLog_SkipsSuccessfulProbes(t *testing.T) {
 			var buf bytes.Buffer
 			var mu sync.Mutex
 			logger := slog.New(slog.NewJSONHandler(&syncWriter{w: &buf, mu: &mu}, nil))
-			handler := NewHandler(&config.Config{Server: &config.ServerConfig{}}, Config{}, logger)
+			handler := NewHandler(&config.Config{Server: &config.ServerConfig{}}, Config{}, logger, testPlan(&config.Config{Server: &config.ServerConfig{}}))
 
 			inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(tt.status)

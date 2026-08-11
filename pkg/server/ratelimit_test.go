@@ -292,7 +292,7 @@ func rateTestHandler(t *testing.T, srv *config.ServerConfig) (*Handler, *bytes.B
 	var buf bytes.Buffer
 	var mu sync.Mutex
 	logger := slog.New(slog.NewJSONHandler(&syncWriter{w: &buf, mu: &mu}, nil))
-	h := NewHandler(&config.Config{Server: srv}, Config{}, logger)
+	h := NewHandler(&config.Config{Server: srv}, Config{}, logger, testPlan(&config.Config{Server: srv}))
 	return h, &buf, &mu
 }
 

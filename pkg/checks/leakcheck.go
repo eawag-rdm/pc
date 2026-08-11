@@ -27,63 +27,55 @@ const (
 )
 
 // leakAttrs holds the operational knobs of the leak check, read from the
-// attrs table of [test.IsFreeOfSecrets]. Wrong-typed values are rejected at
-// config load by ValidateChecksConfig, so plain type assertions suffice here.
+// attrs table of [test.IsFreeOfSecrets] and type-checked once, at load.
 type leakAttrs struct {
-	enabled        bool
 	binary         string
 	timeoutSeconds int
 	maxProcs       int
 }
 
-func leakAttrsFrom(tc *config.TestConfig) leakAttrs {
+func leakAttrsFrom(attrs map[string]interface{}) leakAttrs {
 	a := leakAttrs{
 		binary:         defaultLeakBinary,
 		timeoutSeconds: config.DefaultSecretsTimeoutSeconds,
 		maxProcs:       defaultLeakMaxProcs,
 	}
-	if tc == nil || tc.Attrs == nil {
-		return a
-	}
-	if v, ok := tc.Attrs["enabled"].(bool); ok {
-		a.enabled = v
-	}
-	if v, ok := tc.Attrs["binary"].(string); ok && v != "" {
+	if v, ok := attrs["binary"].(string); ok && v != "" {
 		a.binary = v
 	}
-	if v, ok := tc.Attrs["timeoutSeconds"].(int64); ok && v > 0 {
+	if v, ok := attrs["timeoutSeconds"].(int64); ok && v > 0 {
 		a.timeoutSeconds = int(v)
 	}
-	if v, ok := tc.Attrs["maxProcs"].(int64); ok && v > 0 {
+	if v, ok := attrs["maxProcs"].(int64); ok && v > 0 {
 		a.maxProcs = int(v)
 	}
 	return a
 }
 
-// compileLeakSelector compiles the whitelist/blacklist of [test.IsFreeOfSecrets]
-// into the ONE filter the leak scan matches at both of its gates: top-level
-// files in IsFreeOfSecrets and archive members in extractArchivesForLeakScan.
-// Whitelist -> include, blacklist -> exclude, per-pattern RE2, case-sensitive,
-// both lists set rejected - the policy selector.CompileLegacyRegexLists owns for
-// every legacy list site.
-//
-// The subject is "path", and BOTH gates honour it: the file gate matches
-// File.RelPath (the collection-relative path, which defaults to the file name),
-// the iterator matches the member path. One list, one compiled form, one
-// semantics, one subject.
-//
-// ValidateChecksConfig compiles these same lists at boot through the same
-// constructor, so a config that reaches this point has already been accepted.
-// Re-deriving the filter here is defense in depth: the check owns the filter it
-// scans with and refuses to scan without it.
-func compileLeakSelector(tc *config.TestConfig) (selector.Selector, error) {
-	return selector.CompileLegacyRegexLists("IsFreeOfSecrets", "path", tc.Whitelist, tc.Blacklist)
+// bindSecrets binds the leak scan: its attrs, and nothing else. The ONE
+// selector matched at both of the scan's gates - the repository narrowing that
+// picks the files, and the archive iterator that picks the members - and the
+// scan bounds are HANDED IN by the dispatch, which holds the rule and its
+// batch. The closure must not read them back off the rule it lives on: that
+// would make a BoundRule uncopyable and force a bind per scope.
+func bindSecrets(spec config.RuleSpec, _ *config.GeneralConfig) (*BoundRule, error) {
+	attrs, ok := spec.Params[ParamAttrs].(map[string]interface{})
+	if !ok && spec.Params[ParamAttrs] != nil {
+		return nil, fmt.Errorf("%s must be a table, got %T", ParamAttrs, spec.Params[ParamAttrs])
+	}
+	bound := leakAttrsFrom(attrs)
+	return &BoundRule{
+		Rule: spec.Name,
+		applyRepo: func(repository structs.Repository, batch *Batch, sel *selector.Selector) []structs.Message {
+			return isFreeOfSecrets(repository, bound, batch.Limits, batch.MaxContentScan, sel)
+		},
+	}, nil
 }
 
 // leakTempName strips characters that are unsafe in a temp file name.
 var leakTempName = regexp.MustCompile(`[^A-Za-z0-9._-]`)
 
-// IsFreeOfSecrets scans file contents for secrets with the external betterleaks
+// isFreeOfSecrets scans file contents for secrets with the external betterleaks
 // binary. It is repository-scoped so the whole file set goes to one scanner
 // invocation (the scanner's startup cost is paid once, not per file).
 //
@@ -93,44 +85,21 @@ var leakTempName = regexp.MustCompile(`[^A-Za-z0-9._-]`)
 // iterator as the keyword checks (general.maxArchiveFileSize per member,
 // general.maxTotalArchiveMemory per archive) into a private temp directory.
 // The scanner itself never unpacks anything (--max-archive-depth 0).
-func IsFreeOfSecrets(repo structs.Repository, cfg config.Config) []structs.Message {
-	tc := cfg.Tests["IsFreeOfSecrets"]
-	if tc == nil {
-		return nil
-	}
-	attrs := leakAttrsFrom(tc)
-	if !attrs.enabled {
-		return nil
-	}
-
-	// One filter for the whole scan, compiled once here - after the enabled
-	// gate, so a disabled check pays nothing - and matched at both gates.
-	// Fail CLOSED: a filter that cannot be honoured skips the scan, it never
-	// widens it.
-	sel, err := compileLeakSelector(tc)
-	if err != nil {
-		output.GlobalLogger.Warning("IsFreeOfSecrets: %v", err)
-		reason := "Leak scan did not run: the [test.IsFreeOfSecrets] filter is unusable: " + err.Error()
-		return []structs.Message{{Content: reason, Source: structs.Repository{}, Skipped: true, Reason: reason}}
-	}
-
+func isFreeOfSecrets(repo structs.Repository, attrs leakAttrs, limits readers.ArchiveLimits, maxContentScan int64, memberFilter *selector.Selector) []structs.Message {
 	var messages []structs.Message
 
-	// Partition the repository: excluded paths drop out, oversized files are
-	// acknowledged in one aggregate skip, archives go through extraction. The
-	// subject is RelPath, the selector's declared "path" at file scope; the
-	// collectors set it and the constructors default it to the file name.
+	// Partition the repository: oversized files are acknowledged in one
+	// aggregate skip, archives go through extraction. The excluded paths are
+	// already gone - the rule's selector narrowed the file set before the
+	// check ran.
 	var plain, archives []structs.File
 	oversized := 0
 	for _, f := range repo.Files {
-		if !sel.Match(f.RelPath) {
-			continue
-		}
 		size := f.Size
 		if size <= 0 {
 			size = structs.GetFileSize(f.Path)
 		}
-		if size > cfg.General.MaxContentScanFileSize {
+		if size > maxContentScan {
 			oversized++
 			continue
 		}
@@ -141,7 +110,7 @@ func IsFreeOfSecrets(repo structs.Repository, cfg config.Config) []structs.Messa
 		}
 	}
 	if oversized > 0 {
-		reason := fmt.Sprintf("Skipped leak scan of %d file(s): file size exceeds maximum (%d bytes).", oversized, cfg.General.MaxContentScanFileSize)
+		reason := fmt.Sprintf("Skipped leak scan of %d file(s): file size exceeds maximum (%d bytes).", oversized, maxContentScan)
 		messages = append(messages, structs.Message{Content: reason, Source: structs.Repository{}, Skipped: true, Reason: reason})
 	}
 
@@ -164,7 +133,7 @@ func IsFreeOfSecrets(repo structs.Repository, cfg config.Config) []structs.Messa
 			messages = append(messages, structs.Message{Content: reason, Source: structs.Repository{}, Skipped: true, Reason: reason})
 		} else {
 			defer os.RemoveAll(tmpDir)
-			memberPaths := extractArchivesForLeakScan(cfg, &sel, archives, tmpDir, sources, &messages)
+			memberPaths := extractArchivesForLeakScan(limits, memberFilter, archives, tmpDir, sources, &messages)
 			scanPaths = append(scanPaths, memberPaths...)
 		}
 	}
@@ -208,13 +177,11 @@ func isExtractedTextMember(memberName string) bool {
 // budgets). Acceptable while the secret scan stays opt-in; sharing one
 // extraction across checks needs the fast/slow check split.
 //
-// memberFilter is the scan's compiled filter (see compileLeakSelector), matched
-// against the member path by the iterator. nil means "no filter, admit every
-// member" - a convenience for callers that have no lists to honour; production
-// callers pass the selector the top-level files were matched against.
-func extractArchivesForLeakScan(cfg config.Config, memberFilter *selector.Selector, archives []structs.File, tmpDir string, sources map[string]structs.File, messages *[]structs.Message) []string {
-	limits := archiveLimits(cfg)
-
+// memberFilter is the rule's own selector, matched against the member path by
+// the iterator. nil means "no filter, admit every member" - a convenience for
+// callers that have no lists to honour; production callers pass the selector
+// the top-level files were narrowed with.
+func extractArchivesForLeakScan(limits readers.ArchiveLimits, memberFilter *selector.Selector, archives []structs.File, tmpDir string, sources map[string]structs.File, messages *[]structs.Message) []string {
 	var memberPaths []string
 	for ai, archive := range archives {
 		it := readers.InitArchiveIterator(archive.Path, archive.Name, limits, memberFilter)

@@ -110,6 +110,9 @@ func TestValidateChecksConfig(t *testing.T) {
 		// The leak lists are validated with the constructor the scan compiles
 		// them with, so boot refuses exactly what the scan would refuse - even
 		// while the scan is disabled, which is the state these rows are in.
+		// This is the ONLY gate for them: a disabled rule leaves utils.Compile's
+		// plan before its selectors are compiled (see
+		// utils.TestCompileKeepsDisabledSecretListsUncompiled).
 		{"leak list with an uncompilable pattern", func(cfg *Config) {
 			cfg.Tests["IsFreeOfSecrets"] = &TestConfig{Blacklist: []string{"["}}
 		}, "IsFreeOfSecrets"},

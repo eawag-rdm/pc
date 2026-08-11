@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/eawag-rdm/pc/pkg/config"
+	"github.com/eawag-rdm/pc/pkg/selector"
 	"github.com/eawag-rdm/pc/pkg/structs"
 )
 
@@ -14,20 +15,50 @@ import (
 This file contains tests that need a collection of files. Eg: Checking if a repository has a readme file.
 */
 
-// readmeNames returns the readme filename list from the REQUIRED
-// [test.HasReadme] section (keywordArguments readme_names). Like the other
-// config-driven checks, presence and shape are guaranteed by
-// config.ValidateChecksConfig at boot/startup; SafeRun guards the runtime.
-// ReadMeContainsTOC shares this list deliberately: "what counts as the
-// readme" must have exactly one definition.
-func readmeNames(cfg config.Config) []string {
-	var names []string
-	for _, args := range cfg.Tests["HasReadme"].KeywordArguments {
-		if configured, ok := args["readme_names"].([]string); ok {
-			names = append(names, configured...)
-		}
+// bindReadmeNames type-checks the readme filename list of a rule's parameter
+// sets (keywordArguments readme_names), once, at load. HasReadme and
+// ReadMeContainsTOC bind the SAME list: "what counts as the readme" must have
+// exactly one definition, so the translation feeds both from one section.
+func bindReadmeNames(spec config.RuleSpec) ([]string, error) {
+	sets, err := paramSets(spec)
+	if err != nil {
+		return nil, err
 	}
-	return names
+	var names []string
+	for i, set := range sets {
+		configured, err := stringList(set, "readme_names", i)
+		if err != nil {
+			return nil, err
+		}
+		names = append(names, configured...)
+	}
+	return names, nil
+}
+
+func bindHasReadme(spec config.RuleSpec, general *config.GeneralConfig) (*BoundRule, error) {
+	names, err := bindReadmeNames(spec)
+	if err != nil {
+		return nil, err
+	}
+	return &BoundRule{
+		Rule: spec.Name,
+		applyRepo: func(repository structs.Repository, _ *Batch, _ *selector.Selector) []structs.Message {
+			return hasReadme(repository, names)
+		},
+	}, nil
+}
+
+func bindReadMeContainsTOC(spec config.RuleSpec, general *config.GeneralConfig) (*BoundRule, error) {
+	names, err := bindReadmeNames(spec)
+	if err != nil {
+		return nil, err
+	}
+	return &BoundRule{
+		Rule: spec.Name,
+		applyRepo: func(repository structs.Repository, _ *Batch, _ *selector.Selector) []structs.Message {
+			return readMeContainsTOC(repository, names)
+		},
+	}, nil
 }
 
 // isReadMe reports whether file's name matches one of the readme names
@@ -43,8 +74,7 @@ func isReadMe(file structs.File, names []string) bool {
 }
 
 // Readme File is part of the package
-func HasReadme(repository structs.Repository, config config.Config) []structs.Message {
-	names := readmeNames(config)
+func hasReadme(repository structs.Repository, names []string) []structs.Message {
 	for _, file := range repository.Files {
 		if isReadMe(file, names) {
 			return nil
@@ -54,9 +84,7 @@ func HasReadme(repository structs.Repository, config config.Config) []structs.Me
 }
 
 // Readme File is part of the package
-func ReadMeContainsTOC(repository structs.Repository, config config.Config) []structs.Message {
-	names := readmeNames(config)
-
+func readMeContainsTOC(repository structs.Repository, names []string) []structs.Message {
 	// check if the readme file is part of the repository
 	var readmeFile = structs.File{}
 	for _, file := range repository.Files {

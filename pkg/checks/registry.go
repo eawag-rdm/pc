@@ -1,0 +1,387 @@
+package checks
+
+import (
+	"fmt"
+	"path"
+	"strings"
+
+	"github.com/eawag-rdm/pc/pkg/config"
+	"github.com/eawag-rdm/pc/pkg/readers"
+	"github.com/eawag-rdm/pc/pkg/selector"
+	"github.com/eawag-rdm/pc/pkg/structs"
+)
+
+// Scope names one of the four dispatch phases. Three of them are not
+// interchangeable: the name checks run BOTH over collected files and over
+// archive file lists, archive content is a third phase and the repository a
+// fourth.
+type Scope uint8
+
+const (
+	ScopeFile            Scope = iota // a collected file
+	ScopeArchiveFileList              // one entry of an archive's member-name list
+	ScopeArchiveMember                // the content of an archive's members
+	ScopeRepository                   // the whole collected file set
+	NumScopes
+)
+
+var scopeNames = [NumScopes]string{"file", "archive-file-list", "archive-member", "repository"}
+
+func (s Scope) String() string {
+	if s < NumScopes {
+		return scopeNames[s]
+	}
+	return fmt.Sprintf("scope(%d)", uint8(s))
+}
+
+// ParseScope maps a declared scope name onto its Scope.
+func ParseScope(name string) (Scope, error) {
+	for i, known := range scopeNames {
+		if known == name {
+			return Scope(i), nil
+		}
+	}
+	return 0, fmt.Errorf("unknown scope %q (want one of %s)", name, strings.Join(scopeNames[:], ", "))
+}
+
+// ScopeSet is the set of scopes a check may serve. A rule may name a subset,
+// defaulting to the CheckDef's.
+type ScopeSet uint8
+
+// ScopesOf builds the set of the given scopes. It is exported so a CheckDef
+// literal built outside this package (the dispatch tests) can declare its
+// scopes.
+func ScopesOf(list ...Scope) ScopeSet {
+	var set ScopeSet
+	for _, s := range list {
+		set |= 1 << s
+	}
+	return set
+}
+
+// Has reports whether the set contains scope.
+func (s ScopeSet) Has(scope Scope) bool { return s&(1<<scope) != 0 }
+
+// CheckDef is one registered check: its identity, the scopes it may serve, the
+// loader that turns a rule's declared parameters into a bound runner, and the
+// acquisition it performs. Exactly one of RunFile / RunRepository is set,
+// matching Scopes, so the dispatcher never inspects which.
+type CheckDef struct {
+	Name   string
+	Scopes ScopeSet
+
+	// Bind decodes and type-checks a rule's parameters ONCE, at load, and
+	// returns a rule bound to them - so nothing is type-asserted afterwards.
+	// Called on the ZERO RuleSpec it yields the check's defaults: the defaults
+	// live in Bind itself, which is what default-rule synthesis relies on. Bind
+	// does not fill Sel in: a selector carries no check knowledge, so
+	// utils.Compile compiles one per scope and sets it.
+	Bind func(spec config.RuleSpec, general *config.GeneralConfig) (*BoundRule, error)
+
+	// RunFile acquires this file's content once and hands it to every rule that
+	// matched it, so the invocation count per (file, check) is independent of
+	// the rule count. scope names the dispatch phase; only the keyword check
+	// reads it, to tell a file's own content from an archive's members. batch
+	// carries what the whole invocation shares - see Batch.
+	RunFile func(file structs.File, scope Scope, batch *Batch, rules []*BoundRule) []structs.Message
+
+	// RunRepository is RunFile's twin for the checks that need the whole file
+	// set rather than one file.
+	RunRepository func(repository structs.Repository, batch *Batch, rules []*BoundRule) []structs.Message
+}
+
+// Batch is the state one (check, scope) plan entry shares across ALL its rules.
+// It lives on the plan entry rather than on every BoundRule because what it
+// holds is a property of the acquisition, which happens once per (file, check),
+// not once per rule.
+type Batch struct {
+	// Limits and MaxContentScan are the effective scan bounds, resolved once at
+	// load. The acquisition reads them here rather than from [general] at scan
+	// time, so per-rule overrides later are a config-surface change only.
+	Limits         readers.ArchiveLimits
+	MaxContentScan int64
+
+	// Admit is the member admission filter an archive-member acquisition runs in
+	// front of the per-rule gates: the single member rule's own member selector -
+	// every shipped config's case - and the union of their literals otherwise.
+	// utils.Compile builds it; nil admits every member.
+	Admit *selector.Selector
+
+	// PerRule says the per-rule member gates must still be consulted after
+	// Admit, because Admit is not one rule's own filter. utils.Compile decides
+	// it over the WHOLE plan; it must never be inferred from the rules that
+	// happen to match one archive, which says nothing about what Admit is.
+	PerRule bool
+}
+
+// NewBatch resolves the scan bounds every rule of one plan entry shares.
+func NewBatch(general *config.GeneralConfig) *Batch {
+	return &Batch{Limits: archiveLimits(general), MaxContentScan: general.MaxContentScanFileSize}
+}
+
+// reporting says how a rule reports the findings of one body entry: joined into
+// one message, joined and cited by entry index (OOXML and other binary bodies)
+// or by page (PDF), or one message per keyword (a streamed file, whose chunks
+// the caller deduplicates).
+type reporting uint8
+
+const (
+	reportJoined reporting = iota
+	reportIndexed
+	reportPaged
+	reportEach
+)
+
+// BoundRule is one rule of one check, produced once at load. Its runner is a
+// closure over this rule's concrete typed parameters - its keywords, its
+// matcher, its info string, its disallowed-name set - never a sibling field
+// over an interface value. Exactly one of Apply / ApplyRepo is set, matching
+// the CheckDef.
+type BoundRule struct {
+	Rule string            // rule name: diagnostics, and Message.Rule
+	Sel  selector.Selector // the DISPATCH gate, compiled per scope by utils.Compile
+
+	// Member is the archive-member gate, which reads the same configured lists
+	// under the other legacy semantics (see utils.scopeSelectors). nil admits
+	// every member. Only an archive-member rule carries one.
+	Member *selector.Selector
+
+	// unfiltered caches "Sel admits everything", the shipped configs' case: the
+	// selection pass tests one bool per (file, rule) instead of walking an empty
+	// selector. Kept true by SetSelectors, the only writer of Sel.
+	unfiltered bool
+
+	// apply scans one acquisition: its entries, their shared lowercase copies -
+	// lowered once per acquisition, never once per rule - and how a finding is
+	// reported. Both slices are nil for checks that read no content.
+	//
+	// CONTRACT: body and lowered are BORROWED for the duration of the call. An
+	// implementation may read them but must never retain them (the archive
+	// acquisition reuses one pair of slices for every member, and the streamed
+	// one hands out the chunk buffer itself).
+	apply     func(file structs.File, body, lowered [][]byte, report reporting) []structs.Message
+	applyRepo func(repository structs.Repository, batch *Batch, sel *selector.Selector) []structs.Message
+}
+
+// SetSelectors gives a rule the selectors utils.Compile compiled for ONE scope:
+// gate decides whether the rule is dispatched for a file (or an archive), member
+// whether it sees an individual archive member. It is the only writer of Sel,
+// because it also refreshes the cached unfiltered answer.
+func (r *BoundRule) SetSelectors(gate selector.Selector, member *selector.Selector) {
+	r.Sel = gate
+	r.Member = member
+	r.unfiltered = gate.Unfiltered()
+}
+
+// Match reports whether this rule's dispatch gate admits the file, against the
+// subject the selector declares. It is the selection pass's inner loop, run once
+// per (file, rule), so the "admits everything" case - every shipped config's -
+// is a cached bool and the body stays small enough to inline; the real matching
+// lives in matchSubject, which the empty case never calls.
+func (r *BoundRule) Match(file structs.File) bool {
+	if r.unfiltered {
+		return true
+	}
+	return r.matchSubject(file)
+}
+
+func (r *BoundRule) matchSubject(file structs.File) bool {
+	if r.Sel.Subject() == selector.SubjectPath {
+		return r.Sel.Match(file.RelPath)
+	}
+	return r.Sel.Match(file.Name)
+}
+
+// MatchMember reports whether this rule's member gate admits the member path.
+// It takes the path rather than a structs.File so the member loop can decide
+// without building one.
+func (r *BoundRule) MatchMember(memberPath string) bool {
+	if r.Member == nil {
+		return true
+	}
+	if r.Member.Subject() == selector.SubjectName {
+		return r.Member.Match(path.Base(memberPath))
+	}
+	return r.Member.Match(memberPath)
+}
+
+// narrow hands a repository rule only the files its selector admits. An empty
+// selector skips the copy and passes the caller's slice unchanged - every
+// shipped config's case. Narrowing does not gate the rule: one whose selector
+// admits nothing still runs, and can report over an empty set.
+func (r *BoundRule) narrow(repository structs.Repository) structs.Repository {
+	if r.Sel.Unfiltered() {
+		return repository
+	}
+	files := make([]structs.File, 0, len(repository.Files))
+	for _, file := range repository.Files {
+		if r.Match(file) {
+			files = append(files, file)
+		}
+	}
+	repository.Files = files
+	return repository
+}
+
+// tag stamps a rule's name onto the findings it produced. Messages a check
+// emits for ITSELF - the skip acknowledgements - keep an empty Rule: they are
+// the acquisition's own voice, not the rule's, and no rule name explains them.
+func tag(rule string, messages []structs.Message) []structs.Message {
+	for i := range messages {
+		if messages[i].Skipped {
+			continue
+		}
+		messages[i].Rule = rule
+	}
+	return messages
+}
+
+// The parameter keys a translated legacy [test.X] section carries: its
+// keywordArguments entries become the rule's parameter sets, its attrs table
+// travels verbatim.
+const (
+	ParamSets  = "keywordArguments"
+	ParamAttrs = "attrs"
+)
+
+// Registry holds every registered check. Its DECLARED ORDER is load-bearing:
+// utils.Compile adds the rules to the plan in it, so it is the order the
+// dispatch runs the checks of one file in, and therefore the order findings are
+// rendered in. Lookup is by name; Defs preserves the order.
+type Registry struct {
+	defs  []CheckDef
+	index map[string]int
+}
+
+// Lookup returns one check's definition.
+func (r Registry) Lookup(name string) (CheckDef, bool) {
+	i, known := r.index[name]
+	if !known {
+		return CheckDef{}, false
+	}
+	return r.defs[i], true
+}
+
+// Defs returns the definitions in declared order.
+func (r Registry) Defs() []CheckDef { return r.defs }
+
+// Len returns the number of registered checks.
+func (r Registry) Len() int { return len(r.defs) }
+
+// NewRegistry returns the check registry: a constructed value, never an
+// init()-populated global, so a caller always knows where it came from.
+//
+// The order below is the dispatch order the five hard-coded tables this
+// registry replaced had (BY_FILE, BY_FILE_ON_ARCHIVE_FILE_LIST,
+// BY_FILE_ON_ARCHIVE, BY_REPOSITORY_SECRETS, BY_REPOSITORY - the last two ran as
+// separate phases, secrets first). Rendered message order follows it, so it is
+// pinned by test, not incidental: do not sort it.
+func NewRegistry() Registry {
+	defs := []CheckDef{
+		{Name: "HasOnlyASCII", Scopes: ScopesOf(ScopeFile, ScopeArchiveFileList), Bind: bindNoParams(hasOnlyASCII), RunFile: runNameRules},
+		{Name: "HasNoWhiteSpace", Scopes: ScopesOf(ScopeFile, ScopeArchiveFileList), Bind: bindNoParams(hasNoWhiteSpace), RunFile: runNameRules},
+		{Name: "IsFreeOfKeywords", Scopes: ScopesOf(ScopeFile, ScopeArchiveMember), Bind: bindKeywords, RunFile: runKeywords},
+		{Name: "IsValidName", Scopes: ScopesOf(ScopeFile, ScopeArchiveFileList), Bind: bindValidName, RunFile: runNameRules},
+		{Name: "HasFileNameSpecialChars", Scopes: ScopesOf(ScopeFile), Bind: bindNoParams(hasFileNameSpecialChars), RunFile: runNameRules},
+		{Name: "IsFileNameTooLong", Scopes: ScopesOf(ScopeFile), Bind: bindNoParams(isFileNameTooLong), RunFile: runNameRules},
+		{Name: "IsFreeOfSecrets", Scopes: ScopesOf(ScopeRepository), Bind: bindSecrets, RunRepository: runRepositoryRules},
+		{Name: "HasReadme", Scopes: ScopesOf(ScopeRepository), Bind: bindHasReadme, RunRepository: runRepositoryRules},
+		{Name: "ReadMeContainsTOC", Scopes: ScopesOf(ScopeRepository), Bind: bindReadMeContainsTOC, RunRepository: runRepositoryRules},
+	}
+	index := make(map[string]int, len(defs))
+	for i, def := range defs {
+		index[def.Name] = i
+	}
+	return Registry{defs: defs, index: index}
+}
+
+// runNameRules is RunFile for the checks that read no content: every rule that
+// matched the file reports through its own bound parameters.
+func runNameRules(file structs.File, _ Scope, _ *Batch, rules []*BoundRule) []structs.Message {
+	var messages []structs.Message
+	for _, rule := range rules {
+		messages = append(messages, tag(rule.Rule, rule.apply(file, nil, nil, reportJoined))...)
+	}
+	return messages
+}
+
+// runRepositoryRules is RunRepository for every repository check: each rule
+// sees the repository narrowed by its own selector, and is handed that same
+// selector plus the batch's scan bounds - it never reads them back off itself.
+func runRepositoryRules(repository structs.Repository, batch *Batch, rules []*BoundRule) []structs.Message {
+	var messages []structs.Message
+	for _, rule := range rules {
+		messages = append(messages, tag(rule.Rule, rule.applyRepo(rule.narrow(repository), batch, &rule.Sel))...)
+	}
+	return messages
+}
+
+// bindNoParams binds a check that takes no parameters at all: the rule carries
+// nothing but its selector, and the zero RuleSpec is as good as any other.
+func bindNoParams(check func(structs.File) []structs.Message) func(config.RuleSpec, *config.GeneralConfig) (*BoundRule, error) {
+	return func(spec config.RuleSpec, general *config.GeneralConfig) (*BoundRule, error) {
+		if err := rejectParams(spec); err != nil {
+			return nil, err
+		}
+		return &BoundRule{
+			Rule: spec.Name,
+			apply: func(file structs.File, _, _ [][]byte, _ reporting) []structs.Message {
+				return check(file)
+			},
+		}, nil
+	}
+}
+
+// paramSets reads a rule's parameter sets. One legacy [test.X] section becomes
+// ONE rule carrying N sets, which the batched runner then loops over; the zero
+// RuleSpec carries none, which is the check's default.
+func paramSets(spec config.RuleSpec) ([]map[string]interface{}, error) {
+	raw, present := spec.Params[ParamSets]
+	if !present {
+		return nil, nil
+	}
+	sets, ok := raw.([]map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("%s must be a list of parameter sets, got %T", ParamSets, raw)
+	}
+	return sets, nil
+}
+
+// rejectParams refuses parameters on a check that takes none, so a typo in a
+// section name is a load error rather than a silently inert setting.
+func rejectParams(spec config.RuleSpec) error {
+	sets, err := paramSets(spec)
+	if err != nil {
+		return err
+	}
+	if len(sets) > 0 {
+		return fmt.Errorf("check %q takes no parameters", spec.Check)
+	}
+	return nil
+}
+
+// stringList type-checks one list parameter of one set, once, at load.
+func stringList(set map[string]interface{}, key string, index int) ([]string, error) {
+	value, present := set[key]
+	if !present {
+		return nil, fmt.Errorf("parameter set %d: %q is required", index+1, key)
+	}
+	list, ok := value.([]string)
+	if !ok {
+		return nil, fmt.Errorf("parameter set %d: %q must be a list of strings, got %T", index+1, key, value)
+	}
+	return list, nil
+}
+
+// stringParam type-checks one string parameter of one set, once, at load.
+func stringParam(set map[string]interface{}, key string, index int) (string, error) {
+	value, present := set[key]
+	if !present {
+		return "", fmt.Errorf("parameter set %d: %q is required", index+1, key)
+	}
+	text, ok := value.(string)
+	if !ok {
+		return "", fmt.Errorf("parameter set %d: %q must be a string, got %T", index+1, key, value)
+	}
+	return text, nil
+}

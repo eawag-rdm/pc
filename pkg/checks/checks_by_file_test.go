@@ -27,7 +27,6 @@ func tempFile(content []byte) string {
 }
 
 func TestHasOnlyASCII(t *testing.T) {
-	var config = config.Config{}
 	tests := []struct {
 		name     string
 		file     structs.File
@@ -67,7 +66,7 @@ func TestHasOnlyASCII(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := HasOnlyASCII(tt.file, config)
+			result := hasOnlyASCII(tt.file)
 			if len(result) != len(tt.expected) {
 				t.Errorf("expected %v, got %v", tt.expected, result)
 			}
@@ -80,7 +79,6 @@ func TestHasOnlyASCII(t *testing.T) {
 	}
 }
 func TestHasNoWhiteSpace(t *testing.T) {
-	var config = config.Config{}
 	tests := []struct {
 		name     string
 		file     structs.File
@@ -107,7 +105,7 @@ func TestHasNoWhiteSpace(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := HasNoWhiteSpace(tt.file, config)
+			result := hasNoWhiteSpace(tt.file)
 			if len(result) != len(tt.expected) {
 				t.Errorf("expected %v, got %v", tt.expected, result)
 			}
@@ -121,7 +119,6 @@ func TestHasNoWhiteSpace(t *testing.T) {
 }
 
 func TestIsFileNameTooLong(t *testing.T) {
-	var config = config.Config{}
 	tests := []struct {
 		name     string
 		file     structs.File
@@ -191,7 +188,7 @@ func TestIsFileNameTooLong(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := IsFileNameTooLong(tt.file, config)
+			result := isFileNameTooLong(tt.file)
 			if len(result) != len(tt.expected) {
 				t.Errorf("expected %v, got %v", tt.expected, result)
 			}
@@ -205,7 +202,6 @@ func TestIsFileNameTooLong(t *testing.T) {
 }
 
 func TestHasFileNameSpecialChars(t *testing.T) {
-	var config = config.Config{}
 	tests := []struct {
 		name     string
 		file     structs.File
@@ -297,7 +293,7 @@ func TestHasFileNameSpecialChars(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := HasFileNameSpecialChars(tt.file, config)
+			result := hasFileNameSpecialChars(tt.file)
 			if len(result) != len(tt.expected) {
 				t.Errorf("expected %v, got %v", tt.expected, result)
 			}
@@ -371,7 +367,7 @@ func TestIsFreeOfKeywords(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := IsFreeOfKeywordsCoreList(tt.file, strings.Split(tt.keywords, "|"), tt.info, [][]byte{tt.content}, false)
+			result := isFreeOfKeywordsCoreList(tt.file, strings.Split(tt.keywords, "|"), tt.info, [][]byte{tt.content}, false)
 			if len(result) != len(tt.expected) {
 				t.Errorf("expected %v, got %v", tt.expected, result)
 			}
@@ -435,7 +431,7 @@ func TestIsValidName(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := IsValidNameCore(tt.file, tt.invalidFileNames)
+			result := isValidNameCore(tt.file, tt.invalidFileNames)
 			if len(result) != len(tt.expected) {
 				t.Errorf("expected %v, got %v", tt.expected, result)
 			}
@@ -471,7 +467,7 @@ func TestIsValidNameExtended(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := IsValidNameCore(tt.file, tt.disallowedNames)
+			result := isValidNameCore(tt.file, tt.disallowedNames)
 			if len(result) != tt.expectedMessageCount {
 				t.Errorf("expected %v messages, got %v", tt.expectedMessageCount, result)
 			}
@@ -584,7 +580,7 @@ func TestIsArchiveFreeOfKeywordsMemberFilterWiring(t *testing.T) {
 
 	archive := structs.File{Path: "../../testdata/archives/one_of_each.zip", Name: "one_of_each.zip", DisplayName: "one_of_each.zip", IsArchive: true}
 	hits := map[string]int{}
-	for _, m := range IsArchiveFreeOfKeywords(archive, *cfg) {
+	for _, m := range runRule(t, "IsFreeOfKeywords", *cfg, ScopeArchiveMember, archive) {
 		if f, ok := m.Source.(structs.File); ok && !m.Skipped {
 			hits[f.Name]++
 		}
@@ -649,7 +645,7 @@ func TestIsArchiveFreeOfKeywordsWithRealArchives(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := IsArchiveFreeOfKeywords(tt.file, *cfg)
+			result := runRule(t, "IsFreeOfKeywords", *cfg, ScopeArchiveMember, tt.file)
 			if len(result) != tt.expectedCount {
 				t.Errorf("expected %d messages, got %d", tt.expectedCount, len(result))
 				for _, r := range result {
@@ -731,7 +727,7 @@ func TestOOXMLGateEmitsSkipAck(t *testing.T) {
 	}
 
 	cfg := newKeywordConfig(1024*1024*1024, 10*1024*1024, 100*1024*1024)
-	msgs := IsFreeOfKeywords(structs.File{Path: path, Name: "bomb.xlsx"}, cfg)
+	msgs := runRule(t, "IsFreeOfKeywords", cfg, ScopeFile, structs.File{Path: path, Name: "bomb.xlsx"})
 	found := false
 	for _, m := range msgs {
 		if m.Skipped && strings.Contains(m.Content, "container declares more data") {
@@ -764,7 +760,7 @@ func TestOOXMLParseErrorEmitsSkipAck(t *testing.T) {
 	}
 
 	cfg := newKeywordConfig(1024*1024*1024, 10*1024*1024, 100*1024*1024)
-	msgs := IsFreeOfKeywords(structs.File{Path: path, Name: "odd.xlsx"}, cfg)
+	msgs := runRule(t, "IsFreeOfKeywords", cfg, ScopeFile, structs.File{Path: path, Name: "odd.xlsx"})
 	found := false
 	for _, m := range msgs {
 		if m.Skipped && strings.Contains(m.Content, "could not be parsed") {
@@ -784,7 +780,7 @@ func TestOOXMLMisnamedTextFileStillScanned(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := newKeywordConfig(1024*1024*1024, 10*1024*1024, 100*1024*1024)
-	msgs := IsFreeOfKeywords(structs.File{Path: path, Name: "data.xlsx"}, cfg)
+	msgs := runRule(t, "IsFreeOfKeywords", cfg, ScopeFile, structs.File{Path: path, Name: "data.xlsx"})
 	found := false
 	for _, m := range msgs {
 		if !m.Skipped && strings.Contains(m.Content, "Possible credentials") {
@@ -805,7 +801,7 @@ func TestIsFreeOfKeywords_OversizedFileEmitsSkipMessage(t *testing.T) {
 	// MaxContentScanFileSize of 1 byte forces the size-skip branch.
 	cfg := newKeywordConfig(1, 10*1024*1024, 100*1024*1024)
 
-	messages := IsFreeOfKeywords(file, cfg)
+	messages := runRule(t, "IsFreeOfKeywords", cfg, ScopeFile, file)
 
 	if len(messages) != 1 {
 		t.Fatalf("expected exactly 1 skip message, got %d: %+v", len(messages), messages)
@@ -834,7 +830,7 @@ func TestIsFreeOfKeywords_NormalFileNotSkipped(t *testing.T) {
 	// Generous limit: content scan proceeds, no skip message expected.
 	cfg := newKeywordConfig(1024*1024*1024, 10*1024*1024, 100*1024*1024)
 
-	messages := IsFreeOfKeywords(file, cfg)
+	messages := runRule(t, "IsFreeOfKeywords", cfg, ScopeFile, file)
 
 	// The scan must NOT have been skipped...
 	for _, m := range messages {
@@ -872,7 +868,7 @@ func TestIsArchiveFreeOfKeywords_OversizedArchiveEmitsSkipMessage(t *testing.T) 
 
 	cfg := newKeywordConfig(info.Size()-1, 10*1024*1024, 100*1024*1024)
 
-	messages := IsArchiveFreeOfKeywords(file, cfg)
+	messages := runRule(t, "IsFreeOfKeywords", cfg, ScopeArchiveMember, file)
 
 	if len(messages) != 1 {
 		t.Fatalf("expected exactly 1 archive skip message, got %d: %+v", len(messages), messages)
@@ -897,7 +893,7 @@ func TestIsArchiveFreeOfKeywords_MemberSkipsEmitMessages(t *testing.T) {
 	// while the archive itself is still under MaxContentScanFileSize.
 	cfg := newKeywordConfig(1024*1024*1024, 4, 16)
 
-	messages := IsArchiveFreeOfKeywords(file, cfg)
+	messages := runRule(t, "IsFreeOfKeywords", cfg, ScopeArchiveMember, file)
 
 	skipCount := 0
 	for _, m := range messages {
@@ -924,7 +920,7 @@ func TestIsFreeOfKeywords_BinaryFileEmitsSkipMessage(t *testing.T) {
 	// Generous size limit so the size-skip branch does not fire.
 	cfg := newKeywordConfig(1024*1024*1024, 10*1024*1024, 100*1024*1024)
 
-	messages := IsFreeOfKeywords(file, cfg)
+	messages := runRule(t, "IsFreeOfKeywords", cfg, ScopeFile, file)
 
 	skipCount := 0
 	for _, m := range messages {

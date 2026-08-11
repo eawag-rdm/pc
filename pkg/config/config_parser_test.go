@@ -109,8 +109,10 @@ func TestParseConfig(t *testing.T) {
 
 	[test.test1]
 	blacklist = ["item1", "item2"]
-	whitelist = ["item3"]
 	keywordArguments = [{ "arg1" = "value1" }, {"arg1" = "value1", "arg2" = ["value2", "value3"] }]
+
+	[test.test3]
+	whitelist = ["item3"]
 
 	[test.test2]
 	keywordArguments = [{"arg1" = "value1", "arg2" = ["/path/", "C:/path/"] }]
@@ -138,11 +140,14 @@ func TestParseConfig(t *testing.T) {
 	testConfig, ok := config.Tests["test1"]
 	assert.True(t, ok)
 	assert.ElementsMatch(t, []string{"item1", "item2"}, testConfig.Blacklist)
-	assert.ElementsMatch(t, []string{"item3"}, testConfig.Whitelist)
 	assert.Len(t, testConfig.KeywordArguments, 2)
 	assert.ElementsMatch(t, []string{"value2", "value3"}, testConfig.KeywordArguments[1]["arg2"])
 	assert.Equal(t, "item1", testConfig.Blacklist[0])
 	assert.Equal(t, "value1", testConfig.KeywordArguments[0]["arg1"])
+
+	testConfig3, ok := config.Tests["test3"]
+	assert.True(t, ok)
+	assert.ElementsMatch(t, []string{"item3"}, testConfig3.Whitelist)
 
 	testConfig2, ok := config.Tests["test2"]
 	assert.True(t, ok)
@@ -908,15 +913,21 @@ func TestParseServerConfigMissingKeyKeepsDefault(t *testing.T) {
 	assert.Equal(t, DefaultServerSMTPPort, config.Server.SMTP.Port)
 }
 
-// TestParseShippedConfigsLoad confirms the shipped, correctly-typed configs still
-// parse cleanly after the fail-fast change.
+// TestParseShippedConfigsLoad confirms the shipped, correctly-typed configs
+// still load cleanly. It goes through LoadConfig, the entry point both
+// frontends use, so the whitelist/blacklist check ParseConfig now owns is
+// exercised against the configs it is meant to gate.
 func TestParseShippedConfigsLoad(t *testing.T) {
 	for _, path := range []string{
+		"../../pc.toml",
 		"../../pc.toml.example",
 		"../../testdata/test_config.toml",
 	} {
 		t.Run(path, func(t *testing.T) {
-			cfg, err := ParseConfig(path)
+			if _, err := os.Stat(path); os.IsNotExist(err) {
+				t.Skipf("%s is not in the tree (pc.toml is a local, gitignored config)", path)
+			}
+			cfg, err := LoadConfig(path)
 			assert.NoError(t, err)
 			assert.NotNil(t, cfg)
 		})
