@@ -400,6 +400,79 @@ func (s *Selector) UnionLiterals() (lits []string, ok bool) {
 	return lits, true
 }
 
+// CompileLegacyLists compiles the whitelist/blacklist pair of a legacy
+// [test.X] section into one Selector carrying the meaning those lists have at
+// the archive member filter: case-insensitive LITERAL substrings over the full
+// member path. Every surviving entry is therefore quoted - a metacharacter
+// keeps matching itself, never the regex it spells - and the rule matches with
+// ignoreCase over subject "path".
+//
+// Three outcomes, and a caller must distinguish all three:
+//
+//   - sel != nil: the compiled filter.
+//   - sel == nil, admitNone == false: no usable pattern, admit every subject.
+//   - admitNone == true: admit NOTHING. A whitelist that held only empty
+//     entries selected nothing before this translation existed, and must go on
+//     selecting nothing: turning it into "no filter" would silently widen a
+//     no-scan configuration into a full scan.
+//
+// Empty entries are dropped rather than rejected: an empty entry matched
+// nothing under the old literal matcher, so beside a real entry it stays inert.
+// The config layer rejects them outright once rules own their patterns, which
+// is the real fix; this function is transitional and dies with the rules
+// migration.
+//
+// Two divergences from the old matcher, both deliberate:
+//
+//   - An entry holding a NON-ASCII byte keeps the (?i) regex engine, because
+//     the fold fast path is ASCII-scoped. Its case folding is therefore RE2
+//     simple folding rather than the old Unicode ToLower, which no translation
+//     can preserve in both directions (ToLower maps "İ" onto "i̇" where simple
+//     folding does not; simple folding maps "ſ" onto "s" where ToLower does
+//     not). Such an entry costs ~1 us per member instead of ~80 ns - the one
+//     shape this translation makes slower, and only until rules carry their
+//     own compiled selectors.
+//   - An error is reachable only for an entry holding invalid UTF-8, which no
+//     TOML config can carry: quoting escapes every metacharacter, so nothing a
+//     valid string spells can fail to compile. Callers must fail CLOSED on it -
+//     an unusable filter means the scan cannot honour the operator's exclusions,
+//     so the subjects go unscanned and acknowledged, never scanned unfiltered.
+func CompileLegacyLists(rule string, whitelist []string, blacklist []string) (sel *Selector, admitNone bool, err error) {
+	include, exclude := quoteEntries(whitelist), quoteEntries(blacklist)
+	if len(whitelist) > 0 && len(include) == 0 {
+		return nil, true, nil
+	}
+	if len(include) == 0 && len(exclude) == 0 {
+		return nil, false, nil
+	}
+	compiled, err := Compile(Spec{
+		Rule:       rule,
+		Subject:    "path",
+		IgnoreCase: true,
+		Include:    include,
+		Exclude:    exclude,
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	return &compiled, false, nil
+}
+
+// quoteEntries escapes each non-empty entry so it matches its own text.
+func quoteEntries(list []string) []string {
+	if len(list) == 0 {
+		return nil
+	}
+	quoted := make([]string, 0, len(list))
+	for _, entry := range list {
+		if entry == "" {
+			continue
+		}
+		quoted = append(quoted, regexp.QuoteMeta(entry))
+	}
+	return quoted
+}
+
 // Scratch carries one subject through a set of selectors. A Selector is shared
 // across worker goroutines and therefore holds no buffer of its own; each
 // goroutine keeps its own Scratch. The zero value is ready to use.

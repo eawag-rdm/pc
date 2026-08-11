@@ -55,6 +55,7 @@ func ReadZipFileListWithDisplayName(filePath string, archiveDisplayName string, 
 	fileList := make([]structs.File, 0, len(reader.File))
 	for _, file := range reader.File {
 		f := structs.ToFileWithDisplay(filePath, file.Name, file.Name, file.FileInfo().Size(), "", archiveDisplayName)
+		f.RelPath = f.Name
 		fileList = append(fileList, f)
 	}
 	return fileList, false, nil
@@ -92,6 +93,7 @@ func ReadTarFileListWithDisplayName(filePath string, archiveDisplayName string, 
 			return nil, true, nil
 		}
 		f := structs.ToFileWithDisplay(filePath, header.Name, header.Name, header.Size, "", archiveDisplayName)
+		f.RelPath = f.Name
 		fileList = append(fileList, f)
 	}
 	return fileList, false, nil
@@ -141,6 +143,7 @@ func ReadTarGzFileListWithDisplayName(filePath string, archiveDisplayName string
 			return nil, true, nil
 		}
 		f := structs.ToFileWithDisplay(filePath, header.Name, header.Name, header.Size, "", archiveDisplayName)
+		f.RelPath = f.Name
 		fileList = append(fileList, f)
 	}
 	return fileList, false, nil
@@ -166,6 +169,7 @@ func Read7ZipFileListWithDisplayName(filePath string, archiveDisplayName string,
 	fileList := make([]structs.File, 0, len(r.File))
 	for _, f := range r.File {
 		file := structs.ToFileWithDisplay(filePath, f.Name, f.Name, f.FileInfo().Size(), "", archiveDisplayName)
+		file.RelPath = file.Name
 		fileList = append(fileList, file)
 	}
 
@@ -196,6 +200,13 @@ func IsSupportedArchive(filePath string) bool {
 // content scan, which keeps the members it already scanned, this walk discards
 // everything on purpose, so a partial list can never be mistaken for a complete
 // one. The caller must skip the archive.
+// Every listed member carries the member path VERBATIM in Name and in RelPath -
+// a directory member keeps its trailing slash, and no reader normalizes it, so
+// one selector never sees two conventions. RelPath is assigned at each
+// construction site rather than inherited from ToFile's default, so a change to
+// that default cannot silently redefine the subject a path filter matches on;
+// it is copied from the CONSTRUCTED Name, which for the nameless member a
+// crafted archive can hold is the archive's own base name, not "".
 func ReadArchiveFileList(file structs.File, maxMembers int, maxTotalMemory int64) ([]structs.File, bool, error) {
 	// Use DisplayName for archive reference (CKAN resource name or filename)
 	archiveDisplayName := file.GetDisplayName()

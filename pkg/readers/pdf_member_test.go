@@ -107,7 +107,7 @@ func TestPDFMemberExtractedInZip(t *testing.T) {
 		{"docs/report.pdf", pdf},
 		{"readme.txt", []byte("plain text\n")},
 	})
-	u := InitArchiveIterator(path, "fixture.zip", testMemberLimits, nil, nil)
+	u := InitArchiveIterator(path, "fixture.zip", testMemberLimits, nil)
 	got := drainMembers(u)
 	assert.Contains(t, got, "docs/report.pdf")
 	assert.Contains(t, string(got["docs/report.pdf"]), "archived secret token")
@@ -125,7 +125,7 @@ func TestPDFMemberZeroPageLimitFailsClosed(t *testing.T) {
 		{"doc.pdf", writeMinimalPDF("hidden text")},
 		{"readme.txt", []byte("plain text\n")},
 	})
-	u := InitArchiveIterator(path, "fixture.zip", limits, nil, nil)
+	u := InitArchiveIterator(path, "fixture.zip", limits, nil)
 	got := drainMembers(u)
 	assert.NotContains(t, got, "doc.pdf", "PDF member must fail closed without a page limit")
 	assert.Contains(t, got, "readme.txt")
@@ -138,7 +138,7 @@ func TestPDFMemberWallClockBudgetBreaker(t *testing.T) {
 		{"keep.txt", []byte("still scanned\n")},
 		{"b.pdf", writeMinimalPDF("second pdf")},
 	})
-	u := InitArchiveIterator(path, "fixture.zip", testMemberLimits, nil, nil)
+	u := InitArchiveIterator(path, "fixture.zip", testMemberLimits, nil)
 	u.pdfWallTime = maxArchivePDFTime // budget already exhausted
 	got := drainMembers(u)
 	assert.NotContains(t, got, "a.pdf")
@@ -159,7 +159,7 @@ func TestPDFMemberTimeoutClampedToRemainingBudget(t *testing.T) {
 	// what remains, so maxArchivePDFTime is a ceiling and not a floor that
 	// the last member overshoots by a full DefaultPDFTimeout.
 	path := writeZipFixture(t, []zipMember{{"slow.pdf", writeMinimalPDF("some text")}})
-	u := InitArchiveIterator(path, "fixture.zip", testMemberLimits, nil, nil)
+	u := InitArchiveIterator(path, "fixture.zip", testMemberLimits, nil)
 	u.pdfWallTime = maxArchivePDFTime - time.Nanosecond
 
 	start := time.Now()
@@ -176,7 +176,7 @@ func TestPDFMemberImageOnlyNotYielded(t *testing.T) {
 		{"scan.pdf", writeMinimalPDF("", "", "")},
 		{"readme.txt", []byte("plain text\n")},
 	})
-	u := InitArchiveIterator(path, "fixture.zip", testMemberLimits, nil, nil)
+	u := InitArchiveIterator(path, "fixture.zip", testMemberLimits, nil)
 	got := drainMembers(u)
 	assert.NotContains(t, got, "scan.pdf")
 	assert.Contains(t, got, "readme.txt")
@@ -197,7 +197,7 @@ func TestContentRoutedPDFMemberScanned(t *testing.T) {
 		{"attachment", pdf},
 		{"report.pdf ", pdf}, // trailing space: extractors normalize it away
 	})
-	u := InitArchiveIterator(path, "fixture.zip", testMemberLimits, nil, nil)
+	u := InitArchiveIterator(path, "fixture.zip", testMemberLimits, nil)
 	got := drainMembers(u)
 	assert.Contains(t, string(got["attachment"]), "secret token")
 	assert.Contains(t, string(got["report.pdf "]), "secret token")
@@ -209,7 +209,7 @@ func TestContentRoutedNonPDFStaysSilent(t *testing.T) {
 	junk := append(bytes.Repeat([]byte{0x00, 0x13}, 64), []byte("%PDF-1.4 not really")...)
 	junk = append(junk, bytes.Repeat([]byte{0x42, 0x00}, 512)...)
 	path := writeZipFixture(t, []zipMember{{"blob.bin", junk}})
-	u := InitArchiveIterator(path, "fixture.zip", testMemberLimits, nil, nil)
+	u := InitArchiveIterator(path, "fixture.zip", testMemberLimits, nil)
 	got := drainMembers(u)
 	assert.NotContains(t, got, "blob.bin")
 	assert.Empty(t, u.SkipMessages(), "content-routed non-PDF must not add ack noise")
@@ -221,7 +221,7 @@ func TestPDFMemberMisnamedBinarySilent(t *testing.T) {
 		{"fake.pdf", junk},
 		{"readme.txt", []byte("plain text\n")},
 	})
-	u := InitArchiveIterator(path, "fixture.zip", testMemberLimits, nil, nil)
+	u := InitArchiveIterator(path, "fixture.zip", testMemberLimits, nil)
 	got := drainMembers(u)
 	assert.NotContains(t, got, "fake.pdf")
 	assert.Contains(t, got, "readme.txt")
@@ -231,7 +231,7 @@ func TestPDFMemberMisnamedBinarySilent(t *testing.T) {
 func TestPDFMemberMisnamedTextBuffered(t *testing.T) {
 	text := []byte("plain text with a secret keyword inside\n" + strings.Repeat("filler line\n", 200))
 	path := writeZipFixture(t, []zipMember{{"notes.pdf", text}})
-	u := InitArchiveIterator(path, "fixture.zip", testMemberLimits, nil, nil)
+	u := InitArchiveIterator(path, "fixture.zip", testMemberLimits, nil)
 	got := drainMembers(u)
 	assert.Equal(t, text, got["notes.pdf"], "text member misnamed .pdf must be raw-buffered in full")
 }
@@ -245,7 +245,7 @@ func TestPDFMemberTextCapTruncates(t *testing.T) {
 	limits := testMemberLimits
 	limits.MaxMemberSize = 4096
 	path := writeZipFixture(t, []zipMember{{"dense.pdf", pdf}})
-	u := InitArchiveIterator(path, "fixture.zip", limits, nil, nil)
+	u := InitArchiveIterator(path, "fixture.zip", limits, nil)
 	got := drainMembers(u)
 	assert.Contains(t, got, "dense.pdf")
 	assert.LessOrEqual(t, len(got["dense.pdf"]), 4096+4, "member text must stop at the cap (UTF-8 slack)")
@@ -264,7 +264,7 @@ func TestPDFMemberChargeAffectsNextMember(t *testing.T) {
 		{"doc.pdf", pdf},
 		{"big.txt", bigText},
 	})
-	u := InitArchiveIterator(path, "fixture.zip", limits, nil, nil)
+	u := InitArchiveIterator(path, "fixture.zip", limits, nil)
 	got := drainMembers(u)
 	assert.Contains(t, got, "doc.pdf")
 	assert.NotContains(t, got, "big.txt", "charged PDF text must shrink the remaining budget")
@@ -308,7 +308,7 @@ func TestOverDeclaredMembersStillScanned(t *testing.T) {
 		{"sheet.xlsx", xlsx},
 		{"notes.txt", []byte("plain secret text\n")},
 	})
-	u := InitArchiveIterator(path, "lying.zip", testMemberLimits, nil, nil)
+	u := InitArchiveIterator(path, "lying.zip", testMemberLimits, nil)
 	got := drainMembers(u)
 
 	// Every member's real bytes are intact; over-declaring must not hide them.
@@ -328,7 +328,7 @@ func TestZeroPDFArchiveKeepsRuntimeLazy(t *testing.T) {
 			{"readme.txt", []byte("plain text\n")},
 			{"data.csv", []byte("a,b\n1,2\n")},
 		})
-		u := InitArchiveIterator(path, "fixture.zip", testMemberLimits, nil, nil)
+		u := InitArchiveIterator(path, "fixture.zip", testMemberLimits, nil)
 		got := drainMembers(u)
 		assert.Len(t, got, 2)
 		if pdfRuntimeInitialized() {

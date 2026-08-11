@@ -9,11 +9,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
+	"github.com/eawag-rdm/pc/pkg/selector"
 	"github.com/eawag-rdm/pc/pkg/structs"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestIterareUnpackedFiles(t *testing.T) {
@@ -30,7 +33,7 @@ func TestIterareUnpackedFiles(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			parts := strings.Split(test.filepath, "/")
 			filename := parts[len(parts)-1]
-			nfi := InitArchiveIterator(test.filepath, filename, ArchiveLimits{MaxMemberSize: 1024 * 1024, MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 1000}, []string{}, []string{})
+			nfi := InitArchiveIterator(test.filepath, filename, ArchiveLimits{MaxMemberSize: 1024 * 1024, MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 1000}, nil)
 			assert.True(t, nfi.HasFilesToUnpack(), "Expected archive to have valid files")
 			count := 0
 			for nfi.HasNext() {
@@ -58,7 +61,7 @@ func TestValidFileCount(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			parts := strings.Split(test.filepath, "/")
 			filename := parts[len(parts)-1]
-			nfi := InitArchiveIterator(test.filepath, filename, ArchiveLimits{MaxMemberSize: 1024 * 1024, MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 1000}, []string{}, []string{})
+			nfi := InitArchiveIterator(test.filepath, filename, ArchiveLimits{MaxMemberSize: 1024 * 1024, MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 1000}, nil)
 			assert.True(t, nfi.HasFilesToUnpack(), "Expected archive to have valid files")
 			count := 0
 			for nfi.HasNext() {
@@ -86,7 +89,7 @@ func TestIterareEmpty(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			parts := strings.Split(test.filepath, "/")
 			filename := parts[len(parts)-1]
-			nfi := InitArchiveIterator(test.filepath, filename, ArchiveLimits{MaxMemberSize: 1024 * 1024, MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 1000}, []string{}, []string{})
+			nfi := InitArchiveIterator(test.filepath, filename, ArchiveLimits{MaxMemberSize: 1024 * 1024, MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 1000}, nil)
 			assert.False(t, nfi.HasFilesToUnpack(), "Expected no valid files in archive")
 			assert.False(t, nfi.HasNext())
 		})
@@ -112,7 +115,7 @@ func TestIterareUnpackedFilesMaxSize(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			parts := strings.Split(test.filepath, "/")
 			filename := parts[len(parts)-1]
-			nfi := InitArchiveIterator(test.filepath, filename, ArchiveLimits{MaxMemberSize: int64(test.maxLen), MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 1000}, []string{}, []string{})
+			nfi := InitArchiveIterator(test.filepath, filename, ArchiveLimits{MaxMemberSize: int64(test.maxLen), MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 1000}, nil)
 
 			if !nfi.HasFilesToUnpack() {
 				assert.Equal(t, 0, test.expectedLen, "No files to unpack, but expected some")
@@ -155,7 +158,7 @@ func TestIteratorEdgeCases(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			parts := strings.Split(test.filepath, "/")
 			filename := parts[len(parts)-1]
-			nfi := InitArchiveIterator(test.filepath, filename, ArchiveLimits{MaxMemberSize: int64(test.maxSize), MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 1000}, []string{}, []string{})
+			nfi := InitArchiveIterator(test.filepath, filename, ArchiveLimits{MaxMemberSize: int64(test.maxSize), MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 1000}, nil)
 
 			if test.expectedLen == 0 {
 				assert.False(t, nfi.HasFilesToUnpack(), "Expected no files in archive")
@@ -179,22 +182,58 @@ func TestIteratorEdgeCases(t *testing.T) {
 	}
 }
 
+// legacyMemberFilter translates a [test.X] whitelist/blacklist pair exactly as
+// the production callers do, so the table below exercises the shipped
+// translation and not a test-only reading of it. A translation failure aborts
+// the row - degrading to an unfiltered iterator would assert nothing.
+// admitNone (a whitelist that selects nothing) has no iterator-level form: the
+// callers return before constructing one, so the table asserts the empty
+// unpack set that follows from it.
+func legacyMemberFilter(t *testing.T, whitelist, blacklist []string) (*selector.Selector, bool) {
+	t.Helper()
+	sel, admitNone, err := selector.CompileLegacyLists("test", whitelist, blacklist)
+	require.NoError(t, err)
+	return sel, admitNone
+}
+
+// mustMemberFilter is legacyMemberFilter for the rows outside the frozen table,
+// which never feed an admit-nothing list.
+func mustMemberFilter(t *testing.T, whitelist, blacklist []string) *selector.Selector {
+	t.Helper()
+	sel, admitNone := legacyMemberFilter(t, whitelist, blacklist)
+	require.False(t, admitNone, "this fixture needs a filter, not an admit-nothing verdict")
+	return sel
+}
+
 func TestFiltersDuringArchiveIteration(t *testing.T) {
-	// FROZEN TABLE - scope: the ARCHIVE MEMBER FILTER only, i.e. the pattern
-	// lists handed to the iterator and read by fileGoodToUnpack ->
-	// matchLiteralPatterns -> FastMatcher.HasAnyMatch. The file-check filter
-	// site is a different mechanism, already migrated at HEAD; nothing here
-	// asserts anything about it.
+	// FROZEN TABLE - scope: the ARCHIVE MEMBER FILTER only, i.e. the [test.X]
+	// pattern lists translated by selector.CompileLegacyLists and read by
+	// admitMember -> Selector.MatchScratch, exactly as the two production
+	// callers do it. The file-check filter site is a different mechanism,
+	// already migrated at HEAD; nothing here asserts anything about it.
 	//
-	// Every row asserts the member-filter semantics as they are TODAY:
-	// - literal substring, never a regex;
-	// - case-insensitive (both pattern and member name are lowered);
-	// - matched over the FULL member path, not the basename;
-	// - a non-empty blacklist DISABLES the whitelist - fileGoodToUnpack never
-	//   consults the whitelist once the blacklist is non-empty (this is not
-	//   "blacklist wins" per member: a whitelist-only verdict is unreachable);
-	// - an empty list entry is skipped by FastMatcher.HasAnyMatch, so it
-	//   matches nothing at all.
+	// Every row asserts the member-filter semantics after the Selector
+	// migration, with the legacy lists translated (each entry quoted,
+	// ignoreCase, subject "path"):
+	// - a quoted legacy entry still matches as a literal substring, never as a
+	//   regex, and still case-insensitively;
+	// - still matched over the FULL member path, not the basename;
+	// - an empty list entry is still inert: the translation drops it, and a
+	//   whitelist left with nothing selects nothing exactly as before;
+	// - CHANGED (the one user-visible move of this migration): both lists now
+	//   apply together - a member must match the whitelist AND avoid the
+	//   blacklist, where a non-empty blacklist used to disable the whitelist
+	//   entirely.
+	//
+	// Two further declared changes have no row here because no fixture can hold
+	// their input:
+	// - an EMPTY member name inverts both verdicts. The old matcher treated an
+	//   empty subject as "matches", so a blacklist rejected it and a whitelist
+	//   admitted it; the selector matches patterns against it like any other
+	//   subject, so a blacklist now admits it and a whitelist rejects it. Pinned
+	//   by TestAdmitMemberEmptyName.
+	// - an entry holding a NON-ASCII byte keeps RE2 simple folding instead of
+	//   Unicode ToLower (see selector.CompileLegacyLists).
 	//
 	// Legal moves for the Selector migration commit:
 	// - the EXPECTATIONS of existing rows MAY change - that diff IS the
@@ -205,6 +244,10 @@ func TestFiltersDuringArchiveIteration(t *testing.T) {
 	//   commit MUST re-assert that input's rejection in
 	//   TestArchiveFilterRejectsInvalidPatterns in this package (to be created
 	//   by that commit);
+	// - the commit that deletes the legacy translation MAY rewrite the row
+	//   INPUTS from whitelist/blacklist lists to selector.Spec values, since
+	//   the lists stop existing at this layer - a declared move, not a
+	//   silent one;
 	// - row names and row order are otherwise stable, and names describe the
 	//   INPUT, never the outcome.
 	//
@@ -224,7 +267,8 @@ func TestFiltersDuringArchiveIteration(t *testing.T) {
 	// - app.log             regex `.*\.log$` selects it, the literal never does
 	// - temp.*.txt          the only member holding the literal text `temp.*`
 	// - temporary_notes.txt regex `temp.*` selects it, the literal never does
-	// - UPPER_CASE.TXT      uppercase name, matched today by a lowercase pattern
+	// - UPPER_CASE.TXT      uppercase name, reached by a lowercase pattern only
+	//                       because the translated rule keeps ignoreCase
 	baseTests := []struct {
 		name          string
 		baseFile      string
@@ -240,15 +284,18 @@ func TestFiltersDuringArchiveIteration(t *testing.T) {
 		{"Archive with blacklist filter", "one_of_each", 2 * 1024 * 1024, []string{}, []string{".blst"}, []string{"large_valid.txt", "very_large_but_valid.txt", "white/to_be_whitelisted.wlst"}},
 		{"Archive with overlapping filters", "one_of_each", 0.5 * 1024 * 1024, []string{}, []string{".blst"}, []string{"large_valid.txt", "white/to_be_whitelisted.wlst"}},
 		{"Archive with overlapping filters 2", "one_of_each", 10, []string{"wlst"}, []string{}, []string{}},
-		// Regex metacharacters are matched literally: no member path holds the
-		// text `.*\.log$`, so the whitelist admits nothing and the blacklist
-		// excludes nothing - app.log survives both.
+		// Regex metacharacters are quoted, so they still match themselves: no
+		// member path holds the text `.*\.log$`, so the whitelist admits nothing
+		// and the blacklist excludes nothing - app.log survives both. A raw
+		// (unquoted) `.*\.log$` is now a regex that would select app.log - the
+		// expressiveness the legacy translation deliberately withholds.
 		{"Archive with whitelist `.*\\.log$`", "filter_semantics", 2 * 1024 * 1024, []string{`.*\.log$`}, []string{}, []string{}},
 		{"Archive with blacklist `.*\\.log$`", "filter_semantics", 2 * 1024 * 1024, []string{}, []string{`.*\.log$`}, []string{"app.log", "temp.*.txt", "temporary_notes.txt", "UPPER_CASE.TXT"}},
 		// `temp.*` reaches only the member that spells it out, never the one a
 		// regex would reach through `.*`.
 		{"Archive with whitelist `temp.*`", "filter_semantics", 2 * 1024 * 1024, []string{"temp.*"}, []string{}, []string{"temp.*.txt"}},
-		// A glob-shaped pattern is a valid literal here (and an invalid regex).
+		// A glob-shaped pattern stays a literal: quoting turns what RE2 would
+		// reject as a regex into a pattern matching the text `*.txt`.
 		{"Archive with whitelist `*.txt`", "filter_semantics", 2 * 1024 * 1024, []string{"*.txt"}, []string{}, []string{"temp.*.txt"}},
 		// Matching is case-insensitive in both directions.
 		{"Archive with lowercase whitelist `upper_case`", "filter_semantics", 2 * 1024 * 1024, []string{"upper_case"}, []string{}, []string{"UPPER_CASE.TXT"}},
@@ -256,14 +303,16 @@ func TestFiltersDuringArchiveIteration(t *testing.T) {
 		// Matching runs over the full member path, so a directory component is
 		// a usable pattern - a basename-only subject would admit nothing here.
 		{"Archive with whitelist on a directory component", "one_of_each", 2 * 1024 * 1024, []string{"white/"}, []string{}, []string{"white/to_be_whitelisted.wlst"}},
-		// Both lists set: the whitelist is not consulted at all, so `temp` does
-		// not restrict anything and every member outside the blacklist is
-		// admitted. The iterator takes raw lists, so this input is
-		// constructible here even though the config layer rejects both-set.
-		{"Archive with whitelist `temp` and blacklist `.log`", "filter_semantics", 2 * 1024 * 1024, []string{"temp"}, []string{".log"}, []string{"temp.*.txt", "temporary_notes.txt", "UPPER_CASE.TXT"}},
-		// An empty list entry is skipped by FastMatcher.HasAnyMatch, so it
-		// matches nothing: alone as a whitelist it admits nothing, alone as a
-		// blacklist it excludes nothing, and beside a real entry it is inert.
+		// Both lists set: include AND NOT exclude, so `temp` restricts what the
+		// blacklist leaves - UPPER_CASE.TXT is no longer admitted, the one
+		// verdict the whitelist-suppression rule used to produce. The
+		// translation compiles both lists, so this input is constructible here
+		// even though the config layer rejects both-set.
+		{"Archive with whitelist `temp` and blacklist `.log`", "filter_semantics", 2 * 1024 * 1024, []string{"temp"}, []string{".log"}, []string{"temp.*.txt", "temporary_notes.txt"}},
+		// An empty entry is dropped by the translation, so beside a real entry it
+		// is inert; a whitelist left with no entry at all still selects nothing,
+		// because the translation reports it as admit-nothing rather than
+		// widening it into "no filter".
 		{"Archive with empty whitelist entry", "filter_semantics", 2 * 1024 * 1024, []string{""}, []string{}, []string{}},
 		{"Archive with empty blacklist entry", "filter_semantics", 2 * 1024 * 1024, []string{}, []string{""}, []string{"app.log", "temp.*.txt", "temporary_notes.txt", "UPPER_CASE.TXT"}},
 		{"Archive with empty and non-empty whitelist entries", "filter_semantics", 2 * 1024 * 1024, []string{"", "temp.*"}, []string{}, []string{"temp.*.txt"}},
@@ -304,7 +353,14 @@ func TestFiltersDuringArchiveIteration(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			parts := strings.Split(test.filepath, "/")
 			filename := parts[len(parts)-1]
-			nfi := InitArchiveIterator(test.filepath, filename, ArchiveLimits{MaxMemberSize: int64(test.maxLen), MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 1000}, test.whitelist, test.blacklist)
+			memberFilter, admitNone := legacyMemberFilter(t, test.whitelist, test.blacklist)
+			if admitNone {
+				// The callers never reach the iterator in this case, so the row
+				// asserts what they produce instead: nothing unpacked.
+				assert.Empty(t, test.unpackedFiles, "an admit-nothing filter can only expect an empty unpack set")
+				return
+			}
+			nfi := InitArchiveIterator(test.filepath, filename, ArchiveLimits{MaxMemberSize: int64(test.maxLen), MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 1000}, memberFilter)
 			if len(test.unpackedFiles) == 0 {
 				assert.False(t, nfi.HasFilesToUnpack(), "Expected archive to have valid files")
 			} else {
@@ -332,6 +388,82 @@ func TestFiltersDuringArchiveIteration(t *testing.T) {
 	}
 }
 
+// TestArchiveFilterRejectsInvalidPatterns pins the boundary the frozen table
+// stops at: the iterator's filter is constructible only through
+// selector.Compile, which refuses what the old literal matcher swallowed - an
+// empty entry (inert then) and an uncompilable regex (a plain literal then).
+// The empty-entry rows of the table survive only because the transitional
+// translation drops those entries before compiling.
+func TestArchiveFilterRejectsInvalidPatterns(t *testing.T) {
+	for _, spec := range []selector.Spec{
+		{Rule: "member", Subject: "path", IgnoreCase: true, Include: []string{""}},
+		{Rule: "member", Subject: "path", IgnoreCase: true, Exclude: []string{""}},
+		{Rule: "member", Subject: "path", IgnoreCase: true, Include: []string{"temp", ""}},
+		{Rule: "member", Subject: "path", IgnoreCase: true, Include: []string{"("}},
+	} {
+		_, err := selector.Compile(spec)
+		assert.Error(t, err, "%+v must not compile into a member filter", spec)
+	}
+
+	dropped, admitNone, err := selector.CompileLegacyLists("member", []string{""}, nil)
+	require.NoError(t, err)
+	assert.Nil(t, dropped, "an all-empty whitelist compiles to no selector")
+	assert.True(t, admitNone, "and to admit-nothing, never to no filter")
+}
+
+// TestAdmitMemberEmptyName pins the declared flip for the nameless member a
+// crafted archive can hold: the old matcher short-circuited an empty subject as
+// "matches", so a blacklist rejected it and a whitelist admitted it. Patterns
+// now match it like any other subject, inverting both verdicts.
+func TestAdmitMemberEmptyName(t *testing.T) {
+	include, err := selector.Compile(selector.Spec{Rule: "member", Subject: "path", IgnoreCase: true, Include: []string{"temp"}})
+	require.NoError(t, err)
+	exclude, err := selector.Compile(selector.Spec{Rule: "member", Subject: "path", IgnoreCase: true, Exclude: []string{"temp"}})
+	require.NoError(t, err)
+
+	limits := ArchiveLimits{MaxMemberSize: 1024, MaxTotalMemory: 1024, MaxMemberCount: 10}
+	assert.False(t, InitArchiveIterator("x.zip", "x.zip", limits, &include).admitMember(""),
+		"a whitelist admitted the nameless member before, and rejects it now")
+	assert.True(t, InitArchiveIterator("x.zip", "x.zip", limits, &exclude).admitMember(""),
+		"a blacklist rejected the nameless member before, and admits it now")
+	assert.True(t, InitArchiveIterator("x.zip", "x.zip", limits, nil).admitMember(""),
+		"an unfiltered iterator admits it either way")
+}
+
+// TestArchiveMemberFilterSubject: the iterator matches the subject the filter
+// declares - the full member path, or its base name for subject "name".
+func TestArchiveMemberFilterSubject(t *testing.T) {
+	archive := buildMemberZip(t, map[string][]byte{
+		"sub/notes.txt": []byte("member text\n"),
+		"sub/data.csv":  []byte("a,b\n"),
+	})
+	members := func(t *testing.T, spec selector.Spec) []string {
+		t.Helper()
+		sel, err := selector.Compile(spec)
+		assert.NoError(t, err)
+		nfi := InitArchiveIterator(archive, "members.zip",
+			ArchiveLimits{MaxMemberSize: 1024, MaxTotalMemory: 1024 * 1024, MaxMemberCount: 10}, &sel)
+		defer nfi.Close()
+		var names []string
+		for nfi.HasFilesToUnpack() && nfi.HasNext() {
+			nfi.Next()
+			name, _, _ := nfi.UnpackedFile()
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		return names
+	}
+
+	assert.Equal(t, []string{"sub/data.csv", "sub/notes.txt"},
+		members(t, selector.Spec{Rule: "member", Subject: "path", Include: []string{"sub/"}}),
+		"subject path sees the directory component")
+	assert.Empty(t, members(t, selector.Spec{Rule: "member", Subject: "name", Include: []string{"sub/"}}),
+		"subject name never sees the directory component")
+	assert.Equal(t, []string{"sub/notes.txt"},
+		members(t, selector.Spec{Rule: "member", Subject: "name", Include: []string{"notes"}}),
+		"subject name matches the base name")
+}
+
 func TestSkippingALotOfFiles(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -346,7 +478,7 @@ func TestSkippingALotOfFiles(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			parts := strings.Split(test.filepath, "/")
 			filename := parts[len(parts)-1]
-			nfi := InitArchiveIterator(test.filepath, filename, ArchiveLimits{MaxMemberSize: 1024, MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 1000}, []string{}, []string{})
+			nfi := InitArchiveIterator(test.filepath, filename, ArchiveLimits{MaxMemberSize: 1024, MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 1000}, nil)
 			assert.False(t, nfi.HasFilesToUnpack(), "Expected no files in archive")
 			assert.False(t, nfi.HasNext())
 		})
@@ -367,7 +499,7 @@ func TestALotOfBinaryFiles(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			parts := strings.Split(test.filepath, "/")
 			filename := parts[len(parts)-1]
-			nfi := InitArchiveIterator(test.filepath, filename, ArchiveLimits{MaxMemberSize: 1024, MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 1000}, []string{}, []string{})
+			nfi := InitArchiveIterator(test.filepath, filename, ArchiveLimits{MaxMemberSize: 1024, MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 1000}, nil)
 			assert.False(t, nfi.HasFilesToUnpack(), "Expected only binary files in archive, so nothing to read")
 			assert.False(t, nfi.HasNext())
 		})
@@ -394,7 +526,7 @@ func TestArchiveIterator_MemberSizeSkipEmitsMessages(t *testing.T) {
 
 			// maxLen 0.5MB excludes the 1.2MB and 2.3MB members by size while the
 			// total-memory budget (generous) is not the cause.
-			nfi := InitArchiveIterator(path, filename, ArchiveLimits{MaxMemberSize: int64(0.5 * 1024 * 1024), MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 1000}, []string{}, []string{})
+			nfi := InitArchiveIterator(path, filename, ArchiveLimits{MaxMemberSize: int64(0.5 * 1024 * 1024), MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 1000}, nil)
 			skips := drainIterator(nfi)
 
 			if len(skips) == 0 {
@@ -440,7 +572,7 @@ func (r *sniffTrapReader) Read(p []byte) (int, error) {
 }
 
 func TestSniffThenRead(t *testing.T) {
-	it := InitArchiveIterator("x", "x.zip", ArchiveLimits{MaxMemberSize: 10 * 1024 * 1024, MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 1000}, nil, nil)
+	it := InitArchiveIterator("x", "x.zip", ArchiveLimits{MaxMemberSize: 10 * 1024 * 1024, MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 1000}, nil)
 	text := func(n int) string { return strings.Repeat("a", n) }
 
 	t.Run("binary aborts after sample", func(t *testing.T) {
@@ -534,7 +666,7 @@ func TestZipBinaryBombAbortedAfterSniff(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "bomb.zip")
 	assert.NoError(t, os.WriteFile(path, buf.Bytes(), 0o600))
 
-	nfi := InitArchiveIterator(path, "bomb.zip", ArchiveLimits{MaxMemberSize: 2 * 1024 * 1024, MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 1000}, nil, nil)
+	nfi := InitArchiveIterator(path, "bomb.zip", ArchiveLimits{MaxMemberSize: 2 * 1024 * 1024, MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 1000}, nil)
 	assert.True(t, nfi.HasFilesToUnpack())
 	var names []string
 	for nfi.HasNext() {
@@ -553,7 +685,7 @@ func TestArchiveIterator_7zDeclaredSizeGate(t *testing.T) {
 
 	// Declared sum ~4.7 MB; budget 1 MB -> 4 MB gate limit -> rejected before
 	// any decompression.
-	nfi := InitArchiveIterator(path, "one_of_each.7z", ArchiveLimits{MaxMemberSize: 10 * 1024 * 1024, MaxTotalMemory: 1024 * 1024, MaxMemberCount: 1000}, []string{}, []string{})
+	nfi := InitArchiveIterator(path, "one_of_each.7z", ArchiveLimits{MaxMemberSize: 10 * 1024 * 1024, MaxTotalMemory: 1024 * 1024, MaxMemberCount: 1000}, nil)
 	assert.False(t, nfi.HasFilesToUnpack())
 	skips := nfi.SkipMessages()
 	if assert.Len(t, skips, 1) {
@@ -569,7 +701,7 @@ func TestArchiveIterator_7zDeclaredSizeGate(t *testing.T) {
 	assert.Equal(t, 0, nfi.processedFileCount)
 
 	// Budget above sum/4: gate passes, scan proceeds.
-	ok := InitArchiveIterator(path, "one_of_each.7z", ArchiveLimits{MaxMemberSize: 10 * 1024 * 1024, MaxTotalMemory: 2 * 1024 * 1024, MaxMemberCount: 1000}, []string{}, []string{})
+	ok := InitArchiveIterator(path, "one_of_each.7z", ArchiveLimits{MaxMemberSize: 10 * 1024 * 1024, MaxTotalMemory: 2 * 1024 * 1024, MaxMemberCount: 1000}, nil)
 	assert.True(t, ok.HasFilesToUnpack())
 }
 
@@ -605,7 +737,7 @@ func TestTarGzNormalScan(t *testing.T) {
 		content []byte
 	}{{"a.txt", text}, {"b.txt", text}})
 
-	nfi := InitArchiveIterator(path, "ok.tar.gz", ArchiveLimits{MaxMemberSize: 1024 * 1024, MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 1000}, []string{}, []string{})
+	nfi := InitArchiveIterator(path, "ok.tar.gz", ArchiveLimits{MaxMemberSize: 1024 * 1024, MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 1000}, nil)
 	assert.True(t, nfi.HasFilesToUnpack())
 	count := 0
 	for nfi.HasNext() {
@@ -629,7 +761,7 @@ func TestTarGzWalkCapStopsIteration(t *testing.T) {
 		content []byte
 	}{{"m1.txt", big}, {"m2.txt", big}, {"m3.txt", big}})
 
-	nfi := InitArchiveIterator(path, "big.tar.gz", ArchiveLimits{MaxMemberSize: 10 * 1024 * 1024, MaxTotalMemory: 1024 * 1024, MaxMemberCount: 1000}, []string{}, []string{})
+	nfi := InitArchiveIterator(path, "big.tar.gz", ArchiveLimits{MaxMemberSize: 10 * 1024 * 1024, MaxTotalMemory: 1024 * 1024, MaxMemberCount: 1000}, nil)
 	assert.False(t, nfi.HasFilesToUnpack())
 
 	foundWalkStop := false
@@ -651,7 +783,7 @@ func TestTarGzWalkCapSingleHugeMember(t *testing.T) {
 		content []byte
 	}{{"huge.txt", bytes.Repeat([]byte("B"), 20*1024*1024)}})
 
-	nfi := InitArchiveIterator(path, "huge.tar.gz", ArchiveLimits{MaxMemberSize: 1024 * 1024, MaxTotalMemory: 1024 * 1024, MaxMemberCount: 1000}, []string{}, []string{})
+	nfi := InitArchiveIterator(path, "huge.tar.gz", ArchiveLimits{MaxMemberSize: 1024 * 1024, MaxTotalMemory: 1024 * 1024, MaxMemberCount: 1000}, nil)
 	assert.False(t, nfi.HasFilesToUnpack())
 
 	foundWalkStop := false
@@ -692,7 +824,7 @@ func TestOOXMLMemberExtraction(t *testing.T) {
 	})
 
 	nfi := InitArchiveIterator(path, "members.zip",
-		ArchiveLimits{MaxMemberSize: 10 * 1024 * 1024, MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 1000}, nil, nil)
+		ArchiveLimits{MaxMemberSize: 10 * 1024 * 1024, MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 1000}, nil)
 	assert.True(t, nfi.HasFilesToUnpack())
 	got := map[string][]byte{}
 	for nfi.HasNext() {
@@ -711,7 +843,7 @@ func TestOOXMLMemberTruncationAndCharge(t *testing.T) {
 	// 16 KB -> truncated ack, partial text scanned, charge stays bounded.
 	path := buildMemberZip(t, map[string][]byte{"big.xlsx": buildAmplifiedXLSX(t)})
 	nfi := InitArchiveIterator(path, "members.zip",
-		ArchiveLimits{MaxMemberSize: 16 * 1024, MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 1000}, nil, nil)
+		ArchiveLimits{MaxMemberSize: 16 * 1024, MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 1000}, nil)
 	assert.True(t, nfi.HasFilesToUnpack())
 	count := 0
 	for nfi.HasNext() {
@@ -752,7 +884,7 @@ func TestOOXMLMemberGateReject(t *testing.T) {
 		"safe.txt":  []byte("still scanned\n"),
 	})
 	nfi := InitArchiveIterator(path, "members.zip",
-		ArchiveLimits{MaxMemberSize: 10 * 1024 * 1024, MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 1000}, nil, nil)
+		ArchiveLimits{MaxMemberSize: 10 * 1024 * 1024, MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 1000}, nil)
 	assert.True(t, nfi.HasFilesToUnpack())
 	var names []string
 	for nfi.HasNext() {
@@ -773,7 +905,7 @@ func TestOOXMLMemberGateReject(t *testing.T) {
 func TestOOXMLMemberMisnamedTextFallback(t *testing.T) {
 	path := buildMemberZip(t, map[string][]byte{"data.xlsx": []byte("csv,misnamed,as,xlsx\nplain,text\n")})
 	nfi := InitArchiveIterator(path, "members.zip",
-		ArchiveLimits{MaxMemberSize: 10 * 1024 * 1024, MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 1000}, nil, nil)
+		ArchiveLimits{MaxMemberSize: 10 * 1024 * 1024, MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 1000}, nil)
 	assert.True(t, nfi.HasFilesToUnpack())
 	nfi.Next()
 	name, content, _ := nfi.UnpackedFile()
@@ -797,7 +929,7 @@ func TestMemberCountLimitZip7z(t *testing.T) {
 	for _, ext := range []string{".zip", ".7z"} {
 		t.Run("over limit "+ext, func(t *testing.T) {
 			nfi := InitArchiveIterator("../../testdata/archives/ten_valid_files"+ext, "ten_valid_files"+ext,
-				ArchiveLimits{MaxMemberSize: 1024 * 1024, MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 5}, nil, nil)
+				ArchiveLimits{MaxMemberSize: 1024 * 1024, MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 5}, nil)
 			assert.False(t, nfi.HasFilesToUnpack())
 			assert.Equal(t, 1, countMemberCountAcks(nfi.SkipMessages()))
 			assert.Equal(t, int64(0), nfi.totalMemoryUsed, "over-limit archive must have zero member reads")
@@ -805,7 +937,7 @@ func TestMemberCountLimitZip7z(t *testing.T) {
 		})
 		t.Run("at limit "+ext, func(t *testing.T) {
 			nfi := InitArchiveIterator("../../testdata/archives/ten_valid_files"+ext, "ten_valid_files"+ext,
-				ArchiveLimits{MaxMemberSize: 1024 * 1024, MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 10}, nil, nil)
+				ArchiveLimits{MaxMemberSize: 1024 * 1024, MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 10}, nil)
 			assert.True(t, nfi.HasFilesToUnpack())
 			count := 0
 			for nfi.HasNext() {
@@ -838,7 +970,7 @@ func TestMemberCountLimitFilteredMembersDoNotCount(t *testing.T) {
 	assert.NoError(t, os.WriteFile(path, buf.Bytes(), 0o600))
 
 	nfi := InitArchiveIterator(path, "filtered.zip",
-		ArchiveLimits{MaxMemberSize: 1024 * 1024, MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 5}, nil, []string{".blst"})
+		ArchiveLimits{MaxMemberSize: 1024 * 1024, MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 5}, mustMemberFilter(t, nil, []string{".blst"}))
 	assert.True(t, nfi.HasFilesToUnpack())
 	count := 0
 	for nfi.HasNext() {
@@ -853,7 +985,7 @@ func TestMemberCountLimitTarInline(t *testing.T) {
 	// tar family counts inline: members yielded before the limit stay
 	// scanned, then one archive-level ack and the iteration stops.
 	nfi := InitArchiveIterator("../../testdata/archives/ten_valid_files.tar", "ten_valid_files.tar",
-		ArchiveLimits{MaxMemberSize: 1024 * 1024, MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 5}, nil, nil)
+		ArchiveLimits{MaxMemberSize: 1024 * 1024, MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 5}, nil)
 	assert.True(t, nfi.HasFilesToUnpack())
 	count := 0
 	for nfi.HasNext() {
@@ -880,7 +1012,7 @@ func TestMemberCountLimitTarGz(t *testing.T) {
 	writeTarGzFixture(t, path, members)
 
 	nfi := InitArchiveIterator(path, "many.tar.gz",
-		ArchiveLimits{MaxMemberSize: 1024 * 1024, MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 3}, nil, nil)
+		ArchiveLimits{MaxMemberSize: 1024 * 1024, MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 3}, nil)
 	assert.True(t, nfi.HasFilesToUnpack())
 	count := 0
 	for nfi.HasNext() {
@@ -894,7 +1026,7 @@ func TestMemberCountLimitTarGz(t *testing.T) {
 func TestMemberCountLimitFolderHeavyZip(t *testing.T) {
 	// Directory entries carry size 0 and never count as candidates.
 	nfi := InitArchiveIterator("../../testdata/archives/only_folders.zip", "only_folders.zip",
-		ArchiveLimits{MaxMemberSize: 1024 * 1024, MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 1}, nil, nil)
+		ArchiveLimits{MaxMemberSize: 1024 * 1024, MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 1}, nil)
 	assert.False(t, nfi.HasFilesToUnpack())
 	assert.Equal(t, 0, countMemberCountAcks(nfi.SkipMessages()), "folder-only archives must not trip the member count")
 }
@@ -925,7 +1057,7 @@ func TestSkipAckPrecedence(t *testing.T) {
 	assert.NoError(t, os.WriteFile(path, buf.Bytes(), 0o600))
 
 	nfi := InitArchiveIterator(path, "prec.zip",
-		ArchiveLimits{MaxMemberSize: 2048, MaxTotalMemory: 2560, MaxMemberCount: 1000}, nil, []string{".blst"})
+		ArchiveLimits{MaxMemberSize: 2048, MaxTotalMemory: 2560, MaxMemberCount: 1000}, mustMemberFilter(t, nil, []string{".blst"}))
 	assert.True(t, nfi.HasFilesToUnpack())
 	var yielded []string
 	for nfi.HasNext() {
@@ -965,7 +1097,7 @@ func TestTruncatedTarMemberYieldsTruncatedContent(t *testing.T) {
 	assert.NoError(t, os.WriteFile(path, buf.Bytes()[:512+2048], 0o600))
 
 	nfi := InitArchiveIterator(path, "cut.tar",
-		ArchiveLimits{MaxMemberSize: 1024 * 1024, MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 1000}, nil, nil)
+		ArchiveLimits{MaxMemberSize: 1024 * 1024, MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 1000}, nil)
 	assert.True(t, nfi.HasFilesToUnpack())
 	count := 0
 	for nfi.HasNext() {
@@ -980,7 +1112,7 @@ func TestTruncatedTarMemberYieldsTruncatedContent(t *testing.T) {
 
 func TestIteratorCloseEarly(t *testing.T) {
 	nfi := InitArchiveIterator("../../testdata/archives/ten_valid_files.zip", "ten_valid_files.zip",
-		ArchiveLimits{MaxMemberSize: 1024 * 1024, MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 1000}, nil, nil)
+		ArchiveLimits{MaxMemberSize: 1024 * 1024, MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 1000}, nil)
 	assert.True(t, nfi.HasFilesToUnpack())
 
 	nfi.Close()
@@ -1000,7 +1132,7 @@ func TestArchiveIterator_MembersDecompressedAndChargedOnce(t *testing.T) {
 			path := "../../testdata/archives/ten_valid_files" + ext
 			filename := "ten_valid_files" + ext
 
-			nfi := InitArchiveIterator(path, filename, ArchiveLimits{MaxMemberSize: 1024 * 1024, MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 1000}, []string{}, []string{})
+			nfi := InitArchiveIterator(path, filename, ArchiveLimits{MaxMemberSize: 1024 * 1024, MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 1000}, nil)
 			assert.True(t, nfi.HasFilesToUnpack())
 			var contentSum int64
 			count := 0
@@ -1015,7 +1147,7 @@ func TestArchiveIterator_MembersDecompressedAndChargedOnce(t *testing.T) {
 			assert.Equal(t, count, nfi.processedFileCount, "each member must be processed exactly once")
 
 			// A budget of exactly the summed content must admit every member.
-			tight := InitArchiveIterator(path, filename, ArchiveLimits{MaxMemberSize: 1024 * 1024, MaxTotalMemory: contentSum, MaxMemberCount: 1000}, []string{}, []string{})
+			tight := InitArchiveIterator(path, filename, ArchiveLimits{MaxMemberSize: 1024 * 1024, MaxTotalMemory: contentSum, MaxMemberCount: 1000}, nil)
 			assert.True(t, tight.HasFilesToUnpack())
 			tightCount := 0
 			for tight.HasNext() {
@@ -1040,7 +1172,7 @@ func TestArchiveIterator_TotalMemorySkipEmitsMessages(t *testing.T) {
 			// The budget is chosen above declaredSum/declaredSizeBudgetMultiple so
 			// the 7z declared-size gate does NOT trip (that path has its own test)
 			// while the 2.3 MB member still exceeds the remaining budget.
-			nfi := InitArchiveIterator(path, filename, ArchiveLimits{MaxMemberSize: 10 * 1024 * 1024, MaxTotalMemory: 1536 * 1024, MaxMemberCount: 1000}, []string{}, []string{})
+			nfi := InitArchiveIterator(path, filename, ArchiveLimits{MaxMemberSize: 10 * 1024 * 1024, MaxTotalMemory: 1536 * 1024, MaxMemberCount: 1000}, nil)
 			skips := drainIterator(nfi)
 
 			foundMemorySkip := false

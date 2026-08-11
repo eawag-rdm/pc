@@ -136,6 +136,8 @@ whitelist = []
 # Checking file contents for non-secret keywords; secrets (credentials, keys,
 # tokens) are found by [test.IsFreeOfSecrets] (betterleaks) instead.
 # blacklist/whitelist: Use regex patterns to include/exclude files by path
+# These lists are read twice until the rules migration: as regex over file names
+# (case-sensitive) and as literal substrings over archive member paths (case-insensitive)
 blacklist = []
 whitelist = []
 # keywords: Use literal strings only (case-insensitive matching)

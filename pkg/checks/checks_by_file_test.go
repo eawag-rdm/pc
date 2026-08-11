@@ -562,6 +562,42 @@ func TestIsTextFileExampleFiles(t *testing.T) {
 		}
 	}
 }
+
+// TestIsArchiveFreeOfKeywordsMemberFilterWiring is the wiring guard for the
+// call site: the [test.IsFreeOfKeywords] lists must reach the iterator in the
+// right roles. one_of_each holds the keyword "password" in BOTH the .blst and
+// the .wlst member, so a blacklist naming .blst must silence exactly one of
+// them. Swapping the whitelist and blacklist arguments at the call site inverts
+// both assertions.
+func TestIsArchiveFreeOfKeywordsMemberFilterWiring(t *testing.T) {
+	const (
+		blacklisted = "black/to_be_blacklisted.blst"
+		whitelisted = "white/to_be_whitelisted.wlst"
+	)
+
+	cfg, err := config.LoadConfig("../../testdata/test_config.toml")
+	if err != nil {
+		t.Fatalf("Failed to load config: %v", err)
+	}
+	cfg.Tests["IsFreeOfKeywords"].Whitelist = []string{}
+	cfg.Tests["IsFreeOfKeywords"].Blacklist = []string{".blst"}
+
+	archive := structs.File{Path: "../../testdata/archives/one_of_each.zip", Name: "one_of_each.zip", DisplayName: "one_of_each.zip", IsArchive: true}
+	hits := map[string]int{}
+	for _, m := range IsArchiveFreeOfKeywords(archive, *cfg) {
+		if f, ok := m.Source.(structs.File); ok && !m.Skipped {
+			hits[f.Name]++
+		}
+	}
+
+	if hits[blacklisted] != 0 {
+		t.Errorf("blacklisted member %q produced %d message(s), want none", blacklisted, hits[blacklisted])
+	}
+	if hits[whitelisted] == 0 {
+		t.Errorf("member %q produced no message; the blacklist must not filter it (hits: %v)", whitelisted, hits)
+	}
+}
+
 func TestIsArchiveFreeOfKeywordsWithRealArchives(t *testing.T) {
 	configPath := "../../testdata/test_config.toml"
 	cfg, err := config.LoadConfig(configPath)

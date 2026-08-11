@@ -14,6 +14,7 @@ import (
 	"github.com/eawag-rdm/pc/pkg/config"
 	"github.com/eawag-rdm/pc/pkg/output"
 	"github.com/eawag-rdm/pc/pkg/readers"
+	"github.com/eawag-rdm/pc/pkg/selector"
 	"github.com/eawag-rdm/pc/pkg/structs"
 )
 
@@ -215,10 +216,31 @@ func isExtractedTextMember(memberName string) bool {
 // extraction across checks needs the fast/slow check split.
 func extractArchivesForLeakScan(cfg config.Config, tc *config.TestConfig, archives []structs.File, tmpDir string, sources map[string]structs.File, messages *[]structs.Message) []string {
 	limits := archiveLimits(cfg)
+	// One list, two languages - honestly, for one more commit. leakNameFilter
+	// above reads [test.IsFreeOfSecrets]'s lists as case-SENSITIVE regexes
+	// joined with "|" and matched against f.Name; this gate reads the same two
+	// lists as quoted, case-INSENSITIVE literals matched against the full member
+	// path. A pattern like `.*\.log$` therefore filters top-level files and no
+	// archive member. The next commit collapses both onto one selector; this
+	// call is the minimal adaptation to the iterator's new parameter.
+	//
+	// Fail CLOSED, unlike leakNameFilter's warn-and-disable: a filter that
+	// cannot be honoured must not turn into a wider scan.
+	memberFilter, admitNone, err := selector.CompileLegacyLists("IsFreeOfSecrets", tc.Whitelist, tc.Blacklist)
+	if err != nil {
+		output.GlobalLogger.Warning("IsFreeOfSecrets: %v", err)
+		reason := fmt.Sprintf("Skipped leak scan of %d archive(s): the [test.IsFreeOfSecrets] member filter is unusable.", len(archives))
+		*messages = append(*messages, structs.Message{Content: reason, Source: structs.Repository{}, Skipped: true, Reason: reason})
+		return nil
+	}
+	// A whitelist that selects nothing selects no member either.
+	if admitNone {
+		return nil
+	}
 
 	var memberPaths []string
 	for ai, archive := range archives {
-		it := readers.InitArchiveIterator(archive.Path, archive.Name, limits, tc.Whitelist, tc.Blacklist)
+		it := readers.InitArchiveIterator(archive.Path, archive.Name, limits, memberFilter)
 		if !it.HasFilesToUnpack() {
 			*messages = append(*messages, it.SkipMessages()...)
 			continue
@@ -250,7 +272,7 @@ func extractArchivesForLeakScan(cfg config.Config, tc *config.TestConfig, archiv
 				output.GlobalLogger.FileWarning(archive.GetDisplayName(), "IsFreeOfSecrets: cannot write temp copy of '%s': %v", memberName, err)
 				continue
 			}
-			sources[tmpPath] = structs.ToFileWithDisplay(
+			member := structs.ToFileWithDisplay(
 				archive.Path,             // path stays as archive path
 				memberName,               // name is the path within archive
 				memberName,               // display name
@@ -258,6 +280,8 @@ func extractArchivesForLeakScan(cfg config.Config, tc *config.TestConfig, archiv
 				"",                       // suffix (auto-detected)
 				archive.GetDisplayName(), // archive name reference
 			)
+			member.RelPath = memberName // the member path, verbatim
+			sources[tmpPath] = member
 			memberPaths = append(memberPaths, tmpPath)
 		}
 		*messages = append(*messages, it.SkipMessages()...)

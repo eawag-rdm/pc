@@ -10,13 +10,14 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/bodgit/sevenzip"
-	"github.com/eawag-rdm/pc/pkg/optimization"
 	"github.com/eawag-rdm/pc/pkg/output"
+	"github.com/eawag-rdm/pc/pkg/selector"
 	"github.com/eawag-rdm/pc/pkg/structs"
 )
 
@@ -35,8 +36,18 @@ type UnpackedFileIterator struct {
 	ArchivePath   string
 	ArchiveName   string
 	MaxMemberSize int64
-	Whitelist     []string
-	Blacklist     []string
+
+	// memberFilter decides which members are content-scanned; nil filters
+	// nothing. It is compiled once by the caller and shared read-only across
+	// archives and goroutines. memberScratch carries one member name through it
+	// and is NOT shareable: one iterator runs on one goroutine (like sniffBuf
+	// below), so the scratch lives here. memberBaseName selects the base-name
+	// subject, read once at construction instead of per member - forward
+	// support for rule-derived selectors, which no production caller builds
+	// yet: every filter reaching this iterator today declares subject "path".
+	memberFilter   *selector.Selector
+	memberScratch  selector.Scratch
+	memberBaseName bool
 
 	CurrentFilename    string
 	CurrentFileContent []byte
@@ -114,13 +125,23 @@ func (c *countingReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-func InitArchiveIterator(archivePath string, archiveName string, limits ArchiveLimits, whitelist []string, blacklist []string) *UnpackedFileIterator {
+// InitArchiveIterator prepares an iterator over the scannable members of one
+// archive. memberFilter decides which members are admitted for content
+// scanning; nil is the single form of "unfiltered", and a selector holding no
+// pattern is normalized to it here, so the member loop never asks a filter that
+// cannot reject anything. Compile the filter once and share it - it is
+// stateless, and the per-member scratch lives on the iterator.
+func InitArchiveIterator(archivePath string, archiveName string, limits ArchiveLimits, memberFilter *selector.Selector) *UnpackedFileIterator {
+	if memberFilter != nil && memberFilter.Unfiltered() {
+		memberFilter = nil
+	}
+	baseName := memberFilter != nil && memberFilter.Subject() == selector.SubjectName
 	return &UnpackedFileIterator{
 		ArchivePath:        archivePath,
 		ArchiveName:        archiveName,
 		MaxMemberSize:      limits.MaxMemberSize,
-		Whitelist:          whitelist,
-		Blacklist:          blacklist,
+		memberFilter:       memberFilter,
+		memberBaseName:     baseName,
 		CurrentFilename:    "",
 		CurrentFileContent: []byte{},
 		CurrentFileSize:    0,
@@ -182,6 +203,11 @@ func (u *UnpackedFileIterator) recordSkip(memberName, reason string, memberSize 
 		"",            // suffix (auto-detected)
 		u.ArchiveName, // archive name reference
 	)
+	// From the constructed Name, not from memberName: a nameless member (a
+	// crafted archive can hold one) has its Name filled with the archive's base
+	// name by ToFileWithDisplay, and RelPath must carry that same string rather
+	// than stay empty.
+	member.RelPath = member.Name
 	u.skipMessages = append(u.skipMessages, structs.Message{
 		Content: reason,
 		Source:  member,
@@ -254,24 +280,28 @@ func (u *UnpackedFileIterator) memberCountSkipReason() string {
 	return fmt.Sprintf("Skipped content scan of archive: more than %d members eligible for content scanning (maximum archive member count).", u.maxMemberCount)
 }
 
-func matchLiteralPatterns(list []string, str string) bool {
-	if len(list) == 0 || str == "" {
-		return true // Empty patterns match everything
+// admitMember reports whether a member survives the name filter, the first and
+// cheapest of the three admission gates (name -> size -> memory).
+//
+// The subject is the member path VERBATIM - no normalization, so a directory
+// member keeps the trailing slash its archive gave it - or the member's base
+// name when the filter declares subject "name", which for a directory member is
+// the last path element (path.Base("sub/dir/") == "dir"). The scratch folds the
+// subject at most once however many patterns read it. The admitted set is
+// pinned by the frozen table in TestFiltersDuringArchiveIteration
+// (archive_iterator_test.go).
+//
+// Hot path: one call per member per walk, no allocation and no lock.
+func (u *UnpackedFileIterator) admitMember(memberPath string) bool {
+	if u.memberFilter == nil {
+		return true
 	}
-
-	// Use fast matcher for pattern detection
-	matcher := optimization.GetMatcher(list)
-	return matcher.HasAnyMatch([]byte(str))
-}
-
-func fileGoodToUnpack(whitelist []string, blacklist []string, filename string) bool {
-	if len(blacklist) > 0 {
-		return !matchLiteralPatterns(blacklist, filename)
+	subject := memberPath
+	if u.memberBaseName {
+		subject = path.Base(memberPath)
 	}
-	if len(whitelist) > 0 {
-		return matchLiteralPatterns(whitelist, filename)
-	}
-	return true
+	u.memberScratch.Set(subject)
+	return u.memberFilter.MatchScratch(&u.memberScratch)
 }
 
 func (u *UnpackedFileIterator) findFirstTar() bool {
@@ -337,7 +367,7 @@ func (u *UnpackedFileIterator) bufferNextTar() bool {
 		// Ack precedence: name filter (silent) -> size -> memory. Members the
 		// check excludes by name get no acknowledgements at all.
 		isFile := !(header.Typeflag == tar.TypeDir)
-		if !(isFile && header.Size > 0) || !fileGoodToUnpack(u.Whitelist, u.Blacklist, header.Name) {
+		if !(isFile && header.Size > 0) || !u.admitMember(header.Name) {
 			continue
 		}
 		// Candidates count toward the member limit whether or not they end up
@@ -726,7 +756,7 @@ func (u *UnpackedFileIterator) bufferNextZip() bool {
 
 		// Ack precedence: name filter (silent) -> size -> memory. Members the
 		// check excludes by name get no acknowledgements at all.
-		if f.FileInfo().IsDir() || f.UncompressedSize64 == 0 || !fileGoodToUnpack(u.Whitelist, u.Blacklist, f.Name) {
+		if f.FileInfo().IsDir() || f.UncompressedSize64 == 0 || !u.admitMember(f.Name) {
 			continue
 		}
 		if !(sizeOK && f.UncompressedSize64 <= maxSize) {
@@ -789,7 +819,7 @@ func (u *UnpackedFileIterator) bufferNext7z() bool {
 
 		// Ack precedence: name filter (silent) -> size -> memory. Members the
 		// check excludes by name get no acknowledgements at all.
-		if f.FileInfo().IsDir() || f.UncompressedSize == 0 || !fileGoodToUnpack(u.Whitelist, u.Blacklist, f.Name) {
+		if f.FileInfo().IsDir() || f.UncompressedSize == 0 || !u.admitMember(f.Name) {
 			continue
 		}
 		if !(sizeOK && f.UncompressedSize <= maxSize) {
@@ -843,12 +873,12 @@ func (u *UnpackedFileIterator) findFirst7z() bool {
 }
 
 // sevenZipCandidateCountExceeded mirrors zipCandidateCountExceeded over the
-// 7z file list.
+// 7z file list, trailing-slash exclusion included.
 func (u *UnpackedFileIterator) sevenZipCandidateCountExceeded() bool {
 	count := 0
 	for i := range u.sevenZipReader.File {
 		f := u.sevenZipReader.File[i]
-		if f.UncompressedSize == 0 || !fileGoodToUnpack(u.Whitelist, u.Blacklist, f.Name) {
+		if f.UncompressedSize == 0 || strings.HasSuffix(f.Name, "/") || !u.admitMember(f.Name) {
 			continue
 		}
 		count++
@@ -919,13 +949,15 @@ func (u *UnpackedFileIterator) findFirstZip() bool {
 
 // zipCandidateCountExceeded counts unpack candidates over the central
 // directory: field reads plus the name filter, zero decompression, early exit
-// past the limit. Directory entries carry size 0 and are excluded by the
-// size term (no FileInfo call - it allocates).
+// past the limit. Directory entries carry size 0 and are excluded by the size
+// term (no FileInfo call - it allocates); a crafted entry that claims a size
+// AND a trailing slash is excluded by the slash, so this preview admits exactly
+// what bufferNextZip's IsDir test admits.
 func (u *UnpackedFileIterator) zipCandidateCountExceeded() bool {
 	count := 0
 	for i := range u.zipReader.File {
 		f := u.zipReader.File[i]
-		if f.UncompressedSize64 == 0 || !fileGoodToUnpack(u.Whitelist, u.Blacklist, f.Name) {
+		if f.UncompressedSize64 == 0 || strings.HasSuffix(f.Name, "/") || !u.admitMember(f.Name) {
 			continue
 		}
 		count++
