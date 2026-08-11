@@ -69,12 +69,6 @@ type CheckSelectors struct {
 	byCheck map[string]*selector.Selector
 }
 
-// errBothLists rejects a section that sets both lists. LoadConfig's assesLists
-// rejects it too, but ParseConfig does not, and the two lists no longer have the
-// same precedence (exclude wins, not whitelist), so the constructor must not
-// silently pick one.
-var errBothLists = errors.New("both lists are set; use only one")
-
 // filterSection names the [test.X] section a file check filters on.
 func filterSection(check func(file structs.File, config config.Config) []structs.Message) string {
 	name := optimization.FunctionName(check)
@@ -88,9 +82,12 @@ func filterSection(check func(file structs.File, config config.Config) []structs
 // fileFilterSections collects the sections file dispatch actually filters on.
 // Repository-scoped sections (IsFreeOfSecrets, HasReadme) are deliberately not
 // among them: skipFileCheck never consults those, and their lists belong to the
-// checks themselves - leakcheck compiles its own filter and tolerates patterns
-// this constructor rejects, so compiling them here would fail startup over a
-// pattern nothing on this path uses.
+// checks themselves. The strictness no longer differs - leakcheck compiles its
+// filter through the same constructor - so the exclusion stands on the FAILURE
+// MODE alone: a repository check cannot report a load error (its signature
+// returns messages only), so its lists are validated at boot by
+// ValidateChecksConfig instead. Temporary; it dies when rules carry their own
+// selectors.
 func fileFilterSections() map[string]struct{} {
 	tables := [][]func(file structs.File, config config.Config) []structs.Message{
 		BY_FILE, BY_FILE_ON_ARCHIVE, BY_FILE_ON_ARCHIVE_FILE_LIST,
@@ -109,11 +106,12 @@ func fileFilterSections() map[string]struct{} {
 // exclude, matched case-sensitively against the file's base name. A section
 // without lists gets no entry, and its check is therefore never skipped.
 //
-// Each pattern is compiled on its own, never joined with "|": an inline flag
-// like (?i) now scopes to the entry that spells it instead of leaking into every
-// later entry of the list. Patterns that do not compile - and sections that set
-// both lists - fail startup here, aggregated and named by section, instead of
-// silently filtering everything (whitelist) or nothing (blacklist).
+// The list policy itself belongs to selector.CompileLegacyRegexLists, which
+// every legacy list site shares: each pattern is compiled on its own, never
+// joined with "|", so an inline flag like (?i) scopes to the entry that spells
+// it; patterns that do not compile, empty entries and sections that set both
+// lists fail startup here, aggregated and named by section, instead of silently
+// filtering everything (whitelist) or nothing (blacklist).
 func CompileCheckSelectors(cfg config.Config) (CheckSelectors, error) {
 	sections := fileFilterSections()
 	names := make([]string, 0, len(cfg.Tests))
@@ -135,18 +133,7 @@ func CompileCheckSelectors(cfg config.Config) (CheckSelectors, error) {
 	var errs []error
 	for _, name := range names {
 		test := cfg.Tests[name]
-		if len(test.Whitelist) > 0 && len(test.Blacklist) > 0 {
-			errs = append(errs, &selector.CompileError{
-				Rule:   name,
-				Faults: []selector.Fault{{Field: "whitelist", Index: -1, Value: "blacklist", Err: errBothLists}},
-			})
-			continue
-		}
-		sel, err := selector.Compile(selector.Spec{
-			Rule:    name,
-			Include: test.Whitelist,
-			Exclude: test.Blacklist,
-		})
+		sel, err := selector.CompileLegacyRegexLists(name, "name", test.Whitelist, test.Blacklist)
 		if err != nil {
 			errs = append(errs, err)
 			continue

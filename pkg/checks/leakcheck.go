@@ -60,43 +60,24 @@ func leakAttrsFrom(tc *config.TestConfig) leakAttrs {
 	return a
 }
 
-// leakNameFilter carries the whitelist/blacklist of [test.IsFreeOfSecrets] as
-// regexes compiled once per analysis. Semantics mirror skipFileCheck in
-// pkg/utils: a non-empty whitelist admits only matching names, otherwise a
-// non-empty blacklist rejects matching names. Patterns are validated at config
-// load (ValidateChecksConfig); a compile failure here only warns and disables
-// the filter.
-type leakNameFilter struct {
-	include *regexp.Regexp
-	exclude *regexp.Regexp
-}
-
-func newLeakNameFilter(tc *config.TestConfig) leakNameFilter {
-	compile := func(patterns []string) *regexp.Regexp {
-		combined, err := regexp.Compile(strings.Join(patterns, "|"))
-		if err != nil {
-			output.GlobalLogger.Warning("IsFreeOfSecrets: error compiling pattern '%s': %v", strings.Join(patterns, "|"), err)
-			return nil
-		}
-		return combined
-	}
-	f := leakNameFilter{}
-	if len(tc.Whitelist) > 0 {
-		f.include = compile(tc.Whitelist)
-	} else if len(tc.Blacklist) > 0 {
-		f.exclude = compile(tc.Blacklist)
-	}
-	return f
-}
-
-func (f leakNameFilter) excluded(name string) bool {
-	if f.include != nil {
-		return !f.include.MatchString(name)
-	}
-	if f.exclude != nil {
-		return f.exclude.MatchString(name)
-	}
-	return false
+// compileLeakSelector compiles the whitelist/blacklist of [test.IsFreeOfSecrets]
+// into the ONE filter the leak scan matches at both of its gates: top-level
+// files in IsFreeOfSecrets and archive members in extractArchivesForLeakScan.
+// Whitelist -> include, blacklist -> exclude, per-pattern RE2, case-sensitive,
+// both lists set rejected - the policy selector.CompileLegacyRegexLists owns for
+// every legacy list site.
+//
+// The subject is "path", and BOTH gates honour it: the file gate matches
+// File.RelPath (the collection-relative path, which defaults to the file name),
+// the iterator matches the member path. One list, one compiled form, one
+// semantics, one subject.
+//
+// ValidateChecksConfig compiles these same lists at boot through the same
+// constructor, so a config that reaches this point has already been accepted.
+// Re-deriving the filter here is defense in depth: the check owns the filter it
+// scans with and refuses to scan without it.
+func compileLeakSelector(tc *config.TestConfig) (selector.Selector, error) {
+	return selector.CompileLegacyRegexLists("IsFreeOfSecrets", "path", tc.Whitelist, tc.Blacklist)
 }
 
 // leakTempName strips characters that are unsafe in a temp file name.
@@ -122,15 +103,27 @@ func IsFreeOfSecrets(repo structs.Repository, cfg config.Config) []structs.Messa
 		return nil
 	}
 
+	// One filter for the whole scan, compiled once here - after the enabled
+	// gate, so a disabled check pays nothing - and matched at both gates.
+	// Fail CLOSED: a filter that cannot be honoured skips the scan, it never
+	// widens it.
+	sel, err := compileLeakSelector(tc)
+	if err != nil {
+		output.GlobalLogger.Warning("IsFreeOfSecrets: %v", err)
+		reason := "Leak scan did not run: the [test.IsFreeOfSecrets] filter is unusable: " + err.Error()
+		return []structs.Message{{Content: reason, Source: structs.Repository{}, Skipped: true, Reason: reason}}
+	}
+
 	var messages []structs.Message
 
-	// Partition the repository: excluded names drop out, oversized files are
-	// acknowledged in one aggregate skip, archives go through extraction.
-	nameFilter := newLeakNameFilter(tc)
+	// Partition the repository: excluded paths drop out, oversized files are
+	// acknowledged in one aggregate skip, archives go through extraction. The
+	// subject is RelPath, the selector's declared "path" at file scope; the
+	// collectors set it and the constructors default it to the file name.
 	var plain, archives []structs.File
 	oversized := 0
 	for _, f := range repo.Files {
-		if nameFilter.excluded(f.Name) {
+		if !sel.Match(f.RelPath) {
 			continue
 		}
 		size := f.Size
@@ -171,7 +164,7 @@ func IsFreeOfSecrets(repo structs.Repository, cfg config.Config) []structs.Messa
 			messages = append(messages, structs.Message{Content: reason, Source: structs.Repository{}, Skipped: true, Reason: reason})
 		} else {
 			defer os.RemoveAll(tmpDir)
-			memberPaths := extractArchivesForLeakScan(cfg, tc, archives, tmpDir, sources, &messages)
+			memberPaths := extractArchivesForLeakScan(cfg, &sel, archives, tmpDir, sources, &messages)
 			scanPaths = append(scanPaths, memberPaths...)
 		}
 	}
@@ -214,29 +207,13 @@ func isExtractedTextMember(memberName string) bool {
 // and the per-archive PDF time budget applies per iterator (two passes = two
 // budgets). Acceptable while the secret scan stays opt-in; sharing one
 // extraction across checks needs the fast/slow check split.
-func extractArchivesForLeakScan(cfg config.Config, tc *config.TestConfig, archives []structs.File, tmpDir string, sources map[string]structs.File, messages *[]structs.Message) []string {
+//
+// memberFilter is the scan's compiled filter (see compileLeakSelector), matched
+// against the member path by the iterator. nil means "no filter, admit every
+// member" - a convenience for callers that have no lists to honour; production
+// callers pass the selector the top-level files were matched against.
+func extractArchivesForLeakScan(cfg config.Config, memberFilter *selector.Selector, archives []structs.File, tmpDir string, sources map[string]structs.File, messages *[]structs.Message) []string {
 	limits := archiveLimits(cfg)
-	// One list, two languages - honestly, for one more commit. leakNameFilter
-	// above reads [test.IsFreeOfSecrets]'s lists as case-SENSITIVE regexes
-	// joined with "|" and matched against f.Name; this gate reads the same two
-	// lists as quoted, case-INSENSITIVE literals matched against the full member
-	// path. A pattern like `.*\.log$` therefore filters top-level files and no
-	// archive member. The next commit collapses both onto one selector; this
-	// call is the minimal adaptation to the iterator's new parameter.
-	//
-	// Fail CLOSED, unlike leakNameFilter's warn-and-disable: a filter that
-	// cannot be honoured must not turn into a wider scan.
-	memberFilter, admitNone, err := selector.CompileLegacyLists("IsFreeOfSecrets", tc.Whitelist, tc.Blacklist)
-	if err != nil {
-		output.GlobalLogger.Warning("IsFreeOfSecrets: %v", err)
-		reason := fmt.Sprintf("Skipped leak scan of %d archive(s): the [test.IsFreeOfSecrets] member filter is unusable.", len(archives))
-		*messages = append(*messages, structs.Message{Content: reason, Source: structs.Repository{}, Skipped: true, Reason: reason})
-		return nil
-	}
-	// A whitelist that selects nothing selects no member either.
-	if admitNone {
-		return nil
-	}
 
 	var memberPaths []string
 	for ai, archive := range archives {

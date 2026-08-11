@@ -2,7 +2,8 @@ package config
 
 import (
 	"fmt"
-	"regexp"
+
+	"github.com/eawag-rdm/pc/pkg/selector"
 )
 
 // DefaultSecretsTimeoutSeconds is the default [test.IsFreeOfSecrets]
@@ -48,10 +49,13 @@ func ValidateChecksConfig(cfg *Config) error {
 	// present attrs table must be well-typed so the scan doesn't misbehave at
 	// runtime. Unknown attr keys fail fast to catch operator typos.
 	if leaks, ok := cfg.Tests["IsFreeOfSecrets"]; ok && leaks != nil {
-		for _, p := range append(append([]string{}, leaks.Blacklist...), leaks.Whitelist...) {
-			if _, err := regexp.Compile(p); err != nil {
-				return fmt.Errorf("[test.IsFreeOfSecrets]: invalid regex pattern '%s': %v", p, err)
-			}
+		// The lists are validated with the constructor the scan itself compiles
+		// them with, so boot's verdict IS the scan's verdict: an uncompilable
+		// pattern, an EMPTY entry and both lists set are refused here. Validated
+		// while enabled = false too - a config the scan could not honour must
+		// fail loudly at load, not on the day the dormant scan is reactivated.
+		if _, err := selector.CompileLegacyRegexLists("IsFreeOfSecrets", "path", leaks.Whitelist, leaks.Blacklist); err != nil {
+			return fmt.Errorf("[test.IsFreeOfSecrets]: unusable whitelist/blacklist: %v", err)
 		}
 		if leaks.Attrs != nil {
 			for key, v := range leaks.Attrs {

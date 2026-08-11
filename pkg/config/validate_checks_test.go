@@ -58,6 +58,14 @@ func TestValidateChecksConfig(t *testing.T) {
 		}
 	})
 
+	t.Run("one usable leak list passes", func(t *testing.T) {
+		cfg := validChecksTestConfig()
+		cfg.Tests["IsFreeOfSecrets"] = &TestConfig{Blacklist: []string{`^sub/`, `\.log$`}}
+		if err := ValidateChecksConfig(cfg); err != nil {
+			t.Fatalf("a compilable single list must be accepted, got: %v", err)
+		}
+	})
+
 	cases := []struct {
 		name    string
 		mutate  func(cfg *Config)
@@ -99,6 +107,18 @@ func TestValidateChecksConfig(t *testing.T) {
 		{"readme_names wrong type", func(cfg *Config) {
 			cfg.Tests["HasReadme"].KeywordArguments[0]["readme_names"] = "readme.md"
 		}, "readme_names"},
+		// The leak lists are validated with the constructor the scan compiles
+		// them with, so boot refuses exactly what the scan would refuse - even
+		// while the scan is disabled, which is the state these rows are in.
+		{"leak list with an uncompilable pattern", func(cfg *Config) {
+			cfg.Tests["IsFreeOfSecrets"] = &TestConfig{Blacklist: []string{"["}}
+		}, "IsFreeOfSecrets"},
+		{"leak list with an empty entry", func(cfg *Config) {
+			cfg.Tests["IsFreeOfSecrets"] = &TestConfig{Whitelist: []string{""}}
+		}, "IsFreeOfSecrets"},
+		{"leak section setting both lists", func(cfg *Config) {
+			cfg.Tests["IsFreeOfSecrets"] = &TestConfig{Whitelist: []string{`\.txt$`}, Blacklist: []string{`\.log$`}}
+		}, "IsFreeOfSecrets"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

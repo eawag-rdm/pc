@@ -56,6 +56,12 @@ var ErrEmptyPattern = errors.New("empty pattern")
 // ErrUnknownSubject rejects a subject other than "name" or "path".
 var ErrUnknownSubject = errors.New(`unknown subject (want "name" or "path")`)
 
+// ErrBothLists rejects a legacy [test.X] section that sets whitelist AND
+// blacklist. A Spec may carry both lists - exclude wins, see the package doc -
+// but a legacy section cannot say which of its two lists it meant, so the pair
+// is refused rather than silently resolved.
+var ErrBothLists = errors.New("both lists are set; use only one")
+
 // Subject names the string a selector matches against. The dispatch site knows
 // its own scope and extracts it: file scope passes the file's base name or its
 // collection-relative path, archive scopes the member path or its base slice.
@@ -398,6 +404,30 @@ func (s *Selector) UnionLiterals() (lits []string, ok bool) {
 	lits = make([]string, len(s.unionLits))
 	copy(lits, s.unionLits)
 	return lits, true
+}
+
+// CompileLegacyRegexLists compiles the whitelist/blacklist pair of a legacy
+// [test.X] section under the REGEX reading: entries verbatim, one compiled
+// pattern each, case-sensitive, matched against the given subject
+// ("name" or "path"). whitelist -> include, blacklist -> exclude.
+//
+// It owns the policy shared by every site that reads a legacy pair - the boot
+// gate, the file checks and the leak scan - so all of them accept and reject
+// exactly the same configs: both lists set is ErrBothLists, and an empty or
+// uncompilable entry is a load error like in any other Spec.
+func CompileLegacyRegexLists(rule string, subject string, whitelist []string, blacklist []string) (Selector, error) {
+	if len(whitelist) > 0 && len(blacklist) > 0 {
+		return Selector{}, &CompileError{
+			Rule:   rule,
+			Faults: []Fault{{Field: "whitelist", Index: -1, Value: "blacklist", Err: ErrBothLists}},
+		}
+	}
+	return Compile(Spec{
+		Rule:    rule,
+		Subject: subject,
+		Include: whitelist,
+		Exclude: blacklist,
+	})
 }
 
 // CompileLegacyLists compiles the whitelist/blacklist pair of a legacy

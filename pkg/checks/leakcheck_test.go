@@ -21,7 +21,11 @@ func fakeScanner(t *testing.T, report string) (binPath string, argsFile string) 
 	dir := t.TempDir()
 	binPath = filepath.Join(dir, "fake-betterleaks")
 	argsFile = filepath.Join(dir, "args.txt")
-	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + argsFile + "\ncat <<'EOF'\n" + report + "\nEOF\n"
+	// The redirect target MUST stay quoted: t.TempDir() puts the subtest name
+	// into the path, and an unquoted parenthesis or space kills the script
+	// silently - which would make every "the scanner never ran" assertion pass
+	// for the wrong reason.
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"" + argsFile + "\"\ncat <<'EOF'\n" + report + "\nEOF\n"
 	if err := os.WriteFile(binPath, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -262,7 +266,8 @@ func TestExtractArchivesMkdirFailureKeepsAcks(t *testing.T) {
 
 	var messages []structs.Message
 	sources := map[string]structs.File{}
-	paths := extractArchivesForLeakScan(cfg, cfg.Tests["IsFreeOfSecrets"], []structs.File{archive}, tmpDir, sources, &messages)
+	// No lists in this config, so the scan's selector filters nothing.
+	paths := extractArchivesForLeakScan(cfg, nil, []structs.File{archive}, tmpDir, sources, &messages)
 
 	if len(paths) != 0 {
 		t.Errorf("no members can be extracted when the temp dir cannot be created, got %v", paths)
@@ -276,6 +281,188 @@ func TestExtractArchivesMkdirFailureKeepsAcks(t *testing.T) {
 	}
 	if !foundAck {
 		t.Errorf("Mkdir failure must not drop already-recorded skip acknowledgements, got %v", messages)
+	}
+}
+
+// TestLeakSelectorAdmission pins what the [test.IsFreeOfSecrets] lists mean now
+// that one compiled selector serves both leak-scan gates. Rows marked
+// "preserved" admit the subject the old per-check filter admitted; rows that
+// moved name their declared change.
+func TestLeakSelectorAdmission(t *testing.T) {
+	tests := []struct {
+		name      string
+		whitelist []string
+		blacklist []string
+		subject   string
+		admit     bool
+	}{
+		{"no list admits everything (preserved)", nil, nil, "anything.txt", true},
+		{"whitelist regex admits a match (preserved)", []string{`.*\.txt$`}, nil, "notes.txt", true},
+		{"whitelist regex rejects a non-match (preserved)", []string{`.*\.txt$`}, nil, "notes.log", false},
+		{"whitelist matches case-sensitively (preserved)", []string{`^secret`}, nil, "SECRET.txt", false},
+		{"blacklist regex rejects a match (preserved)", nil, []string{`.*\.log$`}, "notes.log", false},
+		{"blacklist regex admits a non-match (preserved)", nil, []string{`.*\.log$`}, "notes.txt", true},
+		{"blacklist matches case-sensitively (preserved)", nil, []string{`\.LOG$`}, "notes.log", true},
+		// Change (d): the member gate reads the same regexes as the file gate,
+		// so a metachar pattern filters a member path it could not touch before.
+		{"member path filtered by regex, not by literal (change (d))", nil, []string{`.*\.log$`}, "inner/deep/run.log", false},
+		// Change (a): the join leaked a leading (?i) into every later entry.
+		{"inline flag applies to its own entry (change (a))", []string{`(?i)readme`, `data`}, nil, "README.md", true},
+		{"inline flag no longer leaks into later entries (change (a))", []string{`(?i)readme`, `data`}, nil, "DATA.csv", false},
+		// Change (f): the file gate matches RelPath, the declared subject, so a
+		// path pattern reaches nested files as it reaches archive members.
+		{"nested file excluded by a path pattern (change (f))", nil, []string{`^sub/`}, "sub/creds.txt", false},
+		{"top-level file unaffected by a path pattern (change (f))", nil, []string{`^sub/`}, "creds.txt", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sel, err := compileLeakSelector(&config.TestConfig{Whitelist: tt.whitelist, Blacklist: tt.blacklist})
+			if err != nil {
+				t.Fatalf("compile failed: %v", err)
+			}
+			if got := sel.Match(tt.subject); got != tt.admit {
+				t.Errorf("Match(%q) = %v, want %v", tt.subject, got, tt.admit)
+			}
+		})
+	}
+}
+
+// TestLeakSelectorFailsClosed pins change (c): a filter that cannot be honoured
+// skips the WHOLE scan with one acknowledgement naming the section, instead of
+// scanning every file unfiltered.
+//
+// None of these rows is reachable through a loaded config: ValidateChecksConfig
+// compiles the same lists with the same constructor, so a config carrying any of
+// them is refused at boot. They stay as defense in depth - the check must not
+// depend on someone else having validated its input, and hand-built configs
+// (tests, future callers) skip that boot gate.
+func TestLeakSelectorFailsClosed(t *testing.T) {
+	tests := []struct {
+		name      string
+		whitelist []string
+		blacklist []string
+	}{
+		{"uncompilable whitelist pattern", []string{"["}, nil},
+		{"uncompilable blacklist pattern", nil, []string{"(unclosed"}},
+		{"empty whitelist entry - change e", []string{""}, nil},
+		{"empty blacklist entry - change e", nil, []string{""}},
+		{"both lists set - change b", []string{`\.txt$`}, []string{`\.log$`}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := compileLeakSelector(&config.TestConfig{Whitelist: tt.whitelist, Blacklist: tt.blacklist}); err == nil {
+				t.Fatal("expected a compile error")
+			}
+
+			content := tempFile([]byte("token = abc\n"))
+			defer os.Remove(content)
+			bin, argsFile := fakeScanner(t, "null")
+			cfg := leakTestConfig(bin, nil)
+			cfg.Tests["IsFreeOfSecrets"].Whitelist = tt.whitelist
+			cfg.Tests["IsFreeOfSecrets"].Blacklist = tt.blacklist
+
+			file := structs.File{Path: content, Name: "data.txt", RelPath: "data.txt", Size: 12}
+			msgs := IsFreeOfSecrets(structs.Repository{Files: []structs.File{file}}, cfg)
+
+			if len(msgs) != 1 || !msgs[0].Skipped {
+				t.Fatalf("expected exactly one skip message, got %v", msgs)
+			}
+			if !strings.Contains(msgs[0].Content, "[test.IsFreeOfSecrets]") {
+				t.Errorf("skip message should name the config section: %s", msgs[0].Content)
+			}
+			if _, err := os.Stat(argsFile); !os.IsNotExist(err) {
+				t.Errorf("the scanner must not run with an unusable filter (args file exists: %v)", err)
+			}
+		})
+	}
+
+	// Ordering pin: the filter is compiled AFTER the enabled gate, so a disabled
+	// check stays silent (and pays nothing) even with lists that cannot compile.
+	t.Run("disabled check never compiles its lists", func(t *testing.T) {
+		bin, argsFile := fakeScanner(t, "null")
+		cfg := leakTestConfig(bin, nil)
+		cfg.Tests["IsFreeOfSecrets"].Attrs["enabled"] = false
+		cfg.Tests["IsFreeOfSecrets"].Whitelist = []string{"["}
+
+		file := structs.File{Path: "/tmp/does-not-matter", Name: "x.txt", RelPath: "x.txt", Size: 12}
+		if msgs := IsFreeOfSecrets(structs.Repository{Files: []structs.File{file}}, cfg); msgs != nil {
+			t.Fatalf("a disabled check must produce no message at all, got %v", msgs)
+		}
+		if _, err := os.Stat(argsFile); !os.IsNotExist(err) {
+			t.Errorf("the scanner must not run for a disabled check (args file exists: %v)", err)
+		}
+	})
+}
+
+// TestLeakFilterGatesFilesAndMembers is the wiring test: ONE compiled selector
+// filters top-level files and archive members within a single scan, so a
+// pattern like `secret.*\.txt$` drops both. The uppercase member pins the
+// case-SENSITIVE member matching of change (d), and the nested file pins the
+// RelPath subject of change (f) - `^sub/` reaches a nested file exactly as it
+// would reach a nested member.
+func TestLeakFilterGatesFilesAndMembers(t *testing.T) {
+	dir := t.TempDir()
+	dropped := filepath.Join(dir, "secret-notes.txt")
+	kept := filepath.Join(dir, "public.txt")
+	nested := filepath.Join(dir, "creds.txt") // collected as sub/creds.txt
+	for _, p := range []string{dropped, kept, nested} {
+		if err := os.WriteFile(p, []byte("token = abc\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	zipPath := filepath.Join(dir, "data.zip")
+	zf, err := os.Create(zipPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zw := zip.NewWriter(zf)
+	for _, member := range []string{"inner/secret.txt", "inner/other.txt", "inner/SECRET.txt"} {
+		w, err := zw.Create(member)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write([]byte("token = abc\n")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := zf.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	bin, argsFile := fakeScanner(t, "null")
+	cfg := leakTestConfig(bin, nil)
+	cfg.Tests["IsFreeOfSecrets"].Blacklist = []string{`secret.*\.txt$`, `^sub/`}
+
+	// RelPath is what the file gate matches; the collectors set it (here by
+	// hand, since the repository is built without one).
+	files := []structs.File{
+		{Path: dropped, Name: "secret-notes.txt", RelPath: "secret-notes.txt", Size: structs.GetFileSize(dropped)},
+		{Path: kept, Name: "public.txt", RelPath: "public.txt", Size: structs.GetFileSize(kept)},
+		{Path: nested, Name: "creds.txt", RelPath: "sub/creds.txt", Size: structs.GetFileSize(nested)},
+		{Path: zipPath, Name: "data.zip", RelPath: "data.zip", Size: structs.GetFileSize(zipPath), IsArchive: true},
+	}
+	IsFreeOfSecrets(structs.Repository{Files: files}, cfg)
+
+	raw, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatalf("scanner did not run: %v", err)
+	}
+	args := string(raw)
+	// Extracted members are written as "<idx>_<base>", so "_x.txt" identifies a
+	// member and the bare path identifies a top-level file.
+	for _, want := range []string{"public.txt", "_other.txt", "_SECRET.txt"} {
+		if !strings.Contains(args, want) {
+			t.Errorf("admitted subject %q missing from scanner args: %s", want, args)
+		}
+	}
+	for _, unwanted := range []string{"secret-notes.txt", "_secret.txt", "creds.txt"} {
+		if strings.Contains(args, unwanted) {
+			t.Errorf("filtered subject %q reached the scanner: %s", unwanted, args)
+		}
 	}
 }
 
