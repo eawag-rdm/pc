@@ -239,12 +239,6 @@ func applyChecksParallel(ctx context.Context, entries []checkRules, files []stru
 }
 
 func applyChecksFilteredByFileOnArchiveFileList(ctx context.Context, config config.Config, entries []checkRules, files []structs.File) []structs.Message {
-	// No rules in this scope: never pay the archive walk. Reachable when a
-	// whitelist drops every name rule from the scope.
-	if len(entries) == 0 {
-		return []structs.Message{}
-	}
-
 	// Filter to only archive files
 	var archiveFiles []structs.File
 	for _, file := range files {
