@@ -257,7 +257,7 @@ func TestFormatResults_SkippedArchiveMemberFilenameIncludesArchive(t *testing.T)
 	)
 	reason := "Skipped content scan of archive member: would exceed total archive memory limit (100 bytes)."
 	messages := []structs.Message{
-		{Content: reason, Source: member, TestName: "IsArchiveFreeOfKeywords", Skipped: true, Reason: reason},
+		{Content: reason, Source: member, TestName: "IsFreeOfKeywords", Skipped: true, Reason: reason},
 	}
 
 	result, err := formatter.FormatResults("/loc", "LocalCollector", messages, 1, []string{})
