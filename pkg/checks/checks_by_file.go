@@ -124,7 +124,8 @@ func streamChunks(filePath string, scan func(chunk, lowered []byte)) error {
 // byte-identical to bytes.ToLower: ASCII runs are bulk-copied and lowered
 // byte-wise; non-ASCII runes are mapped through unicode.ToLower, and each
 // invalid UTF-8 byte becomes one U+FFFD (so the output can be longer than the
-// input). The caller must not retain the result past the next call.
+// input). The caller must not retain the result past the next call, and dst
+// and src must not share a backing array.
 func lowerInto(dst, src []byte) []byte {
 	dst = dst[:0]
 	for i := 0; i < len(src); {

@@ -258,7 +258,7 @@ func TestCompileMemberAdmission(t *testing.T) {
 		t.Fatal("member selector must be compiled")
 	}
 	if entry.batch.Admit.Match("deep/run.LOG") {
-		t.Error("the member gate must keep the case-insensitive literal reading")
+		t.Error("the admission filter must keep the case-insensitive literal reading")
 	}
 	// The dispatch gate keeps the OTHER legacy reading: regex over the archive's
 	// own name, case-sensitive. ".log" as a regex matches any character before

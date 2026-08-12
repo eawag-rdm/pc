@@ -142,8 +142,9 @@ type BoundRule struct {
 	sel  selector.Selector // the DISPATCH gate, compiled per scope by utils.Compile
 
 	// Member is the archive-member gate, which reads the same configured lists
-	// under the other legacy semantics (see utils.scopeSelectors). nil admits
-	// every member. Only an archive-member rule carries one.
+	// under the other legacy semantics: case-insensitive literals over the
+	// member path. nil admits every member. Only an archive-member rule
+	// carries one.
 	Member *selector.Selector
 
 	// unfiltered caches "the dispatch selector admits everything", the shipped
@@ -324,7 +325,7 @@ func runRepositoryRules(repository structs.Repository, batch *Batch, rules []*Bo
 // bindNoParams binds a check that takes no parameters at all: the rule carries
 // nothing but its selector, and the zero RuleSpec is as good as any other.
 func bindNoParams(check func(structs.File) []structs.Message) func(config.RuleSpec, *config.GeneralConfig) (*BoundRule, error) {
-	return func(spec config.RuleSpec, general *config.GeneralConfig) (*BoundRule, error) {
+	return func(spec config.RuleSpec, _ *config.GeneralConfig) (*BoundRule, error) {
 		if err := rejectParams(spec); err != nil {
 			return nil, err
 		}
