@@ -55,9 +55,8 @@ func TestSummaryGenerator_Generate_SingleCheck(t *testing.T) {
 		t.Error("Missing location")
 	}
 
-	// Check human-readable check name
-	if !strings.Contains(result, "Possible sensitive content detected") {
-		t.Errorf("Expected human-readable check name, got '%s'", result)
+	if !strings.Contains(result, "### IsFreeOfKeywords (1 issue)") {
+		t.Errorf("Expected check name, got '%s'", result)
 	}
 
 	// Check issue count
@@ -88,7 +87,7 @@ func TestSummaryGenerator_Generate_MultipleChecks(t *testing.T) {
 				},
 			},
 			{
-				Checkname: "HasValidFileName",
+				Checkname: "IsValidName",
 				Issues: []SubjectIssue{
 					{Subject: "my file.txt", Message: "File name contains spaces"},
 				},
@@ -100,10 +99,10 @@ func TestSummaryGenerator_Generate_MultipleChecks(t *testing.T) {
 	result := sg.Generate()
 
 	// Check both check types are present
-	if !strings.Contains(result, "Possible sensitive content detected (2 issues)") {
+	if !strings.Contains(result, "### IsFreeOfKeywords (2 issues)") {
 		t.Errorf("Missing first check in '%s'", result)
 	}
-	if !strings.Contains(result, "File name issues (1 issue)") {
+	if !strings.Contains(result, "### IsValidName (1 issue)") {
 		t.Errorf("Missing second check in '%s'", result)
 	}
 
@@ -159,7 +158,7 @@ func TestSummaryGenerator_Generate_RepositoryIssues(t *testing.T) {
 		Timestamp: "2024-01-14T10:30:00Z",
 		DetailsCheckFocused: []CheckDetails{
 			{
-				Checkname: "HasReadMe",
+				Checkname: "HasReadme",
 				Issues: []SubjectIssue{
 					{Subject: "Repository", Path: "", Message: "No README file found"},
 				},
@@ -171,8 +170,8 @@ func TestSummaryGenerator_Generate_RepositoryIssues(t *testing.T) {
 	result := sg.Generate()
 
 	// Check repository issue is formatted correctly
-	if !strings.Contains(result, "Missing README file") {
-		t.Errorf("Missing human-readable check name in '%s'", result)
+	if !strings.Contains(result, "HasReadme") {
+		t.Errorf("Missing check name in '%s'", result)
 	}
 	if !strings.Contains(result, "Repository: No README file found") {
 		t.Errorf("Missing repository issue in '%s'", result)
@@ -261,25 +260,6 @@ func TestParseIssueItem_ArchiveIssue(t *testing.T) {
 	}
 	if item.Message != "Found keyword 'PASSWORD'" {
 		t.Errorf("Expected message without archive suffix, got '%s'", item.Message)
-	}
-}
-
-func TestHumanizeCheckName(t *testing.T) {
-	tests := []struct {
-		input    string
-		expected string
-	}{
-		{"IsFreeOfKeywords", "Possible sensitive content detected"},
-		{"HasValidFileName", "File name issues"},
-		{"HasReadMe", "Missing README file"},
-		{"UnknownCheck", "UnknownCheck"}, // Fallback
-	}
-
-	for _, tt := range tests {
-		result := humanizeCheckName(tt.input)
-		if result != tt.expected {
-			t.Errorf("humanizeCheckName(%s) = '%s', expected '%s'", tt.input, result, tt.expected)
-		}
 	}
 }
 

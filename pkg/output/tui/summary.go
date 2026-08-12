@@ -128,9 +128,7 @@ func (sg *SummaryGenerator) Generate() string {
 			filesWithIssues[issue.Subject] = struct{}{}
 		}
 
-		// Human-readable check name
-		displayName := humanizeCheckName(checkName)
-		sb.WriteString(fmt.Sprintf("### %s (%d issue", displayName, len(issues)))
+		sb.WriteString(fmt.Sprintf("### %s (%d issue", checkName, len(issues)))
 		if len(issues) != 1 {
 			sb.WriteString("s")
 		}
@@ -354,29 +352,4 @@ func formatIssueItem(item IssueItem) string {
 
 	sb.WriteString("\n")
 	return sb.String()
-}
-
-// humanizeCheckName converts internal check names to human-readable form
-func humanizeCheckName(checkName string) string {
-	// Map of known check names to human-readable versions
-	nameMap := map[string]string{
-		"IsFreeOfKeywords":              "Possible sensitive content detected",
-		"HasValidFileName":              "File name issues",
-		"HasValidNameLength":            "File name too long",
-		"IsFreeOfSpecialChars":          "Special characters in file name",
-		"IsFreeOfLeadingTrailingSpaces": "Leading or trailing spaces in file name",
-		"HasOnlyASCIIChars":             "Non-ASCII characters in file name",
-		"HasReadMe":                     "Missing README file",
-		"HasValidTOCTree":               "Table of contents issues",
-		"HasNoInvalidFileNames":         "Invalid file names in archive",
-		"HasNoEmptyFolders":             "Empty folders in archive",
-		"HasNoHiddenFiles":              "Hidden files in archive",
-	}
-
-	if humanName, ok := nameMap[checkName]; ok {
-		return humanName
-	}
-
-	// Fallback: convert CamelCase to spaces
-	return checkName
 }

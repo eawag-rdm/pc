@@ -67,6 +67,7 @@ func (s ScopeSet) Has(scope Scope) bool { return s&(1<<scope) != 0 }
 // acquisition it performs. Exactly one of RunFile / RunRepository is set,
 // matching Scopes, so the dispatcher never inspects which.
 type CheckDef struct {
+	// Name is rendered verbatim by every renderer; renaming it changes user-facing output.
 	Name   string
 	Scopes ScopeSet
 
