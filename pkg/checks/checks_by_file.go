@@ -383,14 +383,16 @@ func keywordsInArchive(file structs.File, batch *Batch, rules []*BoundRule) []st
 	perRule := batch.PerRule
 	// One body per archive, not per member: apply reads it and never retains it.
 	body, lowered := make([][]byte, 1), make([][]byte, 1)
+	var memberLower []byte
 
 	for archiveIterator.HasNext() {
 
 		archiveIterator.Next()
 		fileName, fileContent, fileSize := archiveIterator.UnpackedFile()
-		// Lower once per member; every rule and every keyword set scans the
-		// shared copy.
-		body[0], lowered[0] = fileContent, bytes.ToLower(fileContent)
+		// Lower once per member, into a scratch reused across members; every
+		// rule and every keyword set scans the shared copy.
+		memberLower = lowerInto(memberLower, fileContent)
+		body[0], lowered[0] = fileContent, memberLower
 
 		// The member's File is built only when a rule actually reports: it costs
 		// more than scanning a small member, and the scan itself does not need
