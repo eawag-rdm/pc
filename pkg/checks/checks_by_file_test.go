@@ -912,14 +912,11 @@ func TestIsArchiveFreeOfKeywords_MemberSkipsEmitMessages(t *testing.T) {
 	}
 }
 
-// streamChunkSize mirrors chunkSize in streamChunks: the streamed scan reads
-// 1MB at a time and carries a 2KB overlap, so the first chunk boundary the
-// tests plant keywords around sits exactly here.
-const streamChunkSize = 1024 * 1024
-
 // streamTestFile writes a text file of the given size into t.TempDir, filled
 // with keyword-free filler lines, then copies each plant over its offset. Files
-// larger than streamChunkSize take the streamed scan path.
+// larger than streamChunkSize (the production chunk size and streaming
+// threshold) take the streamed scan path; the first chunk boundary the tests
+// plant keywords around sits exactly at streamChunkSize.
 func streamTestFile(t *testing.T, size int, plants map[int]string) structs.File {
 	t.Helper()
 	line := []byte("2026-08-11 sensor=alpha depth_m=12.5 temperature_c=8.71 status=ok\n")
@@ -938,12 +935,12 @@ func streamTestFile(t *testing.T, size int, plants map[int]string) structs.File 
 }
 
 // TestIsFreeOfKeywords_StreamedLargeFile pins the streamed acquisition for text
-// files past the 1MB threshold: the chunk/overlap loop must not lose a keyword
+// files past the streaming threshold: the chunk/overlap loop must not lose a keyword
 // on a chunk boundary, the cross-chunk dedup must collapse repeats of the SAME
 // finding without collapsing DISTINCT ones, and findings must carry the FILE's
 // casing, matching the whole-file path.
 func TestIsFreeOfKeywords_StreamedLargeFile(t *testing.T) {
-	// 1.5MB: past the >1MB streaming threshold, read as two chunks.
+	// 512KB past the streaming threshold, read as two chunks.
 	const fileSize = streamChunkSize + 512*1024
 	tests := []struct {
 		name     string

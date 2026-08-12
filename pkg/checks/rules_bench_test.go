@@ -194,10 +194,10 @@ func benchmarkIsFreeOfKeywords(b *testing.B, ruleCount int) {
 func BenchmarkIsFreeOfKeywordsRules1(b *testing.B) { benchmarkIsFreeOfKeywords(b, 1) }
 func BenchmarkIsFreeOfKeywordsRules3(b *testing.B) { benchmarkIsFreeOfKeywords(b, 3) }
 
-// benchStreamFile writes a text file of at least size bytes, past the 1 MiB
-// streaming threshold, so the keyword scan takes the chunked path instead of
-// the whole-file one. nonASCII plants a valid UTF-8 'ä' every ~100 KiB, so
-// every 1 MiB chunk leaves the ASCII fast path of the lowercasing step.
+// benchStreamFile writes a text file of at least size bytes, past the
+// streamChunkSize streaming threshold, so the keyword scan takes the chunked
+// path instead of the whole-file one. nonASCII plants a valid UTF-8 'ä' every
+// ~100 KiB, so every chunk leaves the ASCII fast path of the lowercasing step.
 func benchStreamFile(b *testing.B, size int, nonASCII bool) structs.File {
 	b.Helper()
 	body := benchTextBody()
@@ -237,22 +237,22 @@ func benchmarkIsFreeOfKeywordsStream(b *testing.B, ruleCount, size int, nonASCII
 }
 
 func BenchmarkIsFreeOfKeywordsStreamRules1(b *testing.B) {
-	benchmarkIsFreeOfKeywordsStream(b, 1, 1024*1024, false)
+	benchmarkIsFreeOfKeywordsStream(b, 1, streamChunkSize, false)
 }
 func BenchmarkIsFreeOfKeywordsStreamRules3(b *testing.B) {
-	benchmarkIsFreeOfKeywordsStream(b, 3, 1024*1024, false)
+	benchmarkIsFreeOfKeywordsStream(b, 3, streamChunkSize, false)
 }
 
-// The Large pair pins the size-INDEPENDENT acquisition budget: at 8 MiB the
+// The Large pair pins the size-INDEPENDENT acquisition budget: at 8 chunks the
 // chunk count is ~6x the fixture above's, so a per-chunk allocation regression
 // multiplies here while staying invisible at two chunks. The non-ASCII twin
 // must stay near its ASCII sibling - the two diverged 4x before the chunk
 // buffers were reused.
 func BenchmarkIsFreeOfKeywordsStreamLarge(b *testing.B) {
-	benchmarkIsFreeOfKeywordsStream(b, 1, 8*1024*1024, false)
+	benchmarkIsFreeOfKeywordsStream(b, 1, 8*streamChunkSize, false)
 }
 func BenchmarkIsFreeOfKeywordsStreamLargeNonASCII(b *testing.B) {
-	benchmarkIsFreeOfKeywordsStream(b, 1, 8*1024*1024, true)
+	benchmarkIsFreeOfKeywordsStream(b, 1, 8*streamChunkSize, true)
 }
 
 func benchmarkIsArchiveFreeOfKeywords(b *testing.B, ruleCount int) {

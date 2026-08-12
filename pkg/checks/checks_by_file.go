@@ -58,13 +58,17 @@ func isFileNameTooLong(file structs.File) []structs.Message {
 	return []structs.Message{}
 }
 
+// streamChunkSize is both the streamed read size and the streaming threshold:
+// files strictly larger than one chunk are streamed, smaller ones are read
+// whole. 1MB chunks (increased for better performance).
+const streamChunkSize = 1024 * 1024
+
 // streamChunks reads a file too large to hold in one piece and hands each chunk
 // to scan together with its lowercase copy. Chunks overlap by 2KB so a keyword
 // spanning a boundary is still found. The file is read ONCE however many rules
 // scan it.
 func streamChunks(filePath string, scan func(chunk, lowered []byte)) error {
 	const maxFileSize = 2 * 1024 * 1024 * 1024 // 2GB limit for streaming (increased)
-	const chunkSize = 1024 * 1024              // 1MB chunks (increased for better performance)
 
 	file, err := os.Open(filePath)
 	if err != nil {
@@ -81,13 +85,13 @@ func streamChunks(filePath string, scan func(chunk, lowered []byte)) error {
 		return fmt.Errorf("file too large: %d bytes (max %d)", fileInfo.Size(), maxFileSize)
 	}
 
-	buffer := make([]byte, chunkSize)
+	buffer := make([]byte, streamChunkSize)
 	var overlapBuf [2048]byte // Dedicated tail copy so the combined buffer can be reused
 	overlap := overlapBuf[:0]
 	// Reused across chunks: rebuilding and re-lowering combined per chunk
 	// allocated ~2MB of garbage per 1MB read.
-	combined := make([]byte, 0, chunkSize+len(overlapBuf))
-	lowerScratch := make([]byte, 0, chunkSize+len(overlapBuf))
+	combined := make([]byte, 0, streamChunkSize+len(overlapBuf))
+	lowerScratch := make([]byte, 0, streamChunkSize+len(overlapBuf))
 
 	for {
 		n, err := file.Read(buffer)
@@ -480,8 +484,8 @@ func keywordsInFile(file structs.File, batch *Batch, rules []*BoundRule) []struc
 	}
 
 	if isText {
-		// Use streaming for files larger than 1MB (reduced threshold for better performance)
-		if fileInfo.Size() > 1024*1024 {
+		// Stream files larger than one chunk (reduced threshold for better performance)
+		if fileInfo.Size() > streamChunkSize {
 			return append(messages, streamKeywords(file, rules)...)
 		}
 		// Use regular reading for smaller files
