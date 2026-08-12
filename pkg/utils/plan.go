@@ -63,6 +63,12 @@ func (p *Plan) scope(s checks.Scope) []checkRules {
 // which errors.As pulls out of the aggregate - callers that want the faulty
 // patterns rather than the message can match on it.
 func Compile(cfg *config.Config, reg checks.Registry) (*Plan, error) {
+	// A zero-value Registry{} is constructible anywhere and would compile to a
+	// plan with no entries: every package scans clean and the server caches
+	// that as authoritative. An empty registry is a load error, not a plan.
+	if reg.Len() == 0 {
+		return nil, errors.New("check registry has no definitions (an empty plan would report every package clean)")
+	}
 	// [general] carries the scan bounds every acquisition reads. A fabricated
 	// zero value would silently mean "scan nothing" (MaxContentScan 0), so a
 	// missing section is a load error, not a default.

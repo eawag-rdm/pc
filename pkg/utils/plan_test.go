@@ -284,6 +284,16 @@ func TestCompileRejectsMissingGeneral(t *testing.T) {
 	}
 }
 
+// TestCompileRejectsEmptyRegistry pins that a zero-value Registry{} never
+// compiles: a plan with no entries runs no checks, so every package would scan
+// clean and the server would cache that as authoritative.
+func TestCompileRejectsEmptyRegistry(t *testing.T) {
+	cfg := planConfig(nil)
+	if _, err := Compile(&cfg, checks.Registry{}); err == nil {
+		t.Fatal("an empty check registry must fail the compile")
+	}
+}
+
 // TestCompileErrorExposesSelectorFault pins that a pattern fault stays
 // MATCHABLE through the aggregate: callers that want the faulty patterns rather
 // than the message text match *selector.CompileError with errors.As.
