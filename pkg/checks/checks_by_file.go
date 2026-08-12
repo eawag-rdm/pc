@@ -562,7 +562,7 @@ func lowerAll(body [][]byte) [][]byte {
 	return lowered
 }
 
-// IsFreeOfKeywordsCoreList scans one body with one keyword list, the shape the
+// isFreeOfKeywordsCoreList scans one body with one keyword list, the shape the
 // keyword tests assert against.
 func isFreeOfKeywordsCoreList(file structs.File, keywordList []string, info string, body [][]byte, isBinary bool) []structs.Message {
 	report := reportJoined
