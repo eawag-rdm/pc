@@ -375,6 +375,7 @@ func keywordsInArchive(file structs.File, batch *Batch, rules []*BoundRule) []st
 		// keyword rule produces is sourced at the file it was handed, so
 		// stamping Source afterwards is the same message.
 		var archivedFile structs.File
+		var src structs.Source // boxed once per member, shared by all findings
 		built := false
 
 		for _, rule := range rules {
@@ -395,10 +396,11 @@ func keywordsInArchive(file structs.File, batch *Batch, rules []*BoundRule) []st
 					archiveDisplayName, // archive name reference
 				)
 				archivedFile.RelPath = fileName // the member path, verbatim
+				src = archivedFile
 				built = true
 			}
 			for i := range found {
-				found[i].Source = archivedFile
+				found[i].Source = src
 			}
 			messages = append(messages, tag(rule.Rule, found)...)
 		}
