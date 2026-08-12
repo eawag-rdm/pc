@@ -296,7 +296,7 @@ func scanKeywords(file structs.File, sets []keywordSet, body, lowered [][]byte, 
 				continue
 			}
 			if report == reportEach {
-				for _, match := range distinctMatches(matches) {
+				for _, match := range matches {
 					messages = append(messages, structs.Message{Content: set.info + " '" + match + "'", Source: file})
 				}
 				continue
@@ -330,23 +330,6 @@ func joinMatches(matches []string) string {
 		}
 	}
 	return foundKeywordsStr
-}
-
-// distinctMatches drops repeated findings. The matcher already returns its
-// matches sorted and deduplicated, so this preserves that order and is a no-op
-// on its output; it stands as the guard for any other producer. Only the
-// streamed acquisition needs the findings one by one.
-func distinctMatches(matches []string) []string {
-	seen := make(map[string]struct{}, len(matches))
-	distinct := matches[:0:0]
-	for _, match := range matches {
-		if _, exists := seen[match]; exists {
-			continue
-		}
-		seen[match] = struct{}{}
-		distinct = append(distinct, match)
-	}
-	return distinct
 }
 
 // runKeywords is RunFile for the keyword check: the file's own content at file
