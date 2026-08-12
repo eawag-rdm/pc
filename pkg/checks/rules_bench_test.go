@@ -35,6 +35,14 @@ var benchKeywordInfos = []string{
 	"Administrative accounts detected",
 }
 
+// benchKeywordSecondSet rides as a second param set on the first rule - the
+// shipped configs bind multi-set rules. "credential" hits the same archive
+// members as "password", so those members carry TWO findings for one rule; no
+// keyword here hits the text or PDF fixtures.
+var benchKeywordSecondSet = []string{"credential", "passphrase"}
+
+const benchKeywordSecondInfo = "Possible credential material in file"
+
 // benchGeneral is the scan-limits config every rule below binds.
 func benchGeneral() *config.GeneralConfig {
 	return &config.GeneralConfig{
@@ -48,19 +56,28 @@ func benchGeneral() *config.GeneralConfig {
 }
 
 // benchKeywordRules binds n keyword rules, one keyword group each - the fanout
-// the gate is stated over. They share one acquisition per (file, check).
+// the gate is stated over. They share one acquisition per (file, check). The
+// first rule carries benchKeywordSecondSet as a second param set, so an archive
+// member both sets hit yields several findings for ONE rule and per-finding
+// costs (message build, Source boxing) stay visible to the archive benchmarks.
 func benchKeywordRules(b *testing.B, n int) (CheckDef, *Batch, []*BoundRule) {
 	b.Helper()
 	def, _ := NewRegistry().Lookup("IsFreeOfKeywords")
 	rules := make([]*BoundRule, 0, n)
 	for i := 0; i < n; i++ {
+		sets := []map[string]interface{}{
+			{"keywords": benchKeywordGroups[i], "info": benchKeywordInfos[i]},
+		}
+		if i == 0 {
+			sets = append(sets, map[string]interface{}{
+				"keywords": benchKeywordSecondSet, "info": benchKeywordSecondInfo,
+			})
+		}
 		rule, err := def.Bind(config.RuleSpec{
 			Name:    benchKeywordInfos[i],
 			Check:   "IsFreeOfKeywords",
 			Enabled: true,
-			Params: map[string]interface{}{ParamSets: []map[string]interface{}{
-				{"keywords": benchKeywordGroups[i], "info": benchKeywordInfos[i]},
-			}},
+			Params:  map[string]interface{}{ParamSets: sets},
 		}, benchGeneral())
 		if err != nil {
 			b.Fatalf("bind rule %d: %v", i, err)
@@ -246,8 +263,8 @@ func BenchmarkIsFreeOfKeywordsStreamRules3(b *testing.B) {
 // The Large pair pins the size-INDEPENDENT acquisition budget: at 8 chunks the
 // chunk count is ~6x the fixture above's, so a per-chunk allocation regression
 // multiplies here while staying invisible at two chunks. The non-ASCII twin
-// must stay near its ASCII sibling - the two diverged 4x before the chunk
-// buffers were reused.
+// must stay near its ASCII sibling - the two diverged materially (the ratio is
+// machine-dependent) before the chunk buffers were reused.
 func BenchmarkIsFreeOfKeywordsStreamLarge(b *testing.B) {
 	benchmarkIsFreeOfKeywordsStream(b, 1, 8*streamChunkSize, false)
 }
@@ -260,11 +277,15 @@ func benchmarkIsArchiveFreeOfKeywords(b *testing.B, ruleCount int) {
 	file := benchArchiveFile(b)
 	def, batch, rules := benchKeywordRules(b, ruleCount)
 
+	// Each keyword group hits benchArchiveMembers/5 members once; the first
+	// rule's second set hits the group-0 members again, so those members carry
+	// two findings for one rule.
+	want := (ruleCount + 1) * (benchArchiveMembers / 5)
 	b.ReportAllocs()
 	for b.Loop() {
 		msgs := def.RunFile(file, ScopeArchiveMember, batch, rules)
-		if len(msgs) == 0 {
-			b.Fatal("no finding - the benchmark measures the wrong thing")
+		if len(msgs) != want {
+			b.Fatalf("expected %d findings, got %d - the benchmark measures the wrong thing", want, len(msgs))
 		}
 		benchMsgSink += len(msgs)
 	}
