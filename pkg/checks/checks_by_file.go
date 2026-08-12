@@ -291,6 +291,7 @@ func bindKeywords(spec config.RuleSpec, _ *config.GeneralConfig) (*BoundRule, er
 // each finding the way the acquisition demands.
 func scanKeywords(file structs.File, sets []keywordSet, body, lowered [][]byte, report reporting) []structs.Message {
 	var messages []structs.Message
+	var src structs.Source // file boxed once on the first finding, shared by all
 	for _, set := range sets {
 		for idx, entry := range body {
 			if len(entry) == 0 {
@@ -300,20 +301,23 @@ func scanKeywords(file structs.File, sets []keywordSet, body, lowered [][]byte, 
 			if len(matches) == 0 {
 				continue
 			}
+			if src == nil {
+				src = file
+			}
 			if report == reportEach {
 				for _, match := range matches {
-					messages = append(messages, structs.Message{Content: set.info + " '" + match + "'", Source: file})
+					messages = append(messages, structs.Message{Content: set.info + " '" + match + "'", Source: src})
 				}
 				continue
 			}
 			found := joinMatches(matches)
 			switch report {
 			case reportIndexed:
-				messages = append(messages, structs.Message{Content: set.info + " '" + found + "' in sheet/paragraph/table " + fmt.Sprintf("%d", idx), Source: file})
+				messages = append(messages, structs.Message{Content: set.info + " '" + found + "' in sheet/paragraph/table " + fmt.Sprintf("%d", idx), Source: src})
 			case reportPaged:
-				messages = append(messages, structs.Message{Content: fmt.Sprintf("%s '%s' (page %d)", set.info, found, idx+1), Source: file})
+				messages = append(messages, structs.Message{Content: fmt.Sprintf("%s '%s' (page %d)", set.info, found, idx+1), Source: src})
 			default:
-				messages = append(messages, structs.Message{Content: set.info + " '" + found + "'", Source: file})
+				messages = append(messages, structs.Message{Content: set.info + " '" + found + "'", Source: src})
 			}
 		}
 	}
