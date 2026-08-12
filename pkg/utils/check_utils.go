@@ -497,6 +497,9 @@ func noFilesNotice() structs.Message {
 // branch), which pairs this with the metadata checks; call it rather than this
 // directly.
 func ApplyAllChecks(ctx context.Context, config config.Config, plan *Plan, files []structs.File, checksAcrossFiles bool) []structs.Message {
+	if plan == nil {
+		panic("pc: ApplyAllChecks requires a compiled *utils.Plan")
+	}
 	var messages []structs.Message
 
 	messages = append(messages, applyChecksFilteredByFile(ctx, plan.scope(checks.ScopeFile), files)...)
@@ -522,6 +525,9 @@ func ApplyAllChecks(ctx context.Context, config config.Config, plan *Plan, files
 // takes. Intended caller is internal/analysis.Run (progress != nil branch);
 // everything else takes ApplyAllChecks.
 func ApplyAllChecksWithProgress(ctx context.Context, config config.Config, plan *Plan, files []structs.File, checksAcrossFiles bool, progressCallback ProgressCallback) []structs.Message {
+	if plan == nil {
+		panic("pc: ApplyAllChecksWithProgress requires a compiled *utils.Plan")
+	}
 	var messages []structs.Message
 
 	fileChecks := plan.scope(checks.ScopeFile)

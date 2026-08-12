@@ -49,12 +49,8 @@ func (p *Plan) add(scope checks.Scope, def checks.CheckDef, general *config.Gene
 	})
 }
 
-// scope returns the bound rules of one dispatch scope, grouped by check. A nil
-// Plan has none, so a caller that never compiled one dispatches nothing.
+// scope returns the bound rules of one dispatch scope, grouped by check.
 func (p *Plan) scope(s checks.Scope) []checkRules {
-	if p == nil {
-		return nil
-	}
 	return p.scopes[s]
 }
 

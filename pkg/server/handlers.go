@@ -123,6 +123,9 @@ type Handler struct {
 // (utils.Compile) and is REQUIRED: without it the dispatch runs no check at
 // all, and the result would be a clean report - cached as such.
 func NewHandler(pcConfig *config.Config, serverCfg Config, logger *slog.Logger, plan *utils.Plan) *Handler {
+	if plan == nil {
+		panic("pc-server: NewHandler requires a compiled *utils.Plan")
+	}
 	contact := DefaultContactMessage
 	logClientIP := true
 	var limiter *rateLimiter

@@ -57,6 +57,17 @@ func withRequestContext(req *http.Request, requestID, contact string) *http.Requ
 	return req.WithContext(ctx)
 }
 
+// TestNewHandler_NilPlanPanics: a nil plan would dispatch no checks and cache
+// every package as clean, so construction refuses it.
+func TestNewHandler_NilPlanPanics(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("NewHandler must panic on a nil plan")
+		}
+	}()
+	NewHandler(&config.Config{}, Config{}, discardLogger(), nil)
+}
+
 func TestHandler_Health(t *testing.T) {
 	handler := NewHandler(&config.Config{}, Config{}, discardLogger(), testPlan(&config.Config{}))
 

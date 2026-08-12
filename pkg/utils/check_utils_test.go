@@ -20,12 +20,13 @@ import (
 // single skip-style "no files to analyse" notice when the file set is empty, so
 // the CLI and server surface the same clear, non-issue acknowledgement.
 func TestApplyAllChecks_NoFilesNotice(t *testing.T) {
+	plan := compilePlan(t, config.Config{})
 	cases := map[string]func() []structs.Message{
 		"ApplyAllChecks": func() []structs.Message {
-			return ApplyAllChecks(context.Background(), config.Config{}, nil, nil, false)
+			return ApplyAllChecks(context.Background(), config.Config{}, plan, nil, false)
 		},
 		"ApplyAllChecksWithProgress": func() []structs.Message {
-			return ApplyAllChecksWithProgress(context.Background(), config.Config{}, nil, nil, false, nil)
+			return ApplyAllChecksWithProgress(context.Background(), config.Config{}, plan, nil, false, nil)
 		},
 	}
 	for name, run := range cases {
@@ -49,6 +50,17 @@ func TestApplyAllChecks_NoFilesNotice(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestApplyAllChecks_NilPlanPanics: a nil plan dispatches nothing and would
+// report every package clean, so the engine refuses it loudly.
+func TestApplyAllChecks_NilPlanPanics(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("ApplyAllChecks must panic on a nil plan")
+		}
+	}()
+	ApplyAllChecks(context.Background(), config.Config{}, nil, nil, false)
 }
 
 // admits compiles cfg and reports whether the file-scope rule of check admits
