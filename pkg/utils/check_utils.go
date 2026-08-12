@@ -499,9 +499,10 @@ func noFilesNotice() structs.Message {
 // checksAcrossFiles gates the WHOLE repository scope: readme checks and the
 // secret scan alike. Before the registry the secret scan ran regardless of the
 // flag; both frontends pass true, so only a direct caller sees the difference.
+// Panics on a nil plan: dispatching nothing would report every package clean.
 func ApplyAllChecks(ctx context.Context, config config.Config, plan *Plan, files []structs.File, checksAcrossFiles bool) []structs.Message {
 	if plan == nil {
-		panic("pc: ApplyAllChecks requires a compiled *utils.Plan")
+		panic("utils: ApplyAllChecks requires a compiled *utils.Plan")
 	}
 	var messages []structs.Message
 
@@ -526,10 +527,10 @@ func ApplyAllChecks(ctx context.Context, config config.Config, plan *Plan, files
 // sequential walk, so the server must never be routed here - it would serialise
 // every analysis silently. plan is the same startup-built plan ApplyAllChecks
 // takes. Intended caller is internal/analysis.Run (progress != nil branch);
-// everything else takes ApplyAllChecks.
+// everything else takes ApplyAllChecks. Panics on a nil plan, like its twin.
 func ApplyAllChecksWithProgress(ctx context.Context, config config.Config, plan *Plan, files []structs.File, checksAcrossFiles bool, progressCallback ProgressCallback) []structs.Message {
 	if plan == nil {
-		panic("pc: ApplyAllChecksWithProgress requires a compiled *utils.Plan")
+		panic("utils: ApplyAllChecksWithProgress requires a compiled *utils.Plan")
 	}
 	var messages []structs.Message
 

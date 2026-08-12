@@ -121,10 +121,11 @@ type Handler struct {
 // NewHandler creates a new handler with the given configuration. The slog
 // logger writes JSON access records to stdout. plan is the compiled rule set
 // (utils.Compile) and is REQUIRED: without it the dispatch runs no check at
-// all, and the result would be a clean report - cached as such.
+// all, and the result would be a clean report - cached as such. Construction
+// panics on a nil plan.
 func NewHandler(pcConfig *config.Config, serverCfg Config, logger *slog.Logger, plan *utils.Plan) *Handler {
 	if plan == nil {
-		panic("pc-server: NewHandler requires a compiled *utils.Plan")
+		panic("server: NewHandler requires a compiled *utils.Plan")
 	}
 	contact := DefaultContactMessage
 	logClientIP := true
