@@ -502,6 +502,9 @@ func noFilesNotice() structs.Message {
 // carry it. Intended entry point is internal/analysis.Run (progress == nil
 // branch), which pairs this with the metadata checks; call it rather than this
 // directly.
+// checksAcrossFiles gates the WHOLE repository scope: readme checks and the
+// secret scan alike. Before the registry the secret scan ran regardless of the
+// flag; both frontends pass true, so only a direct caller sees the difference.
 func ApplyAllChecks(ctx context.Context, config config.Config, plan *Plan, files []structs.File, checksAcrossFiles bool) []structs.Message {
 	if plan == nil {
 		panic("pc: ApplyAllChecks requires a compiled *utils.Plan")
