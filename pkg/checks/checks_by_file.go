@@ -751,7 +751,7 @@ func tryReadBinary(file structs.File) ([][]byte, *structs.Message) {
 
 // bindValidName binds one name rule: the disallowed-name lists of all its
 // parameter sets, type-checked here and never asserted again.
-func bindValidName(spec config.RuleSpec, general *config.GeneralConfig) (*BoundRule, error) {
+func bindValidName(spec config.RuleSpec, _ *config.GeneralConfig) (*BoundRule, error) {
 	sets, err := paramSets(spec)
 	if err != nil {
 		return nil, err

@@ -35,7 +35,7 @@ func bindReadmeNames(spec config.RuleSpec) ([]string, error) {
 	return names, nil
 }
 
-func bindHasReadme(spec config.RuleSpec, general *config.GeneralConfig) (*BoundRule, error) {
+func bindHasReadme(spec config.RuleSpec, _ *config.GeneralConfig) (*BoundRule, error) {
 	names, err := bindReadmeNames(spec)
 	if err != nil {
 		return nil, err
@@ -48,7 +48,7 @@ func bindHasReadme(spec config.RuleSpec, general *config.GeneralConfig) (*BoundR
 	}, nil
 }
 
-func bindReadMeContainsTOC(spec config.RuleSpec, general *config.GeneralConfig) (*BoundRule, error) {
+func bindReadMeContainsTOC(spec config.RuleSpec, _ *config.GeneralConfig) (*BoundRule, error) {
 	names, err := bindReadmeNames(spec)
 	if err != nil {
 		return nil, err
