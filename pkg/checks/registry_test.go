@@ -108,15 +108,23 @@ func TestRegistryScopesCoverDispatch(t *testing.T) {
 				t.Errorf("%s: scope %s = %v, want %v", name, scope, def.Scopes.Has(scope), expected)
 			}
 		}
-		repository := def.Scopes.Has(ScopeRepository)
-		if repository && (def.RunRepository == nil || def.RunFile != nil) {
-			t.Errorf("%s: a repository check must set RunRepository and only that", name)
+	}
+	for _, def := range registry.Defs() {
+		if def.Scopes == 0 {
+			t.Errorf("%s: no scopes", def.Name)
 		}
-		if !repository && (def.RunFile == nil || def.RunRepository != nil) {
-			t.Errorf("%s: a file check must set RunFile and only that", name)
+		fileScoped := def.Scopes.Has(ScopeFile) || def.Scopes.Has(ScopeArchiveFileList) || def.Scopes.Has(ScopeArchiveMember)
+		if fileScoped && (def.RunFile == nil || def.RunRepository != nil) {
+			t.Errorf("%s: a file-scoped check must set RunFile and only that", def.Name)
+		}
+		if def.Scopes.Has(ScopeRepository) && (def.RunRepository == nil || def.RunFile != nil) {
+			t.Errorf("%s: a repository check must set RunRepository and only that", def.Name)
+		}
+		if (def.RunFile == nil) == (def.RunRepository == nil) {
+			t.Errorf("%s: exactly one of RunFile / RunRepository must be set", def.Name)
 		}
 		if def.Bind == nil {
-			t.Errorf("%s: no Bind", name)
+			t.Errorf("%s: no Bind", def.Name)
 		}
 	}
 }

@@ -71,9 +71,7 @@ func Compile(cfg *config.Config, reg checks.Registry) (*Plan, error) {
 	}
 	general := cfg.General
 
-	errs := validateRegistry(reg)
-	specs, specErrs := legacyRuleSpecs(cfg, reg)
-	errs = append(errs, specErrs...)
+	specs, errs := legacyRuleSpecs(cfg, reg)
 
 	plan := &Plan{}
 	named := make(map[string]struct{}, len(specs))
@@ -126,25 +124,6 @@ func Compile(cfg *config.Config, reg checks.Registry) (*Plan, error) {
 	}
 	plan.buildMemberAdmission()
 	return plan, nil
-}
-
-// validateRegistry refuses a check definition the dispatch cannot run. The
-// invariant is cheap to state and its violation is a nil-func panic inside a
-// pool goroutine, so it is checked where a registry enters the engine.
-func validateRegistry(reg checks.Registry) []error {
-	var errs []error
-	for _, def := range reg.Defs() {
-		if def.Bind == nil {
-			errs = append(errs, fmt.Errorf("check %q: no Bind", def.Name))
-		}
-		switch {
-		case def.RunFile == nil && def.RunRepository == nil:
-			errs = append(errs, fmt.Errorf("check %q: neither RunFile nor RunRepository is set", def.Name))
-		case def.RunFile != nil && def.RunRepository != nil:
-			errs = append(errs, fmt.Errorf("check %q: RunFile and RunRepository are both set", def.Name))
-		}
-	}
-	return errs
 }
 
 // ruleScopes resolves the scopes a rule serves: the ones it names, or the
