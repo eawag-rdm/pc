@@ -53,14 +53,26 @@ func TestApplyAllChecks_NoFilesNotice(t *testing.T) {
 }
 
 // TestApplyAllChecks_NilPlanPanics: a nil plan dispatches nothing and would
-// report every package clean, so the engine refuses it loudly.
+// report every package clean, so both engine entry points refuse it loudly.
 func TestApplyAllChecks_NilPlanPanics(t *testing.T) {
-	defer func() {
-		if recover() == nil {
-			t.Fatal("ApplyAllChecks must panic on a nil plan")
-		}
-	}()
-	ApplyAllChecks(context.Background(), config.Config{}, nil, nil, false)
+	cases := map[string]func(){
+		"ApplyAllChecks": func() {
+			ApplyAllChecks(context.Background(), config.Config{}, nil, nil, false)
+		},
+		"ApplyAllChecksWithProgress": func() {
+			ApplyAllChecksWithProgress(context.Background(), config.Config{}, nil, nil, false, nil)
+		},
+	}
+	for name, run := range cases {
+		t.Run(name, func(t *testing.T) {
+			defer func() {
+				if recover() == nil {
+					t.Fatal("must panic on a nil plan")
+				}
+			}()
+			run()
+		})
+	}
 }
 
 // admits compiles cfg and reports whether the file-scope rule of check admits
