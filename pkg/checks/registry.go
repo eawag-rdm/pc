@@ -180,6 +180,12 @@ func (r *BoundRule) SetSelectors(gate selector.Selector, member *selector.Select
 // per (file, rule), so the "admits everything" case - every shipped config's -
 // is a cached bool and the body stays small enough to inline; the real matching
 // lives in matchSubject, which the empty case never calls.
+// Unfiltered reports whether the dispatch selector admits every file - the
+// shipped configs' case. The dispatcher's fast path reads it once per pass:
+// when every rule of a scope is unfiltered, selection is the identity and the
+// per-file work items can share the plan's own entries.
+func (r *BoundRule) Unfiltered() bool { return r.unfiltered }
+
 func (r *BoundRule) Match(file structs.File) bool {
 	if r.unfiltered {
 		return true

@@ -98,4 +98,18 @@ func BenchmarkFilterChecksForFiles(b *testing.B) {
 			}
 		}
 	})
+
+	// The shipped-config fast path: selection is the identity, so the pass
+	// must allocate the work list and nothing else - no arenas, no Match
+	// calls. The item count and the shared entries pin that the fast path
+	// actually ran.
+	b.Run("workitems-unfiltered", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			items := filterChecksForFiles(noFilter, checks.ScopeFile, files)
+			if len(items) != fileCount || &items[0].Checks[0] != &noFilter[0] {
+				b.Fatal("the unfiltered pass must share the plan's entries")
+			}
+		}
+	})
 }

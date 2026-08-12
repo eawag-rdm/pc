@@ -146,18 +146,44 @@ func applyChecksFilteredByFileWithTestProgress(ctx context.Context, entries []ch
 	return messages
 }
 
+// allUnfiltered reports whether every rule of every entry admits every file -
+// the shipped configs' case, decided once per pass, not per file.
+func allUnfiltered(entries []checkRules) bool {
+	for _, entry := range entries {
+		for _, rule := range entry.rules {
+			if !rule.Unfiltered() {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 // filterChecksForFiles builds the work list: one entry per file that has at
 // least one check with a matching rule.
 //
-// A work item's slices outlive the call - the pool reads them - so, unlike the
-// sequential walks, they cannot come from a reused scratch. They come from two
-// arenas instead, each sized to the whole pass's worst case (every rule of every
-// check matches every file) and therefore never reallocated: sub-slices carved
-// out of them stay valid, and the pass allocates twice rather than twice per
-// file. Workers only read them.
+// When no rule filters at all, selection is the identity: every work item
+// shares the plan's own (immutable) entries and the pass allocates only the
+// work list itself - no arenas, no Match calls.
+//
+// Otherwise a work item's slices outlive the call - the pool reads them - so,
+// unlike the sequential walks, they cannot come from a reused scratch. They
+// come from two arenas instead, each sized to the whole pass's worst case
+// (every rule of every check matches every file) and therefore never
+// reallocated: sub-slices carved out of them stay valid, and the pass
+// allocates twice rather than twice per file. Workers only read them.
 func filterChecksForFiles(entries []checkRules, scope checks.Scope, files []structs.File) []workItem {
-	total := ruleCount(entries)
+	if len(entries) == 0 {
+		return nil
+	}
 	workItems := make([]workItem, 0, len(files))
+	if allUnfiltered(entries) {
+		for _, file := range files {
+			workItems = append(workItems, workItem{File: file, Scope: scope, Checks: entries})
+		}
+		return workItems
+	}
+	total := ruleCount(entries)
 	ruleArena := make([]*checks.BoundRule, 0, len(files)*total)
 	checkArena := make([]checkRules, 0, len(files)*len(entries))
 	for _, file := range files {
