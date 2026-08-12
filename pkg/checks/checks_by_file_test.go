@@ -3,11 +3,13 @@ package checks
 import (
 	"archive/zip"
 	"bytes"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/eawag-rdm/pc/pkg/config"
 	"github.com/eawag-rdm/pc/pkg/structs"
@@ -1067,5 +1069,73 @@ func TestIsFreeOfKeywords_BinaryFileEmitsSkipMessage(t *testing.T) {
 	}
 	if skipCount != 1 {
 		t.Errorf("expected exactly 1 binary skip message, got %d (messages: %+v)", skipCount, messages)
+	}
+}
+
+// TestLowerIntoMatchesBytesToLower pins lowerInto's contract: byte-identical
+// to bytes.ToLower through ONE shared scratch reused across successive calls,
+// as streamChunks reuses it across chunks.
+func TestLowerIntoMatchesBytesToLower(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+	}{
+		{"pure ASCII", "the quick brown fox 0123456789 jumps"},
+		{"ASCII uppercase at boundaries", "Abc mIxEd caSE xyZ"},
+		{"umlauts", "Grüße aus Dübendorf, Öl und Äpfel"},
+		{"degree and micro", "25.3°C at 4.7µm"},
+		{"dotted capital I U+0130", "İstanbul İİ"},
+		{"kelvin sign U+212A", "273.15K and K"},
+		{"titlecase Dz U+01C5", "ǅeno ǅ"},
+		{"capital sigma", "ΣΙΣΥΦΟΣ Σ"},
+		{"invalid single byte", "abc\xffdef"},
+		{"invalid byte pair", "abc\xfe\xffdef"},
+		{"truncated multi-byte at end", "grüße\xc3"},
+		{"empty", ""},
+	}
+
+	scratch := make([]byte, 0, 8) // deliberately small: forces growth via append
+	for _, tc := range cases {
+		src := []byte(tc.src)
+		want := bytes.ToLower(src)
+		scratch = lowerInto(scratch, src)
+		if !bytes.Equal(scratch, want) {
+			t.Errorf("%s: lowerInto = %q, want %q", tc.name, scratch, want)
+		}
+	}
+}
+
+// TestLowerIntoRandomizedMatchesBytesToLower cross-checks lowerInto against
+// bytes.ToLower on random mixes of ASCII, valid UTF-8 and garbage bytes, and
+// guards against stale-tail leftovers by following every random call with a
+// pure-ASCII call on the same scratch.
+func TestLowerIntoRandomizedMatchesBytesToLower(t *testing.T) {
+	rng := rand.New(rand.NewSource(42))
+	scratch := make([]byte, 0, 8)
+	asciiProbe := []byte("Stale TAIL Probe 0123")
+	probeWant := bytes.ToLower(asciiProbe)
+
+	for i := 0; i < 3000; i++ {
+		n := rng.Intn(200)
+		src := make([]byte, 0, n*3)
+		for len(src) < n {
+			switch rng.Intn(3) {
+			case 0: // ASCII byte
+				src = append(src, byte(rng.Intn(utf8.RuneSelf)))
+			case 1: // valid UTF-8 rune (surrogates encode as U+FFFD)
+				src = utf8.AppendRune(src, rune(rng.Intn(utf8.MaxRune+1)))
+			default: // raw byte, often invalid UTF-8
+				src = append(src, byte(rng.Intn(256)))
+			}
+		}
+		want := bytes.ToLower(src)
+		scratch = lowerInto(scratch, src)
+		if !bytes.Equal(scratch, want) {
+			t.Fatalf("iteration %d: lowerInto(%q) = %q, want %q", i, src, scratch, want)
+		}
+		scratch = lowerInto(scratch, asciiProbe)
+		if !bytes.Equal(scratch, probeWant) {
+			t.Fatalf("iteration %d: stale tail after %q: got %q, want %q", i, src, scratch, probeWant)
+		}
 	}
 }

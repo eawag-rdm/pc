@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/eawag-rdm/pc/pkg/config"
 	"github.com/eawag-rdm/pc/pkg/optimization"
@@ -81,7 +82,12 @@ func streamChunks(filePath string, scan func(chunk, lowered []byte)) error {
 	}
 
 	buffer := make([]byte, chunkSize)
-	overlap := make([]byte, 0, 4096) // Increased overlap for better pattern detection
+	var overlapBuf [2048]byte // Dedicated tail copy so the combined buffer can be reused
+	overlap := overlapBuf[:0]
+	// Reused across chunks: rebuilding and re-lowering combined per chunk
+	// allocated ~2MB of garbage per 1MB read.
+	combined := make([]byte, 0, chunkSize+len(overlapBuf))
+	lowerScratch := make([]byte, 0, chunkSize+len(overlapBuf))
 
 	for {
 		n, err := file.Read(buffer)
@@ -90,19 +96,18 @@ func streamChunks(filePath string, scan func(chunk, lowered []byte)) error {
 		}
 
 		// Combine overlap with new data
-		combined := append(overlap, buffer[:n]...)
-		scan(combined, bytes.ToLower(combined))
+		combined = append(append(combined[:0], overlap...), buffer[:n]...)
+		lowerScratch = lowerInto(lowerScratch, combined)
+		scan(combined, lowerScratch)
 
 		// Keep last 2KB as overlap for next chunk to ensure patterns spanning chunks are caught
-		overlapSize := 2048
+		overlapSize := len(overlapBuf)
 		if n < overlapSize {
 			overlapSize = n
 		}
-		if len(combined) >= overlapSize {
-			overlap = combined[len(combined)-overlapSize:]
-		} else {
-			overlap = combined
-		}
+		// overlapSize <= n <= len(combined), so the tail slice is always valid.
+		overlap = overlapBuf[:overlapSize]
+		copy(overlap, combined[len(combined)-overlapSize:])
 
 		if err == io.EOF {
 			break
@@ -112,6 +117,41 @@ func streamChunks(filePath string, scan func(chunk, lowered []byte)) error {
 		}
 	}
 	return nil
+}
+
+// lowerInto lowercases src into dst's backing array (reused across chunks,
+// grown by append only when the output outgrows it) and returns the result,
+// byte-identical to bytes.ToLower: ASCII runs are bulk-copied and lowered
+// byte-wise; non-ASCII runes are mapped through unicode.ToLower, and each
+// invalid UTF-8 byte becomes one U+FFFD (so the output can be longer than the
+// input). The caller must not retain the result past the next call.
+func lowerInto(dst, src []byte) []byte {
+	dst = dst[:0]
+	for i := 0; i < len(src); {
+		if src[i] < utf8.RuneSelf {
+			// Bulk-copy the ASCII run, then lower it in place.
+			j := i + 1
+			for j < len(src) && src[j] < utf8.RuneSelf {
+				j++
+			}
+			mark := len(dst)
+			dst = append(dst, src[i:j]...)
+			run := dst[mark:]
+			for k, c := range run {
+				if 'A' <= c && c <= 'Z' {
+					run[k] = c + ('a' - 'A')
+				}
+			}
+			i = j
+			continue
+		}
+		// Mirrors bytes.Map(unicode.ToLower, src): utf8.DecodeRune yields one
+		// RuneError of width 1 per invalid byte.
+		r, wid := utf8.DecodeRune(src[i:])
+		dst = utf8.AppendRune(dst, unicode.ToLower(r))
+		i += wid
+	}
+	return dst
 }
 
 func hasOnlyASCII(file structs.File) []structs.Message {
