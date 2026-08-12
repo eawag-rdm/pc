@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -906,6 +907,136 @@ func TestIsArchiveFreeOfKeywords_MemberSkipsEmitMessages(t *testing.T) {
 	}
 	if skipCount == 0 {
 		t.Errorf("expected at least one archive-member skip message, got none (messages: %+v)", messages)
+	}
+}
+
+// streamChunkSize mirrors chunkSize in streamChunks: the streamed scan reads
+// 1MB at a time and carries a 2KB overlap, so the first chunk boundary the
+// tests plant keywords around sits exactly here.
+const streamChunkSize = 1024 * 1024
+
+// streamTestFile writes a text file of the given size into t.TempDir, filled
+// with keyword-free filler lines, then copies each plant over its offset. Files
+// larger than streamChunkSize take the streamed scan path.
+func streamTestFile(t *testing.T, size int, plants map[int]string) structs.File {
+	t.Helper()
+	line := []byte("2026-08-11 sensor=alpha depth_m=12.5 temperature_c=8.71 status=ok\n")
+	content := make([]byte, size)
+	for i := 0; i < size; i += len(line) {
+		copy(content[i:], line)
+	}
+	for offset, plant := range plants {
+		copy(content[offset:], plant)
+	}
+	path := filepath.Join(t.TempDir(), "series.txt")
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		t.Fatalf("write stream fixture: %v", err)
+	}
+	return structs.File{Path: path, Name: "series.txt", DisplayName: "series.txt"}
+}
+
+// TestIsFreeOfKeywords_StreamedLargeFile pins the streamed acquisition for text
+// files past the 1MB threshold: the chunk/overlap loop must not lose a keyword
+// on a chunk boundary, the cross-chunk dedup must collapse repeats of the SAME
+// finding without collapsing DISTINCT ones, and findings must carry the FILE's
+// casing, matching the whole-file path.
+func TestIsFreeOfKeywords_StreamedLargeFile(t *testing.T) {
+	// 1.5MB: past the >1MB streaming threshold, read as two chunks.
+	const fileSize = streamChunkSize + 512*1024
+	tests := []struct {
+		name     string
+		keywords []string
+		plants   map[int]string
+		expect   []string // non-skipped message contents, as a multiset
+	}{
+		{
+			// Chunk 1 ends with "pass", the 2KB overlap replays it in front of
+			// chunk 2 where the full keyword matches - exactly once.
+			name:     "keyword straddling the first chunk boundary is found once",
+			keywords: []string{"password"},
+			plants:   map[int]string{streamChunkSize - 4: "password"},
+			expect:   []string{"Keywords found: 'password'"},
+		},
+		{
+			name:     "keyword entirely inside a later chunk is found",
+			keywords: []string{"password"},
+			plants:   map[int]string{streamChunkSize + 200*1024: "password"},
+			expect:   []string{"Keywords found: 'password'"},
+		},
+		{
+			// Dedup keys on rule + lowered content: the same keyword in two
+			// chunks is ONE finding, reported once.
+			name:     "same keyword in two chunks deduplicates to one message",
+			keywords: []string{"password"},
+			plants:   map[int]string{1000: "password", streamChunkSize + 200*1024: "password"},
+			expect:   []string{"Keywords found: 'password'"},
+		},
+		{
+			// Distinct keywords are distinct dedup keys; both survive. The
+			// whole-file path would join these into one message, so two
+			// messages also prove the streamed path ran.
+			name:     "two different keywords are both reported",
+			keywords: []string{"password", "secretkey"},
+			plants:   map[int]string{1000: "password", streamChunkSize + 200*1024: "secretkey"},
+			expect:   []string{"Keywords found: 'password'", "Keywords found: 'secretkey'"},
+		},
+		{
+			// Matching is case-insensitive and the message carries the file's
+			// spelling, consistent with the <=1MB path.
+			name:     "uppercased keyword matches and keeps the file's casing",
+			keywords: []string{"password"},
+			plants:   map[int]string{streamChunkSize + 100*1024: "PASSWORD"},
+			expect:   []string{"Keywords found: 'PASSWORD'"},
+		},
+		{
+			// Casings of one keyword share a lowered dedup key: one finding,
+			// reported with the casing of the chunk it was first found in.
+			name:     "differently cased repeats collapse to the first chunk's casing",
+			keywords: []string{"admin"},
+			plants:   map[int]string{1000: "Admin", streamChunkSize + 200*1024: "ADMIN"},
+			expect:   []string{"Keywords found: 'Admin'"},
+		},
+		{
+			name:     "large file without keywords yields no message",
+			keywords: []string{"password"},
+			plants:   nil,
+			expect:   nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			file := streamTestFile(t, fileSize, tt.plants)
+			cfg := config.Config{
+				General: &config.GeneralConfig{MaxContentScanFileSize: 1024 * 1024 * 1024},
+				Tests: map[string]*config.TestConfig{
+					"IsFreeOfKeywords": {KeywordArguments: []map[string]interface{}{
+						{"keywords": tt.keywords, "info": "Keywords found:"},
+					}},
+				},
+			}
+
+			messages := runRule(t, "IsFreeOfKeywords", cfg, ScopeFile, file)
+
+			var got []string
+			for _, m := range messages {
+				if m.Skipped {
+					t.Fatalf("unexpected skip message: %q", m.Content)
+				}
+				got = append(got, m.Content)
+			}
+			sort.Strings(got)
+			want := append([]string(nil), tt.expect...)
+			sort.Strings(want)
+			if len(got) != len(want) {
+				t.Fatalf("expected %d messages %v, got %v", len(want), want, got)
+			}
+			for i := range got {
+				if got[i] != want[i] {
+					t.Errorf("expected message %v, got %v", want[i], got[i])
+				}
+			}
+		})
 	}
 }
 
