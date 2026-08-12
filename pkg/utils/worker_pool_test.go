@@ -201,7 +201,7 @@ func TestWorkerPool_ChannelFullHandling(t *testing.T) {
 // panics inside a worker-pool goroutine (where no request-level recover can
 // reach), the panic is converted into a logged failure - the pool keeps
 // working, the other checks' messages survive, and the process stays alive.
-// Without SafeRunCheck this test would crash the whole test binary.
+// Without safeRunCheck this test would crash the whole test binary.
 func TestWorkerPool_PanickingCheck_DoesNotKillProcess(t *testing.T) {
 	output.GlobalLogger.SetJSONMode(true)
 	output.GlobalLogger.ClearMessages()

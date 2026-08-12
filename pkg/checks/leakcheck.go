@@ -67,7 +67,7 @@ func bindSecrets(spec config.RuleSpec, _ *config.GeneralConfig) (*BoundRule, err
 	return &BoundRule{
 		Rule: spec.Name,
 		applyRepo: func(repository structs.Repository, batch *Batch, sel *selector.Selector) []structs.Message {
-			return isFreeOfSecrets(repository, bound, batch.Limits, batch.MaxContentScan, sel)
+			return isFreeOfSecrets(repository, bound, batch.limits, batch.maxContentScan, sel)
 		},
 	}, nil
 }

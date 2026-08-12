@@ -74,8 +74,8 @@ type CheckDef struct {
 	// returns a rule bound to them - so nothing is type-asserted afterwards.
 	// Called on the ZERO RuleSpec it yields the check's defaults: the defaults
 	// live in Bind itself, which is what default-rule synthesis relies on. Bind
-	// does not fill Sel in: a selector carries no check knowledge, so
-	// utils.Compile compiles one per scope and sets it.
+	// does not fill the dispatch selector in: a selector carries no check
+	// knowledge, so utils.Compile compiles one per scope and sets it.
 	Bind func(spec config.RuleSpec, general *config.GeneralConfig) (*BoundRule, error)
 
 	// RunFile acquires this file's content once and hands it to every rule that
@@ -95,11 +95,11 @@ type CheckDef struct {
 // holds is a property of the acquisition, which happens once per (file, check),
 // not once per rule.
 type Batch struct {
-	// Limits and MaxContentScan are the effective scan bounds, resolved once at
+	// limits and maxContentScan are the effective scan bounds, resolved once at
 	// load. The acquisition reads them here rather than from [general] at scan
 	// time, so per-rule overrides later are a config-surface change only.
-	Limits         readers.ArchiveLimits
-	MaxContentScan int64
+	limits         readers.ArchiveLimits
+	maxContentScan int64
 
 	// Admit is the member admission filter an archive-member acquisition runs in
 	// front of the per-rule gates: the single member rule's own member selector -
@@ -116,7 +116,7 @@ type Batch struct {
 
 // NewBatch resolves the scan bounds every rule of one plan entry shares.
 func NewBatch(general *config.GeneralConfig) *Batch {
-	return &Batch{Limits: archiveLimits(general), MaxContentScan: general.MaxContentScanFileSize}
+	return &Batch{limits: archiveLimits(general), maxContentScan: general.MaxContentScanFileSize}
 }
 
 // reporting says how a rule reports the findings of one body entry: joined into
@@ -139,16 +139,17 @@ const (
 // the CheckDef.
 type BoundRule struct {
 	Rule string            // rule name: diagnostics, and Message.Rule
-	Sel  selector.Selector // the DISPATCH gate, compiled per scope by utils.Compile
+	sel  selector.Selector // the DISPATCH gate, compiled per scope by utils.Compile
 
 	// Member is the archive-member gate, which reads the same configured lists
 	// under the other legacy semantics (see utils.scopeSelectors). nil admits
 	// every member. Only an archive-member rule carries one.
 	Member *selector.Selector
 
-	// unfiltered caches "Sel admits everything", the shipped configs' case: the
-	// selection pass tests one bool per (file, rule) instead of walking an empty
-	// selector. Kept true by SetSelectors, the only writer of Sel.
+	// unfiltered caches "the dispatch selector admits everything", the shipped
+	// configs' case: the selection pass tests one bool per (file, rule) instead
+	// of walking an empty selector. Kept true by SetSelectors, the only writer
+	// of the dispatch selector.
 	unfiltered bool
 
 	// apply scans one acquisition: its entries, their shared lowercase copies -
@@ -165,10 +166,10 @@ type BoundRule struct {
 
 // SetSelectors gives a rule the selectors utils.Compile compiled for ONE scope:
 // gate decides whether the rule is dispatched for a file (or an archive), member
-// whether it sees an individual archive member. It is the only writer of Sel,
-// because it also refreshes the cached unfiltered answer.
+// whether it sees an individual archive member. It is the only writer of the
+// dispatch selector, because it also refreshes the cached unfiltered answer.
 func (r *BoundRule) SetSelectors(gate selector.Selector, member *selector.Selector) {
-	r.Sel = gate
+	r.sel = gate
 	r.Member = member
 	r.unfiltered = gate.Unfiltered()
 }
@@ -186,16 +187,16 @@ func (r *BoundRule) Match(file structs.File) bool {
 }
 
 func (r *BoundRule) matchSubject(file structs.File) bool {
-	if r.Sel.Subject() == selector.SubjectPath {
-		return r.Sel.Match(file.RelPath)
+	if r.sel.Subject() == selector.SubjectPath {
+		return r.sel.Match(file.RelPath)
 	}
-	return r.Sel.Match(file.Name)
+	return r.sel.Match(file.Name)
 }
 
-// MatchMember reports whether this rule's member gate admits the member path.
+// matchMember reports whether this rule's member gate admits the member path.
 // It takes the path rather than a structs.File so the member loop can decide
 // without building one.
-func (r *BoundRule) MatchMember(memberPath string) bool {
+func (r *BoundRule) matchMember(memberPath string) bool {
 	if r.Member == nil {
 		return true
 	}
@@ -210,7 +211,7 @@ func (r *BoundRule) MatchMember(memberPath string) bool {
 // shipped config's case. Narrowing does not gate the rule: one whose selector
 // admits nothing still runs, and can report over an empty set.
 func (r *BoundRule) narrow(repository structs.Repository) structs.Repository {
-	if r.Sel.Unfiltered() {
+	if r.sel.Unfiltered() {
 		return repository
 	}
 	files := make([]structs.File, 0, len(repository.Files))
@@ -262,8 +263,12 @@ func (r Registry) Lookup(name string) (CheckDef, bool) {
 	return r.defs[i], true
 }
 
-// Defs returns the definitions in declared order.
-func (r Registry) Defs() []CheckDef { return r.defs }
+// Defs returns the definitions in declared order, as a copy: the order is
+// load-bearing, so a caller must not be able to reorder the registry's own
+// slice through it.
+func (r Registry) Defs() []CheckDef {
+	return append([]CheckDef(nil), r.defs...)
+}
 
 // Len returns the number of registered checks.
 func (r Registry) Len() int { return len(r.defs) }
@@ -311,7 +316,7 @@ func runNameRules(file structs.File, _ Scope, _ *Batch, rules []*BoundRule) []st
 func runRepositoryRules(repository structs.Repository, batch *Batch, rules []*BoundRule) []structs.Message {
 	var messages []structs.Message
 	for _, rule := range rules {
-		messages = append(messages, tag(rule.Rule, rule.applyRepo(rule.narrow(repository), batch, &rule.Sel))...)
+		messages = append(messages, tag(rule.Rule, rule.applyRepo(rule.narrow(repository), batch, &rule.sel))...)
 	}
 	return messages
 }

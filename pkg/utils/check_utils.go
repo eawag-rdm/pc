@@ -90,7 +90,7 @@ func applyChecksFilteredByFile(ctx context.Context, entries []checkRules, files 
 		helpers.PDFTracker.AddFileIfPDF("", file)
 		// apply checks by file but only for the rules that matched it
 		for _, entry := range scratch.match(entries, file) {
-			ret := SafeRunCheck(entry, file, checks.ScopeFile)
+			ret := safeRunCheck(entry, file, checks.ScopeFile)
 			if ret != nil {
 				// Add test name to each message
 				for j := range ret {
@@ -133,7 +133,7 @@ func applyChecksFilteredByFileWithTestProgress(ctx context.Context, entries []ch
 			}
 			matched := entry
 			matched.rules = rules
-			ret := SafeRunCheck(matched, file, checks.ScopeFile)
+			ret := safeRunCheck(matched, file, checks.ScopeFile)
 			if ret != nil {
 				// Add test name to each message
 				for j := range ret {
@@ -270,12 +270,12 @@ func applyChecksFilteredByFileOnArchiveFileList(ctx context.Context, config conf
 
 // processArchiveFileList processes all file list checks for a single archive
 // This keeps files within each archive sequential while allowing parallelism across archives.
-// The whole body runs under SafeRun (not just the check invocations):
+// The whole body runs under safeRun (not just the check invocations):
 // ReadArchiveFileList parses untrusted archive bytes, and on the parallel path
 // this function runs in a bare worker goroutine where an unrecovered panic
 // would kill the process.
 func processArchiveFileList(ctx context.Context, cfg config.Config, entries []checkRules, archiveFile structs.File) []structs.Message {
-	return SafeRun("Processing archive '"+archiveFile.Name+"'", archiveFile.GetDisplayName(), func() []structs.Message {
+	return safeRun("Processing archive '"+archiveFile.Name+"'", archiveFile.GetDisplayName(), func() []structs.Message {
 		return archiveFileListChecks(ctx, cfg, entries, archiveFile)
 	})
 }
@@ -331,7 +331,7 @@ func archiveFileListChecks(ctx context.Context, cfg config.Config, entries []che
 		helpers.PDFTracker.AddFileIfPDF(archiveFile.Name+" -> ", archivedFile)
 
 		for _, entry := range scratch.match(entries, archivedFile) {
-			ret := SafeRunCheck(entry, archivedFile, checks.ScopeArchiveFileList)
+			ret := safeRunCheck(entry, archivedFile, checks.ScopeArchiveFileList)
 			if ret != nil {
 				for j := range ret {
 					ret[j].TestName = entry.def.Name
@@ -422,7 +422,7 @@ func applyChecksFilteredByFileOnArchive(ctx context.Context, entries []checkRule
 			return messages
 		}
 		for _, entry := range scratch.match(entries, file) {
-			ret := SafeRunCheck(entry, file, checks.ScopeArchiveMember)
+			ret := safeRunCheck(entry, file, checks.ScopeArchiveMember)
 			if ret != nil {
 				// Add test name to each message
 				for j := range ret {
@@ -453,7 +453,7 @@ func applyChecksFilteredByRepository(ctx context.Context, entries []checkRules, 
 			return messages
 		}
 		testName := entry.def.Name
-		ret := SafeRun("Check "+testName, "", func() []structs.Message {
+		ret := safeRun("Check "+testName, "", func() []structs.Message {
 			return entry.def.RunRepository(repo, entry.batch, entry.rules)
 		})
 		if ret != nil {

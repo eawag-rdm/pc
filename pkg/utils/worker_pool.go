@@ -96,7 +96,7 @@ func (wp *workerPool) processWorkItem(work workItem) []structs.Message {
 	// Run all checks for this file sequentially in the same worker
 	// This avoids IO conflicts from multiple goroutines reading the same file
 	for _, entry := range work.Checks {
-		messages := SafeRunCheck(entry, work.File, work.Scope)
+		messages := safeRunCheck(entry, work.File, work.Scope)
 		if len(messages) > 0 {
 			// Add test name to each message
 			for i := range messages {
@@ -122,12 +122,12 @@ func logPanic(what, subject string, recovered interface{}) {
 	}
 }
 
-// SafeRun is the canonical panic guard around check execution: it runs fn and
+// safeRun is the canonical panic guard around check execution: it runs fn and
 // converts a panic into a logged failure instead of letting it propagate. A
 // panic in a pool goroutine is not covered by any request-level recover, so
 // without this a single buggy check (or unreadable/crafted archive) kills the
 // whole process.
-func SafeRun(what, subject string, fn func() []structs.Message) (messages []structs.Message) {
+func safeRun(what, subject string, fn func() []structs.Message) (messages []structs.Message) {
 	defer func() {
 		if r := recover(); r != nil {
 			logPanic(what, subject, r)
@@ -137,11 +137,11 @@ func SafeRun(what, subject string, fn func() []structs.Message) (messages []stru
 	return fn()
 }
 
-// SafeRunCheck is SafeRun specialized for one check over one file. Its panic
+// safeRunCheck is safeRun specialized for one check over one file. Its panic
 // label is built inside the recover branch, not handed in: concatenating it up
 // front cost a string and an allocation for every check that did NOT panic -
 // which is every check, on every file.
-func SafeRunCheck(entry checkRules, file structs.File, scope checks.Scope) (messages []structs.Message) {
+func safeRunCheck(entry checkRules, file structs.File, scope checks.Scope) (messages []structs.Message) {
 	defer func() {
 		if r := recover(); r != nil {
 			logPanic("Check "+entry.def.Name+" on file '"+file.Name+"'", file.GetDisplayName(), r)
@@ -150,7 +150,7 @@ func SafeRunCheck(entry checkRules, file structs.File, scope checks.Scope) (mess
 	}()
 	if !entry.def.Scopes.Has(scope) {
 		// Wrong-phase dispatch would silently swap the acquisition (a file's own
-		// content for an archive's members). The guard is one bit test; SafeRun's
+		// content for an archive's members). The guard is one bit test; safeRun's
 		// recover turns it into a logged internal error rather than bad results.
 		panic("check " + entry.def.Name + " does not serve scope " + scope.String())
 	}

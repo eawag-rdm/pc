@@ -362,11 +362,11 @@ func keywordsInArchive(file structs.File, batch *Batch, rules []*BoundRule) []st
 
 	// The acquisition reads its bounds from the batch: they belong to the whole
 	// (check, scope) entry, not to whichever rule happens to be first.
-	if fileInfo.Size() > batch.MaxContentScan {
-		return append(messages, oversizeSkip(file, "archive", fileInfo.Size(), batch.MaxContentScan))
+	if fileInfo.Size() > batch.maxContentScan {
+		return append(messages, oversizeSkip(file, "archive", fileInfo.Size(), batch.maxContentScan))
 	}
 
-	archiveIterator := readers.InitArchiveIterator(file.Path, file.Name, batch.Limits, batch.Admit)
+	archiveIterator := readers.InitArchiveIterator(file.Path, file.Name, batch.limits, batch.Admit)
 	defer archiveIterator.Close()
 	if !archiveIterator.HasFilesToUnpack() {
 		// Even with no scannable members, the iterator may have skipped members
@@ -404,7 +404,7 @@ func keywordsInArchive(file structs.File, batch *Batch, rules []*BoundRule) []st
 		built := false
 
 		for _, rule := range rules {
-			if perRule && !rule.MatchMember(fileName) {
+			if perRule && !rule.matchMember(fileName) {
 				continue
 			}
 			found := rule.apply(archivedFile, body, lowered, reportJoined)
@@ -448,13 +448,13 @@ func keywordsInFile(file structs.File, batch *Batch, rules []*BoundRule) []struc
 		return messages
 	}
 
-	limits := batch.Limits
+	limits := batch.limits
 
 	// Check if file exceeds the configured maximum size for content scanning.
 	// Emit a skip acknowledgement Message so every output (CLI plain, TUI, JSON)
 	// surfaces that the file's content was not scanned.
-	if fileInfo.Size() > batch.MaxContentScan {
-		return append(messages, oversizeSkip(file, "file", fileInfo.Size(), batch.MaxContentScan))
+	if fileInfo.Size() > batch.maxContentScan {
+		return append(messages, oversizeSkip(file, "file", fileInfo.Size(), batch.maxContentScan))
 	}
 
 	// Known OOXML containers route by extension BEFORE the text sniff:

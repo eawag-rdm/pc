@@ -56,7 +56,7 @@ func bindTestRule(t testing.TB, name string, cfg config.Config, scope Scope) (Ch
 		}
 	}
 	rule.SetSelectors(gate, member)
-	return def, rule, &Batch{Limits: archiveLimits(general), MaxContentScan: general.MaxContentScanFileSize, Admit: member}
+	return def, rule, &Batch{limits: archiveLimits(general), maxContentScan: general.MaxContentScanFileSize, Admit: member}
 }
 
 // runRule runs one check over one file through its bound rule.
@@ -140,6 +140,54 @@ func TestRegistryDeclaredOrder(t *testing.T) {
 	for i, name := range want {
 		if defs[i].Name != name {
 			t.Errorf("check %d is %q, want %q - rendered message order follows this order", i, defs[i].Name, name)
+		}
+	}
+}
+
+// TestMatchMemberGate pins the member gate the archive loop consults once per
+// member: nil admits everything, and a compiled legacy member selector keeps
+// the case-insensitive LITERAL reading over the full member path.
+func TestMatchMemberGate(t *testing.T) {
+	member, admitNone, err := selector.CompileLegacyLists("IsFreeOfKeywords", []string{".log"}, nil)
+	if err != nil || admitNone || member == nil {
+		t.Fatalf("compile member selector: (%v, %v, %v)", member, admitNone, err)
+	}
+	gated := &BoundRule{}
+	gated.SetSelectors(selector.Selector{}, member)
+
+	cases := []struct {
+		name string
+		rule *BoundRule
+		path string
+		want bool
+	}{
+		{"nil member gate admits everything", &BoundRule{}, "deep/run.LOG", true},
+		{"case-insensitive literal over the member path", gated, "deep/run.LOG", true},
+		{"non-matching path refused", gated, "deep/notes.txt", false},
+	}
+	for _, tc := range cases {
+		if got := tc.rule.matchMember(tc.path); got != tc.want {
+			t.Errorf("%s: matchMember(%q) = %v, want %v", tc.name, tc.path, got, tc.want)
+		}
+	}
+}
+
+// TestRegistryDefsReturnsCopy pins Defs' copy semantics: reordering the
+// returned slice must not disturb the registry's own declared order, which is
+// load-bearing (see TestRegistryDeclaredOrder).
+func TestRegistryDefsReturnsCopy(t *testing.T) {
+	registry := NewRegistry()
+	leaked := registry.Defs()
+	declared := make([]string, len(leaked))
+	for i, def := range leaked {
+		declared[i] = def.Name
+	}
+	for i, j := 0, len(leaked)-1; i < j; i, j = i+1, j-1 {
+		leaked[i], leaked[j] = leaked[j], leaked[i]
+	}
+	for i, def := range registry.Defs() {
+		if def.Name != declared[i] {
+			t.Fatalf("check %d is %q after reordering Defs' result, want %q - Defs must return a copy", i, def.Name, declared[i])
 		}
 	}
 }

@@ -13,8 +13,8 @@ const DefaultSecretsTimeoutSeconds = 120
 
 // ValidateChecksConfig fails fast when a [test.*] section the checks dereference
 // at scan time is missing or wrong-typed (nil-pointer on a missing section,
-// failed type assertion on a wrong-typed key - a panic mid-scan otherwise; see
-// utils.SafeRun for the runtime guard). Both the server (at boot) and
+// failed type assertion on a wrong-typed key - a panic mid-scan otherwise; the
+// dispatcher's panic guard is the runtime backstop). Both the server (at boot) and
 // the CLI (after config load) call this so the operator gets one clear,
 // actionable error instead.
 //

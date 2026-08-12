@@ -251,8 +251,13 @@ func TestCompileMemberAdmission(t *testing.T) {
 	if entry.batch.PerRule {
 		t.Error("with one member rule the per-rule member gates are redundant")
 	}
-	// The legacy member reading: literal, case-insensitive, over the member path.
-	if rule.MatchMember("deep/run.LOG") {
+	// The legacy member reading: literal, case-insensitive, over the member
+	// path. Asserted through the admission filter the iterator is handed, which
+	// the assertion above pinned to this rule's own member selector.
+	if rule.Member == nil {
+		t.Fatal("member selector must be compiled")
+	}
+	if entry.batch.Admit.Match("deep/run.LOG") {
 		t.Error("the member gate must keep the case-insensitive literal reading")
 	}
 	// The dispatch gate keeps the OTHER legacy reading: regex over the archive's

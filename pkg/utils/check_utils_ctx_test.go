@@ -53,7 +53,7 @@ func TestApplyAllChecks_CancelledContext_ReturnsPromptly(t *testing.T) {
 // TestApplyChecksFilteredByFile_PanickingCheck_Parallel asserts a panicking
 // check on the parallel (worker-pool) path is converted into a logged failure:
 // the call returns normally with the healthy check's messages and the process
-// survives. Before the SafeRunCheck guard this panicked in a pool goroutine and
+// survives. Before the safeRunCheck guard this panicked in a pool goroutine and
 // killed the whole process.
 func TestApplyChecksFilteredByFile_PanickingCheck_Parallel(t *testing.T) {
 	files := writeTempFiles(t, 3) // >= 2 files selects the parallel path
