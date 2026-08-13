@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
 
+	"github.com/eawag-rdm/pc/pkg/checks"
 	"github.com/eawag-rdm/pc/pkg/config"
 	"github.com/eawag-rdm/pc/pkg/helpers"
 	"github.com/eawag-rdm/pc/pkg/output"
@@ -35,12 +37,29 @@ func buildParityFixture(t *testing.T) []structs.File {
 		return structs.ToFile(path, "", -1, "")
 	}
 
+	zipPath := writeZipFixture(t, dir)
+
+	return []structs.File{
+		write("notes b.txt", "password in here"),   // whitespace + keyword hit
+		write("naïve_data.csv", "a,b\n1,2\n"),      // non-ASCII name
+		write(strings.Repeat("x", 70)+".txt", "x"), // over-long name
+		write(".Rhistory", "history"),              // disallowed name
+		structs.ToFile(zipPath, "", -1, ""),        // archive: name walk + content scan
+	}
+}
+
+// writeZipFixture writes dir/bundle.zip and returns its path: one member with
+// whitespace in its name, one with a keyword in its content, so the archive
+// name walk and the content scan both have something to find. testing.TB, so
+// the tests and the benchmark share the one fixture.
+func writeZipFixture(tb testing.TB, dir string) string {
+	tb.Helper()
 	zipPath := filepath.Join(dir, "bundle.zip")
 	zf, err := os.Create(zipPath)
 	if err != nil {
-		t.Fatalf("create zip: %v", err)
+		tb.Fatalf("create zip: %v", err)
 	}
-	// Safety net for the t.Fatalf paths below, which would otherwise leak the
+	// Safety net for the tb.Fatalf paths below, which would otherwise leak the
 	// fd; the checked Close at the end is the one whose error matters.
 	defer zf.Close()
 	zw := zip.NewWriter(zf)
@@ -50,26 +69,19 @@ func buildParityFixture(t *testing.T) []structs.File {
 	} {
 		w, werr := zw.Create(name)
 		if werr != nil {
-			t.Fatalf("create zip member: %v", werr)
+			tb.Fatalf("create zip member: %v", werr)
 		}
 		if _, werr = w.Write([]byte(content)); werr != nil {
-			t.Fatalf("write zip member: %v", werr)
+			tb.Fatalf("write zip member: %v", werr)
 		}
 	}
 	if err := zw.Close(); err != nil {
-		t.Fatalf("close zip writer: %v", err)
+		tb.Fatalf("close zip writer: %v", err)
 	}
 	if err := zf.Close(); err != nil {
-		t.Fatalf("close zip: %v", err)
+		tb.Fatalf("close zip: %v", err)
 	}
-
-	return []structs.File{
-		write("notes b.txt", "password in here"),   // whitespace + keyword hit
-		write("naïve_data.csv", "a,b\n1,2\n"),      // non-ASCII name
-		write(strings.Repeat("x", 70)+".txt", "x"), // over-long name
-		write(".Rhistory", "history"),              // disallowed name
-		structs.ToFile(zipPath, "", -1, ""),        // archive: name walk + content scan
-	}
+	return zipPath
 }
 
 // messageKey canonicalises a Message for multiset comparison. Message itself is
@@ -122,8 +134,8 @@ func assertEngineParity(t *testing.T, cfg config.Config, files []structs.File) {
 	resetGlobalScanState()
 	plain := ApplyAllChecks(context.Background(), cfg, plan, files, true)
 
-	// The callback runs on the caller's goroutine only (the progress engine's
-	// file phase is sequential), so an unguarded slice is safe here.
+	// Ticks are emitted from the pool's collect loop, which is this goroutine,
+	// so an unguarded slice is safe here. Ticking from a worker breaks it.
 	var calls []progressCall
 	resetGlobalScanState()
 	withProgress := ApplyAllChecksWithProgress(context.Background(), cfg, plan, files, true, func(current, total int, _ string) {
@@ -189,9 +201,10 @@ func assertProgressAccounting(t *testing.T, calls []progressCall) {
 }
 
 // TestApplyAllChecks_ProgressVariantParity pins the two engine entrypoints
-// together: ApplyAllChecks and ApplyAllChecksWithProgress have separate dispatch
-// code (parallel vs per-test-progress) that can silently drift, so assert they
-// produce the same message multiset over the same file set.
+// together: ApplyAllChecks and ApplyAllChecksWithProgress share the pool but
+// keep separate phase drivers (work-list building, ticking, message assembly)
+// that can silently drift, so assert they produce the same message multiset
+// over the same file set.
 func TestApplyAllChecks_ProgressVariantParity(t *testing.T) {
 	cfg, err := config.LoadConfig("../../testdata/test_config.toml")
 	if err != nil {
@@ -205,4 +218,54 @@ func TestApplyAllChecks_ProgressVariantParity(t *testing.T) {
 	// Single file: the same branch goes sequential (threshold is 2 files), which
 	// the run above never reaches.
 	assertEngineParity(t, *cfg, files[:1])
+}
+
+// TestApplyAllChecksWithProgress_TotalCountsDispatchedItems pins the announced
+// total to the DISPATCHED work items: a file every file-scope check filters out
+// is never dispatched and must not be counted, or the announced total overshoots
+// and the bar sticks below 100% for the whole run.
+func TestApplyAllChecksWithProgress_TotalCountsDispatchedItems(t *testing.T) {
+	const excluded = "naïve_data.csv"
+	blacklist := []string{"^" + regexp.QuoteMeta(excluded) + "$"}
+	cfg := withRequiredAnchors(planConfig(map[string]*config.TestConfig{
+		"HasOnlyASCII":            {Blacklist: blacklist},
+		"HasNoWhiteSpace":         {Blacklist: blacklist},
+		"IsValidName":             {Blacklist: blacklist},
+		"HasFileNameSpecialChars": {Blacklist: blacklist},
+		"IsFileNameTooLong":       {Blacklist: blacklist},
+		"IsFreeOfKeywords": {Blacklist: blacklist, KeywordArguments: []map[string]interface{}{
+			{"keywords": []string{"password"}, "info": "Possible credentials in file"},
+		}},
+	}))
+	plan := compilePlan(t, cfg)
+
+	// Anti-vacuity: a file-scope check the config does not exclude (a new one
+	// entering as an unfiltered default rule) would dispatch the file again.
+	for _, entry := range plan.scope(checks.ScopeFile) {
+		if section := cfg.Tests[entry.def.Name]; section == nil || len(section.Blacklist) == 0 {
+			t.Fatalf("file check %q excludes nothing - %q would still be dispatched", entry.def.Name, excluded)
+		}
+	}
+
+	files := buildParityFixture(t)
+	found := false
+	for _, file := range files {
+		if file.Name == excluded {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("fixture no longer holds %q - no file is filtered out and the case is vacuous", excluded)
+	}
+
+	// Ticks come from the collect loop, this goroutine - see assertEngineParity.
+	var calls []progressCall
+	resetGlobalScanState()
+	ApplyAllChecksWithProgress(context.Background(), cfg, plan, files, true, func(current, total int, _ string) {
+		calls = append(calls, progressCall{current: current, total: total})
+	})
+	resetGlobalScanState()
+
+	assertProgressAccounting(t, calls)
 }

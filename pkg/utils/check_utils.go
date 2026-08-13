@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"runtime"
 	"sync"
+	"time"
 
 	"github.com/eawag-rdm/pc/pkg/checks"
 	"github.com/eawag-rdm/pc/pkg/config"
@@ -71,81 +72,7 @@ func ruleCount(entries []checkRules) int {
 }
 
 func applyChecksFilteredByFile(ctx context.Context, entries []checkRules, files []structs.File) []structs.Message {
-	// Two files are enough to be worth a pool. The file pass is NOT gated on the
-	// CPU budget: most of its time is spent blocked on reads (and on PDF
-	// extraction), and a blocked goroutine releases its P - so even a one-CPU
-	// budget overlaps that waiting, which a sequential walk turns into a sum.
-	if len(files) >= 2 {
-		return applyChecksParallel(ctx, entries, files)
-	}
-
-	scratch := newMatchScratch(entries)
-
-	// Sequential processing for small workloads
-	var messages = []structs.Message{}
-	for _, file := range files {
-		// Stop between files once the analysis deadline fired / the caller
-		// cancelled (coarse-grained: a file in progress finishes).
-		if ctx.Err() != nil {
-			return messages
-		}
-		helpers.PDFTracker.AddFileIfPDF("", file)
-		// apply checks by file but only for the rules that matched it
-		for _, entry := range scratch.match(entries, file) {
-			ret := safeRunCheck(ctx, entry, file, checks.ScopeFile)
-			if ret != nil {
-				// Add test name to each message
-				for j := range ret {
-					ret[j].TestName = entry.def.Name
-				}
-				messages = append(messages, ret...)
-			}
-		}
-	}
-	return messages
-}
-
-// applyChecksFilteredByFileWithTestProgress reports progress per test (including skipped tests)
-func applyChecksFilteredByFileWithTestProgress(ctx context.Context, entries []checkRules, files []structs.File, progressCallback func(int)) []structs.Message {
-	var messages = []structs.Message{}
-	testsProcessed := 0
-	// One backing array for the whole walk, reset per file.
-	backing := make([]*checks.BoundRule, 0, ruleCount(entries))
-
-	for _, file := range files {
-		if ctx.Err() != nil {
-			return messages
-		}
-		helpers.PDFTracker.AddFileIfPDF("", file)
-
-		backing = backing[:0]
-
-		// Process all checks for this file (including skipped ones)
-		for _, entry := range entries {
-			// Count this test (whether run or skipped)
-			testsProcessed++
-			if progressCallback != nil {
-				progressCallback(testsProcessed)
-			}
-
-			var rules []*checks.BoundRule
-			rules, backing = matchRules(entry, file, backing)
-			if len(rules) == 0 {
-				continue // Skip this test, but we already counted it
-			}
-			matched := entry
-			matched.rules = rules
-			ret := safeRunCheck(ctx, matched, file, checks.ScopeFile)
-			if ret != nil {
-				// Add test name to each message
-				for j := range ret {
-					ret[j].TestName = entry.def.Name
-				}
-				messages = append(messages, ret...)
-			}
-		}
-	}
-	return messages
+	return applyFileChecks(ctx, entries, files, nil)
 }
 
 // allUnfiltered reports whether every rule of every entry admits every file -
@@ -217,7 +144,20 @@ func filterChecksForFiles(entries []checkRules, scope checks.Scope, files []stru
 // Cancellation is the loop's second exit: the results the workers abandoned
 // with the pool never arrive, so it returns what it has - a partial set by
 // design.
-func runChecksPool(ctx context.Context, workItems []workItem, numWorkers int) []structs.Message {
+// tick, when non-nil, reports how many items have completed. It runs on the
+// collect loop's goroutine - the caller's - so it needs no synchronisation.
+// Two gates keep it off the result path: a counter that admits every
+// len/100th item (the cheap pre-filter, under 200 admissions per pass however
+// large it is) and, behind it, a 50 ms wall clock - so it fires at most ~20
+// times a second however short the pass is. On a pass that runs to completion
+// the last item ticks with both gates bypassed, so the caller's final report is
+// exact; a cancelled pass submits fewer items, so that tick never fires and the
+// last report undercounts - partial by design, like the messages.
+// tick must not panic:
+// a panic here skips the submit/collect handshake and runs the deferred stop
+// while a submit may be parked (see workerPool.stop), so callers guard their
+// callback - ApplyAllChecksWithProgress does.
+func runChecksPool(ctx context.Context, workItems []workItem, numWorkers int, tick func(int)) []structs.Message {
 	if len(workItems) == 0 {
 		return nil
 	}
@@ -249,12 +189,30 @@ func runChecksPool(ctx context.Context, workItems []workItem, numWorkers int) []
 	var allMessages []structs.Message
 	collected := 0
 	submitted := -1
+	stride := max(1, len(workItems)/100) // count gate: a running counter, no per-result divide
+	nextTick := stride
+	var lastTick time.Time
 	done := ctx.Done() // hoisted: one interface call, not one per result
 	for submitted < 0 || collected < submitted {
 		select {
 		case result := <-pool.results():
 			allMessages = append(allMessages, result.Messages...)
 			collected++
+			if tick != nil {
+				if collected == len(workItems) {
+					tick(collected) // the final report must be exact
+				} else if collected >= nextTick {
+					nextTick += stride
+					// Count alone fires 100-199 times regardless of duration,
+					// which on a millisecond pass is thousands of redraws a
+					// second, each stalling this loop and back-pressuring the
+					// workers. Rate-limit by wall clock.
+					if now := time.Now(); now.Sub(lastTick) > 50*time.Millisecond {
+						lastTick = now
+						tick(collected)
+					}
+				}
+			}
 		case n := <-submittedCh:
 			submitted = n
 		case <-done:
@@ -284,14 +242,53 @@ func runChecksPool(ctx context.Context, workItems []workItem, numWorkers int) []
 	return allMessages
 }
 
-// applyChecksParallel processes files concurrently using a worker pool.
-func applyChecksParallel(ctx context.Context, entries []checkRules, files []structs.File) []structs.Message {
+// applyFileChecks is the whole file phase, shared by both entry points: the PDF
+// pre-pass, selection, then execution of the work list. begin, when non-nil, is
+// handed the work-item count once that list exists and before any check runs -
+// the progress path needs it for its total up front - and returns the tick (or
+// nil, for no progress).
+//
+// Two files are enough to be worth a pool. The pass is NOT gated on the CPU
+// budget: most of its time is spent blocked on reads (and on PDF extraction),
+// and a blocked goroutine releases its P - so even a one-CPU budget overlaps
+// that waiting, which a sequential walk turns into a sum. At least two workers
+// for the same reason.
+func applyFileChecks(ctx context.Context, entries []checkRules, files []structs.File, begin func(int) func(int)) []structs.Message {
 	for _, file := range files {
 		helpers.PDFTracker.AddFileIfPDF("", file)
 	}
-	// At least two workers even on a one-CPU budget: see applyChecksFilteredByFile
-	// on why this pass overlaps I/O rather than tracking the CPU budget.
-	return runChecksPool(ctx, filterChecksForFiles(entries, checks.ScopeFile, files), max(2, runtime.GOMAXPROCS(0)))
+	workItems := filterChecksForFiles(entries, checks.ScopeFile, files)
+	var tick func(int)
+	if begin != nil {
+		tick = begin(len(workItems))
+	}
+	if len(files) >= 2 {
+		return runChecksPool(ctx, workItems, max(2, runtime.GOMAXPROCS(0)), tick)
+	}
+
+	// Sequential processing for small workloads: no pool, no channels.
+	var messages = []structs.Message{}
+	for i, item := range workItems {
+		// Stop between files once the analysis deadline fired / the caller
+		// cancelled (coarse-grained: a file in progress finishes).
+		if ctx.Err() != nil {
+			return messages
+		}
+		for _, entry := range item.Checks {
+			ret := safeRunCheck(ctx, entry, item.File, item.Scope)
+			if ret != nil {
+				// Add test name to each message
+				for j := range ret {
+					ret[j].TestName = entry.def.Name
+				}
+				messages = append(messages, ret...)
+			}
+		}
+		if tick != nil {
+			tick(i + 1)
+		}
+	}
+	return messages
 }
 
 func applyChecksFilteredByFileOnArchiveFileList(ctx context.Context, config config.Config, entries []checkRules, files []structs.File) []structs.Message {
@@ -505,7 +502,7 @@ func archiveWorkers(procs int) int {
 // extraction is memory-intensive, so it uses a fraction of the CPU budget.
 func applyArchiveChecksParallel(ctx context.Context, entries []checkRules, files []structs.File) []structs.Message {
 	numWorkers := archiveWorkers(runtime.GOMAXPROCS(0))
-	return runChecksPool(ctx, filterChecksForFiles(entries, checks.ScopeArchiveMember, files), numWorkers)
+	return runChecksPool(ctx, filterChecksForFiles(entries, checks.ScopeArchiveMember, files), numWorkers, nil)
 }
 
 func applyChecksFilteredByRepository(ctx context.Context, entries []checkRules, files []structs.File) []structs.Message {
@@ -591,11 +588,15 @@ func ApplyAllChecks(ctx context.Context, config config.Config, plan *Plan, files
 }
 
 // ApplyAllChecksWithProgress is the progress-reporting twin of ApplyAllChecks
-// (same check groups, same messages) for the TUI. Its file phase is
-// SINGLE-THREADED by construction: per-test progress accounting needs a
-// sequential walk, so the server must never be routed here - it would serialise
-// every analysis silently. plan is the same startup-built plan ApplyAllChecks
-// takes. Intended caller is internal/analysis.Run (progress != nil branch);
+// (same check groups, same messages) for the TUI. Every phase runs the same
+// dispatch as its twin - the file phase through the same shared helper, which
+// hands out its work-item count before executing, so the announced total is
+// what will actually run - and ticks it from the pool's collect loop, rate
+// limited there. That shared dispatch pools the file phase, so its messages now
+// arrive in completion order, not input order, and the rendered order varies
+// between runs (long true of ApplyAllChecks, new here). plan is the same
+// startup-built plan ApplyAllChecks takes. Intended caller is
+// internal/analysis.Run (progress != nil branch);
 // everything else takes ApplyAllChecks. Panics on a nil plan, like its twin.
 // Cancellation carries the same contract as its twin: a partial, unmarked
 // result set, with ctx.Err() as the caller's only signal.
@@ -610,13 +611,11 @@ func ApplyAllChecksWithProgress(ctx context.Context, config config.Config, plan 
 	memberChecks := plan.scope(checks.ScopeArchiveMember)
 	repositoryChecks := plan.scope(checks.ScopeRepository)
 
-	// Calculate total number of tests (including skipped tests)
+	// Calculate total number of tests (including skipped tests). The file phase's
+	// term, added by begin below, counts WORK ITEMS (one per file) where phases
+	// 2-4 count checks, so the counter is no longer "tests" and the file phase's
+	// share of the bar is ~6x smaller than a files x checks count.
 	totalTests := 0
-
-	// Count ALL file-based tests (including skipped ones)
-	for range files {
-		totalTests += len(fileChecks)
-	}
 
 	// Count ALL archive tests (including skipped ones)
 	for _, file := range files {
@@ -632,17 +631,32 @@ func ApplyAllChecksWithProgress(ctx context.Context, config config.Config, plan 
 
 	testsRun := 0
 
-	// Step 1: File checks (with per-test progress)
+	// Step 1: File checks (with per-test progress). begin completes the total
+	// from the work list the shared file phase built, then hands back the tick.
+	// Without a callback it stays nil: no closures, and a nil tick down a
+	// dispatch identical to ApplyAllChecks'.
+	var begin func(int) func(int)
 	if progressCallback != nil {
-		progressCallback(testsRun, totalTests, "Running file checks...")
-	}
-
-	messages = append(messages, applyChecksFilteredByFileWithTestProgress(ctx, fileChecks, files, func(current int) {
-		testsRun = current
-		if progressCallback != nil {
-			progressCallback(testsRun, totalTests, fmt.Sprintf("Running file tests... (%d/%d)", testsRun, totalTests))
+		begin = func(items int) func(int) {
+			totalTests += items
+			progressCallback(testsRun, totalTests, "Running file checks...")
+			return func(current int) {
+				// The tick runs caller code inside the pool's collect loop: a
+				// panic there would skip the submit/collect handshake and run
+				// the deferred stop against a parked submit (workerPool.stop),
+				// in a goroutine no recover reaches. Progress is cosmetic -
+				// drop the tick and keep scanning.
+				defer func() {
+					if r := recover(); r != nil {
+						logPanic("Progress callback", "", r)
+					}
+				}()
+				testsRun = current
+				progressCallback(testsRun, totalTests, fmt.Sprintf("Running file tests... (%d/%d)", testsRun, totalTests))
+			}
 		}
-	})...)
+	}
+	messages = append(messages, applyFileChecks(ctx, fileChecks, files, begin)...)
 
 	// Step 2: Archive file list checks
 	if progressCallback != nil {

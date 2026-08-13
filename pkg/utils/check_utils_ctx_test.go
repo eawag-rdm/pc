@@ -52,15 +52,15 @@ func TestApplyAllChecks_CancelledContext_ReturnsPromptly(t *testing.T) {
 	}
 }
 
-// TestApplyChecksParallel_CancelledMidScan_ReturnsPromptly is the same contract
-// for a context cancelled while the pool is busy, not before it starts. The
-// pool's context derives from the caller's, so cancellation makes the workers
-// drop whatever is still queued; the collect loop must not go on waiting for
-// those results. Without the ctx case in that loop this hangs forever - and on
-// the server, which admits one analysis at a time, a hang here is fatal. It
-// drives the pool path directly: applyChecksFilteredByFile would fall back to
-// the sequential walk on a single-CPU runner and pass with the bug present.
-func TestApplyChecksParallel_CancelledMidScan_ReturnsPromptly(t *testing.T) {
+// TestApplyChecksFilteredByFile_CancelledMidScan_ReturnsPromptly is the same
+// contract for a context cancelled while the pool is busy, not before it
+// starts. The pool's context derives from the caller's, so cancellation makes
+// the workers drop whatever is still queued; the collect loop must not go on
+// waiting for those results. Without the ctx case in that loop this hangs
+// forever - and on the server, which admits one analysis at a time, a hang here
+// is fatal. The 200-file set is far above the 2-file threshold, so the pass
+// takes the pool path, not the sequential walk.
+func TestApplyChecksFilteredByFile_CancelledMidScan_ReturnsPromptly(t *testing.T) {
 	// No files are created on disk: the mock check below never opens them, and
 	// dispatch selects on the name alone.
 	files := make([]structs.File, 0, 200)
@@ -82,14 +82,14 @@ func TestApplyChecksParallel_CancelledMidScan_ReturnsPromptly(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		applyChecksParallel(ctx, []checkRules{slow}, files)
+		applyChecksFilteredByFile(ctx, []checkRules{slow}, files)
 		close(done)
 	}()
 
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
-		t.Fatal("applyChecksParallel did not return after mid-scan cancellation")
+		t.Fatal("applyChecksFilteredByFile did not return after mid-scan cancellation")
 	}
 	// Returning is not enough: it must have returned because the scan was cut
 	// short. Only the items already queued when the cancel landed can still run,

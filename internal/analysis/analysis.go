@@ -25,11 +25,9 @@ import (
 // the metadata checks - metadata.RunChecks takes no ctx. CLI callers pass
 // context.Background().
 //
-// progress may be nil (server, non-TUI CLI) and then selects the parallel
-// engine. A non-nil progress serialises the file phase: the WithProgress engine
-// is single-threaded there, so callers that want a parallel scan must pass nil.
-// The nil branch MUST stay on ApplyAllChecks for that reason - collapsing both
-// branches onto the progress engine would silently serialise the server.
+// progress may be nil (server, non-TUI CLI). Both branches run the same
+// file-phase dispatch; the only difference is that the WithProgress engine
+// emits progress ticks.
 //
 // Provisional leak: ProgressCallback's message string is engine-authored
 // presentation text; the check-rules rework narrows it.
