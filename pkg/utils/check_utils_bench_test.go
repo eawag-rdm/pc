@@ -62,6 +62,10 @@ func benchFileScope(b *testing.B, cfg config.Config) []checkRules {
 //     every rule admits every file.
 //   - workitems: the whole pass, whose allocations are the per-file rule and
 //     check slices the worker pool consumes, not the filtering.
+//   - workitems-reported / workitems-unfiltered-reported: the same two passes
+//     with the rule report on, so the A/B against them is what the reporting
+//     costs. The buffer is taken inside the loop because production takes one
+//     per phase.
 func BenchmarkFilterChecksForFiles(b *testing.B) {
 	const fileCount = 5000
 	files := benchFilterFiles(fileCount)
@@ -94,7 +98,7 @@ func BenchmarkFilterChecksForFiles(b *testing.B) {
 	b.Run("workitems", func(b *testing.B) {
 		b.ReportAllocs()
 		for b.Loop() {
-			if items := filterChecksForFiles(entries, checks.ScopeFile, files); len(items) == 0 {
+			if items := filterChecksForFiles(entries, checks.ScopeFile, files, nil); len(items) == 0 {
 				b.Fatal("no work items built")
 			}
 		}
@@ -107,7 +111,28 @@ func BenchmarkFilterChecksForFiles(b *testing.B) {
 	b.Run("workitems-unfiltered", func(b *testing.B) {
 		b.ReportAllocs()
 		for b.Loop() {
-			items := filterChecksForFiles(noFilter, checks.ScopeFile, files)
+			items := filterChecksForFiles(noFilter, checks.ScopeFile, files, nil)
+			if len(items) != fileCount || &items[0].Checks[0] != &noFilter[0] {
+				b.Fatal("the unfiltered pass must share the plan's entries")
+			}
+		}
+	})
+
+	b.Run("workitems-reported", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			marks := newRuleMarks(entries)
+			if items := filterChecksForFiles(entries, checks.ScopeFile, files, marks); len(items) == 0 {
+				b.Fatal("no work items built")
+			}
+		}
+	})
+
+	b.Run("workitems-unfiltered-reported", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			marks := newRuleMarks(noFilter)
+			items := filterChecksForFiles(noFilter, checks.ScopeFile, files, marks)
 			if len(items) != fileCount || &items[0].Checks[0] != &noFilter[0] {
 				b.Fatal("the unfiltered pass must share the plan's entries")
 			}

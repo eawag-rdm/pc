@@ -48,7 +48,7 @@ func TestRunChecksPool_ProgressTickRegimes(t *testing.T) {
 				ran.Add(1)
 				return nil
 			})
-			workItems := filterChecksForFiles([]checkRules{entry}, checks.ScopeFile, files)
+			workItems := filterChecksForFiles([]checkRules{entry}, checks.ScopeFile, files, nil)
 			if len(workItems) != items {
 				t.Fatalf("work list holds %d items, want %d", len(workItems), items)
 			}
