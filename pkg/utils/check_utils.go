@@ -71,9 +71,11 @@ func ruleCount(entries []checkRules) int {
 }
 
 func applyChecksFilteredByFile(ctx context.Context, entries []checkRules, files []structs.File) []structs.Message {
-	// Use parallel processing for multiple files, sequential for small workloads
-	// Lowered threshold from 4 to 2 files to enable parallel processing sooner
-	if len(files) >= 2 && runtime.NumCPU() > 1 {
+	// Two files are enough to be worth a pool. The file pass is NOT gated on the
+	// CPU budget: most of its time is spent blocked on reads (and on PDF
+	// extraction), and a blocked goroutine releases its P - so even a one-CPU
+	// budget overlaps that waiting, which a sequential walk turns into a sum.
+	if len(files) >= 2 {
 		return applyChecksParallel(ctx, entries, files)
 	}
 
@@ -287,7 +289,9 @@ func applyChecksParallel(ctx context.Context, entries []checkRules, files []stru
 	for _, file := range files {
 		helpers.PDFTracker.AddFileIfPDF("", file)
 	}
-	return runChecksPool(ctx, filterChecksForFiles(entries, checks.ScopeFile, files), runtime.NumCPU())
+	// At least two workers even on a one-CPU budget: see applyChecksFilteredByFile
+	// on why this pass overlaps I/O rather than tracking the CPU budget.
+	return runChecksPool(ctx, filterChecksForFiles(entries, checks.ScopeFile, files), max(2, runtime.GOMAXPROCS(0)))
 }
 
 func applyChecksFilteredByFileOnArchiveFileList(ctx context.Context, config config.Config, entries []checkRules, files []structs.File) []structs.Message {
@@ -304,7 +308,7 @@ func applyChecksFilteredByFileOnArchiveFileList(ctx context.Context, config conf
 	}
 
 	// Use parallel processing for multiple archives
-	if len(archiveFiles) >= 2 && runtime.NumCPU() > 1 {
+	if len(archiveFiles) >= 2 && runtime.GOMAXPROCS(0) > 1 {
 		return applyArchiveFileListChecksParallel(ctx, config, entries, archiveFiles)
 	}
 
@@ -398,7 +402,7 @@ func archiveFileListChecks(ctx context.Context, cfg config.Config, entries []che
 // applyArchiveFileListChecksParallel processes archive file list checks in parallel across archives
 // Each archive is processed by a single worker, keeping files within each archive sequential
 func applyArchiveFileListChecksParallel(ctx context.Context, cfg config.Config, entries []checkRules, archiveFiles []structs.File) []structs.Message {
-	numWorkers := runtime.NumCPU()
+	numWorkers := runtime.GOMAXPROCS(0)
 	if len(archiveFiles) < numWorkers {
 		numWorkers = len(archiveFiles)
 	}
@@ -461,7 +465,7 @@ func applyChecksFilteredByFileOnArchive(ctx context.Context, entries []checkRule
 	}
 
 	// Use parallel processing for archives as they are CPU-intensive
-	if len(archiveFiles) >= 2 && runtime.NumCPU() > 1 {
+	if len(archiveFiles) >= 2 && runtime.GOMAXPROCS(0) > 1 {
 		return applyArchiveChecksParallel(ctx, entries, archiveFiles)
 	}
 
@@ -487,13 +491,20 @@ func applyChecksFilteredByFileOnArchive(ctx context.Context, entries []checkRule
 	return messages
 }
 
+// archiveWorkers sizes the archive-member pass: half the CPU budget as a proxy
+// for "fewer concurrent extractions, lower peak memory" - the constraint is
+// extraction MEMORY, which no CPU quota bounds. Halving alone would collapse a
+// 2- or 3-core budget to one extraction at a time (harmless under NumCPU, where
+// that floor was unreachable above 3 cores; live once the budget can be capped),
+// so the floor is two - never more than the budget itself.
+func archiveWorkers(procs int) int {
+	return min(procs, max(2, procs/2))
+}
+
 // applyArchiveChecksParallel processes archive files in parallel. Archive
-// extraction is memory-intensive, so it uses half the CPUs.
+// extraction is memory-intensive, so it uses a fraction of the CPU budget.
 func applyArchiveChecksParallel(ctx context.Context, entries []checkRules, files []structs.File) []structs.Message {
-	numWorkers := runtime.NumCPU() / 2
-	if numWorkers < 1 {
-		numWorkers = 1
-	}
+	numWorkers := archiveWorkers(runtime.GOMAXPROCS(0))
 	return runChecksPool(ctx, filterChecksForFiles(entries, checks.ScopeArchiveMember, files), numWorkers)
 }
 

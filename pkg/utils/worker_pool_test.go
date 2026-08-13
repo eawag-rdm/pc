@@ -41,12 +41,52 @@ func TestNewWorkerPool(t *testing.T) {
 func TestNewWorkerPool_DefaultWorkers(t *testing.T) {
 	pool := newWorkerPool(context.Background(), 0)
 
-	expectedWorkers := runtime.NumCPU()
-	if pool.numWorkers != expectedWorkers {
-		t.Errorf("Expected %d workers (NumCPU), got %d", expectedWorkers, pool.numWorkers)
+	if pool.numWorkers < 1 {
+		t.Errorf("default sizing produced %d workers", pool.numWorkers)
+	}
+	if got, want := cap(pool.workChan), pool.numWorkers*2; got != want {
+		t.Errorf("work channel buffered %d, want 2 per worker (%d)", got, want)
 	}
 
 	pool.stop()
+}
+
+// TestNewWorkerPool_RespectsCappedGOMAXPROCS pins the sizing SOURCE: GOMAXPROCS
+// equals NumCPU unless lowered, so only a lowered value tells the two apart.
+func TestNewWorkerPool_RespectsCappedGOMAXPROCS(t *testing.T) {
+	if runtime.NumCPU() < 2 {
+		t.Skip("needs more than one CPU to tell GOMAXPROCS and NumCPU apart")
+	}
+	// Not parallel: GOMAXPROCS is process-wide. Setting it also pins the
+	// runtime's automatic (cgroup-aware) updating off for the rest of the test
+	// binary, which no test depends on.
+	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(1))
+
+	pool := newWorkerPool(context.Background(), 0)
+	defer pool.stop()
+
+	if pool.numWorkers != 1 {
+		t.Errorf("pool sized %d workers under GOMAXPROCS=1, want 1", pool.numWorkers)
+	}
+}
+
+// TestArchiveWorkers pins the sizing with real semantics behind it: half the
+// budget for memory reasons, but never below two extractions and never above
+// the budget itself. Plain halving returns 1 at a budget of 2 or 3.
+func TestArchiveWorkers(t *testing.T) {
+	cases := []struct{ procs, want int }{
+		{1, 1}, // never more than the budget
+		{2, 2}, // plain halving would serialise here
+		{3, 2},
+		{4, 2},
+		{8, 4},
+		{16, 8},
+	}
+	for _, tc := range cases {
+		if got := archiveWorkers(tc.procs); got != tc.want {
+			t.Errorf("archiveWorkers(%d) = %d, want %d", tc.procs, got, tc.want)
+		}
+	}
 }
 
 func TestWorkerPool_StartStop(t *testing.T) {

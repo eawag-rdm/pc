@@ -42,7 +42,7 @@ type workResult struct {
 // called either way - it is what releases the derived context.
 func newWorkerPool(ctx context.Context, numWorkers int) *workerPool {
 	if numWorkers <= 0 {
-		numWorkers = runtime.NumCPU()
+		numWorkers = runtime.GOMAXPROCS(0)
 	}
 
 	poolCtx, cancel := context.WithCancel(ctx)

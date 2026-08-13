@@ -118,7 +118,7 @@ var pdfRuntime struct {
 // initFn builds the pool; a var so tests can inject init failures.
 var initFn = defaultInit
 
-// pdfPool is on the hot path (once per PDF, from NumCPU workers), so the
+// pdfPool is on the hot path (once per PDF, from GOMAXPROCS workers), so the
 // initialized case must stay lock-free: only the retry path takes the mutex.
 func pdfPool() (pdfium.Pool, error) {
 	if p := pdfRuntime.ready.Load(); p != nil {
@@ -204,10 +204,13 @@ func defaultInit() (pdfium.Pool, error) {
 		RuntimeConfig: runtimeConfig,
 		MinIdle:       0,
 		MaxIdle:       1,
-		// Small fixed pool, NOT NumCPU: check workers block on
+		// Small fixed pool, NOT one instance per worker: check workers block on
 		// acquisition as backpressure; instance memory scales with the
-		// largest in-flight document.
-		MaxTotal: min(4, runtime.NumCPU()),
+		// largest in-flight document. This size is a ONE-SHOT SNAPSHOT taken at
+		// the first PDF and kept for the process lifetime, where the check
+		// pools re-read the budget per pass - sound only because the budget is
+		// set once at startup and never moves afterwards.
+		MaxTotal: min(4, runtime.GOMAXPROCS(0)),
 		// Default (false) destroys the instance per document - frees
 		// wasm memory every file; replacement costs single-digit ms.
 		ReuseWorkers: false,
