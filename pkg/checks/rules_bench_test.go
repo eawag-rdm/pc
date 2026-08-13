@@ -77,7 +77,7 @@ func benchKeywordRules(b *testing.B, n int) (CheckDef, *Batch, []*BoundRule) {
 			Name:    benchKeywordInfos[i],
 			Check:   "IsFreeOfKeywords",
 			Enabled: true,
-			Params:  map[string]interface{}{ParamSets: sets},
+			Params:  sets,
 		}, benchGeneral())
 		if err != nil {
 			b.Fatalf("bind rule %d: %v", i, err)
@@ -356,9 +356,9 @@ func TestArchiveBudgetIndependentOfRuleCount(t *testing.T) {
 			rule, err := def.Bind(config.RuleSpec{
 				Name:  benchKeywordInfos[i],
 				Check: "IsFreeOfKeywords",
-				Params: map[string]interface{}{ParamSets: []map[string]interface{}{
+				Params: []map[string]interface{}{
 					{"keywords": benchKeywordGroups[i], "info": benchKeywordInfos[i]},
-				}},
+				},
 			}, general)
 			if err != nil {
 				t.Fatalf("bind rule %d: %v", i, err)

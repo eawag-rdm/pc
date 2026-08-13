@@ -3,6 +3,8 @@ package checks
 import (
 	"fmt"
 	"path"
+	"slices"
+	"sort"
 	"strings"
 
 	"github.com/eawag-rdm/pc/pkg/config"
@@ -154,6 +156,12 @@ type BoundRule struct {
 	// of the dispatch selector.
 	unfiltered bool
 
+	// baseNames says the dispatch gate's "name" subject means the BASE name of
+	// the file's member path (archive-file-list scope of a [[rule]], where the
+	// synthetic file's Name is the full member path). Legacy rules never set
+	// it: their gates historically read the whole member path.
+	baseNames bool
+
 	// apply scans one acquisition: its entries, their shared lowercase copies -
 	// lowered once per acquisition, never once per rule - and how a finding is
 	// reported. Both slices are nil for checks that read no content.
@@ -166,14 +174,17 @@ type BoundRule struct {
 	applyRepo func(repository structs.Repository, batch *Batch, sel *selector.Selector) []structs.Message
 }
 
-// SetSelectors gives a rule the selectors utils.Compile compiled for ONE scope:
-// gate decides whether the rule is dispatched for a file (or an archive), member
-// whether it sees an individual archive member. It is the only writer of the
-// dispatch selector, because it also refreshes the cached unfiltered answer.
-func (r *BoundRule) SetSelectors(gate selector.Selector, member *selector.Selector) {
-	r.sel = gate
-	r.Member = member
-	r.unfiltered = gate.Unfiltered()
+// SetSelectors gives a rule the selectors CompileRuleSelectors compiled for
+// ONE scope: the gate decides whether the rule is dispatched for a file (or an
+// archive), the member selector whether it sees an individual archive member,
+// and BaseNames whether the gate's "name" subject means the base of a member
+// path. It is the only writer of the dispatch selector, because it also
+// refreshes the cached unfiltered answer.
+func (r *BoundRule) SetSelectors(s RuleSelectors) {
+	r.sel = s.Gate
+	r.Member = s.Member
+	r.baseNames = s.BaseNames
+	r.unfiltered = s.Gate.Unfiltered()
 }
 
 // Match reports whether this rule's dispatch gate admits the file, against the
@@ -198,7 +209,11 @@ func (r *BoundRule) matchSubject(file structs.File) bool {
 	if r.sel.Subject() == selector.SubjectPath {
 		return r.sel.Match(file.RelPath)
 	}
-	return r.sel.Match(file.Name)
+	name := file.Name
+	if r.baseNames {
+		name = path.Base(name)
+	}
+	return r.sel.Match(name)
 }
 
 // matchMember reports whether this rule's member gate admits the member path.
@@ -244,14 +259,6 @@ func tag(rule string, messages []structs.Message) []structs.Message {
 	}
 	return messages
 }
-
-// The parameter keys a translated legacy [test.X] section carries: its
-// keywordArguments entries become the rule's parameter sets, its attrs table
-// travels verbatim.
-const (
-	ParamSets  = "keywordArguments"
-	ParamAttrs = "attrs"
-)
 
 // Registry holds every registered check. Its DECLARED ORDER is load-bearing:
 // utils.Compile adds the rules to the plan in it, so it is the order the
@@ -345,25 +352,38 @@ func bindNoParams(check func(structs.File) []structs.Message) func(config.RuleSp
 	}
 }
 
-// paramSets reads a rule's parameter sets. One legacy [test.X] section becomes
-// ONE rule carrying N sets, which the batched runner then loops over; the zero
-// RuleSpec carries none, which is the check's default.
-func paramSets(spec config.RuleSpec) ([]map[string]interface{}, error) {
-	raw, present := spec.Params[ParamSets]
-	if !present {
-		return nil, nil
+// ruleSets returns a rule's parameter sets, the unit the batched runners loop
+// over: each [rule.params] table is one set, a translated legacy section's
+// keywordArguments list its N. The zero RuleSpec carries none, which is the
+// check's default. allowed names the keys the check reads; on the [[rule]]
+// surface any other key is a load error - legacy sets keep their lenient
+// reading until the sugar is removed.
+func ruleSets(spec config.RuleSpec, allowed ...string) ([]map[string]interface{}, error) {
+	if spec.Legacy {
+		return spec.Params, nil
 	}
-	sets, ok := raw.([]map[string]interface{})
-	if !ok {
-		return nil, fmt.Errorf("%s must be a list of parameter sets, got %T", ParamSets, raw)
+	for _, set := range spec.Params {
+		keys := make([]string, 0, len(set))
+		for key := range set {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys) // map order is random; the reported key must not be
+		for _, key := range keys {
+			if !slices.Contains(allowed, key) {
+				if len(allowed) == 0 {
+					return nil, fmt.Errorf("check %q takes no parameters", spec.Check)
+				}
+				return nil, fmt.Errorf("params: unknown key %q (check %q takes %s)", key, spec.Check, strings.Join(allowed, ", "))
+			}
+		}
 	}
-	return sets, nil
+	return spec.Params, nil
 }
 
 // rejectParams refuses parameters on a check that takes none, so a typo in a
 // section name is a load error rather than a silently inert setting.
 func rejectParams(spec config.RuleSpec) error {
-	sets, err := paramSets(spec)
+	sets, err := ruleSets(spec)
 	if err != nil {
 		return err
 	}

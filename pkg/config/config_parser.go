@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -15,27 +16,45 @@ type TestConfig struct {
 	Whitelist        []string
 	KeywordArguments []map[string]interface{}
 	// Attrs holds check-specific scalar settings (e.g. the [test.IsFreeOfSecrets]
-	// attrs table). Values are stored verbatim; ValidateChecksConfig type-checks
-	// the keys each check dereferences so wrong-typed values fail at config load.
+	// attrs table). Values are stored verbatim; the check's own Bind type-checks
+	// them when utils.Compile builds the plan, so wrong-typed values fail at load.
 	Attrs map[string]interface{}
 }
+
+// DefaultRulePrefix marks the names of synthesized default rules
+// (checks.RuleSpecs). parseRuleSpec refuses it on declared rules, so synthesis
+// can never collide with an operator's rule name.
+const DefaultRulePrefix = "default:"
 
 // RuleSpec is the declarative form of one rule: a named instance of a check
 // with its own parameters and its own file selector. It holds strings and raw
 // TOML values only and knows nothing about the check it names - pkg/utils
-// compiles it against the check registry. The [[rule]] TOML surface lands in a
-// later commit; for now pkg/utils translates the legacy [test.X] sections into
-// these.
+// compiles it against the check registry. [[rule]] sections decode into these;
+// the legacy [test.X] sections are translated into them (checks.RuleSpecs)
+// until that sugar is removed.
 type RuleSpec struct {
-	Name       string                 // unique, operator-chosen
-	Check      string                 // registered check name
-	Scope      []string               // empty: the check's own scopes
-	Subject    string                 // "name" (default) or "path"
-	Enabled    bool                   // a disabled rule is left out of the plan
-	IgnoreCase bool                   // selector case folding
-	Include    []string               // selector include patterns
-	Exclude    []string               // selector exclude patterns
-	Params     map[string]interface{} // check-specific, type-checked by its Bind
+	Name       string   // unique, operator-chosen
+	Check      string   // registered check name
+	Scope      []string // empty: the check's own scopes
+	Subject    string   // "name" (default; archive-member and repository default to "path") or "path"
+	Enabled    bool     // a disabled rule is left out of the plan
+	IgnoreCase bool     // selector case folding
+	Include    []string // selector include patterns
+	Exclude    []string // selector exclude patterns
+	// Params holds the check-specific parameter sets, type-checked by the
+	// check's Bind: each [rule.params] table is one set, the repeated
+	// [[rule.params]] form carries several, and a translated legacy section's
+	// keywordArguments list lands here unchanged.
+	Params []map[string]interface{}
+	// Attrs is a translated legacy section's attrs table, verbatim; only the
+	// leak check reads one. The [[rule]] surface never sets it - its knobs are
+	// ordinary params - and it dies with the legacy sugar.
+	Attrs map[string]interface{}
+	// Legacy marks a spec translated from a [test.X] section: its lists keep
+	// the two historical readings (regex over names at dispatch,
+	// case-insensitive literals over member paths) until the sugar is removed.
+	// The [[rule]] surface never sets it.
+	Legacy bool
 }
 
 type CollectorConfig struct {
@@ -178,6 +197,7 @@ type Config struct {
 	General    *GeneralConfig
 	Server     *ServerConfig
 	Tests      map[string]*TestConfig
+	Rules      []RuleSpec // [[rule]] sections, in config order
 	Operation  map[string]*OperationConfig
 	Collectors map[string]*CollectorConfig
 }
@@ -187,6 +207,22 @@ func ParseConfig(filename string) (*Config, error) {
 	var raw map[string]interface{}
 	if _, err := toml.DecodeFile(filename, &raw); err != nil {
 		return nil, err
+	}
+
+	// Unknown top-level tables are refused outright: TOML accepts any table
+	// name, so a typo like [[rules]] would silently discard every declared rule
+	// and the load would proceed on defaults.
+	var unknownTop []string
+	for key := range raw {
+		switch key {
+		case "general", "server", "test", "rule", "collector", "operation":
+		default:
+			unknownTop = append(unknownTop, key)
+		}
+	}
+	if len(unknownTop) > 0 {
+		sort.Strings(unknownTop) // map order is random; the reported keys must not be
+		return nil, fmt.Errorf("unknown top-level config key(s): %s", strings.Join(unknownTop, ", "))
 	}
 
 	c := &Config{
@@ -413,6 +449,42 @@ func ParseConfig(filename string) (*Config, error) {
 		}
 	}
 
+	// [[rule]] sections: the primary check-configuration surface. Decoding is
+	// fail-fast throughout - a wrong-typed or unknown key is a load error, never
+	// a silently inert setting. Faulty rules are aggregated, so a config author
+	// is told all of them at once rather than one per load.
+	if rulesRaw, present := raw["rule"]; present {
+		ruleTables, ok := rulesRaw.([]map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("[[rule]] must be an array of tables, got %T", rulesRaw)
+		}
+		c.Rules = make([]RuleSpec, 0, len(ruleTables))
+		var ruleErrs []error
+		for i, table := range ruleTables {
+			spec, err := parseRuleSpec(i, table)
+			if err != nil {
+				ruleErrs = append(ruleErrs, err)
+				continue
+			}
+			c.Rules = append(c.Rules, spec)
+		}
+		if len(ruleErrs) > 0 {
+			return nil, errors.Join(ruleErrs...)
+		}
+		// One surface per check: a [[rule]] and a [test.X] section for the SAME
+		// check would need a merge policy nobody can remember. Load error
+		// instead, with every collision reported at once.
+		var surfaceErrs []error
+		for _, rule := range c.Rules {
+			if _, both := c.Tests[rule.Check]; both {
+				surfaceErrs = append(surfaceErrs, fmt.Errorf("check %q is configured by [[rule]] %q AND [test.%s]: use one surface per check", rule.Check, rule.Name, rule.Check))
+			}
+		}
+		if len(surfaceErrs) > 0 {
+			return nil, errors.Join(surfaceErrs...)
+		}
+	}
+
 	if collectorData, ok := raw["collector"].(map[string]interface{}); ok {
 		for name, section := range collectorData {
 			cc := &CollectorConfig{Attrs: make(map[string]interface{})}
@@ -451,7 +523,157 @@ func ParseConfig(filename string) (*Config, error) {
 			c.Operation[name] = oc
 		}
 	}
+	if err := secretsTimeoutWithinRequestBudget(c); err != nil {
+		return nil, err
+	}
 	return c, nil
+}
+
+// parseRuleSpec decodes one [[rule]] table. name and check are required; every
+// key is typed fail-fast and an unknown key is a load error, so a typo like
+// "includ" cannot silently disable a filter.
+func parseRuleSpec(index int, table map[string]interface{}) (RuleSpec, error) {
+	label := fmt.Sprintf("[[rule]] #%d", index+1)
+	if name, ok := table["name"].(string); ok && name != "" {
+		label = fmt.Sprintf("rule %q", name)
+	}
+	known := map[string]bool{
+		"name": true, "check": true, "scope": true, "subject": true,
+		"enabled": true, "ignoreCase": true, "include": true, "exclude": true,
+		"params": true,
+	}
+	keys := make([]string, 0, len(table))
+	for key := range table {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys) // map order is random; the reported key must not be
+	for _, key := range keys {
+		if !known[key] {
+			return RuleSpec{}, fmt.Errorf("%s: unknown key %q", label, key)
+		}
+	}
+
+	str := func(key string, dst *string) error {
+		v, ok := table[key]
+		if !ok {
+			return nil
+		}
+		sv, ok := v.(string)
+		if !ok {
+			return fmt.Errorf("%s: %s must be a string, got %T", label, key, v)
+		}
+		*dst = sv
+		return nil
+	}
+	boolean := func(key string, dst *bool) error {
+		v, ok := table[key]
+		if !ok {
+			return nil
+		}
+		bv, ok := v.(bool)
+		if !ok {
+			return fmt.Errorf("%s: %s must be a boolean, got %T", label, key, v)
+		}
+		*dst = bv
+		return nil
+	}
+	strs := func(key string, dst *[]string) error {
+		v, ok := table[key]
+		if !ok {
+			return nil
+		}
+		list, err := stringSlice(v)
+		if err != nil {
+			return fmt.Errorf("%s: %s %v", label, key, err)
+		}
+		*dst = list
+		return nil
+	}
+
+	spec := RuleSpec{Enabled: true}
+	// Every decode step runs; their faults are joined, so a rule with several
+	// wrong-typed keys reports all of them in one load.
+	if err := errors.Join(
+		str("name", &spec.Name), str("check", &spec.Check), str("subject", &spec.Subject),
+		boolean("enabled", &spec.Enabled), boolean("ignoreCase", &spec.IgnoreCase),
+		strs("scope", &spec.Scope), strs("include", &spec.Include), strs("exclude", &spec.Exclude),
+	); err != nil {
+		return RuleSpec{}, err
+	}
+	if spec.Name == "" {
+		return RuleSpec{}, fmt.Errorf("%s: name is required", label)
+	}
+	if strings.HasPrefix(spec.Name, DefaultRulePrefix) {
+		return RuleSpec{}, fmt.Errorf("%s: the %q name prefix is reserved for synthesized default rules", label, DefaultRulePrefix)
+	}
+	if spec.Check == "" {
+		return RuleSpec{}, fmt.Errorf("%s: check is required", label)
+	}
+
+	// [rule.params] declares ONE parameter set; the repeated [[rule.params]]
+	// form declares several, batched exactly like the legacy keywordArguments
+	// list. Values keep the shapes the checks' Bind type-checks: string, bool,
+	// integer, list of strings. Anything else fails the load here.
+	if paramsRaw, present := table["params"]; present {
+		var paramsTables []map[string]interface{}
+		switch pv := paramsRaw.(type) {
+		case map[string]interface{}:
+			paramsTables = []map[string]interface{}{pv}
+		case []map[string]interface{}:
+			paramsTables = pv
+		case []interface{}:
+			// The inline form params = [{...}, {...}] - the direct spelling of
+			// the legacy keywordArguments list - decodes as []interface{}.
+			paramsTables = make([]map[string]interface{}, 0, len(pv))
+			for _, item := range pv {
+				m, ok := item.(map[string]interface{})
+				if !ok {
+					return RuleSpec{}, fmt.Errorf("%s: params must be a table or an array of tables, got a %T element", label, item)
+				}
+				paramsTables = append(paramsTables, m)
+			}
+		default:
+			return RuleSpec{}, fmt.Errorf("%s: params must be a table or an array of tables, got %T", label, paramsRaw)
+		}
+		spec.Params = make([]map[string]interface{}, 0, len(paramsTables))
+		for _, paramsTable := range paramsTables {
+			set := make(map[string]interface{}, len(paramsTable))
+			for key, v := range paramsTable {
+				switch val := v.(type) {
+				case string, bool, int64:
+					set[key] = val
+				case []interface{}:
+					list, err := stringSlice(val)
+					if err != nil {
+						return RuleSpec{}, fmt.Errorf("%s: params.%s %v", label, key, err)
+					}
+					set[key] = list
+				default:
+					return RuleSpec{}, fmt.Errorf("%s: params.%s has unsupported type %T", label, key, v)
+				}
+			}
+			spec.Params = append(spec.Params, set)
+		}
+	}
+	return spec, nil
+}
+
+// stringSlice validates every element, so a typo like include = [1] fails fast
+// instead of yielding a silently empty filter.
+func stringSlice(v interface{}) ([]string, error) {
+	av, ok := v.([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("must be an array of strings, got %T", v)
+	}
+	result := make([]string, 0, len(av))
+	for _, item := range av {
+		s, ok := item.(string)
+		if !ok {
+			return nil, fmt.Errorf("must be an array of strings, got a %T element", item)
+		}
+		result = append(result, s)
+	}
+	return result, nil
 }
 
 // The serverXxx helpers read a single [server] / [server.smtp] key from the

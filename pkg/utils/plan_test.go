@@ -27,6 +27,35 @@ func planConfig(tests map[string]*config.TestConfig) config.Config {
 	}
 }
 
+// withRequiredAnchors copies cfg's legacy sections and fills the anchored
+// checks (which Compile refuses to leave undeclared) with empty sections, so a
+// fixture that configures only the check under test stays a complete config.
+func withRequiredAnchors(cfg config.Config) config.Config {
+	declared := func(name string) bool {
+		if cfg.Tests[name] != nil {
+			return true
+		}
+		for _, rule := range cfg.Rules {
+			if rule.Check == name {
+				return true
+			}
+		}
+		return false
+	}
+	anchored := checks.AnchoredChecks()
+	tests := make(map[string]*config.TestConfig, len(cfg.Tests)+len(anchored))
+	for name, section := range cfg.Tests {
+		tests[name] = section
+	}
+	for _, name := range anchored {
+		if !declared(name) {
+			tests[name] = &config.TestConfig{}
+		}
+	}
+	cfg.Tests = tests
+	return cfg
+}
+
 // compilePlan compiles cfg against the real registry, the way both frontends do
 // at startup.
 func compilePlan(t *testing.T, cfg config.Config) *Plan {
@@ -34,6 +63,7 @@ func compilePlan(t *testing.T, cfg config.Config) *Plan {
 	if cfg.General == nil {
 		cfg.General = &config.GeneralConfig{MaxContentScanFileSize: config.DefaultMaxContentScanFileSize}
 	}
+	cfg = withRequiredAnchors(cfg)
 	plan, err := Compile(&cfg, checks.NewRegistry())
 	if err != nil {
 		t.Fatalf("compile rules: %v", err)
@@ -294,6 +324,13 @@ func TestCompileRejectsEmptyRegistry(t *testing.T) {
 	}
 }
 
+// TestCompileRejectsNilConfig pins that a nil config is an error, not a panic.
+func TestCompileRejectsNilConfig(t *testing.T) {
+	if _, err := Compile(nil, checks.NewRegistry()); err == nil {
+		t.Fatal("a nil config must fail the compile")
+	}
+}
+
 // TestCompileErrorExposesSelectorFault pins that a pattern fault stays
 // MATCHABLE through the aggregate: callers that want the faulty patterns rather
 // than the message text match *selector.CompileError with errors.As.
@@ -312,30 +349,41 @@ func TestCompileErrorExposesSelectorFault(t *testing.T) {
 	}
 }
 
-// TestBuildMemberAdmissionTwoRules pins the plan-wide member decision: with two
-// member rules the iterator gets the UNION of their literals - matched against
-// the member PATH, like the per-rule gates - and the per-rule gates must still
-// run, because the union is nobody's own filter.
-func TestBuildMemberAdmissionTwoRules(t *testing.T) {
-	def := checks.CheckDef{Name: "IsFreeOfKeywords", Scopes: checks.ScopesOf(checks.ScopeArchiveMember)}
-	rules := make([]*checks.BoundRule, 0, 2)
-	// Case-SENSITIVE literals: a case-folding selector may never gate a union
-	// skip (selector.UnionLiterals), which is why the translated legacy lists
-	// never build one.
-	for _, list := range [][]string{{"data/"}, {"raw/"}} {
-		member, err := selector.Compile(selector.Spec{Rule: list[0], Subject: "path", Include: list})
-		if err != nil {
-			t.Fatalf("compile member selector: %v", err)
-		}
-		rule := &checks.BoundRule{Rule: list[0]}
-		rule.SetSelectors(selector.Selector{}, &member)
-		rules = append(rules, rule)
+// memberRule builds one [[rule]] spec for the keyword check's archive-member
+// scope, as the config surface produces it.
+func memberRule(name string, include []string, ignoreCase bool) config.RuleSpec {
+	return config.RuleSpec{
+		Name:       name,
+		Check:      "IsFreeOfKeywords",
+		Scope:      []string{"archive-member"},
+		Enabled:    true,
+		IgnoreCase: ignoreCase,
+		Include:    include,
+		Subject:    "path",
+		Params:     []map[string]interface{}{{"keywords": []string{"password"}, "info": "found"}},
 	}
-	plan := &Plan{}
-	plan.scopes[checks.ScopeArchiveMember] = []checkRules{{def: &def, batch: &checks.Batch{}, rules: rules}}
-	plan.buildMemberAdmission()
+}
 
-	batch := plan.scopes[checks.ScopeArchiveMember][0].batch
+// TestBuildMemberAdmissionTwoRules pins the plan-wide member decision on the
+// PRODUCTION path - two [[rule]] specs through Compile, never hand-built
+// selectors: with two member rules the iterator gets the UNION of their
+// literals - matched against the member PATH, like the per-rule gates - and
+// the per-rule gates must still run, because the union is nobody's own filter.
+func TestBuildMemberAdmissionTwoRules(t *testing.T) {
+	// Case-SENSITIVE literals: a case-folding selector may never gate a union
+	// skip (selector.UnionLiterals), pinned by the ignoreCase case below.
+	cfg := planConfig(nil)
+	cfg.Rules = []config.RuleSpec{
+		memberRule("data-members", []string{"data/"}, false),
+		memberRule("raw-members", []string{"raw/"}, false),
+	}
+	plan := compilePlan(t, cfg)
+
+	entry := planEntry(t, plan, "IsFreeOfKeywords", checks.ScopeArchiveMember)
+	if len(entry.rules) != 2 {
+		t.Fatalf("expected 2 member rules, got %d", len(entry.rules))
+	}
+	batch := entry.batch
 	if !batch.PerRule {
 		t.Fatal("a union admission is nobody's own filter: the per-rule gates must still run")
 	}
@@ -350,18 +398,118 @@ func TestBuildMemberAdmissionTwoRules(t *testing.T) {
 	if batch.Admit.Match("docs/three.csv") {
 		t.Error("the union must skip a member no rule can match")
 	}
+	// A member rule's dispatch gate admits every ARCHIVE: the selector
+	// addresses members, so the container is never gated on it.
+	if !entry.rules[0].Unfiltered() {
+		t.Error("a member rule's dispatch gate must admit every archive")
+	}
+
+	// An ignoreCase selector may never gate a union skip: FastMatcher-style
+	// folding is narrower than RE2 (?i), so the pass is disabled entirely.
+	cfg = planConfig(nil)
+	cfg.Rules = []config.RuleSpec{
+		memberRule("data-members", []string{"data/"}, false),
+		memberRule("raw-members", []string{"raw/"}, true),
+	}
+	plan = compilePlan(t, cfg)
+	entry = planEntry(t, plan, "IsFreeOfKeywords", checks.ScopeArchiveMember)
+	if entry.batch.Admit != nil {
+		t.Error("an ignoreCase member rule must disable the union pre-filter")
+	}
+	if !entry.batch.PerRule {
+		t.Error("without a union, the per-rule gates are the only member filter")
+	}
 }
 
-// TestCompileKeepsDisabledSecretListsUncompiled pins the division of labour a
-// disabled rule creates: utils.Compile leaves it out of the plan and therefore
-// never compiles its lists, so the gate that refuses a leak config the scan
-// could not honour is config.ValidateChecksConfig, at boot.
-func TestCompileKeepsDisabledSecretListsUncompiled(t *testing.T) {
+// TestMemberRulesUnionScansPerRule is the union's behaviour test over a real
+// archive: two member rules, admission = the union of their literals, and each
+// rule still sees ONLY the members its own gate admits - a member both
+// keywords would hit is reported by the rule whose selector covers it, never
+// by the other.
+func TestMemberRulesUnionScansPerRule(t *testing.T) {
+	dir := t.TempDir()
+	zipPath := filepath.Join(dir, "bundle.zip")
+	buf, err := os.Create(zipPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zw := zip.NewWriter(buf)
+	members := map[string]string{
+		"data/one.csv":   "a password here",
+		"raw/two.csv":    "a password here too",
+		"docs/three.csv": "a password everywhere",
+	}
+	for name, content := range members {
+		w, werr := zw.Create(name)
+		if werr != nil {
+			t.Fatal(werr)
+		}
+		if _, werr = w.Write([]byte(content)); werr != nil {
+			t.Fatal(werr)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := buf.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := planConfig(nil)
+	cfg.Rules = []config.RuleSpec{
+		memberRule("data-members", []string{"data/"}, false),
+		memberRule("raw-members", []string{"raw/"}, false),
+	}
+	plan := compilePlan(t, cfg)
+
+	archive := structs.ToFile(zipPath, "bundle.zip", -1, "")
+	messages := applyChecksFilteredByFileOnArchive(context.Background(), plan.scope(checks.ScopeArchiveMember), []structs.File{archive})
+
+	found := map[string]string{} // member -> rule that reported it
+	for _, m := range messages {
+		if m.Skipped {
+			continue
+		}
+		src, ok := m.Source.(structs.File)
+		if !ok {
+			t.Fatalf("finding without a file source: %+v", m)
+		}
+		if previous, twice := found[src.Name]; twice && previous != m.Rule {
+			t.Errorf("member %q reported by two rules: %q and %q", src.Name, previous, m.Rule)
+		}
+		found[src.Name] = m.Rule
+	}
+	want := map[string]string{
+		"data/one.csv": "data-members",
+		"raw/two.csv":  "raw-members",
+	}
+	for member, rule := range want {
+		if found[member] != rule {
+			t.Errorf("member %q: reported by %q, want %q", member, found[member], rule)
+		}
+	}
+	if rule, scanned := found["docs/three.csv"]; scanned {
+		t.Errorf("docs/three.csv matches no rule and must not be scanned, got a finding from %q", rule)
+	}
+}
+
+// TestCompileValidatesDisabledRules pins the gate a disabled rule still passes
+// through: Compile binds its parameters and compiles its selectors exactly like
+// a live rule's - a config the scan could not honour must fail at LOAD, not on
+// the day the dormant rule is re-enabled - and only then leaves it out of the
+// plan (TestCompileSkipsDisabledSecretScan).
+func TestCompileValidatesDisabledRules(t *testing.T) {
 	cfg := planConfig(map[string]*config.TestConfig{
 		"IsFreeOfSecrets": {Whitelist: []string{"("}, Attrs: map[string]interface{}{"enabled": false}},
 	})
-	if _, err := Compile(&cfg, checks.NewRegistry()); err != nil {
-		t.Fatalf("a disabled rule leaves the plan before its lists are compiled: %v", err)
+	if _, err := Compile(&cfg, checks.NewRegistry()); err == nil {
+		t.Fatal("a disabled rule's uncompilable list must refuse the load")
+	}
+	cfg = planConfig(map[string]*config.TestConfig{
+		"IsFreeOfSecrets": {Attrs: map[string]interface{}{"enabled": false, "nonsense": true}},
+	})
+	if _, err := Compile(&cfg, checks.NewRegistry()); err == nil {
+		t.Fatal("a disabled rule's unknown parameter must refuse the load")
 	}
 }
 
@@ -429,13 +577,14 @@ func TestRepositoryRuleRejectsBadPattern(t *testing.T) {
 
 // multisetFixture is the file set the executed-check multiset is counted over:
 // two plain files and two two-member archives, with "b" in exactly the names
-// testdata/test_config.toml's whitelist admits.
+// testdata/test_config.toml's keyword-rule include admits.
 //
-// "BUNDLE.zip" is the guard for the two legacy readings of one list: it holds a
-// "b" only under the CASE-INSENSITIVE literal reading the archive MEMBER gate
-// uses, not under the case-sensitive regex reading the DISPATCH gate uses. An
-// engine that gated the container with the member reading would scan it, and
-// this multiset would grow.
+// "BUNDLE.zip" pins the case-SENSITIVITY of the selector: it holds a "b" only
+// case-insensitively, so at file scope it is not selected, and at
+// archive-member scope it is opened (member rules gate members, not
+// containers) but none of its members passes the member gate - neither
+// "note two.txt" nor "B_MEMBER.txt" holds a lowercase "b". An engine that
+// folded case would scan it at file scope, and this multiset would grow.
 func multisetFixture(t *testing.T) []structs.File {
 	t.Helper()
 	dir := t.TempDir()
@@ -475,7 +624,7 @@ func multisetFixture(t *testing.T) []structs.File {
 		write("notes b.txt", "harmless"),
 		write("clean.txt", "harmless"),
 		writeZip("bundle b.zip", "member one.txt", "b_member.txt"),
-		writeZip("BUNDLE.zip", "member two.txt", "B_MEMBER.txt"),
+		writeZip("BUNDLE.zip", "note two.txt", "B_MEMBER.txt"),
 	}
 }
 
@@ -541,16 +690,23 @@ func TestExecutedCheckMultisetUnchanged(t *testing.T) {
 		"ReadMeContainsTOC@repository":      1,
 	}
 	// testdata/test_config.toml carries the only non-empty lists: the keyword
-	// check is whitelisted to names holding "b" - matched case-sensitively as a
-	// regex, so "notes b.txt" and "bundle b.zip" qualify and "BUNDLE.zip" does
-	// not - and HasOnlyASCII blacklists "test.txt", which no fixture name
-	// matches.
+	// rule includes names holding "b" - matched case-sensitively as a regex, so
+	// at file scope "notes b.txt" and "bundle b.zip" qualify and "BUNDLE.zip"
+	// does not - and the HasOnlyASCII rule excludes "test.txt", which no
+	// fixture name matches.
+	//
+	// AMENDED at R9 (the config migrated to [[rule]]): a member-scope rule's
+	// selector addresses MEMBERS under the one selector semantics, so every
+	// archive is opened (2 invocations, where the legacy two-readings split
+	// gated the container on the same list and opened only "bundle b.zip") and
+	// the member gate decides inside - BUNDLE.zip's members hold no
+	// case-sensitive "b", so it is opened and nothing in it is scanned.
 	testdata := map[string]int{}
 	for key, n := range unfiltered {
 		testdata[key] = n
 	}
 	testdata["IsFreeOfKeywords@file"] = 2
-	testdata["IsFreeOfKeywords@archive-member"] = 1
+	testdata["IsFreeOfKeywords@archive-member"] = 2
 
 	cases := map[string]map[string]int{
 		"../../pc.toml":                   unfiltered,

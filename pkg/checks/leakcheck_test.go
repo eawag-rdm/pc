@@ -316,10 +316,10 @@ func TestLeakSelectorAdmission(t *testing.T) {
 // scan. The scan itself no longer compiles anything, so there is no runtime
 // fail-closed branch left to test.
 //
-// The gate is config.ValidateChecksConfig, NOT utils.Compile: the leak rule
-// ships disabled, and a disabled rule leaves the plan before its selectors are
-// compiled, so Compile has nothing to reject. That division of labour is pinned
-// from both sides - here and by utils.TestCompileKeepsDisabledSecretListsUncompiled.
+// The gate is utils.Compile, which validates DISABLED rules too - the leak rule
+// ships disabled, and its lists are compiled through exactly the constructor
+// exercised here (RuleSpecs + CompileRuleSelectors). The utils side of the same
+// contract is pinned by utils.TestCompileValidatesDisabledRules.
 func TestLeakSelectorRejectedAtLoad(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -334,31 +334,37 @@ func TestLeakSelectorRejectedAtLoad(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// End to end through the boot gate, with the scan DISABLED - the
-			// shipped state - so the refusal is the one an operator would hit.
-			cfg := &config.Config{Tests: map[string]*config.TestConfig{
-				"IsFreeOfKeywords": {KeywordArguments: []map[string]interface{}{
-					{"keywords": []string{"password"}, "info": "found"},
-				}},
-				"IsValidName": {KeywordArguments: []map[string]interface{}{
-					{"disallowed_names": []string{".git"}},
-				}},
-				"HasReadme": {KeywordArguments: []map[string]interface{}{
-					{"readme_names": []string{"readme.md"}},
-				}},
+			// Through the same assembly + selector compilation the boot gate
+			// runs, with the scan DISABLED - the shipped state - so the refusal
+			// is the one an operator would hit.
+			cfg := &config.Config{Tests: testsWithAnchors(map[string]*config.TestConfig{
 				"IsFreeOfSecrets": {
 					Whitelist: tt.whitelist,
 					Blacklist: tt.blacklist,
 					Attrs:     map[string]interface{}{"enabled": false},
 				},
-			}}
-			err := config.ValidateChecksConfig(cfg)
-			if err == nil {
-				t.Fatal("expected the boot gate to refuse the config")
+			}, nil)}
+			specs, err := RuleSpecs(cfg, NewRegistry())
+			if err != nil {
+				t.Fatalf("assemble rule specs: %v", err)
 			}
-			if !strings.Contains(err.Error(), "IsFreeOfSecrets") {
-				t.Errorf("the error must name the section: %v", err)
+			for _, spec := range specs {
+				if spec.Check != "IsFreeOfSecrets" {
+					continue
+				}
+				if spec.Enabled {
+					t.Fatal("the fixture ships the scan disabled")
+				}
+				_, serr := CompileRuleSelectors(spec, []Scope{ScopeRepository})
+				if serr == nil {
+					t.Fatal("expected the selector compile to refuse the lists")
+				}
+				if !strings.Contains(serr.Error(), "IsFreeOfSecrets") {
+					t.Errorf("the error must name the rule: %v", serr)
+				}
+				return
 			}
+			t.Fatal("no IsFreeOfSecrets spec assembled")
 		})
 	}
 }
@@ -544,5 +550,19 @@ func TestIsFreeOfSecretsRealBinary(t *testing.T) {
 		if m.Skipped {
 			t.Errorf("unexpected skip message with real binary: %s", m.Content)
 		}
+	}
+}
+
+// TestCheckSecretAttrsUnknownKeyLists pins the unknown-key error's allowed-key
+// list against the surface it reports for: the legacy attrs table accepts
+// "enabled", the [[rule]] parameter set does not.
+func TestCheckSecretAttrsUnknownKeyLists(t *testing.T) {
+	legacyErr := checkSecretAttrs(map[string]interface{}{"nonsense": true}, true)
+	if legacyErr == nil || !strings.Contains(legacyErr.Error(), "enabled, binary") {
+		t.Errorf("the legacy allowed-key list must name enabled: %v", legacyErr)
+	}
+	ruleErr := checkSecretAttrs(map[string]interface{}{"nonsense": true}, false)
+	if ruleErr == nil || strings.Contains(ruleErr.Error(), "enabled") {
+		t.Errorf("the rule allowed-key list must not name enabled: %v", ruleErr)
 	}
 }

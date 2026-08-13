@@ -2,6 +2,7 @@ package checks
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,12 +16,23 @@ import (
 This file contains tests that need a collection of files. Eg: Checking if a repository has a readme file.
 */
 
+// defaultReadmeNames is the readme filename list a rule that configures none is
+// bound to. The check's defaults live in its own Bind - default-rule synthesis
+// relies on exactly that - and a readme check with NO names would be incoherent
+// (it could never find a readme).
+var defaultReadmeNames = []string{
+	"readme.md", "readme.txt", "readme",
+	"read me", "read me.txt", "read me.md",
+	"read-me", "read-me.txt", "read-me.md",
+	"read_me", "read_me.txt", "read_me.md",
+}
+
 // bindReadmeNames type-checks the readme filename list of a rule's parameter
-// sets (keywordArguments readme_names), once, at load. HasReadme and
-// ReadMeContainsTOC bind the SAME list: "what counts as the readme" must have
-// exactly one definition, so the translation feeds both from one section.
+// sets (readme_names), once, at load. HasReadme and ReadMeContainsTOC bind the
+// SAME list: "what counts as the readme" must have exactly one definition, so
+// checks.RuleSpecs feeds both from one declaration (shareReadmeNames).
 func bindReadmeNames(spec config.RuleSpec) ([]string, error) {
-	sets, err := paramSets(spec)
+	sets, err := ruleSets(spec, "readme_names")
 	if err != nil {
 		return nil, err
 	}
@@ -30,7 +42,13 @@ func bindReadmeNames(spec config.RuleSpec) ([]string, error) {
 		if err != nil {
 			return nil, err
 		}
+		if len(configured) == 0 {
+			return nil, fmt.Errorf("parameter set %d: %q must be a non-empty list", i+1, "readme_names")
+		}
 		names = append(names, configured...)
+	}
+	if len(names) == 0 {
+		return defaultReadmeNames, nil
 	}
 	return names, nil
 }

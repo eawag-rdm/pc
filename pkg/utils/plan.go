@@ -3,12 +3,10 @@ package utils
 import (
 	"errors"
 	"fmt"
-	"regexp"
-	"sort"
+	"slices"
 
 	"github.com/eawag-rdm/pc/pkg/checks"
 	"github.com/eawag-rdm/pc/pkg/config"
-	"github.com/eawag-rdm/pc/pkg/selector"
 )
 
 // checkRules pairs one check with bound rules: in the Plan, every rule of that
@@ -55,14 +53,25 @@ func (p *Plan) scope(s checks.Scope) []checkRules {
 }
 
 // Compile turns the configured rules into the plan the engine dispatches. It is
-// the only place that sees both the config and the check registry. Every load
-// error is aggregated and named with its rule, so a config author is told all
-// of them at once rather than one per run.
+// the boot gate for the whole rule surface: checks.RuleSpecs assembles the
+// specs ([[rule]] sections, translated [test.X] sections, synthesized
+// defaults - refusing a config silent about the anchored checks), every rule's
+// parameters are bound and its selectors compiled - DISABLED rules included,
+// so a config the checks could not honour fails at load, not on the day a rule
+// is re-enabled; only enabled rules enter the plan. Every load error is
+// aggregated and named with its rule, so a config author is told all of them
+// at once rather than one per run.
 //
-// A bad whitelist/blacklist pattern is reported as a *selector.CompileError,
-// which errors.As pulls out of the aggregate - callers that want the faulty
-// patterns rather than the message can match on it.
+// A bad include/exclude (or legacy whitelist/blacklist) pattern is reported as
+// a *selector.CompileError, which errors.As pulls out of the aggregate -
+// callers that want the faulty patterns rather than the message can match on
+// it.
 func Compile(cfg *config.Config, reg checks.Registry) (*Plan, error) {
+	// A nil config is a caller bug, not a plan: dereferencing it below would
+	// panic, and a fabricated empty config would scan nothing.
+	if cfg == nil {
+		return nil, errors.New("config must not be nil")
+	}
 	// A zero-value Registry{} is constructible anywhere and would compile to a
 	// plan with no entries: every package scans clean and the server caches
 	// that as authoritative. An empty registry is a load error, not a plan.
@@ -77,14 +86,15 @@ func Compile(cfg *config.Config, reg checks.Registry) (*Plan, error) {
 	}
 	general := cfg.General
 
-	specs, errs := legacyRuleSpecs(cfg, reg)
+	var errs []error
+	specs, err := checks.RuleSpecs(cfg, reg)
+	if err != nil {
+		errs = append(errs, err)
+	}
 
 	plan := &Plan{}
 	named := make(map[string]struct{}, len(specs))
 	for _, spec := range specs {
-		if !spec.Enabled {
-			continue
-		}
 		if _, duplicate := named[spec.Name]; duplicate {
 			errs = append(errs, fmt.Errorf("rule %q: duplicate rule name", spec.Name))
 			continue
@@ -92,11 +102,17 @@ func Compile(cfg *config.Config, reg checks.Registry) (*Plan, error) {
 		named[spec.Name] = struct{}{}
 		def, known := reg.Lookup(spec.Check)
 		if !known {
+			// RuleSpecs filtered unknown checks already; hand-built spec lists
+			// get the same verdict.
 			errs = append(errs, fmt.Errorf("rule %q: unknown check %q", spec.Name, spec.Check))
 			continue
 		}
 		scopes, err := ruleScopes(spec, def)
 		if err != nil {
+			errs = append(errs, fmt.Errorf("rule %q: %w", spec.Name, err))
+			continue
+		}
+		if err := contradictorySelector(spec); err != nil {
 			errs = append(errs, fmt.Errorf("rule %q: %w", spec.Name, err))
 			continue
 		}
@@ -107,21 +123,28 @@ func Compile(cfg *config.Config, reg checks.Registry) (*Plan, error) {
 			errs = append(errs, fmt.Errorf("rule %q: %w", spec.Name, err))
 			continue
 		}
-		for _, scope := range scopes {
-			gate, member, admitNone, err := scopeSelectors(spec, scope)
-			if err != nil {
-				errs = append(errs, fmt.Errorf("rule %q: %w", spec.Name, err))
-				continue
-			}
+		// Selectors likewise compile ONCE per rule; the result carries one
+		// placement per scope.
+		selectors, err := checks.CompileRuleSelectors(spec, scopes)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("rule %q: %w", spec.Name, err))
+			continue
+		}
+		for i, scope := range scopes {
 			// A whitelist that selects nothing selects nothing: the rule has no
 			// subject in this scope, so it is not dispatched there at all.
-			if admitNone {
+			if selectors[i].AdmitNone {
+				continue
+			}
+			// Validated like any other rule, but a disabled rule stays out of
+			// the plan.
+			if !spec.Enabled {
 				continue
 			}
 			// One copy per scope, sharing the bound closures: each scope carries
 			// its own selectors, and nothing in a bound rule reads itself.
 			scoped := *bound
-			scoped.SetSelectors(gate, member)
+			scoped.SetSelectors(selectors[i])
 			plan.add(scope, def, general, &scoped)
 		}
 	}
@@ -134,7 +157,8 @@ func Compile(cfg *config.Config, reg checks.Registry) (*Plan, error) {
 
 // ruleScopes resolves the scopes a rule serves: the ones it names, or the
 // check's own when it names none. A scope the check does not support is a load
-// error.
+// error, and so is a scope named twice - the rule would be added to that
+// scope's plan twice, doubling its findings.
 func ruleScopes(spec config.RuleSpec, def checks.CheckDef) ([]checks.Scope, error) {
 	if len(spec.Scope) == 0 {
 		var scopes []checks.Scope
@@ -154,48 +178,40 @@ func ruleScopes(spec config.RuleSpec, def checks.CheckDef) ([]checks.Scope, erro
 		if !def.Scopes.Has(scope) {
 			return nil, fmt.Errorf("check %q does not support scope %q", spec.Check, name)
 		}
+		if slices.Contains(scopes, scope) {
+			return nil, fmt.Errorf("scope %q is declared twice", name)
+		}
 		scopes = append(scopes, scope)
 	}
 	return scopes, nil
 }
 
-// scopeSelectors compiles a rule's file filters for one scope. A legacy
-// [test.X] list has TWO readings, and an archive-member rule is subject to
-// BOTH: the dispatch gate that decides whether the ARCHIVE is scanned reads it
-// as regexes over the archive's own name, while the gate that decides which
-// MEMBERS are scanned reads it as case-insensitive literal substrings over the
-// member path. Each is preserved here in the place that had it; admitNone
-// reports the whitelist that selected nothing.
-//
-// Collapsing the two readings into one is R9's job - do not do it here, it is a
-// user-visible config-surface change and this commit is behaviour-preserving.
-func scopeSelectors(spec config.RuleSpec, scope checks.Scope) (gate selector.Selector, member *selector.Selector, admitNone bool, err error) {
-	subject := "name"
-	if scope == checks.ScopeRepository {
-		subject = "path"
+// contradictorySelector implements the honest subset of include/exclude
+// contradiction detection: an identical pattern in both lists can never match,
+// because exclude wins. Full regex intersection is undecidable, and a
+// recognizer for "exclude matches everything" could only ever spell out a
+// handful of its infinitely many forms, so the rest is the run-scoped
+// dead-rule report's job. Legacy sections cannot set both lists, so only the
+// [[rule]] surface is checked.
+func contradictorySelector(spec config.RuleSpec) error {
+	if spec.Legacy {
+		return nil
 	}
-	gate, err = selector.CompileLegacyRegexLists(spec.Name, subject, spec.Include, spec.Exclude)
-	if err != nil || scope != checks.ScopeArchiveMember {
-		return gate, nil, false, err
+	for _, excluded := range spec.Exclude {
+		for _, included := range spec.Include {
+			if included == excluded {
+				return fmt.Errorf("%q is in include AND exclude; exclude wins, so the rule can never match it", included)
+			}
+		}
 	}
-	member, admitNone, err = selector.CompileLegacyLists(spec.Name, spec.Include, spec.Exclude)
-	if err != nil || admitNone {
-		return selector.Selector{}, nil, admitNone, err
-	}
-	return gate, member, false, nil
+	return nil
 }
 
-// buildMemberAdmission gives every archive-member entry the filter the iterator
-// runs in front of the per-rule member gates. With ONE such rule - every shipped
-// config's case - it is that rule's own member selector and the per-rule gates
-// are skipped entirely; with more it is a single pass over the union of their
-// literals, and each rule is still consulted for the members that pass. A rule
-// that may not take part in a union (see selector.UnionLiterals) disables the
-// pass, so no member is ever skipped on its behalf.
-//
-// The decision is made HERE, over the whole plan, and recorded on the entry: it
-// describes what the iterator was given, which the rules matching one archive
-// cannot tell.
+// buildMemberAdmission records, on every archive-member entry, the member
+// pre-filter the iterator runs and whether the per-rule member gates still
+// have to run behind it. The decision is checks.MemberAdmission's, made over
+// the WHOLE plan and recorded on the entry: it describes what the iterator was
+// given, which the rules matching one archive cannot tell.
 func (p *Plan) buildMemberAdmission() {
 	entries := p.scopes[checks.ScopeArchiveMember]
 	var rules []*checks.BoundRule
@@ -205,99 +221,9 @@ func (p *Plan) buildMemberAdmission() {
 	if len(rules) == 0 {
 		return
 	}
-	if len(rules) == 1 {
-		entries[0].batch.Admit = rules[0].Member
-		return
-	}
+	admit, perRule := checks.MemberAdmission(rules)
 	for i := range entries {
-		entries[i].batch.PerRule = true
-	}
-	var include []string
-	for _, rule := range rules {
-		if rule.Member == nil {
-			return // admits every member: nothing may be skipped for it
-		}
-		literals, ok := rule.Member.UnionLiterals()
-		if !ok {
-			return
-		}
-		for _, literal := range literals {
-			include = append(include, regexp.QuoteMeta(literal))
-		}
-	}
-	// Subject "path": the union carries member-path literals, so it must match
-	// the same subject the per-rule member gates do.
-	union, err := selector.Compile(selector.Spec{Rule: "archive members", Subject: "path", Include: include})
-	if err != nil {
-		return
-	}
-	for i := range entries {
-		entries[i].batch.Admit = &union
-	}
-}
-
-// legacyRuleSpecs translates the [test.X] sections into rule specs: one section
-// becomes ONE rule carrying its N parameter sets, never N rules. Every
-// registered check no section names gets a default rule with an empty selector
-// and the parameters its own Bind produces for the zero spec - without that,
-// translation would silently delete every section-less check.
-//
-// The specs come out in the registry's DECLARED order, not sorted: that order is
-// the order the dispatch runs a file's checks in, and therefore the order
-// findings are rendered in. Sorting it would reorder every report.
-func legacyRuleSpecs(cfg *config.Config, reg checks.Registry) ([]config.RuleSpec, []error) {
-	var errs []error
-	orphans := make([]string, 0, len(cfg.Tests))
-	for name := range cfg.Tests {
-		if _, known := reg.Lookup(name); !known {
-			orphans = append(orphans, name)
-		}
-	}
-	sort.Strings(orphans) // map order is random; error order must not be
-	for _, name := range orphans {
-		errs = append(errs, fmt.Errorf("config section [test.%s] names no known check", name))
-	}
-
-	specs := make([]config.RuleSpec, 0, reg.Len())
-	for _, def := range reg.Defs() {
-		name := def.Name
-		spec := config.RuleSpec{Name: name, Check: name, Enabled: true}
-		section := cfg.Tests[name]
-		if section != nil {
-			spec.Include, spec.Exclude = section.Whitelist, section.Blacklist
-			spec.Params = legacyParams(section)
-		}
-		switch name {
-		case "ReadMeContainsTOC":
-			// "What counts as the readme" has exactly one definition: the TOC
-			// check binds [test.HasReadme]'s list, never a second copy. With no
-			// section of its own it takes that section's file filter too, so
-			// both readme checks see the same narrowed file set - one section,
-			// one rule, read by two checks.
-			if readme := cfg.Tests["HasReadme"]; readme != nil {
-				spec.Params = legacyParams(readme)
-				if section == nil {
-					spec.Include, spec.Exclude = readme.Whitelist, readme.Blacklist
-				}
-			}
-		case "IsFreeOfSecrets":
-			// The scan's phase gate used to be an attrs peek; it is the rule's
-			// own enabled flag now. A disabled rule leaves the plan here, so its
-			// lists are never compiled: the gate that refuses a config the scan
-			// could not honour is config.ValidateChecksConfig, at boot.
-			spec.Enabled = false
-			if section != nil {
-				spec.Enabled, _ = section.Attrs["enabled"].(bool)
-			}
-		}
-		specs = append(specs, spec)
-	}
-	return specs, errs
-}
-
-func legacyParams(section *config.TestConfig) map[string]interface{} {
-	return map[string]interface{}{
-		checks.ParamSets:  section.KeywordArguments,
-		checks.ParamAttrs: section.Attrs,
+		entries[i].batch.Admit = admit
+		entries[i].batch.PerRule = perRule
 	}
 }

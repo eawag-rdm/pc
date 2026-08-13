@@ -58,18 +58,71 @@ func leakAttrsFrom(attrs map[string]interface{}) leakAttrs {
 // scan bounds are HANDED IN by the dispatch, which holds the rule and its
 // batch. The closure must not read them back off the rule it lives on: that
 // would make a BoundRule uncopyable and force a bind per scope.
+//
+// Typing is strict: an unknown or wrong-typed knob is a load error, validated
+// for a DISABLED rule too (Compile binds those and then leaves them out of the
+// plan), so a config the scan could not honour fails at load, not on the day
+// the dormant scan is reactivated. A legacy section carries the knobs in its
+// attrs table, which also holds "enabled"; a [[rule]] carries them as its ONE
+// parameter set, where "enabled" is the rule's own key and refused here.
 func bindSecrets(spec config.RuleSpec, _ *config.GeneralConfig) (*BoundRule, error) {
-	attrs, ok := spec.Params[ParamAttrs].(map[string]interface{})
-	if !ok && spec.Params[ParamAttrs] != nil {
-		return nil, fmt.Errorf("%s must be a table, got %T", ParamAttrs, spec.Params[ParamAttrs])
+	table := spec.Attrs
+	if !spec.Legacy {
+		if len(spec.Params) > 1 {
+			return nil, fmt.Errorf("check %q takes one parameter set", spec.Check)
+		}
+		table = nil
+		if len(spec.Params) == 1 {
+			table = spec.Params[0]
+		}
 	}
-	bound := leakAttrsFrom(attrs)
+	if err := checkSecretAttrs(table, spec.Legacy); err != nil {
+		return nil, err
+	}
+	bound := leakAttrsFrom(table)
 	return &BoundRule{
 		Rule: spec.Name,
 		applyRepo: func(repository structs.Repository, batch *Batch, sel *selector.Selector) []structs.Message {
 			return isFreeOfSecrets(repository, bound, batch.limits, batch.maxContentScan, sel)
 		},
 	}, nil
+}
+
+// checkSecretAttrs type-checks the scan's knobs once, at load. allowEnabled
+// admits the legacy attrs table's "enabled" key.
+func checkSecretAttrs(attrs map[string]interface{}, allowEnabled bool) error {
+	keys := make([]string, 0, len(attrs))
+	for key := range attrs {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys) // map order is random; the reported key must not be
+	for _, key := range keys {
+		v := attrs[key]
+		var typeOK bool
+		switch key {
+		case "enabled":
+			if !allowEnabled {
+				return fmt.Errorf("params: %q is the rule's own key, not a parameter", key)
+			}
+			_, typeOK = v.(bool)
+		case "binary":
+			s, isStr := v.(string)
+			typeOK = isStr && s != ""
+		case "timeoutSeconds", "maxProcs":
+			n, isInt := v.(int64)
+			typeOK = isInt && n > 0
+		default:
+			allowed := "binary, timeoutSeconds, maxProcs"
+			if allowEnabled {
+				allowed = "enabled, " + allowed
+			}
+			return fmt.Errorf("unknown key %q (allowed: %s)", key, allowed)
+		}
+		if !typeOK {
+			return fmt.Errorf("%q has the wrong type or an invalid value (%v)", key, v)
+		}
+	}
+	return nil
 }
 
 // leakTempName strips characters that are unsafe in a temp file name.

@@ -62,13 +62,7 @@ func New(cfg Config) (*Server, error) {
 		return nil, fmt.Errorf("invalid PC config: %w", err)
 	}
 
-	// Fail fast if a [test.*] section the checks dereference at request time is
-	// missing or wrong-typed (see config.ValidateChecksConfig).
-	if err := config.ValidateChecksConfig(pcConfig); err != nil {
-		return nil, fmt.Errorf("invalid PC config: %w", err)
-	}
-
-	// Compile the rules once, here: a whitelist/blacklist pattern that does not
+	// Compile the rules once, here: an include/exclude pattern that does not
 	// compile, an unknown section or a wrong-typed parameter is an operator
 	// error, so it refuses the boot instead of failing (and alerting on) every
 	// /analyze request.

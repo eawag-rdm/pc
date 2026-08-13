@@ -35,6 +35,30 @@ func testPlan(pcConfig *config.Config) *utils.Plan {
 	if cfg.General == nil {
 		cfg.General = &config.GeneralConfig{MaxContentScanFileSize: config.DefaultMaxContentScanFileSize}
 	}
+	// Compile refuses a config silent about the anchored checks; declare the
+	// missing ones with empty legacy sections, without touching a caller's own
+	// sections or rules.
+	declared := func(name string) bool {
+		if cfg.Tests[name] != nil {
+			return true
+		}
+		for _, rule := range cfg.Rules {
+			if rule.Check == name {
+				return true
+			}
+		}
+		return false
+	}
+	tests := map[string]*config.TestConfig{}
+	for name, section := range cfg.Tests {
+		tests[name] = section
+	}
+	for _, name := range checks.AnchoredChecks() {
+		if !declared(name) {
+			tests[name] = &config.TestConfig{}
+		}
+	}
+	cfg.Tests = tests
 	plan, err := utils.Compile(&cfg, checks.NewRegistry())
 	if err != nil {
 		panic("server test plan: " + err.Error())

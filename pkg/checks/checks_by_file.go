@@ -260,7 +260,7 @@ type keywordSet struct {
 // looked up again. The scan bounds are the batch's, not the rule's - one
 // acquisition serves every rule.
 func bindKeywords(spec config.RuleSpec, _ *config.GeneralConfig) (*BoundRule, error) {
-	sets, err := paramSets(spec)
+	sets, err := ruleSets(spec, "keywords", "info")
 	if err != nil {
 		return nil, err
 	}
@@ -761,7 +761,7 @@ func tryReadBinary(file structs.File) ([][]byte, *structs.Message) {
 // bindValidName binds one name rule: the disallowed-name lists of all its
 // parameter sets, type-checked here and never asserted again.
 func bindValidName(spec config.RuleSpec, _ *config.GeneralConfig) (*BoundRule, error) {
-	sets, err := paramSets(spec)
+	sets, err := ruleSets(spec, "disallowed_names")
 	if err != nil {
 		return nil, err
 	}

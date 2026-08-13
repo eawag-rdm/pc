@@ -1,41 +1,16 @@
 #####################################################################################
 # README
 # ------
-# Sections are function names
-#
-# Settings are contained in lists each list entry represents one function call.
-#
-# Within setting function arguments are defined.
-#
-# For each function (section) a whitelist and a blacklist can be defined.
-#
-# REGEX USAGE RULES:
-# ==================
-#
-# REGEX PATTERNS ARE ALLOWED IN:
-# - blacklist: File paths that match these patterns are skipped
-# - whitelist: Only file paths that match these patterns are checked
-#
-# Examples of valid regex patterns for blacklist/whitelist:
-# - "test\.txt"           (matches test.txt exactly)
-# - ".*\.log$"            (matches any .log file)
-# - "temp.*"              (matches files starting with "temp")
-# - "test[0-9]+\.txt"     (matches test1.txt, test2.txt, etc.)
-#
-# REGEX PATTERNS ARE NOT ALLOWED IN:
-# - keywords: These are literal strings only, matched case-insensitively
-# - disallowed_names: These are literal strings only
-#
-# Examples of valid literal strings for keywords:
-# - "password"            (matches "password", "Password", "PASSWORD")
-# - "api_key"             (matches "api_key", "API_KEY", etc.)
-# - "/Users/"             (matches the literal string "/Users/")
-# - "Q:"                  (matches the literal string "Q:")
-#
-# DO NOT USE regex patterns in keywords like:
-# - "pass.*"              (will look for literal "pass.*" not regex)
-# - "[Pp]assword"         (will look for literal "[Pp]assword")
-#
+# Checks are configured as rules: each [[rule]] is one named instance of a
+# check with its own file selector (include/exclude = RE2 regexes, matched
+# unanchored, case-sensitive unless ignoreCase = true, against subject "name"
+# or "path"; exclude wins) and its own [rule.params] (repeated [[rule.params]]
+# = several parameter sets on one rule). keywords / disallowed_names /
+# readme_names are literal strings, never regexes. A check without any rule
+# runs with its defaults (IsFreeOfKeywords, IsValidName and HasReadme must be
+# declared); HasNoWhiteSpace, HasFileNameSpecialChars, IsFileNameTooLong and
+# ReadMeContainsTOC are left rule-less here on purpose - they pin default-rule
+# synthesis.
 #####################################################################################
 
 [general]
@@ -76,53 +51,59 @@ to   = ["rdm@eawag.ch"]
 [operation.main]
 collector = "LocalCollector"
 
-[test.HasOnlyASCII]
-# Checking for Non-ASCII characters in folder and file names.
-blacklist = ["test.txt"]
-whitelist = []
+[[rule]]
+# Non-ASCII characters in folder and file names
+name    = "ascii-names"
+check   = "HasOnlyASCII"
+exclude = ["test.txt"]
 
-[test.IsFreeOfKeywords]
-# Checking file contents for sensitive information
-# blacklist/whitelist: Use regex patterns to include/exclude files by path
-blacklist = []
-whitelist = ["b"]
-# keywords: Use literal strings only (case-insensitive matching)
-keywordArguments = [
-    { keywords = ["user", "id_rsa", "password"], info = "Possible credentials in file" },
-    { keywords = ["Q:"], info = "Possible internal information in file" },
-    { keywords = ["/Users/"], info = "Do you have hardcoded filepaths in your files?  Found suspicious keyword(s):" }
-]
+[[rule]]
+# Sensitive content in file contents; selector kept narrow for the fixtures.
+# ONE keyword rule carrying three [[rule.params]] groups, so the archive path
+# takes the single-member-rule admission.
+name    = "sensitive-content"
+check   = "IsFreeOfKeywords"
+include = ["b"]
+  [[rule.params]]
+  keywords = ["user", "id_rsa", "password"]
+  info     = "Possible credentials in file"
+  [[rule.params]]
+  keywords = ["Q:"]
+  info     = "Possible internal information in file"
+  [[rule.params]]
+  keywords = ["/Users/"]
+  info     = "Do you have hardcoded filepaths in your files?  Found suspicious keyword(s):"
 
-[test.IsFreeOfSecrets]
+[[rule]]
 # Secret scan via betterleaks; disabled in tests (no scanner binary in CI).
-# The keyword groups above stay: they exercise the keyword-check machinery.
-blacklist = []
-whitelist = []
-attrs = {enabled = false, binary = "betterleaks", timeoutSeconds = 120, maxProcs = 3}
+# The keyword rules above stay: they exercise the keyword-check machinery.
+name    = "secret-scan"
+check   = "IsFreeOfSecrets"
+enabled = false
+  [rule.params]
+  binary = "betterleaks"
+  timeoutSeconds = 120
+  maxProcs = 3
 
-[test.HasReadme]
-# Filenames recognized as the repository readme (literal, case-insensitive).
-# Used by HasReadme and ReadMeContainsTOC.
-keywordArguments = [
-    { readme_names = ["readme.md", "readme.txt", "readme", "read me", "read me.txt", "read me.md", "read-me", "read-me.txt", "read-me.md", "read_me", "read_me.txt", "read_me.md"] }
-]
+[[rule]]
+# The repository readme must be present; which filenames count is the check's
+# built-in default list. ReadMeContainsTOC reads this rule.
+name  = "readme-present"
+check = "HasReadme"
 
-[test.IsValidName]
-# Checking for invalid files and folders
-# blacklist/whitelist: Use regex patterns to include/exclude files by path
-blacklist = []
-whitelist = []
-# disallowed_names: Use literal strings only (exact filename matching)
-keywordArguments = [
-    { disallowed_names = [ 
-        ".Rhistory", ".RData",
-        ".Rapp.history", ".Ruserdata", 
-        ".Rbuildignore", "__pycache__", ".vscode", 
-        ".ipynb_checkpoints", "venv", ".idea", ".egg-info", 
-        ".pytest_cache", ".pyc", ".tox", ".python_version", 
-        ".coverage", ".benchmark"
-    ]}
-]
+[[rule]]
+# Disallowed file/folder names (literal strings, exact or suffix match)
+name  = "no-junk-files"
+check = "IsValidName"
+  [rule.params]
+  disallowed_names = [
+      ".Rhistory", ".RData",
+      ".Rapp.history", ".Ruserdata",
+      ".Rbuildignore", "__pycache__", ".vscode",
+      ".ipynb_checkpoints", "venv", ".idea", ".egg-info",
+      ".pytest_cache", ".pyc", ".tox", ".python_version",
+      ".coverage", ".benchmark"
+  ]
 
 [collector.CkanCollector]
 attrs = {url = "https://example.com", token = "", verify = true, ckan_storage_path = "/nfsmount/ckan/default"}

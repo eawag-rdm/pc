@@ -45,6 +45,7 @@ func benchFilterFiles(n int) []structs.File {
 // startup does once.
 func benchFileScope(b *testing.B, cfg config.Config) []checkRules {
 	b.Helper()
+	cfg = withRequiredAnchors(cfg)
 	plan, err := Compile(&cfg, checks.NewRegistry())
 	if err != nil {
 		b.Fatalf("compile rules: %v", err)

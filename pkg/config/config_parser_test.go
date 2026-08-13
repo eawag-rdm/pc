@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -84,21 +85,40 @@ func TestConfigFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Check if the config file is loaded correctly
-	assert.Equal(t, 5, len(cfg.Tests))
+	// Check if the config file is loaded correctly: the checks are configured
+	// as [[rule]] sections since the rules migration.
+	assert.Equal(t, 0, len(cfg.Tests))
+	assert.Equal(t, 5, len(cfg.Rules))
 	assert.Equal(t, 2, len(cfg.Collectors))
 
-	// The IsFreeOfSecrets attrs table is parsed verbatim.
-	secrets := cfg.Tests["IsFreeOfSecrets"]
-	assert.NotNil(t, secrets)
-	assert.Equal(t, false, secrets.Attrs["enabled"])
-	assert.Equal(t, "betterleaks", secrets.Attrs["binary"])
+	rule := func(name string) RuleSpec {
+		for _, r := range cfg.Rules {
+			if r.Name == name {
+				return r
+			}
+		}
+		t.Fatalf("no rule %q", name)
+		return RuleSpec{}
+	}
 
-	keywords, ok := (*cfg.Tests["IsFreeOfKeywords"]).KeywordArguments[2]["keywords"].([]string)
+	// The secret-scan rule is disabled and carries its knobs as ONE typed
+	// parameter set.
+	secrets := rule("secret-scan")
+	assert.Equal(t, "IsFreeOfSecrets", secrets.Check)
+	assert.False(t, secrets.Enabled)
+	assert.Equal(t, 1, len(secrets.Params))
+	assert.Equal(t, "betterleaks", secrets.Params[0]["binary"])
+	assert.Equal(t, int64(120), secrets.Params[0]["timeoutSeconds"])
+
+	// The keyword rule carries its three [[rule.params]] groups on one rule.
+	keywords := rule("sensitive-content")
+	assert.Equal(t, "IsFreeOfKeywords", keywords.Check)
+	assert.Equal(t, []string{"b"}, keywords.Include)
+	assert.Equal(t, 3, len(keywords.Params))
+	paths, ok := keywords.Params[2]["keywords"].([]string)
 	assert.True(t, ok)
-	assert.Equal(t, 1, len(keywords))
-	assert.Contains(t, keywords, "/Users/")
-
+	assert.Equal(t, 1, len(paths))
+	assert.Contains(t, paths, "/Users/")
 }
 
 func TestParseConfig(t *testing.T) {
@@ -931,5 +951,252 @@ func TestParseShippedConfigsLoad(t *testing.T) {
 			assert.NoError(t, err)
 			assert.NotNil(t, cfg)
 		})
+	}
+}
+
+// TestRuleMixedWithTestSection pins the no-merge rule: a [[rule]] and a
+// [test.X] section for the SAME check is a load error, never a merge.
+func TestRuleMixedWithTestSection(t *testing.T) {
+	_, err := loadTOML(t, `
+[test.HasOnlyASCII]
+blacklist = []
+
+[[rule]]
+name  = "ascii"
+check = "HasOnlyASCII"
+`)
+	if err == nil {
+		t.Fatal("a [[rule]] and a [test.X] for one check must refuse the load")
+	}
+	for _, want := range []string{"HasOnlyASCII", "one surface"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error must name %q: %v", want, err)
+		}
+	}
+	// Different checks on different surfaces are fine.
+	cfg, err := loadTOML(t, `
+[test.HasOnlyASCII]
+blacklist = []
+
+[[rule]]
+name  = "whitespace"
+check = "HasNoWhiteSpace"
+`)
+	if err != nil {
+		t.Fatalf("distinct checks may use distinct surfaces: %v", err)
+	}
+	if len(cfg.Rules) != 1 || cfg.Rules[0].Name != "whitespace" {
+		t.Fatalf("rule not decoded: %+v", cfg.Rules)
+	}
+
+	// Several collisions are reported at once, not one per load.
+	_, err = loadTOML(t, `
+[test.HasOnlyASCII]
+blacklist = []
+
+[test.HasNoWhiteSpace]
+blacklist = []
+
+[[rule]]
+name  = "a"
+check = "HasOnlyASCII"
+
+[[rule]]
+name  = "b"
+check = "HasNoWhiteSpace"
+`)
+	if err == nil {
+		t.Fatal("expected a load error")
+	}
+	for _, want := range []string{"HasOnlyASCII", "HasNoWhiteSpace"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("aggregated error must name the %q collision: %v", want, err)
+		}
+	}
+}
+
+// TestRuleSpecDecode pins the [[rule]] decode: defaults, typed values, and the
+// fail-fast rejections (missing identity, unknown key, wrong-typed key,
+// unsupported params value).
+func TestRuleSpecDecode(t *testing.T) {
+	cfg, err := loadTOML(t, `
+[[rule]]
+name       = "credentials"
+check      = "IsFreeOfKeywords"
+scope      = ["file", "archive-member"]
+subject    = "path"
+enabled    = false
+ignoreCase = true
+include    = ["\\.csv$"]
+exclude    = ["^raw/"]
+  [rule.params]
+  keywords = ["password", "api_key"]
+  info     = "Possible credentials"
+  depth    = 3
+  strict   = true
+
+[[rule]]
+name  = "defaults"
+check = "HasOnlyASCII"
+`)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(cfg.Rules) != 2 {
+		t.Fatalf("expected 2 rules, got %d", len(cfg.Rules))
+	}
+	full := cfg.Rules[0]
+	if full.Name != "credentials" || full.Check != "IsFreeOfKeywords" ||
+		full.Subject != "path" || full.Enabled || !full.IgnoreCase || full.Legacy {
+		t.Errorf("rule fields decoded wrong: %+v", full)
+	}
+	if len(full.Scope) != 2 || full.Scope[0] != "file" || full.Scope[1] != "archive-member" {
+		t.Errorf("scope decoded wrong: %v", full.Scope)
+	}
+	if len(full.Include) != 1 || full.Include[0] != `\.csv$` || len(full.Exclude) != 1 {
+		t.Errorf("selector lists decoded wrong: %v / %v", full.Include, full.Exclude)
+	}
+	if len(full.Params) != 1 {
+		t.Fatalf("a single [rule.params] table must decode as ONE set: %v", full.Params)
+	}
+	set := full.Params[0]
+	if kw, ok := set["keywords"].([]string); !ok || len(kw) != 2 {
+		t.Errorf("string list param decoded wrong: %T %v", set["keywords"], set["keywords"])
+	}
+	if set["info"] != "Possible credentials" || set["depth"] != int64(3) || set["strict"] != true {
+		t.Errorf("scalar params decoded wrong: %v", set)
+	}
+	minimal := cfg.Rules[1]
+	if !minimal.Enabled || minimal.IgnoreCase || minimal.Subject != "" || minimal.Params != nil {
+		t.Errorf("defaults decoded wrong: %+v", minimal)
+	}
+
+	rejected := []struct {
+		name string
+		doc  string
+		want string
+	}{
+		{"missing name", "[[rule]]\ncheck = \"HasOnlyASCII\"\n", "name is required"},
+		{"missing check", "[[rule]]\nname = \"x\"\n", "check is required"},
+		{"reserved default prefix", "[[rule]]\nname = \"default:HasReadme\"\ncheck = \"HasOnlyASCII\"\n", "reserved for synthesized default rules"},
+		{"unknown key", "[[rule]]\nname = \"x\"\ncheck = \"C\"\nincludes = []\n", `unknown key "includes"`},
+		{"wrong-typed enabled", "[[rule]]\nname = \"x\"\ncheck = \"C\"\nenabled = \"yes\"\n", "must be a boolean"},
+		{"wrong-typed include", "[[rule]]\nname = \"x\"\ncheck = \"C\"\ninclude = [1]\n", "array of strings"},
+		{"nested params table", "[[rule]]\nname = \"x\"\ncheck = \"C\"\n[rule.params]\nnested = {a = 1}\n", "unsupported type"},
+		{"mixed params list", "[[rule]]\nname = \"x\"\ncheck = \"C\"\n[rule.params]\nlist = [\"a\", 1]\n", "array of strings"},
+	}
+	for _, tc := range rejected {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := loadTOML(t, tc.doc)
+			if err == nil {
+				t.Fatal("expected a load error")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error must name %q: %v", tc.want, err)
+			}
+		})
+	}
+}
+
+// TestRuleSpecDecodeMultipleParamSets pins the repeated [[rule.params]] form:
+// one rule, N parameter sets, in declaration order.
+func TestRuleSpecDecodeMultipleParamSets(t *testing.T) {
+	cfg, err := loadTOML(t, `
+[[rule]]
+name  = "multi"
+check = "IsFreeOfKeywords"
+  [[rule.params]]
+  keywords = ["password"]
+  info     = "credentials"
+  [[rule.params]]
+  keywords = ["Q:"]
+  info     = "internal"
+`)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(cfg.Rules) != 1 || len(cfg.Rules[0].Params) != 2 {
+		t.Fatalf("expected one rule with two parameter sets: %+v", cfg.Rules)
+	}
+	if cfg.Rules[0].Params[0]["info"] != "credentials" || cfg.Rules[0].Params[1]["info"] != "internal" {
+		t.Errorf("sets must keep declaration order: %v", cfg.Rules[0].Params)
+	}
+}
+
+// TestParseConfigRejectsUnknownTopLevel pins the strict top-level surface: a
+// typo like [[rules]] must refuse the load instead of silently discarding
+// every declared rule and running on defaults.
+func TestParseConfigRejectsUnknownTopLevel(t *testing.T) {
+	_, err := loadTOML(t, "[[rules]]\nname = \"x\"\ncheck = \"HasOnlyASCII\"\n")
+	if err == nil || !strings.Contains(err.Error(), "rules") {
+		t.Fatalf("a [[rules]] typo must be a load error naming the key: %v", err)
+	}
+	_, err = loadTOML(t, "[generall]\nmaxPDFPages = 3\n")
+	if err == nil || !strings.Contains(err.Error(), "generall") {
+		t.Fatalf("an unknown top-level table must be a load error naming it: %v", err)
+	}
+}
+
+// TestRuleDecodeAggregatesErrors pins that every faulty [[rule]] is reported
+// in one load, not one per run - and that several faults WITHIN one rule are
+// all reported too.
+func TestRuleDecodeAggregatesErrors(t *testing.T) {
+	_, err := loadTOML(t, `
+[[rule]]
+check = "HasOnlyASCII"
+
+[[rule]]
+name  = "typo"
+check = "HasOnlyASCII"
+includes = []
+`)
+	if err == nil {
+		t.Fatal("expected a load error")
+	}
+	for _, want := range []string{"name is required", `unknown key "includes"`} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("aggregated error must name %q: %v", want, err)
+		}
+	}
+
+	_, err = loadTOML(t, `
+[[rule]]
+name    = "bad-types"
+check   = "HasOnlyASCII"
+enabled = "yes"
+include = [1]
+`)
+	if err == nil {
+		t.Fatal("expected a load error")
+	}
+	for _, want := range []string{"must be a boolean", "array of strings"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("one rule's faults must all be reported: %q missing from %v", want, err)
+		}
+	}
+}
+
+// TestRuleSpecDecodeInlineParamsArray pins the inline array form - the direct
+// spelling of the legacy keywordArguments list operators migrate from.
+func TestRuleSpecDecodeInlineParamsArray(t *testing.T) {
+	cfg, err := loadTOML(t, `
+[[rule]]
+name   = "multi-inline"
+check  = "IsFreeOfKeywords"
+params = [{keywords = ["password"], info = "credentials"}, {keywords = ["Q:"], info = "internal"}]
+`)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(cfg.Rules) != 1 || len(cfg.Rules[0].Params) != 2 {
+		t.Fatalf("expected one rule with two parameter sets: %+v", cfg.Rules)
+	}
+	if kw, ok := cfg.Rules[0].Params[1]["keywords"].([]string); !ok || len(kw) != 1 || kw[0] != "Q:" {
+		t.Errorf("inline sets must decode like [[rule.params]]: %v", cfg.Rules[0].Params)
+	}
+	// A non-table element keeps a clear error.
+	_, err = loadTOML(t, "[[rule]]\nname = \"x\"\ncheck = \"C\"\nparams = [1]\n")
+	if err == nil || !strings.Contains(err.Error(), "array of tables") {
+		t.Fatalf("a non-table params element must fail the load clearly: %v", err)
 	}
 }

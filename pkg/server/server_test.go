@@ -15,9 +15,9 @@ import (
 	"time"
 )
 
-// testChecksTOML is the minimal [test.*] configuration boot validation
-// (config.ValidateChecksConfig) requires: the sections the checks dereference at
-// request time must exist and be well-typed.
+// testChecksTOML is a small, well-typed check configuration on the legacy
+// [test.*] surface (still valid sugar); boot validation is utils.Compile,
+// which binds every rule's parameters at server.New.
 const testChecksTOML = "" +
 	"[test.IsFreeOfKeywords]\n" +
 	"keywordArguments = [{keywords = [\"password\"], info = \"Sensitive keyword found:\"}]\n" +
@@ -141,16 +141,20 @@ func TestNew_MissingCkanAttr_FailsAtBoot(t *testing.T) {
 	}
 }
 
-// TestNew_MissingChecksConfig_FailsAtBoot asserts that a config lacking the
-// [test.*] sections the checks dereference at request time makes server.New
-// fail at startup with a clear error - instead of booting and panicking inside
-// a worker-pool goroutine on the first multi-file /analyze (which would kill
-// the process, not the request).
-func TestNew_MissingChecksConfig_FailsAtBoot(t *testing.T) {
+// TestNew_BadCheckParams_FailsAtBoot asserts that a wrong-typed check
+// parameter makes server.New fail at startup with a clear error - instead of
+// booting and misbehaving on the first /analyze.
+func TestNew_BadCheckParams_FailsAtBoot(t *testing.T) {
 	dir := t.TempDir()
 	path := dir + "/pc.toml"
-	// Valid CkanCollector, NO [test.*] sections.
+	// Valid CkanCollector, one [[rule]] with a wrong-typed parameter.
 	contents := "" +
+		"[[rule]]\n" +
+		"name  = \"credentials\"\n" +
+		"check = \"IsFreeOfKeywords\"\n" +
+		"  [rule.params]\n" +
+		"  keywords = \"password\"\n" +
+		"  info     = \"found\"\n" +
 		"[collector.CkanCollector]\n" +
 		"attrs = {url = \"http://127.0.0.1:1\", token = \"\", verify = false, ckan_storage_path = \"" + t.TempDir() + "\"}\n"
 	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
@@ -159,10 +163,10 @@ func TestNew_MissingChecksConfig_FailsAtBoot(t *testing.T) {
 
 	_, err := New(Config{Address: "127.0.0.1:0", ConfigPath: path})
 	if err == nil {
-		t.Fatal("expected New to fail at boot for missing [test.*] sections")
+		t.Fatal("expected New to fail at boot for a wrong-typed rule parameter")
 	}
-	if !strings.Contains(err.Error(), "IsFreeOfKeywords") {
-		t.Errorf("startup error should name the missing section, got: %v", err)
+	if !strings.Contains(err.Error(), "keywords") {
+		t.Errorf("startup error should name the bad parameter, got: %v", err)
 	}
 }
 

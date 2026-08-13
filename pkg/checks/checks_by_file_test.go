@@ -563,11 +563,10 @@ func TestIsTextFileExampleFiles(t *testing.T) {
 }
 
 // TestIsArchiveFreeOfKeywordsMemberFilterWiring is the wiring guard for the
-// call site: the [test.IsFreeOfKeywords] lists must reach the iterator in the
-// right roles. one_of_each holds the keyword "password" in BOTH the .blst and
-// the .wlst member, so a blacklist naming .blst must silence exactly one of
-// them. Swapping the whitelist and blacklist arguments at the call site inverts
-// both assertions.
+// call site: the keyword rules' exclude patterns must reach the iterator in
+// the right role. one_of_each holds the keyword "password" in BOTH the .blst
+// and the .wlst member, so an exclude naming .blst must silence exactly one of
+// them. Swapping include and exclude at the call site inverts both assertions.
 func TestIsArchiveFreeOfKeywordsMemberFilterWiring(t *testing.T) {
 	const (
 		blacklisted = "black/to_be_blacklisted.blst"
@@ -578,8 +577,12 @@ func TestIsArchiveFreeOfKeywordsMemberFilterWiring(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to load config: %v", err)
 	}
-	cfg.Tests["IsFreeOfKeywords"].Whitelist = []string{}
-	cfg.Tests["IsFreeOfKeywords"].Blacklist = []string{".blst"}
+	for i := range cfg.Rules {
+		if cfg.Rules[i].Check == "IsFreeOfKeywords" {
+			cfg.Rules[i].Include = nil
+			cfg.Rules[i].Exclude = []string{`\.blst$`}
+		}
+	}
 
 	archive := structs.File{Path: "../../testdata/archives/one_of_each.zip", Name: "one_of_each.zip", DisplayName: "one_of_each.zip", IsArchive: true}
 	hits := map[string]int{}
@@ -603,8 +606,12 @@ func TestIsArchiveFreeOfKeywordsWithRealArchives(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to load config: %v", err)
 	}
-	cfg.Tests["IsFreeOfKeywords"].Whitelist = []string{}
-	cfg.Tests["IsFreeOfKeywords"].Blacklist = []string{}
+	for i := range cfg.Rules {
+		if cfg.Rules[i].Check == "IsFreeOfKeywords" {
+			cfg.Rules[i].Include = nil
+			cfg.Rules[i].Exclude = nil
+		}
+	}
 
 	zipFile := structs.File{Path: "../../testdata/archives/complex_archive.zip", Name: "complex_archive.zip", DisplayName: "complex_archive.zip", IsArchive: true}
 	sevenZipFile := structs.File{Path: "../../testdata/archives/complex_archive.7z", Name: "complex_archive.7z", DisplayName: "complex_archive.7z", IsArchive: true}

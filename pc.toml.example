@@ -1,41 +1,30 @@
 #####################################################################################
 # README
 # ------
-# Sections are function names
+# Checks are configured as rules: each [[rule]] is one named instance of a
+# check with its own file selector and its own [rule.params].
 #
-# Settings are contained in lists each list entry represents one function call.
+#   name       unique rule name (shown in diagnostics)
+#   check      check to run (HasOnlyASCII, HasNoWhiteSpace, IsFreeOfKeywords,
+#              IsValidName, HasFileNameSpecialChars, IsFileNameTooLong,
+#              IsFreeOfSecrets, HasReadme, ReadMeContainsTOC)
+#   scope      dispatch phases, default = the check's own
+#              (file, archive-file-list, archive-member, repository)
+#   subject    what patterns match: "name" | "path"; per scope:
+#              file: name = the file's name (default), path = its relative path
+#              archive-file-list: name = member basename (default), path = member path
+#              archive-member: selector addresses members, default subject path
+#              repository: path = the file's relative path (default)
+#   include    regex patterns; only matching files are checked
+#   exclude    regex patterns; matching files are skipped (exclude wins)
+#   ignoreCase true = case-insensitive patterns (default false)
+#   enabled    false = rule off, check not dispatched (default true)
 #
-# Within setting function arguments are defined.
-#
-# For each function (section) a whitelist and a blacklist can be defined.
-#
-# REGEX USAGE RULES:
-# ==================
-# 
-# REGEX PATTERNS ARE ALLOWED IN:
-# - blacklist: File paths that match these patterns are skipped
-# - whitelist: Only file paths that match these patterns are checked
-#
-# Examples of valid regex patterns for blacklist/whitelist:
-# - "test\.txt"           (matches test.txt exactly)
-# - ".*\.log$"            (matches any .log file)
-# - "temp.*"              (matches files starting with "temp")
-# - "test[0-9]+\.txt"     (matches test1.txt, test2.txt, etc.)
-#
-# REGEX PATTERNS ARE NOT ALLOWED IN:
-# - keywords: These are literal strings only, matched case-insensitively
-# - disallowed_names: These are literal strings only
-#
-# Examples of valid literal strings for keywords:
-# - "password"            (matches "password", "Password", "PASSWORD")
-# - "api_key"             (matches "api_key", "API_KEY", etc.)
-# - "/Users/"             (matches the literal string "/Users/")
-# - "Q:"                  (matches the literal string "Q:")
-#
-# DO NOT USE regex patterns in keywords like:
-# - "pass.*"              (will look for literal "pass.*" not regex)
-# - "[Pp]assword"         (will look for literal "[Pp]assword")
-#
+# Patterns are RE2 regexes, matched unanchored and case-sensitively unless
+# ignoreCase is set. keywords/disallowed_names/readme_names are literal
+# strings, never regexes. A repeated [[rule.params]] block declares several
+# parameter sets on one rule. Most checks without a rule run with defaults;
+# IsFreeOfKeywords, IsValidName and HasReadme must be declared.
 #####################################################################################
 
 [general]
@@ -122,76 +111,72 @@ to = ["rdm@eawag.ch"]
 [operation.main]
 collector = "LocalCollector"
 
-[test.HasOnlyASCII]
-# Checking for Non-ASCII characters in folder and file names.
-blacklist = []
-whitelist = []
+[[rule]]
+# Non-ASCII characters in folder and file names
+name  = "ascii-names"
+check = "HasOnlyASCII"
 
-[test.HasNoWhiteSpace]
-# Checking for white spaces in folder and file names.
-blacklist = []
-whitelist = []
+[[rule]]
+# White spaces in folder and file names
+name  = "no-whitespace"
+check = "HasNoWhiteSpace"
 
-[test.IsFreeOfKeywords]
-# Checking file contents for non-secret keywords; secrets (credentials, keys,
-# tokens) are found by [test.IsFreeOfSecrets] (betterleaks) instead.
-# blacklist/whitelist: Use regex patterns to include/exclude files by path
-# These lists are read twice until the rules migration: as regex over file names
-# (case-sensitive) and as literal substrings over archive member paths (case-insensitive)
-blacklist = []
-whitelist = []
-# keywords: Use literal strings only (case-insensitive matching)
-keywordArguments = [
-    { keywords = ["/home/", "/Users/", "C:\\Users\\", "Q:"], info = "Hardcoded file paths detected" },
-    { keywords = ["admin", "root", "superuser"], info = "Administrative accounts detected" }
-]
+[[rule]]
+# Sensitive keywords in file contents (keywords = literal strings, case-insensitive);
+# secrets (credentials, keys, tokens) are found by the IsFreeOfSecrets rule instead.
+# One rule, several [[rule.params]] groups: each group reports with its own info.
+name  = "sensitive-content"
+check = "IsFreeOfKeywords"
+  [[rule.params]]
+  keywords = ["/home/", "/Users/", "C:\\Users\\", "Q:"]
+  info     = "Hardcoded file paths detected"
+  [[rule.params]]
+  keywords = ["admin", "root", "superuser"]
+  info     = "Administrative accounts detected"
 
-[test.IsFreeOfSecrets]
-# Secret scan of file contents via the bundled betterleaks binary
-# blacklist/whitelist: Use regex patterns to include/exclude files by path
-blacklist = []
-whitelist = []
-# enabled: toggle the scan; binary: scanner executable (name in PATH or absolute path);
-# timeoutSeconds: whole-scan cap (must not exceed [server] requestTimeoutSeconds);
-# maxProcs: CPU cores the scanner may use
+[[rule]]
+# Secret scan of file contents via the bundled betterleaks binary.
 # Dormant for now: scan too slow; code kept, flip enabled = true to reactivate.
-attrs = {enabled = false, binary = "betterleaks", timeoutSeconds = 120, maxProcs = 3}
+name    = "secret-scan"
+check   = "IsFreeOfSecrets"
+enabled = false
+  [rule.params]
+  # scanner executable (name in PATH or absolute path)
+  binary = "betterleaks"
+  # whole-scan cap in seconds (must not exceed [server] requestTimeoutSeconds)
+  timeoutSeconds = 120
+  # CPU cores the scanner may use
+  maxProcs = 3
 
-[test.HasFileNameSpecialChars]
-# Checking for invalid/special characters in file names
-# blacklist/whitelist: Use regex patterns to include/exclude files by path
-blacklist = []
-whitelist = []
+[[rule]]
+# Invalid/special characters in file names
+name  = "no-special-chars"
+check = "HasFileNameSpecialChars"
 
-[test.IsFileNameTooLong]
-# Checking if file names are longer than 64 characters
-# blacklist/whitelist: Use regex patterns to include/exclude files by path
-blacklist = []
-whitelist = []
+[[rule]]
+# File names longer than 64 characters
+name  = "name-length"
+check = "IsFileNameTooLong"
 
-[test.HasReadme]
-# Filenames recognized as the repository readme (literal, case-insensitive).
-# Used by HasReadme and ReadMeContainsTOC.
-keywordArguments = [
-    { readme_names = ["readme.md", "readme.txt", "readme", "read me", "read me.txt", "read me.md", "read-me", "read-me.txt", "read-me.md", "read_me", "read_me.txt", "read_me.md"] }
-]
+[[rule]]
+# The repository readme must be present; which filenames count is the check's
+# built-in default list (readme_names overrides it). ReadMeContainsTOC reads this rule.
+name  = "readme-present"
+check = "HasReadme"
 
-[test.IsValidName]
-# Checking for invalid files and folders
-# blacklist/whitelist: Use regex patterns to include/exclude files by path
-blacklist = []
-whitelist = []
-# disallowed_names: Use literal strings only (exact filename matching)
-keywordArguments = [
-    { disallowed_names = [ 
-        ".Rhistory", ".RData",
-        ".Rapp.history", ".Ruserdata", 
-        ".Rbuildignore", "__pycache__", ".vscode", 
-        ".ipynb_checkpoints", "venv", ".idea", ".egg-info", 
-        ".pytest_cache", ".pyc", ".tox", ".python_version", 
-        ".coverage", ".benchmark", ".doc", ".xls", ".DS_Store"
-    ]}
-]
+[[rule]]
+# Disallowed file/folder names (literal strings, exact or suffix match)
+name  = "no-junk-files"
+check = "IsValidName"
+  [rule.params]
+  disallowed_names = [
+      ".Rhistory", ".RData",
+      ".Rapp.history", ".Ruserdata",
+      ".Rbuildignore", "__pycache__", ".vscode",
+      ".ipynb_checkpoints", "venv", ".idea", ".egg-info",
+      ".pytest_cache", ".pyc", ".tox", ".python_version",
+      ".coverage", ".benchmark", ".doc", ".xls", ".DS_Store"
+  ]
 
 [collector.CkanCollector]
 attrs = {url = "https://example.com", token = "", verify = true, ckan_storage_path = "/nfsmount/ckan/default"}

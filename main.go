@@ -97,17 +97,11 @@ func main() {
 		return
 	}
 
-	// Fail fast (like the server does at boot) when a [test.*] section the checks
-	// dereference at scan time is missing or wrong-typed.
-	if err := config.ValidateChecksConfig(generalConfig); err != nil {
-		outputError("config_error", fmt.Sprintf("Invalid config: %v", err))
-		return
-	}
-
-	// Same gate for the rules themselves: bind every check's parameters and
-	// compile every whitelist/blacklist once, here, so a bad pattern or an
-	// unknown section is an operator error before anything scans - not a
-	// silently unfiltered (or fully filtered) run.
+	// The one boot gate for the rules (like the server's at boot): bind every
+	// check's parameters and compile every include/exclude pattern once, here,
+	// so a bad pattern, a wrong-typed parameter or an unknown section is an
+	// operator error before anything scans - not a silently unfiltered (or
+	// fully filtered) run.
 	plan, err := utils.Compile(generalConfig, checks.NewRegistry())
 	if err != nil {
 		outputError("config_error", fmt.Sprintf("Invalid config: %v", err))
