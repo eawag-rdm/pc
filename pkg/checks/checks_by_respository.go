@@ -2,6 +2,7 @@ package checks
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -60,7 +61,7 @@ func bindHasReadme(spec config.RuleSpec, _ *config.GeneralConfig) (*BoundRule, e
 	}
 	return &BoundRule{
 		Rule: spec.Name,
-		applyRepo: func(repository structs.Repository, _ *Batch, _ *selector.Selector) []structs.Message {
+		applyRepo: func(_ context.Context, repository structs.Repository, _ *Batch, _ *selector.Selector) []structs.Message {
 			return hasReadme(repository, names)
 		},
 	}, nil
@@ -73,7 +74,7 @@ func bindReadMeContainsTOC(spec config.RuleSpec, _ *config.GeneralConfig) (*Boun
 	}
 	return &BoundRule{
 		Rule: spec.Name,
-		applyRepo: func(repository structs.Repository, _ *Batch, _ *selector.Selector) []structs.Message {
+		applyRepo: func(_ context.Context, repository structs.Repository, _ *Batch, _ *selector.Selector) []structs.Message {
 			return readMeContainsTOC(repository, names)
 		},
 	}, nil

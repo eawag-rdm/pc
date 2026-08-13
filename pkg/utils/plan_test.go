@@ -644,15 +644,15 @@ func countInvocations(plan *Plan) map[string]int {
 			entry := &plan.scopes[scope][i]
 			key := entry.def.Name + "@" + scope.String()
 			if run := entry.def.RunFile; run != nil {
-				entry.def.RunFile = func(file structs.File, s checks.Scope, batch *checks.Batch, rules []*checks.BoundRule) []structs.Message {
+				entry.def.RunFile = func(ctx context.Context, file structs.File, s checks.Scope, batch *checks.Batch, rules []*checks.BoundRule) []structs.Message {
 					record(key)
-					return run(file, s, batch, rules)
+					return run(ctx, file, s, batch, rules)
 				}
 			}
 			if run := entry.def.RunRepository; run != nil {
-				entry.def.RunRepository = func(repo structs.Repository, batch *checks.Batch, rules []*checks.BoundRule) []structs.Message {
+				entry.def.RunRepository = func(ctx context.Context, repo structs.Repository, batch *checks.Batch, rules []*checks.BoundRule) []structs.Message {
 					record(key)
-					return run(repo, batch, rules)
+					return run(ctx, repo, batch, rules)
 				}
 			}
 		}

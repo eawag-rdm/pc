@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"context"
 	"fmt"
 	"path"
 	"slices"
@@ -83,14 +84,20 @@ type CheckDef struct {
 
 	// RunFile acquires this file's content once and hands it to every rule that
 	// matched it, so the invocation count per (file, check) is independent of
-	// the rule count. scope names the dispatch phase; only the keyword check
-	// reads it, to tell a file's own content from an archive's members. batch
-	// carries what the whole invocation shares - see Batch.
-	RunFile func(file structs.File, scope Scope, batch *Batch, rules []*BoundRule) []structs.Message
+	// the rule count. ctx bounds the SCAN of acquired content, and only as an
+	// UPPER BOUND: an implementation may ignore ctx entirely (the name checks
+	// do), and none observes it more finely than once per archive member, per
+	// body entry or per streamed chunk - never inside a byte-scan loop. A fired
+	// ctx returns the messages collected so far. Acquisition itself does not
+	// observe ctx: a single large PDF or OOXML container is extracted whole
+	// before the first cancellation point. scope names the dispatch phase; only
+	// the keyword check reads it, to tell a file's own content from an archive's
+	// members. batch carries what the whole invocation shares - see Batch.
+	RunFile func(ctx context.Context, file structs.File, scope Scope, batch *Batch, rules []*BoundRule) []structs.Message
 
 	// RunRepository is RunFile's twin for the checks that need the whole file
 	// set rather than one file.
-	RunRepository func(repository structs.Repository, batch *Batch, rules []*BoundRule) []structs.Message
+	RunRepository func(ctx context.Context, repository structs.Repository, batch *Batch, rules []*BoundRule) []structs.Message
 }
 
 // Batch is the state one (check, scope) plan entry shares across ALL its rules.
@@ -164,14 +171,15 @@ type BoundRule struct {
 
 	// apply scans one acquisition: its entries, their shared lowercase copies -
 	// lowered once per acquisition, never once per rule - and how a finding is
-	// reported. Both slices are nil for checks that read no content.
+	// reported. Both slices are nil for checks that read no content. ctx is
+	// observed per body entry at most; the name checks ignore it.
 	//
 	// CONTRACT: body and lowered are BORROWED for the duration of the call. An
 	// implementation may read them but must never retain them (the archive
 	// acquisition reuses one pair of slices for every member, and the streamed
 	// one hands out the chunk buffer itself).
-	apply     func(file structs.File, body, lowered [][]byte, report reporting) []structs.Message
-	applyRepo func(repository structs.Repository, batch *Batch, sel *selector.Selector) []structs.Message
+	apply     func(ctx context.Context, file structs.File, body, lowered [][]byte, report reporting) []structs.Message
+	applyRepo func(ctx context.Context, repository structs.Repository, batch *Batch, sel *selector.Selector) []structs.Message
 }
 
 // SetSelectors gives a rule the selectors CompileRuleSelectors compiled for
@@ -316,11 +324,12 @@ func NewRegistry() Registry {
 }
 
 // runNameRules is RunFile for the checks that read no content: every rule that
-// matched the file reports through its own bound parameters.
-func runNameRules(file structs.File, _ Scope, _ *Batch, rules []*BoundRule) []structs.Message {
+// matched the file reports through its own bound parameters. ctx is forwarded
+// but never consulted: a name check costs less than testing it would.
+func runNameRules(ctx context.Context, file structs.File, _ Scope, _ *Batch, rules []*BoundRule) []structs.Message {
 	var messages []structs.Message
 	for _, rule := range rules {
-		messages = append(messages, tag(rule.Rule, rule.apply(file, nil, nil, reportJoined))...)
+		messages = append(messages, tag(rule.Rule, rule.apply(ctx, file, nil, nil, reportJoined))...)
 	}
 	return messages
 }
@@ -328,10 +337,10 @@ func runNameRules(file structs.File, _ Scope, _ *Batch, rules []*BoundRule) []st
 // runRepositoryRules is RunRepository for every repository check: each rule
 // sees the repository narrowed by its own selector, and is handed that same
 // selector plus the batch's scan bounds - it never reads them back off itself.
-func runRepositoryRules(repository structs.Repository, batch *Batch, rules []*BoundRule) []structs.Message {
+func runRepositoryRules(ctx context.Context, repository structs.Repository, batch *Batch, rules []*BoundRule) []structs.Message {
 	var messages []structs.Message
 	for _, rule := range rules {
-		messages = append(messages, tag(rule.Rule, rule.applyRepo(rule.narrow(repository), batch, &rule.sel))...)
+		messages = append(messages, tag(rule.Rule, rule.applyRepo(ctx, rule.narrow(repository), batch, &rule.sel))...)
 	}
 	return messages
 }
@@ -345,7 +354,7 @@ func bindNoParams(check func(structs.File) []structs.Message) func(config.RuleSp
 		}
 		return &BoundRule{
 			Rule: spec.Name,
-			apply: func(file structs.File, _, _ [][]byte, _ reporting) []structs.Message {
+			apply: func(_ context.Context, file structs.File, _, _ [][]byte, _ reporting) []structs.Message {
 				return check(file)
 			},
 		}, nil

@@ -82,8 +82,8 @@ func bindSecrets(spec config.RuleSpec, _ *config.GeneralConfig) (*BoundRule, err
 	bound := leakAttrsFrom(table)
 	return &BoundRule{
 		Rule: spec.Name,
-		applyRepo: func(repository structs.Repository, batch *Batch, sel *selector.Selector) []structs.Message {
-			return isFreeOfSecrets(repository, bound, batch.limits, batch.maxContentScan, sel)
+		applyRepo: func(ctx context.Context, repository structs.Repository, batch *Batch, sel *selector.Selector) []structs.Message {
+			return isFreeOfSecrets(ctx, repository, bound, batch.limits, batch.maxContentScan, sel)
 		},
 	}, nil
 }
@@ -138,7 +138,7 @@ var leakTempName = regexp.MustCompile(`[^A-Za-z0-9._-]`)
 // iterator as the keyword checks (general.maxArchiveFileSize per member,
 // general.maxTotalArchiveMemory per archive) into a private temp directory.
 // The scanner itself never unpacks anything (--max-archive-depth 0).
-func isFreeOfSecrets(repo structs.Repository, attrs leakAttrs, limits readers.ArchiveLimits, maxContentScan int64, memberFilter *selector.Selector) []structs.Message {
+func isFreeOfSecrets(ctx context.Context, repo structs.Repository, attrs leakAttrs, limits readers.ArchiveLimits, maxContentScan int64, memberFilter *selector.Selector) []structs.Message {
 	var messages []structs.Message
 
 	// Partition the repository: oversized files are acknowledged in one
@@ -195,11 +195,19 @@ func isFreeOfSecrets(repo structs.Repository, attrs leakAttrs, limits readers.Ar
 		return messages
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(attrs.timeoutSeconds)*time.Second)
+	// The scan's own timeout nests under the caller's ctx, so a cancelled
+	// request also cancels a running scanner; the timeout semantics stand.
+	scanCtx, cancel := context.WithTimeout(ctx, time.Duration(attrs.timeoutSeconds)*time.Second)
 	defer cancel()
 
-	findings, err := runBetterleaks(ctx, attrs.binary, scanPaths, attrs.maxProcs)
+	findings, err := runBetterleaks(scanCtx, attrs.binary, scanPaths, attrs.maxProcs)
 	if err != nil {
+		if ctx.Err() != nil {
+			// The CALLER cancelled (not the scan's own timeout, which is still
+			// acknowledged below): a scan the caller stopped did not fail, so
+			// the messages collected so far stand, like every other ctx exit.
+			return messages
+		}
 		output.GlobalLogger.Warning("IsFreeOfSecrets: %v", err)
 		reason := "Leak scan did not run: " + err.Error()
 		messages = append(messages, structs.Message{Content: reason, Source: structs.Repository{}, Skipped: true, Reason: reason})

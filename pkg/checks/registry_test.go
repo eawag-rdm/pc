@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"context"
 	"os"
 	"strings"
 	"testing"
@@ -93,7 +94,7 @@ func bindTestRule(t testing.TB, name string, cfg config.Config, scope Scope) (Ch
 func runRule(t testing.TB, name string, cfg config.Config, scope Scope, file structs.File) []structs.Message {
 	t.Helper()
 	def, rules, batch := bindTestRule(t, name, cfg, scope)
-	return def.RunFile(file, scope, batch, rules)
+	return def.RunFile(context.Background(), file, scope, batch, rules)
 }
 
 // runRepoRule is runRule for the repository-scoped checks, whose rules narrow
@@ -101,7 +102,7 @@ func runRule(t testing.TB, name string, cfg config.Config, scope Scope, file str
 func runRepoRule(t testing.TB, name string, cfg config.Config, repository structs.Repository) []structs.Message {
 	t.Helper()
 	def, rules, batch := bindTestRule(t, name, cfg, ScopeRepository)
-	return def.RunRepository(repository, batch, rules)
+	return def.RunRepository(context.Background(), repository, batch, rules)
 }
 
 // TestRegistryScopesCoverDispatch pins the registry against the dispatch phases
@@ -300,7 +301,7 @@ func TestBindKeywordsMultipleParamSets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bind: %v", err)
 	}
-	msgs := def.RunFile(structs.File{Path: path, Name: "notes.txt"}, ScopeFile, NewBatch(general), []*BoundRule{rule})
+	msgs := def.RunFile(context.Background(), structs.File{Path: path, Name: "notes.txt"}, ScopeFile, NewBatch(general), []*BoundRule{rule})
 	if len(msgs) != 2 {
 		t.Fatalf("expected one finding per parameter set, got %v", msgs)
 	}

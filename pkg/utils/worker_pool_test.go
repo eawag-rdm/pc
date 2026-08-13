@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"context"
 	"fmt"
 	"runtime"
 	"strings"
@@ -12,7 +13,7 @@ import (
 )
 
 func TestNewWorkerPool(t *testing.T) {
-	pool := newWorkerPool(4)
+	pool := newWorkerPool(context.Background(), 4)
 
 	if pool == nil {
 		t.Fatal("NewWorkerPool returned nil")
@@ -38,7 +39,7 @@ func TestNewWorkerPool(t *testing.T) {
 }
 
 func TestNewWorkerPool_DefaultWorkers(t *testing.T) {
-	pool := newWorkerPool(0)
+	pool := newWorkerPool(context.Background(), 0)
 
 	expectedWorkers := runtime.NumCPU()
 	if pool.numWorkers != expectedWorkers {
@@ -49,7 +50,7 @@ func TestNewWorkerPool_DefaultWorkers(t *testing.T) {
 }
 
 func TestWorkerPool_StartStop(t *testing.T) {
-	pool := newWorkerPool(2)
+	pool := newWorkerPool(context.Background(), 2)
 
 	// Start the pool
 	pool.start()
@@ -58,12 +59,12 @@ func TestWorkerPool_StartStop(t *testing.T) {
 	pool.stop()
 
 	// Test stopping a fresh pool without starting
-	pool2 := newWorkerPool(1)
+	pool2 := newWorkerPool(context.Background(), 1)
 	pool2.stop() // Should not panic
 }
 
 func TestWorkerPool_ProcessWork(t *testing.T) {
-	pool := newWorkerPool(2)
+	pool := newWorkerPool(context.Background(), 2)
 	pool.start()
 	defer pool.stop()
 
@@ -101,7 +102,7 @@ func TestWorkerPool_ProcessWork(t *testing.T) {
 }
 
 func TestWorkerPool_MultipleChecks(t *testing.T) {
-	pool := newWorkerPool(1)
+	pool := newWorkerPool(context.Background(), 1)
 	pool.start()
 	defer pool.stop()
 
@@ -130,7 +131,7 @@ func TestWorkerPool_MultipleChecks(t *testing.T) {
 }
 
 func TestWorkerPool_ConcurrentProcessing(t *testing.T) {
-	pool := newWorkerPool(4)
+	pool := newWorkerPool(context.Background(), 4)
 	pool.start()
 	defer pool.stop()
 
@@ -171,7 +172,7 @@ func TestWorkerPool_ConcurrentProcessing(t *testing.T) {
 
 func TestWorkerPool_ChannelFullHandling(t *testing.T) {
 	// Create pool with small buffer (but start workers so it processes)
-	pool := newWorkerPool(1)
+	pool := newWorkerPool(context.Background(), 1)
 
 	testFile := structs.File{Name: "test.txt", Path: "/test/test.txt"}
 	testCheck := mockEntry("testCheck", func(file structs.File) []structs.Message {
@@ -213,7 +214,7 @@ func TestWorkerPool_PanickingCheck_DoesNotKillProcess(t *testing.T) {
 		return []structs.Message{{Content: "healthy ran", Source: file}}
 	})
 
-	pool := newWorkerPool(2)
+	pool := newWorkerPool(context.Background(), 2)
 	pool.start()
 	defer pool.stop()
 

@@ -19,8 +19,11 @@ import (
 // Run executes the metadata checks and then the file check pipeline over files,
 // returning their messages in that order. md may be nil (no metadata collected,
 // e.g. the local collector). ctx bounds the file pipeline coarsely: once it is
-// done the loops stop between files. It does not bound the metadata checks -
-// metadata.RunChecks takes no ctx. CLI callers pass context.Background().
+// done the scan stops at the next cancellation point (between files, or
+// mid-archive), and the messages are then PARTIAL in an unspecified way - no
+// error, no marker, so ctx.Err() is the caller's only signal. It does not bound
+// the metadata checks - metadata.RunChecks takes no ctx. CLI callers pass
+// context.Background().
 //
 // progress may be nil (server, non-TUI CLI) and then selects the parallel
 // engine. A non-nil progress serialises the file phase: the WithProgress engine

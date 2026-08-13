@@ -37,19 +37,21 @@ type workResult struct {
 	Messages []structs.Message
 }
 
-// newWorkerPool creates a new worker pool with the specified number of workers
-func newWorkerPool(numWorkers int) *workerPool {
+// newWorkerPool creates a new worker pool with the specified number of workers.
+// Cancelling ctx tears the pool down; ctx must not be nil. stop must still be
+// called either way - it is what releases the derived context.
+func newWorkerPool(ctx context.Context, numWorkers int) *workerPool {
 	if numWorkers <= 0 {
 		numWorkers = runtime.NumCPU()
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	poolCtx, cancel := context.WithCancel(ctx)
 
 	return &workerPool{
 		numWorkers: numWorkers,
 		workChan:   make(chan workItem, numWorkers*2), // Buffer to prevent blocking
 		resultChan: make(chan workResult, numWorkers*2),
-		ctx:        ctx,
+		ctx:        poolCtx,
 		cancel:     cancel,
 	}
 }
@@ -96,7 +98,7 @@ func (wp *workerPool) processWorkItem(work workItem) []structs.Message {
 	// Run all checks for this file sequentially in the same worker
 	// This avoids IO conflicts from multiple goroutines reading the same file
 	for _, entry := range work.Checks {
-		messages := safeRunCheck(entry, work.File, work.Scope)
+		messages := safeRunCheck(wp.ctx, entry, work.File, work.Scope)
 		if len(messages) > 0 {
 			// Add test name to each message
 			for i := range messages {
@@ -141,7 +143,7 @@ func safeRun(what, subject string, fn func() []structs.Message) (messages []stru
 // label is built inside the recover branch, not handed in: concatenating it up
 // front cost a string and an allocation for every check that did NOT panic -
 // which is every check, on every file.
-func safeRunCheck(entry checkRules, file structs.File, scope checks.Scope) (messages []structs.Message) {
+func safeRunCheck(ctx context.Context, entry checkRules, file structs.File, scope checks.Scope) (messages []structs.Message) {
 	defer func() {
 		if r := recover(); r != nil {
 			logPanic("Check "+entry.def.Name+" on file '"+file.Name+"'", file.GetDisplayName(), r)
@@ -154,7 +156,7 @@ func safeRunCheck(entry checkRules, file structs.File, scope checks.Scope) (mess
 		// recover turns it into a logged internal error rather than bad results.
 		panic("check " + entry.def.Name + " does not serve scope " + scope.String())
 	}
-	return entry.def.RunFile(file, scope, entry.batch, entry.rules)
+	return entry.def.RunFile(ctx, file, scope, entry.batch, entry.rules)
 }
 
 // submit adds a work item to the processing queue (blocks until space is available)
@@ -185,9 +187,14 @@ func (wp *workerPool) results() <-chan workResult {
 // select waits on both the work channel and the pool context; cancel()+close()
 // here can make BOTH cases ready, and if the runtime commits the send case the
 // process panics with "send on closed channel". Callers must ensure all submit
-// calls have returned before stop runs - the submit/collect handshake in
-// runChecksPool (collect exactly `submitted` results, which happens-after the
-// submitter goroutine's last Submit) provides this.
+// calls have returned before stop runs. runChecksPool provides this twice over:
+// on the normal path by the submit/collect handshake (collect exactly
+// `submitted` results, which happens-after the submitter goroutine's last
+// submit), and on the cancellation path by reading the submitter's count before
+// it returns. The second argument holds only because this pool's context is a
+// DESCENDANT of the one the collector watches - that is what unblocks a submit
+// parked on a full work channel. Giving the pool an independent context would
+// turn that read into a permanent block.
 func (wp *workerPool) stop() {
 	wp.cancel() // Cancel context first to stop accepting new work
 	close(wp.workChan)

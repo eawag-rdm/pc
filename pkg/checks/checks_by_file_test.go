@@ -3,6 +3,7 @@ package checks
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/eawag-rdm/pc/pkg/config"
+	"github.com/eawag-rdm/pc/pkg/optimization"
 	"github.com/eawag-rdm/pc/pkg/structs"
 )
 
@@ -19,6 +21,18 @@ func check(e error) {
 	if e != nil {
 		panic(e)
 	}
+}
+
+// isFreeOfKeywordsCoreList scans one body with one keyword list, the shape the
+// keyword tests assert against. It lives here, not beside the production code,
+// because nothing but these tests calls it.
+func isFreeOfKeywordsCoreList(file structs.File, keywordList []string, info string, body [][]byte, isBinary bool) []structs.Message {
+	report := reportJoined
+	if isBinary {
+		report = reportIndexed
+	}
+	sets := []keywordSet{{matcher: optimization.GetMatcher(keywordList), info: info}}
+	return scanKeywords(context.Background(), file, sets, body, lowerAll(body), report)
 }
 
 func tempFile(content []byte) string {

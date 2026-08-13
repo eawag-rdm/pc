@@ -90,7 +90,7 @@ func applyChecksFilteredByFile(ctx context.Context, entries []checkRules, files 
 		helpers.PDFTracker.AddFileIfPDF("", file)
 		// apply checks by file but only for the rules that matched it
 		for _, entry := range scratch.match(entries, file) {
-			ret := safeRunCheck(entry, file, checks.ScopeFile)
+			ret := safeRunCheck(ctx, entry, file, checks.ScopeFile)
 			if ret != nil {
 				// Add test name to each message
 				for j := range ret {
@@ -133,7 +133,7 @@ func applyChecksFilteredByFileWithTestProgress(ctx context.Context, entries []ch
 			}
 			matched := entry
 			matched.rules = rules
-			ret := safeRunCheck(matched, file, checks.ScopeFile)
+			ret := safeRunCheck(ctx, matched, file, checks.ScopeFile)
 			if ret != nil {
 				// Add test name to each message
 				for j := range ret {
@@ -212,6 +212,9 @@ func filterChecksForFiles(entries []checkRules, scope checks.Scope, files []stru
 // analysis deadline fires mid-submission and the submit loop stops early).
 // Collecting exactly `submitted` results also guarantees every submit has
 // returned before the deferred stop runs (the pool's stop/submit invariant).
+// Cancellation is the loop's second exit: the results the workers abandoned
+// with the pool never arrive, so it returns what it has - a partial set by
+// design.
 func runChecksPool(ctx context.Context, workItems []workItem, numWorkers int) []structs.Message {
 	if len(workItems) == 0 {
 		return nil
@@ -220,7 +223,7 @@ func runChecksPool(ctx context.Context, workItems []workItem, numWorkers int) []
 		numWorkers = len(workItems)
 	}
 
-	pool := newWorkerPool(numWorkers)
+	pool := newWorkerPool(ctx, numWorkers)
 	pool.start()
 	defer pool.stop()
 
@@ -244,6 +247,7 @@ func runChecksPool(ctx context.Context, workItems []workItem, numWorkers int) []
 	var allMessages []structs.Message
 	collected := 0
 	submitted := -1
+	done := ctx.Done() // hoisted: one interface call, not one per result
 	for submitted < 0 || collected < submitted {
 		select {
 		case result := <-pool.results():
@@ -251,6 +255,28 @@ func runChecksPool(ctx context.Context, workItems []workItem, numWorkers int) []
 			collected++
 		case n := <-submittedCh:
 			submitted = n
+		case <-done:
+			// The pool's context derives from this one, so the workers abandon
+			// whatever is still queued: those results never arrive and waiting
+			// for them would hang here. Read the submitter's count first - the
+			// same cancellation unblocks it - so the deferred stop still cannot
+			// race a blocked submit.
+			if submitted < 0 {
+				<-submittedCh
+			}
+			// Take what the workers DID deliver before returning: once ctx is
+			// done the select above picks this case against a non-empty result
+			// channel with even odds, so finished work would otherwise be
+			// dropped at random. Only the deferred stop closes the channel, so
+			// the drain cannot block.
+			for {
+				select {
+				case result := <-pool.results():
+					allMessages = append(allMessages, result.Messages...)
+				default:
+					return allMessages
+				}
+			}
 		}
 	}
 	return allMessages
@@ -357,7 +383,7 @@ func archiveFileListChecks(ctx context.Context, cfg config.Config, entries []che
 		helpers.PDFTracker.AddFileIfPDF(archiveFile.Name+" -> ", archivedFile)
 
 		for _, entry := range scratch.match(entries, archivedFile) {
-			ret := safeRunCheck(entry, archivedFile, checks.ScopeArchiveFileList)
+			ret := safeRunCheck(ctx, entry, archivedFile, checks.ScopeArchiveFileList)
 			if ret != nil {
 				for j := range ret {
 					ret[j].TestName = entry.def.Name
@@ -448,7 +474,7 @@ func applyChecksFilteredByFileOnArchive(ctx context.Context, entries []checkRule
 			return messages
 		}
 		for _, entry := range scratch.match(entries, file) {
-			ret := safeRunCheck(entry, file, checks.ScopeArchiveMember)
+			ret := safeRunCheck(ctx, entry, file, checks.ScopeArchiveMember)
 			if ret != nil {
 				// Add test name to each message
 				for j := range ret {
@@ -480,7 +506,7 @@ func applyChecksFilteredByRepository(ctx context.Context, entries []checkRules, 
 		}
 		testName := entry.def.Name
 		ret := safeRun("Check "+testName, "", func() []structs.Message {
-			return entry.def.RunRepository(repo, entry.batch, entry.rules)
+			return entry.def.RunRepository(ctx, repo, entry.batch, entry.rules)
 		})
 		if ret != nil {
 			// Add test name to each message
@@ -515,8 +541,14 @@ func noFilesNotice() structs.Message {
 
 // ApplyAllChecks runs every scope of the plan over the collected files. ctx
 // bounds the work coarsely: once its deadline fires (the server's whole-analysis
-// timeout) or it is cancelled, the loops stop between files - a file in progress
-// finishes, no new one starts. CLI callers pass context.Background().
+// timeout) or it is cancelled, the scan stops at the next cancellation point -
+// between files, but also mid-archive, so the file in progress does NOT
+// necessarily finish. CLI callers pass context.Background().
+//
+// CONTRACT ON CANCELLATION: the returned set is partial in an UNSPECIFIED way -
+// no error, no marker, and no way to tell it from a clean run that found the
+// same messages. Findings the workers had already delivered are kept; whatever
+// they abandoned is lost. A caller that cares must consult ctx.Err() itself.
 //
 // plan must come from Compile; both frontends compile it once at startup and
 // carry it. Intended entry point is internal/analysis.Run (progress == nil
@@ -554,6 +586,8 @@ func ApplyAllChecks(ctx context.Context, config config.Config, plan *Plan, files
 // every analysis silently. plan is the same startup-built plan ApplyAllChecks
 // takes. Intended caller is internal/analysis.Run (progress != nil branch);
 // everything else takes ApplyAllChecks. Panics on a nil plan, like its twin.
+// Cancellation carries the same contract as its twin: a partial, unmarked
+// result set, with ctx.Err() as the caller's only signal.
 func ApplyAllChecksWithProgress(ctx context.Context, config config.Config, plan *Plan, files []structs.File, checksAcrossFiles bool, progressCallback ProgressCallback) []structs.Message {
 	if plan == nil {
 		panic("utils: ApplyAllChecksWithProgress requires a compiled *utils.Plan")

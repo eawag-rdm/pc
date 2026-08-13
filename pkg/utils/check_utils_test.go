@@ -326,7 +326,7 @@ func mockEntry(name string, run func(structs.File) []structs.Message) checkRules
 		// The dispatch asserts the scope it hands RunFile against these, so a
 		// mock has to declare the phases the dispatch tests drive it through.
 		Scopes: checks.ScopesOf(checks.ScopeFile, checks.ScopeArchiveFileList, checks.ScopeArchiveMember),
-		RunFile: func(file structs.File, _ checks.Scope, _ *checks.Batch, rules []*checks.BoundRule) []structs.Message {
+		RunFile: func(_ context.Context, file structs.File, _ checks.Scope, _ *checks.Batch, rules []*checks.BoundRule) []structs.Message {
 			var messages []structs.Message
 			for range rules {
 				messages = append(messages, run(file)...)

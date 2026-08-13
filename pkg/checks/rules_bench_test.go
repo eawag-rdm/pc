@@ -3,6 +3,7 @@ package checks
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -200,7 +201,7 @@ func benchmarkIsFreeOfKeywords(b *testing.B, ruleCount int) {
 
 	b.ReportAllocs()
 	for b.Loop() {
-		msgs := def.RunFile(file, ScopeFile, batch, rules)
+		msgs := def.RunFile(context.Background(), file, ScopeFile, batch, rules)
 		if len(msgs) != ruleCount {
 			b.Fatalf("expected one finding per rule, got %d for %d", len(msgs), ruleCount)
 		}
@@ -245,7 +246,7 @@ func benchmarkIsFreeOfKeywordsStream(b *testing.B, ruleCount, size int, nonASCII
 
 	b.ReportAllocs()
 	for b.Loop() {
-		msgs := def.RunFile(file, ScopeFile, batch, rules)
+		msgs := def.RunFile(context.Background(), file, ScopeFile, batch, rules)
 		if len(msgs) != ruleCount {
 			b.Fatalf("expected one deduplicated finding per rule, got %d for %d", len(msgs), ruleCount)
 		}
@@ -283,7 +284,7 @@ func benchmarkIsArchiveFreeOfKeywords(b *testing.B, ruleCount int) {
 	want := (ruleCount + 1) * (benchArchiveMembers / 5)
 	b.ReportAllocs()
 	for b.Loop() {
-		msgs := def.RunFile(file, ScopeArchiveMember, batch, rules)
+		msgs := def.RunFile(context.Background(), file, ScopeArchiveMember, batch, rules)
 		if len(msgs) != want {
 			b.Fatalf("expected %d findings, got %d - the benchmark measures the wrong thing", want, len(msgs))
 		}
@@ -300,7 +301,7 @@ func benchmarkPDFRulesFanout(b *testing.B, ruleCount int) {
 
 	b.ReportAllocs()
 	for b.Loop() {
-		msgs := def.RunFile(file, ScopeFile, batch, rules)
+		msgs := def.RunFile(context.Background(), file, ScopeFile, batch, rules)
 		if len(msgs) != ruleCount {
 			b.Fatalf("expected one finding per rule, got %d for %d", len(msgs), ruleCount)
 		}
@@ -365,7 +366,7 @@ func TestArchiveBudgetIndependentOfRuleCount(t *testing.T) {
 			}
 			rules = append(rules, rule)
 		}
-		for _, m := range def.RunFile(archive, ScopeArchiveMember, batch, rules) {
+		for _, m := range def.RunFile(context.Background(), archive, ScopeArchiveMember, batch, rules) {
 			if m.Skipped {
 				skips++
 			} else {
