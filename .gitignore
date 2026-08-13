@@ -45,6 +45,6 @@ go.work.sum
 .DS_Store
 
 .claude
-claude.local.md
+CLAUDE.local.md
 
 *.html
