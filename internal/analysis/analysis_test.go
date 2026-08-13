@@ -96,7 +96,7 @@ func TestRun_NilMetadata(t *testing.T) {
 	files := buildFiles(t)
 
 	resetGlobalScanState()
-	messages := Run(context.Background(), cfg, planFor(t, cfg), files, nil, nil)
+	messages := Run(context.Background(), cfg, planFor(t, cfg), files, nil, nil).Messages
 	resetGlobalScanState()
 
 	if countFileMessages(messages) == 0 {
@@ -122,7 +122,7 @@ func TestRun_MetadataMessagesFirst(t *testing.T) {
 	}
 
 	resetGlobalScanState()
-	messages := Run(context.Background(), cfg, planFor(t, cfg), files, md, nil)
+	messages := Run(context.Background(), cfg, planFor(t, cfg), files, md, nil).Messages
 	resetGlobalScanState()
 
 	if len(messages) <= len(want) {
@@ -164,7 +164,7 @@ func TestRun_ProgressRoutesToProgressEngine(t *testing.T) {
 	resetGlobalScanState()
 	messages := Run(context.Background(), cfg, planFor(t, cfg), files, nil, func(current, total int, message string) {
 		calls = append(calls, call{current: current, total: total, message: message})
-	})
+	}).Messages
 	resetGlobalScanState()
 
 	if len(calls) == 0 {
@@ -179,5 +179,55 @@ func TestRun_ProgressRoutesToProgressEngine(t *testing.T) {
 	}
 	if countFileMessages(messages) == 0 {
 		t.Fatal("no File-sourced messages - the file pipeline did not run")
+	}
+}
+
+// TestRun_MergesGlobalAndEngineDiagnostics pins Run as the run's single merge
+// point: what other packages still write to output.GlobalLogger and what the
+// engine returns by value both come back in one Result.Diagnostics, and the
+// buffer is left empty so a second run cannot inherit the first one's notes.
+func TestRun_MergesGlobalAndEngineDiagnostics(t *testing.T) {
+	cfg := testConfig(t)
+	files := buildFiles(t)
+
+	resetGlobalScanState()
+	output.GlobalLogger.SetJSONMode(true)
+	t.Cleanup(resetGlobalScanState)
+
+	// Stands in for the packages that still emit through the global (readers,
+	// collectors, checks): emitted before Run, exactly as a collector's would be.
+	output.GlobalLogger.FileWarning("data.csv", "planted by a collector")
+
+	// And a file the ENGINE itself will report on: bytes that are not the
+	// archive the name claims, so the archive-file-list phase emits into the
+	// sink and that diagnostic comes back by value. Both halves of the merge
+	// must be present - asserting only the global half leaves "Run drops
+	// everything the engine returned" green.
+	dir := t.TempDir()
+	broken := filepath.Join(dir, "broken.zip")
+	if err := os.WriteFile(broken, []byte("not a zip at all"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	files = append(files, structs.ToFile(broken, "", -1, ""))
+
+	res := Run(context.Background(), cfg, planFor(t, cfg), files, nil, nil)
+
+	var fromGlobal, fromEngine bool
+	for _, d := range res.Diagnostics {
+		if d.Message == "planted by a collector" && d.Subject == "data.csv" {
+			fromGlobal = true
+		}
+		if strings.Contains(d.Message, "archive filelist checks") && d.Subject == "broken.zip" {
+			fromEngine = true
+		}
+	}
+	if !fromGlobal {
+		t.Errorf("Run did not merge the buffered global diagnostics, got %v", res.Diagnostics)
+	}
+	if !fromEngine {
+		t.Errorf("Run did not merge the diagnostics the engine returned, got %v", res.Diagnostics)
+	}
+	if buffered := output.GlobalLogger.GetMessages(); len(buffered) != 0 {
+		t.Errorf("Run must drain the buffer, it still holds %v", buffered)
 	}
 }

@@ -369,7 +369,7 @@ enabled = false
 		{Path: filepath.Join(dir, "data.csv"), Name: "data.csv", RelPath: "data.csv"},
 	}
 	toc := 0
-	for _, m := range applyChecksFilteredByRepository(context.Background(), plan.scope(checks.ScopeRepository), files) {
+	for _, m := range applyChecksFilteredByRepository(context.Background(), &diagSink{}, plan.scope(checks.ScopeRepository), files) {
 		if m.TestName == "ReadMeContainsTOC" && strings.Contains(m.Content, "data.csv") {
 			toc++
 		}
@@ -506,7 +506,7 @@ keywordArguments = [{readme_names = ["other.rst"]}]
 		{Path: filepath.Join(dir, "data.csv"), Name: "data.csv", RelPath: "data.csv"},
 	}
 	toc := 0
-	for _, m := range applyChecksFilteredByRepository(context.Background(), plan.scope(checks.ScopeRepository), files) {
+	for _, m := range applyChecksFilteredByRepository(context.Background(), &diagSink{}, plan.scope(checks.ScopeRepository), files) {
 		if m.TestName == "ReadMeContainsTOC" && strings.Contains(m.Content, "data.csv") {
 			toc++
 		}

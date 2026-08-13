@@ -88,8 +88,11 @@ func NewJSONFormatter() *JSONFormatter {
 	return &JSONFormatter{}
 }
 
-// FormatResults converts messages to structured JSON output
-func (jf *JSONFormatter) FormatResults(location, collector string, messages []structs.Message, totalFiles int, pdfFiles []string) (string, error) {
+// FormatResults converts messages to structured JSON output. diagnostics are
+// the run's operator-facing notes, classified into errors[]/warnings[] here;
+// the formatter reads no process state, so what it renders is exactly what it
+// was handed.
+func (jf *JSONFormatter) FormatResults(location, collector string, messages []structs.Message, totalFiles int, pdfFiles []string, diagnostics []structs.Diagnostic) (string, error) {
 	result := ScanResult{
 		Timestamp:             time.Now().UTC().Format(time.RFC3339),
 		Scanned:               make([]ScannedFile, 0),
@@ -106,14 +109,13 @@ func (jf *JSONFormatter) FormatResults(location, collector string, messages []st
 	// routed into result.Skipped and excluded from the issue maps.
 	result.processMessages(messages)
 
-	// Separate logger messages by level. Skipped files are now sourced from
+	// Separate diagnostics by level. Skipped files are now sourced from
 	// skip-flagged structs.Messages (see processMessages), not scraped from logs.
-	logMessages := output.GlobalLogger.GetMessages()
-	for _, msg := range logMessages {
+	for _, msg := range diagnostics {
 		switch msg.Level {
-		case "error":
+		case structs.DiagError:
 			result.Errors = append(result.Errors, msg)
-		case "warning":
+		case structs.DiagWarning:
 			result.Warnings = append(result.Warnings, msg)
 		}
 	}

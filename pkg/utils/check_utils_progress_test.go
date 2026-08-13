@@ -56,7 +56,7 @@ func TestRunChecksPool_ProgressTickRegimes(t *testing.T) {
 
 			// The collect loop ticks on THIS goroutine, so a bare slice is safe.
 			var ticks []int
-			runChecksPool(context.Background(), workItems, workers, func(current int) {
+			runChecksPool(context.Background(), &diagSink{}, workItems, workers, func(current int) {
 				ticks = append(ticks, current)
 			})
 
@@ -91,7 +91,7 @@ func TestRunChecksPool_ProgressTickRegimes(t *testing.T) {
 
 			// Same pass with a nil tick: the whole work list still runs.
 			ran.Store(0)
-			runChecksPool(context.Background(), workItems, workers, nil)
+			runChecksPool(context.Background(), &diagSink{}, workItems, workers, nil)
 			if got := int(ran.Load()); got != items {
 				t.Fatalf("nil-tick pass ran the check %d times, want %d", got, items)
 			}
@@ -114,14 +114,14 @@ func TestApplyAllChecksWithProgress_PanickingTick_KeepsScanning(t *testing.T) {
 	plan := compilePlan(t, *cfg)
 
 	resetGlobalScanState()
-	want := ApplyAllChecksWithProgress(context.Background(), *cfg, plan, files, true, func(int, int, string) {})
+	want, _ := ApplyAllChecksWithProgress(context.Background(), *cfg, plan, files, true, func(int, int, string) {})
 
 	// Only the tick is guarded - the phase announcements run unguarded on this
 	// goroutine - so panic on the tick's message alone. It ticks on this
 	// goroutine too, so the counter needs no synchronisation.
 	panics := 0
 	resetGlobalScanState()
-	got := ApplyAllChecksWithProgress(context.Background(), *cfg, plan, files, true, func(_, _ int, message string) {
+	got, _ := ApplyAllChecksWithProgress(context.Background(), *cfg, plan, files, true, func(_, _ int, message string) {
 		if strings.HasPrefix(message, "Running file tests") {
 			panics++
 			panic("boom: simulated progress callback bug")

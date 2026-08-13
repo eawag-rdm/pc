@@ -23,10 +23,12 @@ func TestApplyAllChecks_NoFilesNotice(t *testing.T) {
 	plan := compilePlan(t, config.Config{})
 	cases := map[string]func() []structs.Message{
 		"ApplyAllChecks": func() []structs.Message {
-			return ApplyAllChecks(context.Background(), config.Config{}, plan, nil, false)
+			messages, _ := ApplyAllChecks(context.Background(), config.Config{}, plan, nil, false)
+			return messages
 		},
 		"ApplyAllChecksWithProgress": func() []structs.Message {
-			return ApplyAllChecksWithProgress(context.Background(), config.Config{}, plan, nil, false, nil)
+			messages, _ := ApplyAllChecksWithProgress(context.Background(), config.Config{}, plan, nil, false, nil)
+			return messages
 		},
 	}
 	for name, run := range cases {
@@ -413,7 +415,7 @@ func TestApplyChecksFilteredByFile(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			result := applyChecksFilteredByFile(context.Background(), test.entries, test.files)
+			result := applyChecksFilteredByFile(context.Background(), &diagSink{}, test.entries, test.files)
 			if !reflect.DeepEqual(result, test.expected) {
 				t.Errorf("%v: applyChecksFilteredByFile() = %v; want %v", test.name, result, test.expected)
 			}
@@ -464,7 +466,7 @@ func TestArchiveFileListChecks_WalkCapSkipsArchive(t *testing.T) {
 
 	const memberLimit = 2
 	capped := config.Config{General: &config.GeneralConfig{MaxArchiveMemberCount: memberLimit}}
-	msgs := applyChecksFilteredByFileOnArchiveFileList(context.Background(), capped, nameChecks, []structs.File{archive})
+	msgs := applyChecksFilteredByFileOnArchiveFileList(context.Background(), &diagSink{}, capped, nameChecks, []structs.File{archive})
 	if len(msgs) != 1 {
 		t.Fatalf("expected exactly the archive skip acknowledgement, got %d: %v", len(msgs), msgs)
 	}
@@ -480,7 +482,7 @@ func TestArchiveFileListChecks_WalkCapSkipsArchive(t *testing.T) {
 
 	// Same archive, limit above the member count: the member names are checked.
 	uncapped := config.Config{General: &config.GeneralConfig{MaxArchiveMemberCount: 10}}
-	msgs = applyChecksFilteredByFileOnArchiveFileList(context.Background(), uncapped, nameChecks, []structs.File{archive})
+	msgs = applyChecksFilteredByFileOnArchiveFileList(context.Background(), &diagSink{}, uncapped, nameChecks, []structs.File{archive})
 	if len(msgs) != 3 {
 		t.Fatalf("expected one whitespace issue per member, got %d: %v", len(msgs), msgs)
 	}

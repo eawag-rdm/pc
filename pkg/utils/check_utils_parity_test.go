@@ -132,13 +132,13 @@ func assertEngineParity(t *testing.T, cfg config.Config, files []structs.File) {
 	plan := compilePlan(t, cfg)
 
 	resetGlobalScanState()
-	plain := ApplyAllChecks(context.Background(), cfg, plan, files, true)
+	plain, _ := ApplyAllChecks(context.Background(), cfg, plan, files, true)
 
 	// Ticks are emitted from the pool's collect loop, which is this goroutine,
 	// so an unguarded slice is safe here. Ticking from a worker breaks it.
 	var calls []progressCall
 	resetGlobalScanState()
-	withProgress := ApplyAllChecksWithProgress(context.Background(), cfg, plan, files, true, func(current, total int, _ string) {
+	withProgress, _ := ApplyAllChecksWithProgress(context.Background(), cfg, plan, files, true, func(current, total int, _ string) {
 		calls = append(calls, progressCall{current: current, total: total})
 	})
 

@@ -23,7 +23,7 @@ func TestFormatResultsMetadataSection(t *testing.T) {
 		{Content: "file issue", Source: file, TestName: "HasOnlyASCII"},
 	}
 
-	out, err := NewJSONFormatter().FormatResults("loc", "CkanCollector", messages, 1, nil)
+	out, err := NewJSONFormatter().FormatResults("loc", "CkanCollector", messages, 1, nil, nil)
 	if err != nil {
 		t.Fatalf("FormatResults: %v", err)
 	}

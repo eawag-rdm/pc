@@ -16,6 +16,10 @@ import (
 // Sink: the engines' result must not be elided.
 var benchPipelineMessages []structs.Message
 
+// benchPipelineDiagnostics keeps the second return live, so the benchmark
+// exercises the diagnostics path the way a caller does.
+var benchPipelineDiagnostics []structs.Diagnostic
+
 // benchPipelineConfig is the end-to-end workload: the parameterised checks are
 // declared here, the registry's remaining ones enter as synthesized default
 // rules (6 file checks in the compiled plan). No path filters, so every file
@@ -107,13 +111,17 @@ func BenchmarkApplyAllChecks(b *testing.B) {
 
 	b.Run("plain", func(b *testing.B) {
 		run(b, func() []structs.Message {
-			return ApplyAllChecks(context.Background(), cfg, plan, files, true)
+			messages, diags := ApplyAllChecks(context.Background(), cfg, plan, files, true)
+			benchPipelineDiagnostics = diags
+			return messages
 		})
 	})
 
 	b.Run("progress", func(b *testing.B) {
 		run(b, func() []structs.Message {
-			return ApplyAllChecksWithProgress(context.Background(), cfg, plan, files, true, func(int, int, string) {})
+			messages, diags := ApplyAllChecksWithProgress(context.Background(), cfg, plan, files, true, func(int, int, string) {})
+			benchPipelineDiagnostics = diags
+			return messages
 		})
 	})
 }

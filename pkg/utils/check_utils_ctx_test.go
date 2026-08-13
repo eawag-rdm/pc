@@ -40,7 +40,8 @@ func TestApplyAllChecks_CancelledContext_ReturnsPromptly(t *testing.T) {
 
 	done := make(chan []structs.Message, 1)
 	go func() {
-		done <- ApplyAllChecks(ctx, config.Config{}, compilePlan(t, config.Config{}), files, true)
+		messages, _ := ApplyAllChecks(ctx, config.Config{}, compilePlan(t, config.Config{}), files, true)
+		done <- messages
 	}()
 
 	select {
@@ -82,7 +83,7 @@ func TestApplyChecksFilteredByFile_CancelledMidScan_ReturnsPromptly(t *testing.T
 
 	done := make(chan struct{})
 	go func() {
-		applyChecksFilteredByFile(ctx, []checkRules{slow}, files)
+		applyChecksFilteredByFile(ctx, &diagSink{}, []checkRules{slow}, files)
 		close(done)
 	}()
 
@@ -114,7 +115,7 @@ func TestApplyChecksFilteredByFile_PanickingCheck_Parallel(t *testing.T) {
 		return []structs.Message{{Content: "healthy ran", Source: file}}
 	})
 
-	messages := applyChecksFilteredByFile(context.Background(), []checkRules{panicking, healthy}, files)
+	messages := applyChecksFilteredByFile(context.Background(), &diagSink{}, []checkRules{panicking, healthy}, files)
 
 	healthyCount := 0
 	for _, m := range messages {

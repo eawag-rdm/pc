@@ -467,28 +467,32 @@ func (h *Handler) runAnalysis(ctx context.Context, packageID, token string) (bod
 	// checks phase too - the handler then maps the expired context to
 	// analysis_timeout (504).
 	md := metadata.CkanMetadataFromJSON(result)
-	messages := analysis.Run(ctx, pcConfigCopy, h.plan, files, md, nil)
+	res := analysis.Run(ctx, pcConfigCopy, h.plan, files, md, nil)
+	messages := res.Messages
 
 	if h.afterChecks != nil {
 		h.afterChecks()
 	}
 
 	// Server-mode response discipline (spec §3/§8: no internal paths, no raw
-	// diagnostics). The buffered GlobalLogger diagnostics are split by audience:
-	// the full raw detail (paths, causes) goes to the server log keyed by
-	// request_id, and the response instead gets ONE soft, path-free skip
-	// acknowledgement per affected file. The buffer is cleared, so the
-	// formatter's warnings[]/errors[] arrays are always empty in server
-	// responses. Then any remaining absolute FileStore paths are blanked from
-	// the outgoing messages. The CLI shares none of this - its formatters read
-	// the untouched GlobalLogger and full paths.
-	messages = append(messages, h.convertScanDiagnostics(ctx, packageID)...)
+	// diagnostics). analysis.Run returns the run's whole diagnostic set - what
+	// the engine produced plus what it drained from the buffered GlobalLogger -
+	// and it is split here by audience: the full raw detail (paths, causes) goes
+	// to the server log keyed by request_id, and the response instead gets ONE
+	// soft, path-free skip acknowledgement per affected file. The formatter is
+	// then handed NO diagnostics, so its warnings[]/errors[] arrays are always
+	// empty in server responses - a property of what it is given, not of the
+	// buffer having been cleared in time. Then any remaining absolute FileStore
+	// paths are blanked from the outgoing messages. The CLI shares none of this:
+	// its JSON, HTML and TUI outputs render the same diagnostics with full paths
+	// (--plain renders none at all).
+	messages = append(messages, h.convertScanDiagnostics(ctx, packageID, res.Diagnostics)...)
 	scrubMessagePaths(messages)
 
 	// Format results as JSON. PDFTracker.SnapshotFiles takes a locked copy; we
 	// also still hold analysisMu, so no concurrent reset/append can intervene.
 	formatter := jsonformatter.NewJSONFormatter()
-	jsonResult, err := formatter.FormatResults(packageID, "CkanCollector", messages, len(files), helpers.PDFTracker.SnapshotFiles())
+	jsonResult, err := formatter.FormatResults(packageID, "CkanCollector", messages, len(files), helpers.PDFTracker.SnapshotFiles(), nil)
 	if err != nil {
 		return "", 0, 0, false, CodeInternalError, ""
 	}
@@ -516,17 +520,18 @@ func (h *Handler) runAnalysis(ctx context.Context, packageID, token string) (bod
 // the server log, keyed by request_id.
 const unscannedReason = "The file could not be fully scanned."
 
-// convertScanDiagnostics drains the buffered GlobalLogger diagnostics collected
-// during this analysis and splits them by audience: every raw message (which may
-// carry absolute paths and OS error text) is logged via slog keyed by
-// request_id, and each distinct affected file (identified by the diagnostic's
-// Subject display name) yields ONE soft, path-free skip acknowledgement for the
-// response. Subject-less diagnostics (CKAN/transport/config notes) are
-// log-only. Must be called under analysisMu, before FormatResults reads the
-// logger - clearing the buffer here is what keeps warnings[]/errors[] empty in
-// server responses.
-func (h *Handler) convertScanDiagnostics(ctx context.Context, packageID string) []structs.Message {
-	diags := output.GlobalLogger.GetMessages()
+// convertScanDiagnostics splits this analysis's diagnostics by audience: every
+// raw message (which may carry absolute paths and OS error text) is logged via
+// slog keyed by request_id, and each distinct affected file (identified by the
+// diagnostic's Subject display name) yields ONE soft, path-free skip
+// acknowledgement for the response. Subject-less diagnostics (CKAN/transport/
+// config notes) are log-only - see structs.Diagnostic for that protocol.
+//
+// diags comes from analysis.Run, which has already drained the buffered
+// GlobalLogger into it, so both the engine's own diagnostics and those of the
+// packages still writing to the global arrive here. Must be called under
+// analysisMu.
+func (h *Handler) convertScanDiagnostics(ctx context.Context, packageID string, diags []structs.Diagnostic) []structs.Message {
 	if len(diags) == 0 {
 		return nil
 	}
@@ -535,9 +540,9 @@ func (h *Handler) convertScanDiagnostics(ctx context.Context, packageID string) 
 	for _, d := range diags {
 		level := slog.LevelWarn
 		switch d.Level {
-		case "error":
+		case structs.DiagError:
 			level = slog.LevelError
-		case "info":
+		case structs.DiagInfo:
 			level = slog.LevelInfo
 		}
 		h.logger.LogAttrs(ctx, level, "scan_diagnostic",
@@ -561,7 +566,6 @@ func (h *Handler) convertScanDiagnostics(ctx context.Context, packageID string) 
 			Reason:   unscannedReason,
 		})
 	}
-	output.GlobalLogger.ClearMessages()
 	return soft
 }
 

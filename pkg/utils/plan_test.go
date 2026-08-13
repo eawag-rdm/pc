@@ -228,7 +228,7 @@ func TestCompileSynthesizesDefaultRules(t *testing.T) {
 		{Path: readme, Name: "myreadme.md", RelPath: "myreadme.md"},
 		{Path: filepath.Join(dir, "data.csv"), Name: "data.csv", RelPath: "data.csv"},
 	}}
-	msgs := applyChecksFilteredByRepository(context.Background(), plan.scope(checks.ScopeRepository), repo.Files)
+	msgs := applyChecksFilteredByRepository(context.Background(), &diagSink{}, plan.scope(checks.ScopeRepository), repo.Files)
 	toc := 0
 	for _, m := range msgs {
 		if m.TestName == "ReadMeContainsTOC" {
@@ -463,7 +463,7 @@ func TestMemberRulesUnionScansPerRule(t *testing.T) {
 	plan := compilePlan(t, cfg)
 
 	archive := structs.ToFile(zipPath, "bundle.zip", -1, "")
-	messages := applyChecksFilteredByFileOnArchive(context.Background(), plan.scope(checks.ScopeArchiveMember), []structs.File{archive})
+	messages := applyChecksFilteredByFileOnArchive(context.Background(), &diagSink{}, plan.scope(checks.ScopeArchiveMember), []structs.File{archive})
 
 	found := map[string]string{} // member -> rule that reported it
 	for _, m := range messages {
@@ -534,7 +534,7 @@ func TestRepositoryRuleNarrowsFileSet(t *testing.T) {
 	}))
 	report := func(plan *Plan) map[string]string {
 		out := map[string]string{}
-		for _, m := range applyChecksFilteredByRepository(context.Background(), plan.scope(checks.ScopeRepository), files) {
+		for _, m := range applyChecksFilteredByRepository(context.Background(), &diagSink{}, plan.scope(checks.ScopeRepository), files) {
 			out[m.TestName] = m.Content
 		}
 		return out

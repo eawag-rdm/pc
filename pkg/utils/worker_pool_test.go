@@ -13,7 +13,7 @@ import (
 )
 
 func TestNewWorkerPool(t *testing.T) {
-	pool := newWorkerPool(context.Background(), 4)
+	pool := newWorkerPool(context.Background(), &diagSink{}, 4)
 
 	if pool == nil {
 		t.Fatal("NewWorkerPool returned nil")
@@ -39,7 +39,7 @@ func TestNewWorkerPool(t *testing.T) {
 }
 
 func TestNewWorkerPool_DefaultWorkers(t *testing.T) {
-	pool := newWorkerPool(context.Background(), 0)
+	pool := newWorkerPool(context.Background(), &diagSink{}, 0)
 
 	if pool.numWorkers < 1 {
 		t.Errorf("default sizing produced %d workers", pool.numWorkers)
@@ -62,7 +62,7 @@ func TestNewWorkerPool_RespectsCappedGOMAXPROCS(t *testing.T) {
 	// binary, which no test depends on.
 	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(1))
 
-	pool := newWorkerPool(context.Background(), 0)
+	pool := newWorkerPool(context.Background(), &diagSink{}, 0)
 	defer pool.stop()
 
 	if pool.numWorkers != 1 {
@@ -90,7 +90,7 @@ func TestArchiveWorkers(t *testing.T) {
 }
 
 func TestWorkerPool_StartStop(t *testing.T) {
-	pool := newWorkerPool(context.Background(), 2)
+	pool := newWorkerPool(context.Background(), &diagSink{}, 2)
 
 	// Start the pool
 	pool.start()
@@ -99,12 +99,12 @@ func TestWorkerPool_StartStop(t *testing.T) {
 	pool.stop()
 
 	// Test stopping a fresh pool without starting
-	pool2 := newWorkerPool(context.Background(), 1)
+	pool2 := newWorkerPool(context.Background(), &diagSink{}, 1)
 	pool2.stop() // Should not panic
 }
 
 func TestWorkerPool_ProcessWork(t *testing.T) {
-	pool := newWorkerPool(context.Background(), 2)
+	pool := newWorkerPool(context.Background(), &diagSink{}, 2)
 	pool.start()
 	defer pool.stop()
 
@@ -142,7 +142,7 @@ func TestWorkerPool_ProcessWork(t *testing.T) {
 }
 
 func TestWorkerPool_MultipleChecks(t *testing.T) {
-	pool := newWorkerPool(context.Background(), 1)
+	pool := newWorkerPool(context.Background(), &diagSink{}, 1)
 	pool.start()
 	defer pool.stop()
 
@@ -171,7 +171,7 @@ func TestWorkerPool_MultipleChecks(t *testing.T) {
 }
 
 func TestWorkerPool_ConcurrentProcessing(t *testing.T) {
-	pool := newWorkerPool(context.Background(), 4)
+	pool := newWorkerPool(context.Background(), &diagSink{}, 4)
 	pool.start()
 	defer pool.stop()
 
@@ -212,7 +212,7 @@ func TestWorkerPool_ConcurrentProcessing(t *testing.T) {
 
 func TestWorkerPool_ChannelFullHandling(t *testing.T) {
 	// Create pool with small buffer (but start workers so it processes)
-	pool := newWorkerPool(context.Background(), 1)
+	pool := newWorkerPool(context.Background(), &diagSink{}, 1)
 
 	testFile := structs.File{Name: "test.txt", Path: "/test/test.txt"}
 	testCheck := mockEntry("testCheck", func(file structs.File) []structs.Message {
@@ -254,7 +254,8 @@ func TestWorkerPool_PanickingCheck_DoesNotKillProcess(t *testing.T) {
 		return []structs.Message{{Content: "healthy ran", Source: file}}
 	})
 
-	pool := newWorkerPool(context.Background(), 2)
+	sink := &diagSink{}
+	pool := newWorkerPool(context.Background(), sink, 2)
 	pool.start()
 	defer pool.stop()
 
@@ -268,18 +269,23 @@ func TestWorkerPool_PanickingCheck_DoesNotKillProcess(t *testing.T) {
 		t.Fatalf("expected only the healthy check's message, got %v", result.Messages)
 	}
 
-	// The failure must be acknowledged in the buffered logger (as a short,
-	// path-free error), not silently swallowed.
+	// The failure must be acknowledged as a short, path-free error diagnostic on
+	// the RUN's sink - not silently swallowed, and not written to the process
+	// global, which pkg/utils no longer touches.
 	found := false
-	for _, msg := range output.GlobalLogger.GetMessages() {
-		if msg.Level == "error" && strings.Contains(msg.Message, "internal error") {
+	for _, d := range sink.drain() {
+		if d.Level == structs.DiagError && strings.Contains(d.Message, "internal error") {
 			found = true
-			if strings.Contains(msg.Message, "/tmp/") {
-				t.Errorf("panic notice must not leak the file path, got %q", msg.Message)
+			if d.Subject != file.GetDisplayName() {
+				t.Errorf("panic notice must be tagged with the file's display name, got %q", d.Subject)
+			}
+			if strings.Contains(d.Message, "/tmp/") {
+				t.Errorf("panic notice must not leak the file path, got %q", d.Message)
 			}
 		}
 	}
 	if !found {
-		t.Error("expected an error-level log message acknowledging the failed check")
+		t.Error("expected an error-level diagnostic acknowledging the failed check")
 	}
+	assertNotInGlobal(t, "internal error")
 }

@@ -8,7 +8,6 @@ import (
 	"sync"
 
 	"github.com/eawag-rdm/pc/pkg/checks"
-	"github.com/eawag-rdm/pc/pkg/output"
 	"github.com/eawag-rdm/pc/pkg/structs"
 )
 
@@ -20,6 +19,13 @@ type workerPool struct {
 	wg         sync.WaitGroup
 	ctx        context.Context
 	cancel     context.CancelFunc
+	// sink receives the run diagnostics a worker produces (a recovered check
+	// panic). It is a constructor argument rather than a field set afterwards
+	// so a caller cannot forget it, and newWorkerPool rejects nil outright: a
+	// nil sink surfaces as a nil dereference inside a deferred recover, which
+	// is a second panic while unwinding that no recover catches and the bare
+	// worker goroutine does not survive.
+	sink *diagSink
 }
 
 // workItem represents a unit of work to be processed: one file with the checks
@@ -39,8 +45,12 @@ type workResult struct {
 
 // newWorkerPool creates a new worker pool with the specified number of workers.
 // Cancelling ctx tears the pool down; ctx must not be nil. stop must still be
-// called either way - it is what releases the derived context.
-func newWorkerPool(ctx context.Context, numWorkers int) *workerPool {
+// called either way - it is what releases the derived context. sink collects
+// the diagnostics the workers produce and must not be nil.
+func newWorkerPool(ctx context.Context, sink *diagSink, numWorkers int) *workerPool {
+	if sink == nil {
+		panic("utils: newWorkerPool requires a diagnostics sink")
+	}
 	if numWorkers <= 0 {
 		numWorkers = runtime.GOMAXPROCS(0)
 	}
@@ -49,6 +59,7 @@ func newWorkerPool(ctx context.Context, numWorkers int) *workerPool {
 
 	return &workerPool{
 		numWorkers: numWorkers,
+		sink:       sink,
 		workChan:   make(chan workItem, numWorkers*2), // Buffer to prevent blocking
 		resultChan: make(chan workResult, numWorkers*2),
 		ctx:        poolCtx,
@@ -98,7 +109,7 @@ func (wp *workerPool) processWorkItem(work workItem) []structs.Message {
 	// Run all checks for this file sequentially in the same worker
 	// This avoids IO conflicts from multiple goroutines reading the same file
 	for _, entry := range work.Checks {
-		messages := safeRunCheck(wp.ctx, entry, work.File, work.Scope)
+		messages := safeRunCheck(wp.ctx, wp.sink, entry, work.File, work.Scope)
 		if len(messages) > 0 {
 			// Add test name to each message
 			for i := range messages {
@@ -112,16 +123,12 @@ func (wp *workerPool) processWorkItem(work workItem) []structs.Message {
 }
 
 // logPanic reports a recovered check panic. The panic value and stack go to
-// stderr for the operator; the buffered GlobalLogger gets only a short,
-// path-free notice - tagged with subject (a display name) when the failure
-// concerns one file, so the server can acknowledge that file as unscanned.
-func logPanic(what, subject string, recovered interface{}) {
+// stderr for the operator; the run's sink gets only a short, path-free notice -
+// tagged with subject (a display name) when the failure concerns one file, so
+// the server can acknowledge that file as unscanned.
+func logPanic(sink *diagSink, what, subject string, recovered interface{}) {
 	log.Printf("%s panicked: %v\n%s", what, recovered, debug.Stack())
-	if subject != "" {
-		output.GlobalLogger.FileError(subject, "%s failed: internal error", what)
-	} else {
-		output.GlobalLogger.Error("%s failed: internal error", what)
-	}
+	sink.add(structs.DiagError, subject, "%s failed: internal error", what)
 }
 
 // safeRun is the canonical panic guard around check execution: it runs fn and
@@ -129,10 +136,10 @@ func logPanic(what, subject string, recovered interface{}) {
 // panic in a pool goroutine is not covered by any request-level recover, so
 // without this a single buggy check (or unreadable/crafted archive) kills the
 // whole process.
-func safeRun(what, subject string, fn func() []structs.Message) (messages []structs.Message) {
+func safeRun(sink *diagSink, what, subject string, fn func() []structs.Message) (messages []structs.Message) {
 	defer func() {
 		if r := recover(); r != nil {
-			logPanic(what, subject, r)
+			logPanic(sink, what, subject, r)
 			messages = nil
 		}
 	}()
@@ -143,10 +150,10 @@ func safeRun(what, subject string, fn func() []structs.Message) (messages []stru
 // label is built inside the recover branch, not handed in: concatenating it up
 // front cost a string and an allocation for every check that did NOT panic -
 // which is every check, on every file.
-func safeRunCheck(ctx context.Context, entry checkRules, file structs.File, scope checks.Scope) (messages []structs.Message) {
+func safeRunCheck(ctx context.Context, sink *diagSink, entry checkRules, file structs.File, scope checks.Scope) (messages []structs.Message) {
 	defer func() {
 		if r := recover(); r != nil {
-			logPanic("Check "+entry.def.Name+" on file '"+file.Name+"'", file.GetDisplayName(), r)
+			logPanic(sink, "Check "+entry.def.Name+" on file '"+file.Name+"'", file.GetDisplayName(), r)
 			messages = nil
 		}
 	}()

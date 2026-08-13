@@ -4,18 +4,16 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/eawag-rdm/pc/pkg/structs"
 )
 
-// LogMessage represents a log entry with level, message and timestamp
-type LogMessage struct {
-	Level     string `json:"level"`
-	Message   string `json:"message"`
-	Timestamp string `json:"timestamp"`
-	// Subject optionally names the file/archive the message is about - always a
-	// display name, never a path; empty for messages without a single-file
-	// subject.
-	Subject string `json:"subject,omitempty"`
-}
+// LogMessage is the buffered diagnostic. It is an ALIAS of structs.Diagnostic,
+// not a second type: the check engine returns structs.Diagnostic values and
+// they arrive here - and in the JSON body - unconverted. structs.Diagnostic
+// carries the field documentation, including which diagnostics may reach a
+// depositor-facing response.
+type LogMessage = structs.Diagnostic
 
 // Logger provides configurable output destinations
 type Logger struct {
@@ -34,7 +32,7 @@ func (l *Logger) SetJSONMode(enabled bool) {
 // log buffers (JSON mode) or prints (CLI stream mode) one message. The printed
 // text is identical with or without a subject, so tagging a call site with a
 // subject never changes CLI output.
-func (l *Logger) log(level, subject, format string, args ...interface{}) {
+func (l *Logger) log(level structs.DiagLevel, subject, format string, args ...interface{}) {
 	message := fmt.Sprintf(format, args...)
 	if l.jsonMode {
 		l.mu.Lock()
@@ -52,37 +50,54 @@ func (l *Logger) log(level, subject, format string, args ...interface{}) {
 
 // Warning prints warning messages to appropriate stream
 func (l *Logger) Warning(format string, args ...interface{}) {
-	l.log("warning", "", format, args...)
+	l.log(structs.DiagWarning, "", format, args...)
 }
 
 // FileWarning is Warning tagged with the display name (never a path) of the
 // file/archive the message is about. Use it for per-file scan diagnostics so
 // the server can surface a soft skip acknowledgement for that file.
 func (l *Logger) FileWarning(subject, format string, args ...interface{}) {
-	l.log("warning", subject, format, args...)
+	l.log(structs.DiagWarning, subject, format, args...)
 }
 
 // Error prints error messages to appropriate stream
 func (l *Logger) Error(format string, args ...interface{}) {
-	l.log("error", "", format, args...)
+	l.log(structs.DiagError, "", format, args...)
 }
 
 // FileError is Error tagged with the display name (never a path) of the
 // file/archive the message is about (see FileWarning).
 func (l *Logger) FileError(subject, format string, args ...interface{}) {
-	l.log("error", subject, format, args...)
+	l.log(structs.DiagError, subject, format, args...)
 }
 
 // Info prints info messages to appropriate stream
 func (l *Logger) Info(format string, args ...interface{}) {
-	l.log("info", "", format, args...)
+	l.log(structs.DiagInfo, "", format, args...)
 }
 
-// GetMessages returns captured messages for JSON output
+// GetMessages returns a COPY of the captured messages, leaving the buffer
+// intact - the non-destructive peek, where Drain is the destructive take that
+// production uses. It exists for callers that must observe the buffer without
+// consuming it (chiefly tests asserting that a package wrote nothing to it).
+// The copy is what keeps the buffer out of the caller's hands.
 func (l *Logger) GetMessages() []LogMessage {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return l.messages
+	return append([]LogMessage(nil), l.messages...)
+}
+
+// Drain takes the captured messages and clears the buffer in one critical
+// section. Callers that both read and reset - the run entry point, which turns
+// the buffer into part of its returned Result - must use this rather than
+// GetMessages followed by ClearMessages: between those two calls a diagnostic
+// emitted by a still-running goroutine would be dropped.
+func (l *Logger) Drain() []LogMessage {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	messages := l.messages
+	l.messages = nil
+	return messages
 }
 
 // ClearMessages clears the captured messages

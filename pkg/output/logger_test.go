@@ -1,6 +1,7 @@
 package output
 
 import (
+	"github.com/eawag-rdm/pc/pkg/structs"
 	"sync"
 	"testing"
 	"time"
@@ -104,7 +105,7 @@ func TestLogger_MultipleMessages(t *testing.T) {
 	}
 
 	// Verify message order and types
-	expectedLevels := []string{"warning", "error", "info", "warning"}
+	expectedLevels := []structs.DiagLevel{"warning", "error", "info", "warning"}
 	for i, expected := range expectedLevels {
 		if logger.messages[i].Level != expected {
 			t.Errorf("Message %d: expected level '%s', got '%s'", i, expected, logger.messages[i].Level)
@@ -274,5 +275,47 @@ func TestFileWarning_SubjectTagging(t *testing.T) {
 	}
 	if msgs[2].Subject != "" || msgs[3].Subject != "" {
 		t.Errorf("plain Warning/Error must stay subject-less: %+v %+v", msgs[2], msgs[3])
+	}
+}
+
+// TestGetMessages_ReturnsACopy pins that the caller cannot reach into the
+// logger's buffer through the returned slice.
+func TestGetMessages_ReturnsACopy(t *testing.T) {
+	logger := &Logger{jsonMode: true}
+	logger.Warning("original")
+
+	got := logger.GetMessages()
+	got[0].Message = "mutated by the caller"
+
+	if logger.messages[0].Message != "original" {
+		t.Errorf("GetMessages aliased the buffer: caller's write reached it as %q", logger.messages[0].Message)
+	}
+}
+
+// TestDrain_TakesAndClearsAtomically pins Drain's reason to exist over
+// GetMessages followed by ClearMessages: it returns what was buffered AND
+// empties the buffer in one critical section, so a second Drain cannot
+// re-report the same diagnostic into another run's results.
+func TestDrain_TakesAndClearsAtomically(t *testing.T) {
+	logger := &Logger{jsonMode: true}
+	logger.Warning("first run")
+
+	drained := logger.Drain()
+	if len(drained) != 1 || drained[0].Message != "first run" {
+		t.Fatalf("Drain did not return the buffered message: %v", drained)
+	}
+	if len(logger.messages) != 0 {
+		t.Errorf("Drain left the buffer loaded: %v", logger.messages)
+	}
+	if again := logger.Drain(); len(again) != 0 {
+		t.Errorf("second Drain re-reported %v", again)
+	}
+
+	logger.Error("second run")
+	if got := logger.Drain(); len(got) != 1 || got[0].Message != "second run" {
+		t.Errorf("buffer did not restart cleanly, got %v", got)
+	}
+	if drained[0].Message != "first run" {
+		t.Errorf("the first drain's slice was mutated: %v", drained)
 	}
 }

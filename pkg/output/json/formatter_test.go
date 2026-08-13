@@ -20,7 +20,7 @@ func TestFormatResults_EmptyMessages(t *testing.T) {
 	formatter := NewJSONFormatter()
 	messages := []structs.Message{}
 
-	result, err := formatter.FormatResults("/test/location", "LocalCollector", messages, 0, []string{})
+	result, err := formatter.FormatResults("/test/location", "LocalCollector", messages, 0, []string{}, nil)
 	if err != nil {
 		t.Fatalf("FormatResults failed: %v", err)
 	}
@@ -51,7 +51,7 @@ func TestFormatResults_EmptyMessages(t *testing.T) {
 func TestFormatResults_NilPDFFiles(t *testing.T) {
 	formatter := NewJSONFormatter()
 
-	result, err := formatter.FormatResults("/test/location", "CkanCollector", []structs.Message{}, 0, nil)
+	result, err := formatter.FormatResults("/test/location", "CkanCollector", []structs.Message{}, 0, nil, nil)
 	if err != nil {
 		t.Fatalf("FormatResults failed: %v", err)
 	}
@@ -89,7 +89,7 @@ func TestFormatResults_WithMessages(t *testing.T) {
 		},
 	}
 
-	result, err := formatter.FormatResults("/test/location", "LocalCollector", messages, 1, []string{})
+	result, err := formatter.FormatResults("/test/location", "LocalCollector", messages, 1, []string{}, nil)
 	if err != nil {
 		t.Fatalf("FormatResults failed: %v", err)
 	}
@@ -148,7 +148,7 @@ func TestFormatResults_RepositoryMessage(t *testing.T) {
 		},
 	}
 
-	result, err := formatter.FormatResults("/test/location", "LocalCollector", messages, 0, []string{})
+	result, err := formatter.FormatResults("/test/location", "LocalCollector", messages, 0, []string{}, nil)
 	if err != nil {
 		t.Fatalf("FormatResults failed: %v", err)
 	}
@@ -202,7 +202,7 @@ func TestFormatResults_SkippedMessageRoutedToSkipped(t *testing.T) {
 		},
 	}
 
-	result, err := formatter.FormatResults("/test/location", "LocalCollector", messages, 2, []string{})
+	result, err := formatter.FormatResults("/test/location", "LocalCollector", messages, 2, []string{}, nil)
 	if err != nil {
 		t.Fatalf("FormatResults failed: %v", err)
 	}
@@ -260,7 +260,7 @@ func TestFormatResults_SkippedArchiveMemberFilenameIncludesArchive(t *testing.T)
 		{Content: reason, Source: member, TestName: "IsFreeOfKeywords", Skipped: true, Reason: reason},
 	}
 
-	result, err := formatter.FormatResults("/loc", "LocalCollector", messages, 1, []string{})
+	result, err := formatter.FormatResults("/loc", "LocalCollector", messages, 1, []string{}, nil)
 	if err != nil {
 		t.Fatalf("FormatResults failed: %v", err)
 	}
@@ -348,7 +348,7 @@ func TestJSONStructureIntegrity(t *testing.T) {
 		},
 	}
 
-	result, err := formatter.FormatResults("/test", "LocalCollector", messages, 1, []string{})
+	result, err := formatter.FormatResults("/test", "LocalCollector", messages, 1, []string{}, nil)
 	if err != nil {
 		t.Fatalf("FormatResults failed: %v", err)
 	}

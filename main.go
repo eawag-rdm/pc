@@ -200,7 +200,7 @@ func main() {
 				app.UpdateProgress(0, 1, "Starting scan...")
 
 				// Run scanning with progress updates
-				messages := analysis.Run(context.Background(), *generalConfig, plan, files, metadataResult, func(current, total int, message string) {
+				res := analysis.Run(context.Background(), *generalConfig, plan, files, metadataResult, func(current, total int, message string) {
 					app.UpdateProgress(current, total, message)
 				})
 
@@ -210,7 +210,7 @@ func main() {
 				// Get collector name from config
 				collectorName := generalConfig.Operation["main"].Collector
 
-				jsonResult, err := formatter.FormatResults(*folder_or_url, collectorName, messages, len(files), helpers.PDFTracker.SnapshotFiles())
+				jsonResult, err := formatter.FormatResults(*folder_or_url, collectorName, res.Messages, len(files), helpers.PDFTracker.SnapshotFiles(), res.Diagnostics)
 				if err != nil {
 					scanErrors <- fmt.Errorf("formatting error: %v", err)
 					return
@@ -262,14 +262,14 @@ func main() {
 		}
 	} else {
 		// Non-TUI mode: run regular scan
-		messages := analysis.Run(context.Background(), *generalConfig, plan, files, metadataResult, nil)
+		res := analysis.Run(context.Background(), *generalConfig, plan, files, metadataResult, nil)
 
 		// Get collector name from config
 		collectorName := generalConfig.Operation["main"].Collector
 
 		// Generate JSON result (needed for HTML and JSON output)
 		formatter := jsonformatter.NewJSONFormatter()
-		jsonResult, err := formatter.FormatResults(*folder_or_url, collectorName, messages, len(files), helpers.PDFTracker.SnapshotFiles())
+		jsonResult, err := formatter.FormatResults(*folder_or_url, collectorName, res.Messages, len(files), helpers.PDFTracker.SnapshotFiles(), res.Diagnostics)
 		if err != nil {
 			outputError("formatting_error", fmt.Sprintf("Error formatting output: %v", err))
 			return
@@ -290,7 +290,7 @@ func main() {
 			fmt.Println(jsonResult)
 		} else if *plainOutput {
 			plainFormatter := plainformatter.NewPlainFormatter()
-			plainResult := plainFormatter.FormatResults(*folder_or_url, collectorName, messages, len(files), helpers.PDFTracker.SnapshotFiles())
+			plainResult := plainFormatter.FormatResults(*folder_or_url, collectorName, res.Messages, len(files), helpers.PDFTracker.SnapshotFiles())
 			fmt.Print(plainResult)
 		}
 		// If only --no-tui (with or without --html), no stdout output beyond HTML message

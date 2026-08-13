@@ -12,8 +12,9 @@ import (
 
 // TestConvertScanDiagnostics asserts the server-mode split of raw scan
 // diagnostics: one soft, path-free skip acknowledgement per distinct affected
-// file (Subject), subject-less diagnostics log-only, and the GlobalLogger
-// buffer drained so warnings[]/errors[] stay empty in the response.
+// file (Subject), and subject-less diagnostics log-only. It covers both
+// sources, since analysis.Run hands the handler one merged set: diagnostics the
+// engine returned by value, and diagnostics it drained from the global.
 func TestConvertScanDiagnostics(t *testing.T) {
 	output.GlobalLogger.SetJSONMode(true)
 	output.GlobalLogger.ClearMessages()
@@ -24,11 +25,21 @@ func TestConvertScanDiagnostics(t *testing.T) {
 	output.GlobalLogger.FileError("archive.zip", "Processing archive 'archive.zip' failed: internal error")
 	output.GlobalLogger.Warning("CKAN request failed with status code 500")
 
-	h := NewHandler(&config.Config{}, Config{}, discardLogger(), testPlan(&config.Config{}))
-	soft := h.convertScanDiagnostics(context.Background(), "pkg-x")
+	// analysis.Run hands the handler the run's WHOLE diagnostic set: what it
+	// drained from the global (the four above) plus what the check engine
+	// returned by value (the fifth). Both classes must be split the same way.
+	diags := append(output.GlobalLogger.Drain(), structs.Diagnostic{
+		Level:     structs.DiagError,
+		Message:   "Check IsFreeOfKeywords on file 'broken.zip' failed: internal error",
+		Subject:   "broken.zip",
+		Timestamp: "2026-08-13T00:00:00Z",
+	})
 
-	if len(soft) != 2 {
-		t.Fatalf("expected 2 deduplicated soft skips, got %d: %v", len(soft), soft)
+	h := NewHandler(&config.Config{}, Config{}, discardLogger(), testPlan(&config.Config{}))
+	soft := h.convertScanDiagnostics(context.Background(), "pkg-x", diags)
+
+	if len(soft) != 3 {
+		t.Fatalf("expected 3 deduplicated soft skips, got %d: %v", len(soft), soft)
 	}
 	subjects := map[string]bool{}
 	for _, m := range soft {
@@ -53,11 +64,10 @@ func TestConvertScanDiagnostics(t *testing.T) {
 	if !subjects["data.csv"] || !subjects["archive.zip"] {
 		t.Errorf("expected soft skips for data.csv and archive.zip, got %v", subjects)
 	}
-
-	// Buffer must be drained: the formatter's warnings[]/errors[] arrays read
-	// from the same buffer and must come out empty.
-	if remaining := output.GlobalLogger.GetMessages(); len(remaining) != 0 {
-		t.Errorf("GlobalLogger must be drained after conversion, still holds %v", remaining)
+	// The engine-returned diagnostic must be acknowledged exactly like a
+	// global-sourced one - the value channel is not a second-class input.
+	if !subjects["broken.zip"] {
+		t.Errorf("engine-returned diagnostic produced no soft skip, got %v", subjects)
 	}
 }
 
