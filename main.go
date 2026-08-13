@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/eawag-rdm/pc/internal/analysis"
+	"github.com/eawag-rdm/pc/internal/cpucap"
 	"github.com/eawag-rdm/pc/pkg/checks"
 	"github.com/eawag-rdm/pc/pkg/collectors"
 	"github.com/eawag-rdm/pc/pkg/config"
@@ -96,6 +97,13 @@ func main() {
 		outputError("config_error", fmt.Sprintf("Error loading config: %v", err))
 		return
 	}
+
+	// Pin the CPU budget before anything is sized off it. Nothing is printed:
+	// every CLI stream is spoken for - stdout carries the JSON envelope (error
+	// envelopes too, whatever the output flags say) and the tests read the
+	// streams merged - so a startup notice here would break that contract. The
+	// server, which has a logging channel of its own, reports its budget at boot.
+	cpucap.Apply(generalConfig.General.EffectiveMaxCores())
 
 	// The one boot gate for the rules (like the server's at boot): bind every
 	// check's parameters and compile every include/exclude pattern once, here,

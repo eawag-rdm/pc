@@ -82,6 +82,7 @@ const (
 	DefaultMaxContentScanFileSize = 1024 * 1024 * 1024 // whole-file content scan gate (bytes)
 	DefaultMaxPDFPages            = 10                 // page ceiling per PDF; a longer document is skipped WHOLE, not truncated
 	DefaultMaxPDFFileSize         = 1024 * 1024        // PDF admission gate (bytes); larger PDFs are not read at all
+	DefaultMaxCores               = 4                  // CPU cores pc may use; every pool and the leak scanner size from it
 )
 
 type GeneralConfig struct {
@@ -91,9 +92,21 @@ type GeneralConfig struct {
 	MaxPDFPages                      int    // Page ceiling per PDF; over it nothing is extracted (0 = default, not unlimited)
 	MaxPDFFileSize                   int64  // PDF admission gate in bytes; over it nothing is read (0 = default, not unlimited)
 	MaxContentScanFileSize           int64  // Maximum size for files that read content (like IsFreeOfKeywords) (bytes)
+	MaxCores                         int    // CPU cores pc may use, whole process (0 = default, not unlimited)
 	SummaryIntroText                 string // Introductory text shown at the top of the summary
 	SummaryMaxIssuesBeforeTruncation int    // Number of issues to show before truncating
 	SummaryMinGroupSizeForTruncation int    // Minimum group size to trigger truncation
+}
+
+// EffectiveMaxCores applies the documented default to non-positive values (same
+// single-defaulting-site convention; 0 never means "every core"). It is a
+// CEILING, not a request: the caller clamps it to what the process may actually
+// run, so a config shared across machines never oversubscribes the small ones.
+func (g *GeneralConfig) EffectiveMaxCores() int {
+	if g.MaxCores <= 0 {
+		return DefaultMaxCores
+	}
+	return g.MaxCores
 }
 
 // EffectiveMaxPDFPages applies the documented default to non-positive values
@@ -233,6 +246,7 @@ func ParseConfig(filename string) (*Config, error) {
 			MaxPDFPages:                      DefaultMaxPDFPages,
 			MaxPDFFileSize:                   DefaultMaxPDFFileSize,
 			MaxContentScanFileSize:           DefaultMaxContentScanFileSize,
+			MaxCores:                         DefaultMaxCores,
 			SummaryIntroText:                 DefaultSummaryIntroText,
 			SummaryMaxIssuesBeforeTruncation: DefaultSummaryMaxIssuesBeforeTruncation,
 			SummaryMinGroupSizeForTruncation: DefaultSummaryMinGroupSizeForTruncation,
@@ -323,6 +337,12 @@ func ParseConfig(filename string) (*Config, error) {
 		}
 		if c.General.MaxPDFFileSize < 0 {
 			return nil, fmt.Errorf("[general] maxPDFFileSize must be >= 0, got %d", c.General.MaxPDFFileSize)
+		}
+		if err := generalInt(generalData, "maxCores", &c.General.MaxCores); err != nil {
+			return nil, err
+		}
+		if c.General.MaxCores < 0 {
+			return nil, fmt.Errorf("[general] maxCores must be >= 0, got %d", c.General.MaxCores)
 		}
 		if summaryIntroText, ok := generalData["summaryIntroText"].(string); ok {
 			c.General.SummaryIntroText = summaryIntroText

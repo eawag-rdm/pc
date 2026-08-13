@@ -26,7 +26,9 @@ func fakeScanner(t *testing.T, report string) (binPath string, argsFile string) 
 	// into the path, and an unquoted parenthesis or space kills the script
 	// silently - which would make every "the scanner never ran" assertion pass
 	// for the wrong reason.
-	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"" + argsFile + "\"\ncat <<'EOF'\n" + report + "\nEOF\n"
+	// The child's CPU cap arrives as an environment variable, not an argument,
+	// so the log carries it too - it is the only place the cap is observable.
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"" + argsFile + "\"\nprintf 'GOMAXPROCS=%s\\n' \"$GOMAXPROCS\" >> \"" + argsFile + "\"\ncat <<'EOF'\n" + report + "\nEOF\n"
 	if err := os.WriteFile(binPath, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -471,15 +473,63 @@ func TestFormatLeakLinesCap(t *testing.T) {
 }
 
 func TestLeakAttrsDefaults(t *testing.T) {
-	a := leakAttrsFrom(nil)
+	a := leakAttrsFrom(nil, &config.GeneralConfig{MaxCores: 64})
 	if a.binary != "betterleaks" || a.timeoutSeconds != 120 || a.maxProcs != 3 {
 		t.Errorf("unexpected defaults: %+v", a)
 	}
 	a = leakAttrsFrom(map[string]interface{}{
 		"binary": "/opt/bl", "timeoutSeconds": int64(30), "maxProcs": int64(1),
-	})
+	}, &config.GeneralConfig{MaxCores: 64})
 	if a.binary != "/opt/bl" || a.timeoutSeconds != 30 || a.maxProcs != 1 {
 		t.Errorf("unexpected parsed attrs: %+v", a)
+	}
+}
+
+// TestLeakAttrsInheritMaxCores pins that the CHILD scanner obeys the CONFIGURED
+// CPU cap: it is a separate process, so it inherits nothing from this one's
+// GOMAXPROCS and would otherwise be the single place that ignores the cap.
+func TestLeakAttrsInheritMaxCores(t *testing.T) {
+	capped := leakAttrsFrom(map[string]interface{}{"maxProcs": int64(8)}, &config.GeneralConfig{MaxCores: 2})
+	if capped.maxProcs != 2 {
+		t.Errorf("maxProcs %d: the rule asked for 8 on a 2-core budget, want the budget", capped.maxProcs)
+	}
+	// Below the budget the rule's own, smaller number stands.
+	under := leakAttrsFrom(map[string]interface{}{"maxProcs": int64(1)}, &config.GeneralConfig{MaxCores: 8})
+	if under.maxProcs != 1 {
+		t.Errorf("maxProcs %d: the budget must not RAISE the rule's own limit", under.maxProcs)
+	}
+	// The rule setting nothing still takes the budget, not its own default.
+	silent := leakAttrsFrom(nil, &config.GeneralConfig{MaxCores: 1})
+	if silent.maxProcs != 1 {
+		t.Errorf("maxProcs %d with no rule param on a 1-core budget, want 1", silent.maxProcs)
+	}
+}
+
+// TestSecretScanChildInheritsMaxCores pins the wiring, not the clamp: the bind
+// must take the cap from the config it is handed, so the child scanner honours
+// [general] maxCores however the rule was written.
+func TestSecretScanChildInheritsMaxCores(t *testing.T) {
+	content := tempFile([]byte("nothing to find\n"))
+	defer os.Remove(content)
+
+	bin, argsFile := fakeScanner(t, "null")
+	cfg := leakTestConfig(bin, &config.GeneralConfig{
+		MaxArchiveFileSize:     10 * 1024 * 1024,
+		MaxTotalArchiveMemory:  100 * 1024 * 1024,
+		MaxContentScanFileSize: 1024 * 1024 * 1024,
+		MaxCores:               2,
+	})
+	cfg.Tests["IsFreeOfSecrets"].Attrs["maxProcs"] = int64(8)
+
+	file := structs.File{Path: content, Name: "data.txt", Size: 10}
+	runRepoRule(t, "IsFreeOfSecrets", cfg, structs.Repository{Files: []structs.File{file}})
+
+	args, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(args), "GOMAXPROCS=2\n") {
+		t.Errorf("child scanner ran without the configured 2-core cap (rule asked for 8): %s", args)
 	}
 }
 

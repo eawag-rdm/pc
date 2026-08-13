@@ -123,7 +123,12 @@ image bundles the
 `[test.IsFreeOfSecrets]` check - version and SHA-256 are pinned via the
 `BETTERLEAKS_VERSION` / `BETTERLEAKS_SHA256` build args in the `Dockerfile`
 (checksum-verified at build). The scanner runs offline, capped at
-`attrs.maxProcs` cores and `attrs.timeoutSeconds` per analysis.
+`attrs.maxProcs` cores and `attrs.timeoutSeconds` per analysis. `maxProcs` is
+itself capped by the **configured** `[general] maxCores` (default 4): the
+scanner is a child process and inherits none of the server's CPU budget, so the
+smaller of those two values wins - not the budget the server settled on, which
+may be lower. Note that the scan runs alongside the server's own pools, so a
+host can briefly see up to twice `maxCores` while one is in flight.
 
 **PDF engine cache.** The committed compose sets `XDG_CACHE_HOME=/var/lib/pc`
 (the persistent named volume) so the sandboxed PDF engine's one-time wasm

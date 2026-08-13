@@ -54,8 +54,8 @@ func TestNewWorkerPool_DefaultWorkers(t *testing.T) {
 // TestNewWorkerPool_RespectsCappedGOMAXPROCS pins the sizing SOURCE: GOMAXPROCS
 // equals NumCPU unless lowered, so only a lowered value tells the two apart.
 func TestNewWorkerPool_RespectsCappedGOMAXPROCS(t *testing.T) {
-	if runtime.NumCPU() < 2 {
-		t.Skip("needs more than one CPU to tell GOMAXPROCS and NumCPU apart")
+	if runtime.GOMAXPROCS(0) < 2 {
+		t.Skip("needs a budget above 1: at GOMAXPROCS=1 the assertion is vacuous")
 	}
 	// Not parallel: GOMAXPROCS is process-wide. Setting it also pins the
 	// runtime's automatic (cgroup-aware) updating off for the rest of the test

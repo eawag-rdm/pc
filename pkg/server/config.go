@@ -23,6 +23,12 @@ type Config struct {
 	// ConfigPath is the path to the PC config file (pc.toml)
 	ConfigPath string
 
+	// PCConfig optionally supplies an already-loaded PC config and takes
+	// precedence over ConfigPath, for a caller that must read the config before
+	// constructing the server (pc-server pins the CPU budget from it). nil means
+	// "not set" - LoadPCConfig reads ConfigPath.
+	PCConfig *config.Config
+
 	// VerifyTLS optionally overrides TLS verification for CKAN API calls.
 	// nil means "not set" - fall back to the PC config (and finally the
 	// secure default). A non-nil value is honored exactly, so that an
@@ -159,8 +165,12 @@ func validateServerSettings(pcConfig *config.Config, addr string) error {
 	return nil
 }
 
-// LoadPCConfig loads and returns the PC configuration from the config file
+// LoadPCConfig returns the preloaded PC configuration if one was supplied,
+// otherwise loads it from the config file.
 func (c Config) LoadPCConfig() (*config.Config, error) {
+	if c.PCConfig != nil {
+		return c.PCConfig, nil
+	}
 	return config.LoadConfig(c.ConfigPath)
 }
 

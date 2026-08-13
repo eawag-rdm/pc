@@ -34,7 +34,16 @@ type leakAttrs struct {
 	maxProcs       int
 }
 
-func leakAttrsFrom(attrs map[string]interface{}) leakAttrs {
+// leakAttrsFrom reads the knobs and clamps maxProcs to general's maxCores: the
+// scanner is a CHILD PROCESS, so it does not inherit this process's GOMAXPROCS
+// and would otherwise be the one place that ignores [general] maxCores. The
+// number is the CONFIGURED maxCores, never this process's settled runtime
+// budget: reading the live runtime here would make the bind - and so all of
+// config compilation - depend on the CPU cap having been applied first, an
+// ordering no signature states. On a machine smaller than the configured cap
+// the child is granted the configured number regardless, because the parent's
+// own ceiling bounds only the parent.
+func leakAttrsFrom(attrs map[string]interface{}, general *config.GeneralConfig) leakAttrs {
 	a := leakAttrs{
 		binary:         defaultLeakBinary,
 		timeoutSeconds: config.DefaultSecretsTimeoutSeconds,
@@ -49,6 +58,7 @@ func leakAttrsFrom(attrs map[string]interface{}) leakAttrs {
 	if v, ok := attrs["maxProcs"].(int64); ok && v > 0 {
 		a.maxProcs = int(v)
 	}
+	a.maxProcs = min(a.maxProcs, general.EffectiveMaxCores())
 	return a
 }
 
@@ -65,7 +75,7 @@ func leakAttrsFrom(attrs map[string]interface{}) leakAttrs {
 // the dormant scan is reactivated. A legacy section carries the knobs in its
 // attrs table, which also holds "enabled"; a [[rule]] carries them as its ONE
 // parameter set, where "enabled" is the rule's own key and refused here.
-func bindSecrets(spec config.RuleSpec, _ *config.GeneralConfig) (*BoundRule, error) {
+func bindSecrets(spec config.RuleSpec, general *config.GeneralConfig) (*BoundRule, error) {
 	table := spec.Attrs
 	if !spec.Legacy {
 		if len(spec.Params) > 1 {
@@ -79,7 +89,8 @@ func bindSecrets(spec config.RuleSpec, _ *config.GeneralConfig) (*BoundRule, err
 	if err := checkSecretAttrs(table, spec.Legacy); err != nil {
 		return nil, err
 	}
-	bound := leakAttrsFrom(table)
+	// The child's cap comes from the CONFIG, never the live runtime - see leakAttrsFrom.
+	bound := leakAttrsFrom(table, general)
 	return &BoundRule{
 		Rule: spec.Name,
 		applyRepo: func(ctx context.Context, repository structs.Repository, batch *Batch, sel *selector.Selector) []structs.Message {

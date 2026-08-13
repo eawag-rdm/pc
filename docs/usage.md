@@ -107,7 +107,7 @@ blacklist = []
 whitelist = []
 # enabled: toggle the scan; binary: scanner executable (name in PATH or absolute path);
 # timeoutSeconds: whole-scan cap (must not exceed [server] requestTimeoutSeconds);
-# maxProcs: CPU cores the scanner may use
+# maxProcs: CPU cores the scanner may use, capped by the configured [general] maxCores (the lower wins)
 attrs = {enabled = false, binary = "betterleaks", timeoutSeconds = 120, maxProcs = 3}
 ```
 
@@ -128,7 +128,31 @@ maxArchiveMemberCount  = 1000       # max members per archive (both archive walk
 maxPDFPages            = 10         # page ceiling per PDF (longer = skipped whole)
 maxPDFFileSize         = 1048576    # max PDF size in bytes (larger = not read)
 maxContentScanFileSize = 20971520   # max size for content-scanned files
+maxCores               = 4          # CPU cores this process may use (0 = the same default)
 ```
+
+`maxCores` caps this process's CPU: every worker pool, every
+parallel/sequential threshold and the PDF engine's instance pool size
+themselves from it. The external secret scanner is a child process and inherits
+nothing automatically, so it follows the **configured** `maxCores` - the lower
+of its own `maxProcs` and `maxCores` - whatever budget pc settled on for itself.
+On a machine smaller than `maxCores`, or under a lower `GOMAXPROCS`, the scanner
+can therefore be granted more cores than pc runs with (`GOMAXPROCS=1 pc` runs pc
+at 1 while the scanner still gets 3; a 2-core host with `maxCores = 4` likewise
+gives it 3). It also runs alongside pc's own pools, so a host can briefly see up
+to twice `maxCores` while a scan is in flight.
+
+It applies **whether or not you set it**: an absent key means the default of 4,
+not "use every core", so a 16-core host runs pc at 4 cores unless told
+otherwise. For pc itself it is a ceiling and never a request: the budget is the
+lowest of `maxCores`, a `GOMAXPROCS` environment variable and what the machine
+or cgroup allows, rather than oversubscribing the machine (`GOMAXPROCS=16 pc`
+still runs at 4).
+
+pc always pins the budget at startup, so it never follows a container CPU quota
+that changes while it runs - in either direction. A quota raised after start is
+not taken up; a quota lowered after start leaves pc throttled rather than
+resized.
 
 These limits gate the keyword checks and the secret scan alike: files above
 `maxContentScanFileSize` are never content-scanned (skip acknowledgement

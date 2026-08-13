@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/eawag-rdm/pc/internal/cpucap"
 	"github.com/eawag-rdm/pc/pkg/config"
 	"github.com/eawag-rdm/pc/pkg/server"
 )
@@ -36,12 +37,28 @@ func main() {
 		}
 	}
 
+	// Pin the CPU budget HERE, at the composition root, before anything sizes
+	// itself from it: every pool reads the budget per pass. The cap applies
+	// whether or not the operator set one, so it is logged rather than left to
+	// be discovered on a machine with more cores than the default. Both numbers
+	// are logged: the machine, a cgroup quota or GOMAXPROCS can bind below the cap.
+	pcConfig, err := config.LoadConfig(*configPath)
+	if err != nil {
+		log.Fatalf("Failed to load config: %v", err)
+	}
+	maxCores := pcConfig.General.EffectiveMaxCores()
+	budget := cpucap.Apply(maxCores)
+	log.Printf("CPU budget: %d core(s) ([general] maxCores %d)", budget, maxCores)
+
 	// Create server configuration. The listen address comes from the TOML
 	// ([server] listenAddress), not a flag, so Address is left empty here.
 	// VerifyTLS is left nil so it falls back to the PC config's CkanCollector
-	// "verify" attr (and finally the secure default of true).
+	// "verify" attr (and finally the secure default of true). The config read
+	// above is handed in so the cap and the rules come from one read; ConfigPath
+	// stays set for logging and any path-based re-read.
 	cfg := server.Config{
 		ConfigPath: *configPath,
+		PCConfig:   pcConfig,
 	}
 
 	// Create server

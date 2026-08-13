@@ -40,6 +40,8 @@ maxPDFPages = 10
 maxPDFFileSize = 1048576
 # Maximum size for files that read content (like IsFreeOfKeywords) (bytes) - 20MB
 maxContentScanFileSize = 20971520
+# CPU cores this process may use (0 = default 4); see usage.md
+maxCores = 4
 # Introductory text shown at the top of the summary (set to "" to disable)
 summaryIntroText = "We have analyzed your data package and found a few issues. Please address them and get back to us once you're done. Then, we can continue with the publication process. Feel free to get back to us, if something is unclear."
 # Number of issues to show before truncating with "... and X more" (default: 5)
@@ -145,7 +147,7 @@ enabled = false
   binary = "betterleaks"
   # whole-scan cap in seconds (must not exceed [server] requestTimeoutSeconds)
   timeoutSeconds = 120
-  # CPU cores the scanner may use
+  # CPU cores the scanner may use; capped by [general] maxCores (the lower wins)
   maxProcs = 3
 
 [[rule]]

@@ -503,6 +503,54 @@ func TestParseMaxArchiveMemberCount(t *testing.T) {
 	})
 }
 
+func TestParseMaxCores(t *testing.T) {
+	t.Run("Configured", func(t *testing.T) {
+		configFile := createTempConfigFile(t, `
+		[general]
+		maxCores = 2
+		`)
+		defer os.Remove(configFile)
+		config, err := ParseConfig(configFile)
+		assert.NoError(t, err)
+		assert.Equal(t, 2, config.General.MaxCores)
+	})
+	t.Run("MissingUsesDefault", func(t *testing.T) {
+		configFile := createTempConfigFile(t, `
+		[general]
+		`)
+		defer os.Remove(configFile)
+		config, err := ParseConfig(configFile)
+		assert.NoError(t, err)
+		assert.Equal(t, DefaultMaxCores, config.General.MaxCores)
+	})
+	t.Run("NegativeFailsFast", func(t *testing.T) {
+		configFile := createTempConfigFile(t, `
+		[general]
+		maxCores = -1
+		`)
+		defer os.Remove(configFile)
+		_, err := ParseConfig(configFile)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "must be >= 0")
+	})
+	t.Run("WrongTypeFailsFast", func(t *testing.T) {
+		configFile := createTempConfigFile(t, `
+		[general]
+		maxCores = "2"
+		`)
+		defer os.Remove(configFile)
+		_, err := ParseConfig(configFile)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "maxCores")
+	})
+	t.Run("EffectiveZeroDefaults", func(t *testing.T) {
+		g := &GeneralConfig{}
+		assert.Equal(t, DefaultMaxCores, g.EffectiveMaxCores())
+		g.MaxCores = 3
+		assert.Equal(t, 3, g.EffectiveMaxCores())
+	})
+}
+
 func TestParseMaxPDFPages(t *testing.T) {
 	t.Run("Configured", func(t *testing.T) {
 		configFile := createTempConfigFile(t, `
