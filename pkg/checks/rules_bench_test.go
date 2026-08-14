@@ -178,23 +178,6 @@ func benchPDFFile(b *testing.B) structs.File {
 	return structs.ToFile(path, "report.pdf", -1, "")
 }
 
-// benchQuietStdout muzzles the iterator's per-ten-member memory line: it must
-// stay in the measurement but off the terminal, or the benchmark measures the
-// console.
-func benchQuietStdout(b *testing.B) {
-	b.Helper()
-	devnull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
-	if err != nil {
-		b.Fatalf("open %s: %v", os.DevNull, err)
-	}
-	stdout := os.Stdout
-	os.Stdout = devnull
-	b.Cleanup(func() {
-		os.Stdout = stdout
-		devnull.Close()
-	})
-}
-
 func benchmarkIsFreeOfKeywords(b *testing.B, ruleCount int) {
 	file := benchTextFile(b)
 	def, batch, rules := benchKeywordRules(b, ruleCount)
@@ -274,7 +257,6 @@ func BenchmarkIsFreeOfKeywordsStreamLargeNonASCII(b *testing.B) {
 }
 
 func benchmarkIsArchiveFreeOfKeywords(b *testing.B, ruleCount int) {
-	benchQuietStdout(b)
 	file := benchArchiveFile(b)
 	def, batch, rules := benchKeywordRules(b, ruleCount)
 

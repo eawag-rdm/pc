@@ -147,20 +147,6 @@ func BenchmarkArchiveIterationFiltered(b *testing.B) {
 	names := benchMemberNames(1000)
 	path := benchWalkZip(b, names)
 
-	// The iterator logs a memory line every ten scanned members. Keep that cost
-	// in the measurement but off the terminal, or the benchmark measures the
-	// console.
-	devnull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
-	if err != nil {
-		b.Fatalf("open %s: %v", os.DevNull, err)
-	}
-	stdout := os.Stdout
-	os.Stdout = devnull
-	defer func() {
-		os.Stdout = stdout
-		devnull.Close()
-	}()
-
 	b.ReportAllocs()
 	for b.Loop() {
 		filter, admitNone, err := selector.CompileLegacyLists("bench", benchMemberLists, nil)

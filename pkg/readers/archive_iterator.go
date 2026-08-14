@@ -178,16 +178,13 @@ func (u *UnpackedFileIterator) checkMemoryLimit(additionalBytes int64) bool {
 	return u.totalMemoryUsed+additionalBytes <= u.maxTotalMemory
 }
 
-// updateMemoryUsage tracks memory usage and enforces limits
+// updateMemoryUsage charges a scanned member against the archive memory
+// budget and counts it. Enforcement is checkMemoryLimit's job, not this
+// one's; processedFileCount has no production reader and exists for the
+// "each member is processed exactly once" assertions in the tests.
 func (u *UnpackedFileIterator) updateMemoryUsage(fileSize int) {
 	u.totalMemoryUsed += int64(fileSize)
 	u.processedFileCount++
-
-	// Log memory usage every 10 files
-	if u.processedFileCount%10 == 0 {
-		output.GlobalLogger.Info("Archive memory usage: %d/%d bytes (%d files processed)",
-			u.totalMemoryUsed, u.maxTotalMemory, u.processedFileCount)
-	}
 }
 
 // recordSkip appends a skip acknowledgement Message for an archive member that
