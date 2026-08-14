@@ -3,6 +3,7 @@ package json
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/eawag-rdm/pc/pkg/metadata"
@@ -17,6 +18,7 @@ type ScanResult struct {
 	Skipped               []SkippedFile       `json:"skipped"`
 	DetailsSubjectFocused []SubjectDetails    `json:"details_subject_focused"`
 	DetailsCheckFocused   []CheckDetails      `json:"details_check_focused"`
+	DetailsRuleFocused    []RuleDetails       `json:"details_rule_focused"`
 	DetailsMetadata       []MetadataDetails   `json:"details_metadata"`
 	PDFFiles              []string            `json:"pdf_files"`
 	Errors                []output.LogMessage `json:"errors"`
@@ -48,6 +50,47 @@ type SubjectDetails struct {
 type CheckDetails struct {
 	Checkname string         `json:"checkname"`
 	Issues    []SubjectIssue `json:"issues"`
+}
+
+// RuleSubject is one subject a rule flagged: the same triple the other
+// detail sections carry, with that subject's finding count instead of the
+// message text - which stays in details_subject_focused and
+// details_check_focused rather than being repeated a third time.
+type RuleSubject struct {
+	Subject     string `json:"subject"`
+	Path        string `json:"path"`
+	ArchiveName string `json:"archive_name,omitempty"`
+	IssueCount  int    `json:"issue_count"`
+}
+
+// RuleDetails represents the findings of one configured rule. A rule that
+// found nothing does not appear, exactly like a check that found nothing
+// does not appear in details_check_focused: every section is built from the
+// run's messages.
+//
+// IssueCount is the authoritative total for the rule and equals the sum of
+// the subjects' counts. Grouping is by rule name alone, which is sound
+// because rule names are unique run-wide (enforced in pkg/utils/plan.go when
+// the plan is compiled), so one rule belongs to exactly one check.
+//
+// On a legacy [test.X] config every rule is named after its check, so this
+// section degrades to a message-less relabelling of details_check_focused;
+// it earns its place on [[rule]] configs with several rules per check.
+type RuleDetails struct {
+	Rule       string        `json:"rule"`
+	Checkname  string        `json:"checkname"`
+	IssueCount int           `json:"issue_count"`
+	Subjects   []RuleSubject `json:"subjects"`
+}
+
+// ruleAccum accumulates one rule's findings while the messages are walked.
+// subjects is keyed by subjectKey, NOT by display name: two archives can
+// carry a member of the same name, and keying on the display name would
+// merge them into one subject while the counts kept saying two.
+type ruleAccum struct {
+	checkname string
+	count     int
+	subjects  map[string]int
 }
 
 // MetadataDetails represents the metadata-check findings for one entity
@@ -99,6 +142,7 @@ func (jf *JSONFormatter) FormatResults(location, collector string, messages []st
 		Skipped:               make([]SkippedFile, 0),
 		DetailsSubjectFocused: make([]SubjectDetails, 0),
 		DetailsCheckFocused:   make([]CheckDetails, 0),
+		DetailsRuleFocused:    make([]RuleDetails, 0),
 		DetailsMetadata:       make([]MetadataDetails, 0),
 		PDFFiles:              make([]string, 0),
 		Errors:                make([]output.LogMessage, 0),
@@ -150,6 +194,7 @@ func (result *ScanResult) processMessages(messages []structs.Message) {
 	fileIssueMap := make(map[string]map[string]int)   // subject_key -> checkname -> count (only for files)
 	subjectDetailMap := make(map[string][]CheckIssue) // subject_key -> []CheckIssue
 	checkDetailMap := make(map[string][]SubjectIssue) // checkname -> []SubjectIssue
+	ruleDetailMap := make(map[string]*ruleAccum)      // rule name -> accumulator
 	subjectPathMap := make(map[string]string)         // subject_key -> path
 	subjectArchiveMap := make(map[string]string)      // subject_key -> archive_name
 	subjectDisplayMap := make(map[string]string)      // subject_key -> display_name
@@ -224,6 +269,19 @@ func (result *ScanResult) processMessages(messages []structs.Message) {
 			ArchiveName: archiveName,
 			Message:     msg.Content,
 		})
+
+		// Add to rule-focused details. The guard drops findings with no rule of
+		// their own; skip acknowledgements and metadata findings never reach it,
+		// having been routed out earlier in this loop.
+		if msg.Rule != "" {
+			acc := ruleDetailMap[msg.Rule]
+			if acc == nil {
+				acc = &ruleAccum{checkname: testName, subjects: make(map[string]int)}
+				ruleDetailMap[msg.Rule] = acc
+			}
+			acc.count++
+			acc.subjects[subject]++
+		}
 	}
 
 	// Build scanned files (only for actual files, not repository)
@@ -268,6 +326,38 @@ func (result *ScanResult) processMessages(messages []structs.Message) {
 			Issues:    issues,
 		})
 	}
+
+	// Build rule-focused details. Message order is worker-completion order, so
+	// an unsorted array would vary run to run inside a published response: both
+	// the subjects and the rules themselves are sorted before they are emitted.
+	for rule, acc := range ruleDetailMap {
+		subjects := make([]RuleSubject, 0, len(acc.subjects))
+		for key, count := range acc.subjects {
+			// Identity is read from the same maps the subject- and check-focused
+			// sections use, so one artefact cannot report two paths for one subject.
+			subjects = append(subjects, RuleSubject{
+				Subject:     subjectDisplayMap[key],
+				Path:        subjectPathMap[key],
+				ArchiveName: subjectArchiveMap[key],
+				IssueCount:  count,
+			})
+		}
+		sort.Slice(subjects, func(i, j int) bool {
+			if subjects[i].ArchiveName != subjects[j].ArchiveName {
+				return subjects[i].ArchiveName < subjects[j].ArchiveName
+			}
+			return subjects[i].Subject < subjects[j].Subject
+		})
+		result.DetailsRuleFocused = append(result.DetailsRuleFocused, RuleDetails{
+			Rule:       rule,
+			Checkname:  acc.checkname,
+			IssueCount: acc.count,
+			Subjects:   subjects,
+		})
+	}
+	sort.Slice(result.DetailsRuleFocused, func(i, j int) bool {
+		return result.DetailsRuleFocused[i].Rule < result.DetailsRuleFocused[j].Rule
+	})
 }
 
 // appendSkipped converts a skip-flagged Message into a SkippedFile entry. The

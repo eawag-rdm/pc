@@ -119,3 +119,68 @@ func TestHandler_Analyze_EngineDiagnosticReachesResponse(t *testing.T) {
 		t.Errorf("raw diagnostics reached the depositor response: errors=%v warnings=%v", result.Errors, result.Warnings)
 	}
 }
+
+// TestHandler_Analyze_RuleFocusedInResponse pins the SERVER WIRING of the
+// details_rule_focused section: the CONFIGURED RULE that produced a finding must
+// reach the response, not just the check that implements it.
+//
+// The assertion is on the RULE NAME on purpose. Asserting only that the section
+// exists and is non-empty would still pass if the field were populated from the
+// check name, and telling rule from check is the entire reason this section
+// exists. "zip-pkg" ships no readme, and testdata/test_config.toml binds rule
+// "readme-present" to check "HasReadme", so the pair is unambiguous: a rule-name
+// regression shows up as "HasReadme" in both fields.
+func TestHandler_Analyze_RuleFocusedInResponse(t *testing.T) {
+	ckan, pcConfig, _ := makeBrokenArchiveCKAN(t)
+	defer ckan.Close()
+
+	output.GlobalLogger.ClearMessages()
+	t.Cleanup(func() { output.GlobalLogger.ClearMessages() })
+
+	handler := NewHandler(pcConfig, Config{}, slog.New(slog.NewJSONHandler(io.Discard, nil)), testPlan(pcConfig))
+
+	req := httptest.NewRequest("POST", "/api/v1/analyze", bytes.NewBufferString(`{"package_id":"zip-pkg"}`))
+	req = withRequestContext(req, "REQ-RULES", DefaultContactMessage)
+	req = req.WithContext(context.WithValue(req.Context(), CKANTokenKey, "tok"))
+	rec := httptest.NewRecorder()
+	handler.Analyze(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+
+	var response struct {
+		DetailsRuleFocused []struct {
+			Rule       string `json:"rule"`
+			CheckName  string `json:"checkname"`
+			IssueCount int    `json:"issue_count"`
+			Subjects   []struct {
+				Subject    string `json:"subject"`
+				IssueCount int    `json:"issue_count"`
+			} `json:"subjects"`
+		} `json:"details_rule_focused"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if len(response.DetailsRuleFocused) == 0 {
+		t.Fatalf("details_rule_focused is empty: %s", rec.Body.String())
+	}
+
+	found := false
+	for _, entry := range response.DetailsRuleFocused {
+		if entry.Rule != "readme-present" {
+			continue
+		}
+		found = true
+		if entry.CheckName != "HasReadme" {
+			t.Errorf("rule %q: checkname = %q, want HasReadme", entry.Rule, entry.CheckName)
+		}
+		if got := entry.Subjects[0].Subject; got != "repository" {
+			t.Errorf("rule %q: first subject = %q, want repository", entry.Rule, got)
+		}
+	}
+	if !found {
+		t.Errorf("no details_rule_focused entry for rule \"readme-present\": %s", rec.Body.String())
+	}
+}

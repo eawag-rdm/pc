@@ -332,6 +332,208 @@ func TestProcessMessages(t *testing.T) {
 	}
 }
 
+func TestRuleFocusedGroupsByRule(t *testing.T) {
+	result := &ScanResult{}
+
+	testFile := structs.File{Name: "test.txt", Path: "/path/to/test.txt"}
+
+	messages := []structs.Message{
+		{Content: "Found keyword 'password'", Source: testFile, TestName: "IsFreeOfKeywords", Rule: "secrets"},
+		{Content: "Found keyword 'todo'", Source: testFile, TestName: "IsFreeOfKeywords", Rule: "drafts"},
+	}
+
+	result.processMessages(messages)
+
+	if len(result.DetailsRuleFocused) != 2 {
+		t.Fatalf("Expected 2 rule details, got %d", len(result.DetailsRuleFocused))
+	}
+
+	for _, rule := range result.DetailsRuleFocused {
+		if rule.Checkname != "IsFreeOfKeywords" {
+			t.Errorf("Rule '%s': expected checkname 'IsFreeOfKeywords', got '%s'", rule.Rule, rule.Checkname)
+		}
+		if rule.IssueCount != 1 {
+			t.Errorf("Rule '%s': expected issue_count 1, got %d", rule.Rule, rule.IssueCount)
+		}
+	}
+
+	if result.DetailsRuleFocused[0].Rule != "drafts" || result.DetailsRuleFocused[1].Rule != "secrets" {
+		t.Errorf("Expected rules [drafts secrets], got [%s %s]",
+			result.DetailsRuleFocused[0].Rule, result.DetailsRuleFocused[1].Rule)
+	}
+}
+
+func TestRuleFocusedKeyedBySubjectKey(t *testing.T) {
+	result := &ScanResult{}
+
+	memberA := structs.ToFileWithDisplay("/path/to/a.zip", "notes.txt", "notes.txt", 100, "", "a.zip")
+	memberB := structs.ToFileWithDisplay("/path/to/b.zip", "notes.txt", "notes.txt", 100, "", "b.zip")
+
+	messages := []structs.Message{
+		{Content: "Found keyword 'password'", Source: memberA, TestName: "IsFreeOfKeywords", Rule: "secrets"},
+		{Content: "Found keyword 'password'", Source: memberB, TestName: "IsFreeOfKeywords", Rule: "secrets"},
+	}
+
+	result.processMessages(messages)
+
+	if len(result.DetailsRuleFocused) != 1 {
+		t.Fatalf("Expected 1 rule detail, got %d", len(result.DetailsRuleFocused))
+	}
+
+	rule := result.DetailsRuleFocused[0]
+	if rule.IssueCount != 2 {
+		t.Errorf("Expected rule issue_count 2, got %d", rule.IssueCount)
+	}
+
+	// Same display name in two archives must stay two subjects.
+	if len(rule.Subjects) != 2 {
+		t.Fatalf("Expected 2 subjects, got %d: %+v", len(rule.Subjects), rule.Subjects)
+	}
+	for _, sub := range rule.Subjects {
+		if sub.IssueCount != 1 {
+			t.Errorf("Subject '%s > %s': expected issue_count 1, got %d", sub.ArchiveName, sub.Subject, sub.IssueCount)
+		}
+	}
+	if rule.Subjects[0].ArchiveName != "a.zip" || rule.Subjects[1].ArchiveName != "b.zip" {
+		t.Errorf("Expected archives [a.zip b.zip], got [%s %s]",
+			rule.Subjects[0].ArchiveName, rule.Subjects[1].ArchiveName)
+	}
+
+	// Subject carries the display name, never the composite subject key.
+	for _, sub := range rule.Subjects {
+		if sub.Subject != "notes.txt" {
+			t.Errorf("Expected subject display name 'notes.txt', got '%s'", sub.Subject)
+		}
+	}
+	if rule.Subjects[0].Path != "/path/to/a.zip" || rule.Subjects[1].Path != "/path/to/b.zip" {
+		t.Errorf("Expected paths [/path/to/a.zip /path/to/b.zip], got [%s %s]",
+			rule.Subjects[0].Path, rule.Subjects[1].Path)
+	}
+}
+
+func TestRuleFocusedExcludesRulelessMessages(t *testing.T) {
+	result := &ScanResult{}
+
+	plainFile := structs.File{Name: "plain.txt", Path: "/path/to/plain.txt"}
+	skippedFile := structs.File{Name: "huge.bin", Path: "/path/to/huge.bin"}
+
+	reason := "Skipped content scan of file: file size exceeds maximum."
+	messages := []structs.Message{
+		// Load-bearing: a finding with no rule of its own must not create a rule.
+		{Content: "Filename contains a space", Source: plainFile, TestName: "HasNoWhitespace", Rule: ""},
+		// Documents an inherited exclusion: skips are routed out earlier in the
+		// message loop, so this section never sees them.
+		{Content: reason, Source: skippedFile, TestName: "IsFreeOfKeywords", Rule: "secrets", Skipped: true, Reason: reason},
+	}
+
+	result.processMessages(messages)
+
+	if len(result.DetailsRuleFocused) != 0 {
+		t.Fatalf("Expected 0 rule details, got %d: %+v", len(result.DetailsRuleFocused), result.DetailsRuleFocused)
+	}
+}
+
+func TestRuleFocusedTotalEqualsSubjectCounts(t *testing.T) {
+	result := &ScanResult{}
+
+	testFile := structs.File{Name: "test.txt", Path: "/path/to/test.txt"}
+
+	messages := []structs.Message{
+		{Content: "Found keyword 'password' (line 1)", Source: testFile, TestName: "IsFreeOfKeywords", Rule: "secrets"},
+		{Content: "Found keyword 'password' (line 7)", Source: testFile, TestName: "IsFreeOfKeywords", Rule: "secrets"},
+		{Content: "Found keyword 'password' (line 9)", Source: testFile, TestName: "IsFreeOfKeywords", Rule: "secrets"},
+	}
+
+	result.processMessages(messages)
+
+	if len(result.DetailsRuleFocused) != 1 {
+		t.Fatalf("Expected 1 rule detail, got %d", len(result.DetailsRuleFocused))
+	}
+	rule := result.DetailsRuleFocused[0]
+	if rule.IssueCount != 3 {
+		t.Errorf("Expected rule issue_count 3, got %d", rule.IssueCount)
+	}
+	if len(rule.Subjects) != 1 {
+		t.Fatalf("Expected 1 subject, got %d", len(rule.Subjects))
+	}
+	if rule.Subjects[0].IssueCount != 3 {
+		t.Errorf("Expected subject issue_count 3, got %d", rule.Subjects[0].IssueCount)
+	}
+
+	// The rule's count must reconcile with the same check's issues.
+	checkIssues := 0
+	for _, check := range result.DetailsCheckFocused {
+		if check.Checkname == rule.Checkname {
+			checkIssues = len(check.Issues)
+		}
+	}
+	if checkIssues != rule.IssueCount {
+		t.Errorf("Rule issue_count %d does not reconcile with check '%s' issues %d",
+			rule.IssueCount, rule.Checkname, checkIssues)
+	}
+}
+
+func TestRuleFocusedSerializesEmptyArray(t *testing.T) {
+	formatter := NewJSONFormatter()
+
+	testFile := structs.File{Name: "test.txt", Path: "/path/to/test.txt"}
+	messages := []structs.Message{
+		{Content: "Filename contains a space", Source: testFile, TestName: "HasNoWhitespace"},
+	}
+
+	result, err := formatter.FormatResults("/test/location", "LocalCollector", messages, 1, []string{}, nil)
+	if err != nil {
+		t.Fatalf("FormatResults failed: %v", err)
+	}
+
+	if !strings.Contains(result, `"details_rule_focused": []`) {
+		t.Errorf("Expected empty details_rule_focused array in JSON, got:\n%s", result)
+	}
+
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(result), &raw); err != nil {
+		t.Fatalf("Result is not valid JSON: %v", err)
+	}
+	if string(raw["details_rule_focused"]) == "null" {
+		t.Error("details_rule_focused serialized as null; want []")
+	}
+}
+
+func TestRuleFocusedOrderStable(t *testing.T) {
+	result := &ScanResult{}
+
+	zebra := structs.File{Name: "zebra.txt", Path: "/path/to/zebra.txt"}
+	alpha := structs.File{Name: "alpha.txt", Path: "/path/to/alpha.txt"}
+
+	messages := []structs.Message{
+		{Content: "m1", Source: zebra, TestName: "IsFreeOfKeywords", Rule: "zulu"},
+		{Content: "m2", Source: alpha, TestName: "IsFreeOfKeywords", Rule: "mike"},
+		{Content: "m3", Source: zebra, TestName: "IsFreeOfKeywords", Rule: "alfa"},
+		{Content: "m4", Source: alpha, TestName: "IsFreeOfKeywords", Rule: "alfa"},
+	}
+
+	result.processMessages(messages)
+
+	wantRules := []string{"alfa", "mike", "zulu"}
+	if len(result.DetailsRuleFocused) != len(wantRules) {
+		t.Fatalf("Expected %d rule details, got %d", len(wantRules), len(result.DetailsRuleFocused))
+	}
+	for i, want := range wantRules {
+		if result.DetailsRuleFocused[i].Rule != want {
+			t.Errorf("Rule at index %d: expected '%s', got '%s'", i, want, result.DetailsRuleFocused[i].Rule)
+		}
+	}
+
+	alfa := result.DetailsRuleFocused[0]
+	if len(alfa.Subjects) != 2 {
+		t.Fatalf("Expected 2 subjects for rule 'alfa', got %d", len(alfa.Subjects))
+	}
+	if alfa.Subjects[0].Subject != "alpha.txt" || alfa.Subjects[1].Subject != "zebra.txt" {
+		t.Errorf("Expected subjects [alpha.txt zebra.txt], got [%s %s]",
+			alfa.Subjects[0].Subject, alfa.Subjects[1].Subject)
+	}
+}
+
 func TestJSONStructureIntegrity(t *testing.T) {
 	formatter := NewJSONFormatter()
 

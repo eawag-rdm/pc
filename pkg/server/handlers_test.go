@@ -785,7 +785,12 @@ func TestHandler_Analyze_ResultCache(t *testing.T) {
 	if string(b1["request_id"]) == string(b2["request_id"]) {
 		t.Error("cached response must carry the SECOND request's id, not the stored one")
 	}
-	if string(b1["scanned"]) != string(b2["scanned"]) || string(b1["details_metadata"]) != string(b2["details_metadata"]) {
+	// Compares scanned, details_metadata and details_rule_focused only - the
+	// sections whose content a cache regression would silently change. Other
+	// sections (skipped, the detail views, pdf_files, errors, warnings,
+	// timestamp) are NOT covered here, so a new section is added to this
+	// comparison deliberately rather than assumed covered.
+	if string(b1["scanned"]) != string(b2["scanned"]) || string(b1["details_metadata"]) != string(b2["details_metadata"]) || string(b1["details_rule_focused"]) != string(b2["details_rule_focused"]) {
 		t.Error("cached response content must equal the original analysis")
 	}
 
