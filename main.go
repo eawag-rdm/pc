@@ -200,9 +200,7 @@ func main() {
 				app.UpdateProgress(0, 1, "Starting scan...")
 
 				// Run scanning with progress updates
-				res := analysis.Run(context.Background(), *generalConfig, plan, files, metadataResult, func(current, total int, message string) {
-					app.UpdateProgress(current, total, message)
-				})
+				res := analysis.Run(context.Background(), *generalConfig, plan, files, metadataResult, app.UpdateScanProgress)
 
 				// Create JSON formatter and generate output
 				formatter := jsonformatter.NewJSONFormatter()

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/eawag-rdm/pc/pkg/output"
+	"github.com/eawag-rdm/pc/pkg/structs"
 )
 
 // TestRulesPanelRendersRuleAttribution asserts the RENDERED details text after
@@ -154,6 +155,54 @@ func TestSummaryOmitsRuleNames(t *testing.T) {
 	// passing on an empty document.
 	if !strings.Contains(result, "config.yaml") {
 		t.Fatalf("Summary rendered no findings, got:\n%s", result)
+	}
+}
+
+// TestProgressLabelWordsEveryPhase pins the progress bar's text BYTE FOR BYTE.
+// The engine reports a phase and counters and nothing else; this mapping is the
+// only place they become words, so it alone decides what a user reads while a
+// scan runs, and these are the strings the bar has always shown.
+//
+// The last two cases cover what the switch does with a phase it has no arm for:
+// a zero-valued report from a wiring slip and a phase added later must both
+// leave the bar labelled rather than blank.
+func TestProgressLabelWordsEveryPhase(t *testing.T) {
+	tests := []struct {
+		name     string
+		progress structs.Progress
+		want     string
+	}{
+		{"file phase opens", structs.Progress{Phase: structs.PhaseFileChecks, Current: 0, Total: 12, Start: true}, "Running file checks..."},
+		{"file phase counts", structs.Progress{Phase: structs.PhaseFileChecks, Current: 3, Total: 12}, "Running file tests... (3/12)"},
+		{"archive file list", structs.Progress{Phase: structs.PhaseArchiveFileList, Current: 12, Total: 12, Start: true}, "Running archive file list tests..."},
+		{"archive content", structs.Progress{Phase: structs.PhaseArchiveContent, Current: 12, Total: 12, Start: true}, "Running archive content tests..."},
+		{"repository", structs.Progress{Phase: structs.PhaseRepository, Current: 12, Total: 12, Start: true}, "Running repository tests..."},
+		{"finalizing", structs.Progress{Phase: structs.PhaseFinalizing, Current: 14, Total: 14, Start: true}, "Finalizing results..."},
+		{"unset report", structs.Progress{}, "Scanning..."},
+		{"unknown phase", structs.Progress{Phase: structs.PhaseFinalizing + 1, Start: true}, "Scanning..."},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := progressLabel(tt.progress); got != tt.want {
+				t.Errorf("progressLabel(%+v) = %q, want %q", tt.progress, got, tt.want)
+			}
+		})
+	}
+
+	// Coverage of the phase set itself. ProgressPhase.String() names exactly the
+	// declared phases and falls back to "phase(N)" past them, so this walks the
+	// set without hard-coding its size: a phase added to the engine's boundary
+	// type and forgotten here would fall through to the neutral label. The walk
+	// is bounded because ProgressPhase is a uint8 and the fallback's wording is
+	// another package's to change: unbounded, a reworded fallback would wrap the
+	// counter and hang CI instead of failing here.
+	for p := structs.ProgressPhase(1); p < 64; p++ {
+		if strings.HasPrefix(p.String(), "phase(") {
+			break
+		}
+		if label := progressLabel(structs.Progress{Phase: p, Start: true}); label == "Scanning..." {
+			t.Errorf("phase %s has no wording of its own, got the fallback %q", p, label)
+		}
 	}
 }
 

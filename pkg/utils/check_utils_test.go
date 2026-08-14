@@ -18,31 +18,45 @@ import (
 
 // TestApplyAllChecks_NoFilesNotice verifies both engine entrypoints append a
 // single skip-style "no files to analyse" notice when the file set is empty, so
-// the CLI and server surface the same clear, non-issue acknowledgement.
+// the CLI and server surface the same clear, non-issue acknowledgement. The
+// repository scope runs over the empty set as well and reports what it finds
+// there (no readme), so the notice is picked out of the messages rather than
+// being the whole set - but nothing else may turn up beside the two, which is
+// what keeps the empty-set message set pinned.
 func TestApplyAllChecks_NoFilesNotice(t *testing.T) {
 	plan := compilePlan(t, config.Config{})
+	repositoryChecks := map[string]bool{}
+	for _, entry := range plan.scope(checks.ScopeRepository) {
+		repositoryChecks[entry.def.Name] = true
+	}
 	cases := map[string]func() []structs.Message{
 		"ApplyAllChecks": func() []structs.Message {
-			messages, _ := ApplyAllChecks(context.Background(), config.Config{}, plan, nil, false)
+			messages, _ := ApplyAllChecks(context.Background(), config.Config{}, plan, nil)
 			return messages
 		},
 		"ApplyAllChecksWithProgress": func() []structs.Message {
-			messages, _ := ApplyAllChecksWithProgress(context.Background(), config.Config{}, plan, nil, false, nil)
+			messages, _ := ApplyAllChecksWithProgress(context.Background(), config.Config{}, plan, nil, nil)
 			return messages
 		},
 	}
 	for name, run := range cases {
 		t.Run(name, func(t *testing.T) {
-			msgs := run()
-			if len(msgs) != 1 {
-				t.Fatalf("expected exactly the no-files notice for an empty set, got %d: %v", len(msgs), msgs)
+			var notices []structs.Message
+			for _, m := range run() {
+				if m.TestName == "FilesPresent" {
+					notices = append(notices, m)
+					continue
+				}
+				if !repositoryChecks[m.TestName] {
+					t.Errorf("empty set produced %q from check %q - only the notice and the repository checks may report here", m.Content, m.TestName)
+				}
 			}
-			notice := msgs[0]
+			if len(notices) != 1 {
+				t.Fatalf("expected exactly one no-files notice for an empty set, got %d: %v", len(notices), notices)
+			}
+			notice := notices[0]
 			if !notice.Skipped {
 				t.Error("no-files notice must be Skipped (a non-issue acknowledgement)")
-			}
-			if notice.TestName != "FilesPresent" {
-				t.Errorf("expected TestName FilesPresent, got %q", notice.TestName)
 			}
 			if notice.Reason == "" || notice.Content == "" {
 				t.Error("no-files notice must carry a reason and content")
@@ -59,10 +73,10 @@ func TestApplyAllChecks_NoFilesNotice(t *testing.T) {
 func TestApplyAllChecks_NilPlanPanics(t *testing.T) {
 	cases := map[string]func(){
 		"ApplyAllChecks": func() {
-			ApplyAllChecks(context.Background(), config.Config{}, nil, nil, false)
+			ApplyAllChecks(context.Background(), config.Config{}, nil, nil)
 		},
 		"ApplyAllChecksWithProgress": func() {
-			ApplyAllChecksWithProgress(context.Background(), config.Config{}, nil, nil, false, nil)
+			ApplyAllChecksWithProgress(context.Background(), config.Config{}, nil, nil, nil)
 		},
 	}
 	for name, run := range cases {

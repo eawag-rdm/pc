@@ -109,7 +109,7 @@ func TestDiagnosticsSurviveCancellation(t *testing.T) {
 
 	plan := &Plan{}
 	plan.scopes[checks.ScopeFile] = []checkRules{panicking}
-	_, diags := ApplyAllChecks(ctx, config.Config{}, plan, files, false)
+	_, diags := ApplyAllChecks(ctx, config.Config{}, plan, files)
 
 	if len(diags) == 0 {
 		t.Fatal("a cancelled run dropped the diagnostics its workers had already produced")
@@ -224,7 +224,7 @@ func TestProgressEngineReturnsDiagnostics(t *testing.T) {
 
 	files := writeTempFiles(t, 3)
 	_, diags := ApplyAllChecksWithProgress(context.Background(), config.Config{},
-		panickingPlan(checks.ScopeFile), files, false, func(int, int, string) {})
+		panickingPlan(checks.ScopeFile), files, func(structs.Progress) {})
 
 	assertPanicDiagnostic(t, diags)
 	assertNotInGlobal(t, "internal error")
@@ -249,7 +249,7 @@ func TestRepositoryPhaseReturnsDiagnostics(t *testing.T) {
 		rules: []*checks.BoundRule{{Rule: "panickingRepo"}},
 	}}
 
-	_, diags := ApplyAllChecks(context.Background(), config.Config{}, plan, writeTempFiles(t, 1), true)
+	_, diags := ApplyAllChecks(context.Background(), config.Config{}, plan, writeTempFiles(t, 1))
 	assertPanicDiagnostic(t, diags)
 	assertNotInGlobal(t, "internal error")
 }
@@ -267,7 +267,7 @@ func TestArchiveMemberPhaseReturnsDiagnostics(t *testing.T) {
 	files := []structs.File{{Path: path, Name: "member.zip", IsArchive: true}}
 
 	_, diags := ApplyAllChecks(context.Background(), config.Config{},
-		panickingPlan(checks.ScopeArchiveMember), files, false)
+		panickingPlan(checks.ScopeArchiveMember), files)
 	assertPanicDiagnostic(t, diags)
 	assertNotInGlobal(t, "internal error")
 }

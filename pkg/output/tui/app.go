@@ -9,6 +9,7 @@ import (
 
 	"github.com/atotto/clipboard"
 	"github.com/eawag-rdm/pc/pkg/output"
+	"github.com/eawag-rdm/pc/pkg/structs"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
@@ -989,6 +990,37 @@ func (a *App) UpdateProgress(current, total int, message string) {
 
 	a.progressBar.SetText(progressText)
 	a.app.QueueUpdateDraw(func() {})
+}
+
+// UpdateScanProgress draws one progress report from the scan engine. The engine
+// reports which phase it is in and how far along the run is; the wording is the
+// frontend's, and this is where it lives.
+func (a *App) UpdateScanProgress(p structs.Progress) {
+	a.UpdateProgress(p.Current, p.Total, progressLabel(p))
+}
+
+// progressLabel words one progress report for the progress bar.
+func progressLabel(p structs.Progress) string {
+	switch p.Phase {
+	case structs.PhaseFileChecks:
+		// The phase announces itself before anything of it has run, then
+		// reports the files it has behind it.
+		if p.Start {
+			return "Running file checks..."
+		}
+		return fmt.Sprintf("Running file tests... (%d/%d)", p.Current, p.Total)
+	case structs.PhaseArchiveFileList:
+		return "Running archive file list tests..."
+	case structs.PhaseArchiveContent:
+		return "Running archive content tests..."
+	case structs.PhaseRepository:
+		return "Running repository tests..."
+	case structs.PhaseFinalizing:
+		return "Finalizing results..."
+	default:
+		// A phase this build does not know still has to leave the bar labelled.
+		return "Scanning..."
+	}
 }
 
 func (a *App) UpdateData(newData *ScanResult) {

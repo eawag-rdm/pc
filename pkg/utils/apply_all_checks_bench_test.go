@@ -111,7 +111,7 @@ func BenchmarkApplyAllChecks(b *testing.B) {
 
 	b.Run("plain", func(b *testing.B) {
 		run(b, func() []structs.Message {
-			messages, diags := ApplyAllChecks(context.Background(), cfg, plan, files, true)
+			messages, diags := ApplyAllChecks(context.Background(), cfg, plan, files)
 			benchPipelineDiagnostics = diags
 			return messages
 		})
@@ -119,7 +119,7 @@ func BenchmarkApplyAllChecks(b *testing.B) {
 
 	b.Run("progress", func(b *testing.B) {
 		run(b, func() []structs.Message {
-			messages, diags := ApplyAllChecksWithProgress(context.Background(), cfg, plan, files, true, func(int, int, string) {})
+			messages, diags := ApplyAllChecksWithProgress(context.Background(), cfg, plan, files, func(structs.Progress) {})
 			benchPipelineDiagnostics = diags
 			return messages
 		})

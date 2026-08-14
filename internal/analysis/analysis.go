@@ -47,12 +47,6 @@ type Result struct {
 // file-phase dispatch; the only difference is that the WithProgress engine
 // emits progress ticks.
 //
-// Provisional leak: ProgressCallback's message string is engine-authored
-// presentation text; the check-rules rework narrows it.
-//
-// checksAcrossFiles is passed as true deliberately - the knob is retired from
-// production use, every caller wants the repository-wide checks.
-//
 // plan carries the bound rules of every check, compiled once at startup by each
 // frontend (utils.Compile) so a bad pattern or parameter fails the boot rather
 // than a run.
@@ -77,9 +71,9 @@ func Run(ctx context.Context, cfg config.Config, plan *utils.Plan, files []struc
 	var fileMessages []structs.Message
 	var diagnostics []structs.Diagnostic
 	if progress == nil {
-		fileMessages, diagnostics = utils.ApplyAllChecks(ctx, cfg, plan, files, true)
+		fileMessages, diagnostics = utils.ApplyAllChecks(ctx, cfg, plan, files)
 	} else {
-		fileMessages, diagnostics = utils.ApplyAllChecksWithProgress(ctx, cfg, plan, files, true, progress)
+		fileMessages, diagnostics = utils.ApplyAllChecksWithProgress(ctx, cfg, plan, files, progress)
 	}
 	// Diagnostics are GROUPED, not chronological: everything drained from the
 	// global first, then everything the engine returned. Each item carries its

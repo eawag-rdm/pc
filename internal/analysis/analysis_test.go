@@ -154,16 +154,11 @@ func TestRun_ProgressRoutesToProgressEngine(t *testing.T) {
 
 	// The progress engine's file phase is single-threaded and the callback only
 	// runs on that goroutine, so an unguarded slice is safe here.
-	type call struct {
-		current int
-		total   int
-		message string
-	}
-	var calls []call
+	var calls []structs.Progress
 
 	resetGlobalScanState()
-	messages := Run(context.Background(), cfg, planFor(t, cfg), files, nil, func(current, total int, message string) {
-		calls = append(calls, call{current: current, total: total, message: message})
+	messages := Run(context.Background(), cfg, planFor(t, cfg), files, nil, func(p structs.Progress) {
+		calls = append(calls, p)
 	}).Messages
 	resetGlobalScanState()
 
@@ -171,11 +166,11 @@ func TestRun_ProgressRoutesToProgressEngine(t *testing.T) {
 		t.Fatal("progress callback never fired - Run did not route to ApplyAllChecksWithProgress")
 	}
 	last := calls[len(calls)-1]
-	if last.total == 0 || last.current != last.total {
-		t.Fatalf("progress did not finish: final current %d, total %d", last.current, last.total)
+	if last.Total == 0 || last.Current != last.Total {
+		t.Fatalf("progress did not finish: final current %d, total %d", last.Current, last.Total)
 	}
-	if strings.TrimSpace(last.message) == "" {
-		t.Fatal("final progress message is empty")
+	if last.Phase != structs.PhaseFinalizing {
+		t.Fatalf("the last report came from the %s phase, want the finalizing one", last.Phase)
 	}
 	if countFileMessages(messages) == 0 {
 		t.Fatal("no File-sourced messages - the file pipeline did not run")

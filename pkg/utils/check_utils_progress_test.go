@@ -6,7 +6,7 @@ import (
 	"maps"
 	"path/filepath"
 	"runtime"
-	"strings"
+	"slices"
 	"sync/atomic"
 	"testing"
 
@@ -114,15 +114,16 @@ func TestApplyAllChecksWithProgress_PanickingTick_KeepsScanning(t *testing.T) {
 	plan := compilePlan(t, *cfg)
 
 	resetGlobalScanState()
-	want, _ := ApplyAllChecksWithProgress(context.Background(), *cfg, plan, files, true, func(int, int, string) {})
+	want, _ := ApplyAllChecksWithProgress(context.Background(), *cfg, plan, files, func(structs.Progress) {})
 
 	// Only the tick is guarded - the phase announcements run unguarded on this
-	// goroutine - so panic on the tick's message alone. It ticks on this
-	// goroutine too, so the counter needs no synchronisation.
+	// goroutine - so panic on the tick alone: the file phase's reports with work
+	// behind them, not the one that opens it. It ticks on this goroutine too, so
+	// the counter needs no synchronisation.
 	panics := 0
 	resetGlobalScanState()
-	got, _ := ApplyAllChecksWithProgress(context.Background(), *cfg, plan, files, true, func(_, _ int, message string) {
-		if strings.HasPrefix(message, "Running file tests") {
+	got, _ := ApplyAllChecksWithProgress(context.Background(), *cfg, plan, files, func(p structs.Progress) {
+		if p.Phase == structs.PhaseFileChecks && !p.Start {
 			panics++
 			panic("boom: simulated progress callback bug")
 		}
@@ -130,9 +131,73 @@ func TestApplyAllChecksWithProgress_PanickingTick_KeepsScanning(t *testing.T) {
 	resetGlobalScanState()
 
 	if panics == 0 {
-		t.Fatal("the tick never fired - the guard went untested (did the tick's message change?)")
+		t.Fatal("the tick never fired - the guard went untested (did the tick's phase change?)")
 	}
 	if wantSet, gotSet := messageMultiset(want), messageMultiset(got); !maps.Equal(wantSet, gotSet) {
 		t.Fatalf("the panicking tick changed the result set:\nwant %v\ngot  %v", wantSet, gotSet)
+	}
+}
+
+// TestApplyAllChecksWithProgress_ReportsPhasesAndFileCounts pins what the engine
+// REPORTS, now that the frontend words it: the phase every report comes from,
+// the Start flag the frontend tells an opening report from a count by, and - the
+// one datum a frontend cannot reconstruct - the file phase's counts, which open
+// at nothing done, advance, and end on the size of the work list that was
+// dispatched. The mock check makes the whole run's total that same size, so the
+// counters can be asserted exactly.
+func TestApplyAllChecksWithProgress_ReportsPhasesAndFileCounts(t *testing.T) {
+	files := progressFiles(6)
+	plan := &Plan{}
+	plan.scopes[checks.ScopeFile] = []checkRules{mockEntry("counted", func(structs.File) []structs.Message { return nil })}
+
+	// Reports arrive on the collect loop's goroutine, which is this one, so an
+	// unguarded slice is safe here.
+	var reports []structs.Progress
+	ApplyAllChecksWithProgress(context.Background(), config.Config{}, plan, files, func(p structs.Progress) {
+		reports = append(reports, p)
+	})
+
+	opened := 0
+	var ticks []int
+	var tail []structs.ProgressPhase
+	for _, p := range reports {
+		if p.Phase != structs.PhaseFileChecks {
+			tail = append(tail, p.Phase)
+			continue
+		}
+		if p.Total != len(files) {
+			t.Fatalf("a file phase report announced a total of %d, want the %d dispatched items", p.Total, len(files))
+		}
+		if p.Start {
+			opened++
+			if p.Current != 0 {
+				t.Fatalf("the file phase opened with %d items already done", p.Current)
+			}
+			continue
+		}
+		ticks = append(ticks, p.Current)
+	}
+
+	if opened != 1 {
+		t.Fatalf("the file phase must announce itself exactly once, got %d reports with nothing done", opened)
+	}
+	if len(ticks) == 0 {
+		t.Fatal("the file phase never reported a count - a frontend cannot reconstruct one")
+	}
+	previous := 0
+	for i, tick := range ticks {
+		if tick <= previous {
+			t.Fatalf("count %d did not advance: %d after %d", i, tick, previous)
+		}
+		previous = tick
+	}
+	if last := ticks[len(ticks)-1]; last != len(files) {
+		t.Fatalf("the file phase ended at %d of %d dispatched items", last, len(files))
+	}
+
+	// The phases behind the file phase report once each, in dispatch order.
+	want := []structs.ProgressPhase{structs.PhaseArchiveFileList, structs.PhaseArchiveContent, structs.PhaseRepository, structs.PhaseFinalizing}
+	if !slices.Equal(tail, want) {
+		t.Fatalf("phases reported after the file phase: got %v, want %v", tail, want)
 	}
 }

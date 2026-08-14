@@ -754,7 +754,7 @@ func TestExecutedCheckMultisetUnchanged(t *testing.T) {
 			counts := countInvocations(plan)
 
 			resetGlobalScanState()
-			ApplyAllChecks(context.Background(), *cfg, plan, multisetFixture(t), true)
+			ApplyAllChecks(context.Background(), *cfg, plan, multisetFixture(t))
 			resetGlobalScanState()
 
 			var diffs []string

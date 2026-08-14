@@ -40,7 +40,7 @@ func TestApplyAllChecks_CancelledContext_ReturnsPromptly(t *testing.T) {
 
 	done := make(chan []structs.Message, 1)
 	go func() {
-		messages, _ := ApplyAllChecks(ctx, config.Config{}, compilePlan(t, config.Config{}), files, true)
+		messages, _ := ApplyAllChecks(ctx, config.Config{}, compilePlan(t, config.Config{}), files)
 		done <- messages
 	}()
 

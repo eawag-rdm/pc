@@ -577,8 +577,15 @@ func applyChecksFilteredByRepository(ctx context.Context, sink *diagSink, entrie
 	return messages
 }
 
-// ProgressCallback is called during scanning to report progress
-type ProgressCallback func(current, total int, message string)
+// ProgressCallback is called during scanning to report progress. Every report
+// runs on the goroutine that called the engine - the file phase ticks from the
+// pool's collect loop, which is that same goroutine - so the callback is never
+// invoked concurrently, and whatever it spends is spent on the scan.
+//
+// The panic guard is ASYMMETRIC: a panic in a tick is recovered and logged
+// (letting it escape the collect loop would break the pool's handshake), a
+// panic in a phase's opening report is not and takes the process down.
+type ProgressCallback func(structs.Progress)
 
 // noFilesNotice returns a skip-style acknowledgement that no files were found to
 // analyse. ApplyAllChecks(WithProgress) appends it whenever the collected file
@@ -612,9 +619,6 @@ func noFilesNotice() structs.Message {
 // carry it. Intended entry point is internal/analysis.Run (progress == nil
 // branch), which pairs this with the metadata checks; call it rather than this
 // directly.
-// checksAcrossFiles gates the WHOLE repository scope: readme checks and the
-// secret scan alike. Before the registry the secret scan ran regardless of the
-// flag; both frontends pass true, so only a direct caller sees the difference.
 // Panics on a nil plan: dispatching nothing would report every package clean.
 //
 // The second return value carries the diagnostics THIS PACKAGE emits, neither
@@ -629,7 +633,7 @@ func noFilesNotice() structs.Message {
 // output.GlobalLogger, so a caller wanting everything must drain that too -
 // internal/analysis.Run does exactly that and returns the union. See
 // structs.Diagnostic for who may see which.
-func ApplyAllChecks(ctx context.Context, config config.Config, plan *Plan, files []structs.File, checksAcrossFiles bool) ([]structs.Message, []structs.Diagnostic) {
+func ApplyAllChecks(ctx context.Context, config config.Config, plan *Plan, files []structs.File) ([]structs.Message, []structs.Diagnostic) {
 	if plan == nil {
 		panic("utils: ApplyAllChecks requires a compiled *utils.Plan")
 	}
@@ -639,9 +643,7 @@ func ApplyAllChecks(ctx context.Context, config config.Config, plan *Plan, files
 	messages = append(messages, applyChecksFilteredByFile(ctx, sink, plan.scope(checks.ScopeFile), files)...)
 	messages = append(messages, applyChecksFilteredByFileOnArchiveFileList(ctx, sink, config, plan.scope(checks.ScopeArchiveFileList), files)...)
 	messages = append(messages, applyChecksFilteredByFileOnArchive(ctx, sink, plan.scope(checks.ScopeArchiveMember), files)...)
-	if checksAcrossFiles {
-		messages = append(messages, applyChecksFilteredByRepository(ctx, sink, plan.scope(checks.ScopeRepository), files)...)
-	}
+	messages = append(messages, applyChecksFilteredByRepository(ctx, sink, plan.scope(checks.ScopeRepository), files)...)
 
 	// Surface a clear, non-issue notice when there was nothing to analyse.
 	if len(files) == 0 {
@@ -681,7 +683,7 @@ func ApplyAllChecks(ctx context.Context, config config.Config, plan *Plan, files
 // result set, with ctx.Err() as the caller's only signal.
 // The diagnostics return carries the same contract as its twin's, the verdicts
 // on the rule configuration and their cancellation gate included.
-func ApplyAllChecksWithProgress(ctx context.Context, config config.Config, plan *Plan, files []structs.File, checksAcrossFiles bool, progressCallback ProgressCallback) ([]structs.Message, []structs.Diagnostic) {
+func ApplyAllChecksWithProgress(ctx context.Context, config config.Config, plan *Plan, files []structs.File, progressCallback ProgressCallback) ([]structs.Message, []structs.Diagnostic) {
 	if plan == nil {
 		panic("utils: ApplyAllChecksWithProgress requires a compiled *utils.Plan")
 	}
@@ -707,9 +709,7 @@ func ApplyAllChecksWithProgress(ctx context.Context, config config.Config, plan 
 	}
 
 	// Count repository tests
-	if checksAcrossFiles {
-		totalTests += len(repositoryChecks)
-	}
+	totalTests += len(repositoryChecks)
 
 	testsRun := 0
 
@@ -721,7 +721,7 @@ func ApplyAllChecksWithProgress(ctx context.Context, config config.Config, plan 
 	if progressCallback != nil {
 		begin = func(items int) func(int) {
 			totalTests += items
-			progressCallback(testsRun, totalTests, "Running file checks...")
+			progressCallback(structs.Progress{Phase: structs.PhaseFileChecks, Current: testsRun, Total: totalTests, Start: true})
 			return func(current int) {
 				// The tick runs caller code inside the pool's collect loop: a
 				// panic there would skip the submit/collect handshake and run
@@ -734,7 +734,7 @@ func ApplyAllChecksWithProgress(ctx context.Context, config config.Config, plan 
 					}
 				}()
 				testsRun = current
-				progressCallback(testsRun, totalTests, fmt.Sprintf("Running file tests... (%d/%d)", testsRun, totalTests))
+				progressCallback(structs.Progress{Phase: structs.PhaseFileChecks, Current: testsRun, Total: totalTests})
 			}
 		}
 	}
@@ -742,7 +742,7 @@ func ApplyAllChecksWithProgress(ctx context.Context, config config.Config, plan 
 
 	// Step 2: Archive file list checks
 	if progressCallback != nil {
-		progressCallback(testsRun, totalTests, "Running archive file list tests...")
+		progressCallback(structs.Progress{Phase: structs.PhaseArchiveFileList, Current: testsRun, Total: totalTests, Start: true})
 	}
 	archiveListTests := applyChecksFilteredByFileOnArchiveFileList(ctx, sink, config, listChecks, files)
 	messages = append(messages, archiveListTests...)
@@ -755,7 +755,7 @@ func ApplyAllChecksWithProgress(ctx context.Context, config config.Config, plan 
 
 	// Step 3: Archive content checks
 	if progressCallback != nil {
-		progressCallback(testsRun, totalTests, "Running archive content tests...")
+		progressCallback(structs.Progress{Phase: structs.PhaseArchiveContent, Current: testsRun, Total: totalTests, Start: true})
 	}
 	archiveContentTests := applyChecksFilteredByFileOnArchive(ctx, sink, memberChecks, files)
 	messages = append(messages, archiveContentTests...)
@@ -766,19 +766,17 @@ func ApplyAllChecksWithProgress(ctx context.Context, config config.Config, plan 
 		}
 	}
 
-	// Step 4: Repository checks (if enabled)
-	if checksAcrossFiles {
-		if progressCallback != nil {
-			progressCallback(testsRun, totalTests, "Running repository tests...")
-		}
-		repoTests := applyChecksFilteredByRepository(ctx, sink, repositoryChecks, files)
-		messages = append(messages, repoTests...)
-		testsRun += len(repositoryChecks)
+	// Step 4: Repository checks
+	if progressCallback != nil {
+		progressCallback(structs.Progress{Phase: structs.PhaseRepository, Current: testsRun, Total: totalTests, Start: true})
 	}
+	repoTests := applyChecksFilteredByRepository(ctx, sink, repositoryChecks, files)
+	messages = append(messages, repoTests...)
+	testsRun += len(repositoryChecks)
 
 	// Final step
 	if progressCallback != nil {
-		progressCallback(testsRun, totalTests, "Finalizing results...")
+		progressCallback(structs.Progress{Phase: structs.PhaseFinalizing, Current: testsRun, Total: totalTests, Start: true})
 	}
 	// Surface a clear, non-issue notice when there was nothing to analyse.
 	if len(files) == 0 {

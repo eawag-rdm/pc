@@ -171,7 +171,7 @@ func TestRuleReportDeadRuleWarnsOnce(t *testing.T) {
 	}
 	plan := compilePlan(t, cfg)
 
-	_, diags := ApplyAllChecks(context.Background(), cfg, plan, files, false)
+	_, diags := ApplyAllChecks(context.Background(), cfg, plan, files)
 
 	assertRuleDiags(t, diags, structs.DiagWarning, 1, "tar-only")
 	assertRuleDiags(t, diags, structs.DiagWarning, 0, "csv-only")
@@ -198,7 +198,7 @@ func TestRuleReportOverlapOnFilteredPath(t *testing.T) {
 		t.Fatal("the fixture must take the filtered selection path")
 	}
 
-	_, diags := ApplyAllChecks(context.Background(), cfg, plan, files, false)
+	_, diags := ApplyAllChecks(context.Background(), cfg, plan, files)
 
 	assertRuleDiags(t, diags, structs.DiagWarning, 1, "csv-rule", "alpha-rule")
 	assertNoDeadRule(t, diags, "csv-rule")
@@ -246,7 +246,7 @@ func TestRuleReportUnfilteredFastPathMarksEveryRule(t *testing.T) {
 		}
 	}
 
-	_, diags := ApplyAllChecks(context.Background(), cfg, plan, files, false)
+	_, diags := ApplyAllChecks(context.Background(), cfg, plan, files)
 	assertNoDeadRule(t, diags, "wide-one")
 	assertNoDeadRule(t, diags, "wide-two")
 	// Three files, one notice: the fast path records the pair for the pass, not
@@ -277,7 +277,7 @@ func TestRuleReportEmptyPackageStaysSilent(t *testing.T) {
 		t.Fatal("the fixture must take the unfiltered fast path")
 	}
 
-	_, diags := ApplyAllChecks(context.Background(), cfg, plan, nil, true)
+	_, diags := ApplyAllChecks(context.Background(), cfg, plan, nil)
 
 	assertRuleDiags(t, diags, structs.DiagWarning, 0, "wide-one", "wide-two")
 	assertRuleDiags(t, diags, structs.DiagWarning, 0, "wide-one")
@@ -297,7 +297,7 @@ func TestRuleReportProgressEntryPointEmits(t *testing.T) {
 	}
 	plan := compilePlan(t, cfg)
 
-	_, diags := ApplyAllChecksWithProgress(context.Background(), cfg, plan, files, false, nil)
+	_, diags := ApplyAllChecksWithProgress(context.Background(), cfg, plan, files, nil)
 
 	assertRuleDiags(t, diags, structs.DiagWarning, 1, "tar-only")
 	assertRuleDiags(t, diags, structs.DiagWarning, 0, "csv-only")
@@ -318,16 +318,16 @@ func TestRuleReportCancelledRunEmitsNothing(t *testing.T) {
 	}
 	plan := compilePlan(t, cfg)
 
-	_, complete := ApplyAllChecks(context.Background(), cfg, plan, files, false)
+	_, complete := ApplyAllChecks(context.Background(), cfg, plan, files)
 	assertRuleDiags(t, complete, structs.DiagWarning, 1, "tar-only")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, plain := ApplyAllChecks(ctx, cfg, plan, files, false)
+	_, plain := ApplyAllChecks(ctx, cfg, plan, files)
 	assertRuleDiags(t, plain, structs.DiagWarning, 0, "tar-only")
 
-	_, progress := ApplyAllChecksWithProgress(ctx, cfg, plan, files, false, nil)
+	_, progress := ApplyAllChecksWithProgress(ctx, cfg, plan, files, nil)
 	assertRuleDiags(t, progress, structs.DiagWarning, 0, "tar-only")
 }
 
@@ -346,12 +346,12 @@ func TestRuleReportUnexercisedScopeStaysSilent(t *testing.T) {
 	// No archive file: the phase returns before it reaches a member list, so its
 	// rules may not be called dead.
 	plainFiles := ruleReportFiles(t, "alpha.csv", "beta.csv")
-	_, diags := ApplyAllChecks(context.Background(), cfg, plan, plainFiles, false)
+	_, diags := ApplyAllChecks(context.Background(), cfg, plan, plainFiles)
 	assertRuleDiags(t, diags, structs.DiagWarning, 0, "list-dead")
 
 	// Same rule, same plan, a package whose member lists are walked: now the
 	// silence above is the scope's, not a report that never fires.
-	_, diags = ApplyAllChecks(context.Background(), cfg, plan, ruleReportArchives(t), false)
+	_, diags = ApplyAllChecks(context.Background(), cfg, plan, ruleReportArchives(t))
 	assertRuleDiags(t, diags, structs.DiagWarning, 1, "list-dead")
 }
 
@@ -385,7 +385,7 @@ func TestRuleReportEmptyArchiveIsNotEvidence(t *testing.T) {
 		t.Fatalf("the fixture must hold no member at all, got %v", members)
 	}
 
-	_, diags := ApplyAllChecks(context.Background(), cfg, plan, []structs.File{archive}, false)
+	_, diags := ApplyAllChecks(context.Background(), cfg, plan, []structs.File{archive})
 	assertRuleDiags(t, diags, structs.DiagWarning, 0, "list-rule")
 }
 
@@ -423,7 +423,7 @@ func TestRuleReportArchiveMemberScopeStaysSilent(t *testing.T) {
 
 	// The contract: no member of either archive matches either rule, and the two
 	// never meet - so neither a dead-rule warning nor an overlap notice may appear.
-	_, diags := ApplyAllChecks(context.Background(), cfg, plan, ruleReportArchives(t), false)
+	_, diags := ApplyAllChecks(context.Background(), cfg, plan, ruleReportArchives(t))
 	assertRuleDiags(t, diags, structs.DiagWarning, 0, "member-nowhere")
 	assertRuleDiags(t, diags, structs.DiagWarning, 0, "member-elsewhere")
 	assertRuleDiags(t, diags, structs.DiagWarning, 0, "member-nowhere", "member-elsewhere")
@@ -524,7 +524,7 @@ func TestRuleReportArchiveFileListFold(t *testing.T) {
 	}
 	plan := compilePlan(t, cfg)
 
-	_, diags := ApplyAllChecks(context.Background(), cfg, plan, archives, false)
+	_, diags := ApplyAllChecks(context.Background(), cfg, plan, archives)
 
 	// Each rule was marked in one worker's buffer only; both must survive the join.
 	assertRuleDiags(t, diags, structs.DiagWarning, 0, "list-alpha")
