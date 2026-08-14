@@ -138,6 +138,25 @@ func assertRuleDiags(t *testing.T, diags []structs.Diagnostic, level structs.Dia
 	}
 }
 
+// assertNoDeadRule asserts that nothing accuses the named rule of having
+// matched no file, at ANY level: the claim is about the accusation, not about
+// how loudly it is made, so a level to filter on is one more thing the report
+// could move without this ever failing again. It cannot go through
+// assertRuleDiags either, because an overlap notice names BOTH rules of its pair
+// - a count by name alone would read a notice ABOUT the rule as an accusation
+// AGAINST it. deadRuleReason tells the two apart, and it is the producer's own
+// const so the two spellings cannot drift.
+func assertNoDeadRule(t *testing.T, diags []structs.Diagnostic, name string) {
+	t.Helper()
+	for _, diag := range diags {
+		// Quoted, the way the report spells a rule name, so "alpha" never matches
+		// an accusation against "alpha-two".
+		if strings.Contains(diag.Message, strconv.Quote(name)) && strings.Contains(diag.Message, deadRuleReason) {
+			t.Fatalf("rule %q must not be reported dead: %s", name, diag.Message)
+		}
+	}
+}
+
 // TestRuleReportDeadRuleWarnsOnce pins the dead-rule warning: a file-scope rule
 // whose include pattern selects none of the collected files is reported exactly
 // once, its sibling on the same check is not reported at all, and a rule that
@@ -157,7 +176,7 @@ func TestRuleReportDeadRuleWarnsOnce(t *testing.T) {
 	assertRuleDiags(t, diags, structs.DiagWarning, 1, "tar-only")
 	assertRuleDiags(t, diags, structs.DiagWarning, 0, "csv-only")
 	// The two rules never admitted the same file, so nothing may claim they did.
-	assertRuleDiags(t, diags, structs.DiagInfo, 0, "csv-only", "tar-only")
+	assertRuleDiags(t, diags, structs.DiagWarning, 0, "csv-only", "tar-only")
 }
 
 // TestRuleReportOverlapOnFilteredPath pins the overlap notice on the selection
@@ -181,9 +200,9 @@ func TestRuleReportOverlapOnFilteredPath(t *testing.T) {
 
 	_, diags := ApplyAllChecks(context.Background(), cfg, plan, files, false)
 
-	assertRuleDiags(t, diags, structs.DiagInfo, 1, "csv-rule", "alpha-rule")
-	assertRuleDiags(t, diags, structs.DiagWarning, 0, "csv-rule")
-	assertRuleDiags(t, diags, structs.DiagWarning, 0, "alpha-rule")
+	assertRuleDiags(t, diags, structs.DiagWarning, 1, "csv-rule", "alpha-rule")
+	assertNoDeadRule(t, diags, "csv-rule")
+	assertNoDeadRule(t, diags, "alpha-rule")
 }
 
 // TestRuleReportUnfilteredFastPathMarksEveryRule pins the OTHER branch of
@@ -228,11 +247,11 @@ func TestRuleReportUnfilteredFastPathMarksEveryRule(t *testing.T) {
 	}
 
 	_, diags := ApplyAllChecks(context.Background(), cfg, plan, files, false)
-	assertRuleDiags(t, diags, structs.DiagWarning, 0, "wide-one")
-	assertRuleDiags(t, diags, structs.DiagWarning, 0, "wide-two")
+	assertNoDeadRule(t, diags, "wide-one")
+	assertNoDeadRule(t, diags, "wide-two")
 	// Three files, one notice: the fast path records the pair for the pass, not
 	// for each file it skipped matching.
-	assertRuleDiags(t, diags, structs.DiagInfo, 1, "wide-one", "wide-two")
+	assertRuleDiags(t, diags, structs.DiagWarning, 1, "wide-one", "wide-two")
 }
 
 // TestRuleReportEmptyPackageStaysSilent pins both halves of the fast path's
@@ -260,7 +279,7 @@ func TestRuleReportEmptyPackageStaysSilent(t *testing.T) {
 
 	_, diags := ApplyAllChecks(context.Background(), cfg, plan, nil, true)
 
-	assertRuleDiags(t, diags, structs.DiagInfo, 0, "wide-one", "wide-two")
+	assertRuleDiags(t, diags, structs.DiagWarning, 0, "wide-one", "wide-two")
 	assertRuleDiags(t, diags, structs.DiagWarning, 0, "wide-one")
 	assertRuleDiags(t, diags, structs.DiagWarning, 0, "wide-two")
 }
@@ -407,7 +426,7 @@ func TestRuleReportArchiveMemberScopeStaysSilent(t *testing.T) {
 	_, diags := ApplyAllChecks(context.Background(), cfg, plan, ruleReportArchives(t), false)
 	assertRuleDiags(t, diags, structs.DiagWarning, 0, "member-nowhere")
 	assertRuleDiags(t, diags, structs.DiagWarning, 0, "member-elsewhere")
-	assertRuleDiags(t, diags, structs.DiagInfo, 0, "member-nowhere", "member-elsewhere")
+	assertRuleDiags(t, diags, structs.DiagWarning, 0, "member-nowhere", "member-elsewhere")
 }
 
 // TestRuleReportRepositoryScopeStaysSilent pins the scope the report
@@ -468,7 +487,7 @@ func TestRuleReportRepositoryScopeStaysSilent(t *testing.T) {
 	diags := append(sink.drain(), sink.rules.diagnostics()...)
 
 	assertRuleDiags(t, diags, structs.DiagWarning, 0, "readme-nowhere")
-	assertRuleDiags(t, diags, structs.DiagInfo, 0, "toc-one", "toc-two")
+	assertRuleDiags(t, diags, structs.DiagWarning, 0, "toc-one", "toc-two")
 
 	// The other half of the reason: narrowed to nothing, the rule still RAN and
 	// still reported - the finding a dead-rule warning would have contradicted.
@@ -513,7 +532,7 @@ func TestRuleReportArchiveFileListFold(t *testing.T) {
 	// The rule no member of either archive matches is still reported, once.
 	assertRuleDiags(t, diags, structs.DiagWarning, 1, "list-dead")
 	// Disjoint members: the two live rules never met on one file.
-	assertRuleDiags(t, diags, structs.DiagInfo, 0, "list-alpha", "list-beta")
+	assertRuleDiags(t, diags, structs.DiagWarning, 0, "list-alpha", "list-beta")
 }
 
 // TestRuleReportFoldAccumulatesAcrossArchives pins what the fold ACCUMULATES,
@@ -553,10 +572,10 @@ func TestRuleReportFoldAccumulatesAcrossArchives(t *testing.T) {
 	// exercised even though the second one proved nothing.
 	assertRuleDiags(t, diags, structs.DiagWarning, 1, "list-dead")
 	// The hits: alpha.txt admitted both live rules during the first walk.
-	assertRuleDiags(t, diags, structs.DiagWarning, 0, "list-alpha")
-	assertRuleDiags(t, diags, structs.DiagWarning, 0, "list-txt")
+	assertNoDeadRule(t, diags, "list-alpha")
+	assertNoDeadRule(t, diags, "list-txt")
 	// The pair: recorded on alpha.txt, in the first walk's buffer only.
-	assertRuleDiags(t, diags, structs.DiagInfo, 1, "list-alpha", "list-txt")
+	assertRuleDiags(t, diags, structs.DiagWarning, 1, "list-alpha", "list-txt")
 }
 
 // TestRuleReportLocalBuffersArePrivate pins the property the fold above RESTS on,

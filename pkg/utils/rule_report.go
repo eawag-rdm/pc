@@ -233,6 +233,12 @@ func (r *ruleReport) fold(scope checks.Scope, m *ruleMarks, exercised bool) {
 	r.mu.Unlock()
 }
 
+// deadRuleReason is the verdict half of the dead-rule warning. It is a const
+// because the tests assert the ABSENCE of that verdict: a second spelling over
+// there would stop matching the day this one is reworded, and the assertion
+// would pass for the wrong reason ever after.
+const deadRuleReason = "matched no file this run"
+
 // diagnostics returns the run's rule diagnostics, built through the same
 // constructor diagSink.add uses. They are RETURNED rather than pushed into the
 // sink: the report hangs off the sink, and a child writing back into its parent
@@ -268,7 +274,7 @@ func (r *ruleReport) diagnostics() []structs.Diagnostic {
 						// or a synthesized one inheriting another rule's
 						// selectors, so naming its own patterns would be wrong.
 						items = append(items, newDiagnosticAt(structs.DiagWarning, "",
-							fmt.Sprintf("rule %q of check %s (scope %s) matched no file this run", entry.rules[j].Rule, entry.def.Name, scope), stamp))
+							fmt.Sprintf("rule %q of check %s (scope %s) %s", entry.rules[j].Rule, entry.def.Name, scope, deadRuleReason), stamp))
 					}
 				}
 			}
@@ -289,11 +295,13 @@ func (r *ruleReport) diagnostics() []structs.Diagnostic {
 						// check) and hands that content to every matched rule, so
 						// what the overlap can duplicate is findings.
 						//
-						// DiagInfo reaches the server log only: the CLI's JSON
-						// formatter keeps error and warning and drops the rest
-						// (pkg/output/json/formatter.go), and every other CLI
-						// renderer is built from that JSON.
-						items = append(items, newDiagnosticAt(structs.DiagInfo, "",
+						// A WARNING because it is a verdict on the
+						// configuration and the operator is the one who can act
+						// on it: DiagWarning is the level the CLI renders - its
+						// JSON formatter keeps error and warning and drops the
+						// rest (pkg/output/json/formatter.go), and every other
+						// CLI renderer is built from that JSON.
+						items = append(items, newDiagnosticAt(structs.DiagWarning, "",
 							fmt.Sprintf("rules %q and %q of check %s (scope %s) both apply to the same file - it is read once, but both rules report on it", entry.rules[a].Rule, entry.rules[b].Rule, entry.def.Name, scope), stamp))
 					}
 				}

@@ -621,9 +621,9 @@ func noFilesNotice() structs.Message {
 // of them a finding: what happened to the SCAN (an archive whose file list could
 // not be read, a check that panicked), and - on a run that was not cancelled -
 // verdicts on the rule CONFIGURATION, namely a configured rule that matched no
-// file and two rules of one check that both applied to one file (this package's
-// first DiagInfo, which reaches the server log only). Only two of the four
-// scopes are reported that way; newRuleReport says why the other two cannot be.
+// file and two rules of one check that both applied to one file. Only two of
+// the four scopes are reported that way; newRuleReport says why the other two
+// cannot be.
 // pkg/utils no longer writes any of them to a process global. It is not yet the
 // run's whole set: pkg/readers, pkg/collectors and pkg/checks still emit through
 // output.GlobalLogger, so a caller wanting everything must drain that too -
