@@ -1,10 +1,161 @@
 package tui
 
 import (
-	"github.com/eawag-rdm/pc/pkg/output"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/eawag-rdm/pc/pkg/output"
 )
+
+// TestRulesPanelRendersRuleAttribution asserts the RENDERED details text after
+// switching to the Rules section, not the section index.
+//
+// An index-only assertion is worthless here: bumping the navigation bound in
+// navigateLeftPanelRight without wiring case 7 in switchToSelectedLeftPanel
+// leaves the section selectable, counted in the header bar, and still showing
+// the PREVIOUS panel's content. An index assertion passes against exactly that
+// broken state. Only reading detailsContent proves the rule data reaches the
+// screen.
+func TestRulesPanelRendersRuleAttribution(t *testing.T) {
+	data := &ScanResult{
+		Timestamp: "2024-01-14T10:30:00Z",
+		DetailsRuleFocused: []RuleDetails{
+			{
+				Rule:       "sensitive-content",
+				Checkname:  "IsFreeOfKeywords",
+				IssueCount: 2,
+				Subjects: []RuleSubject{
+					{Subject: "inner.txt", Path: "/path/archive.zip", ArchiveName: "archive.zip", IssueCount: 1},
+					{Subject: "config.yaml", Path: "/path/config.yaml", IssueCount: 1},
+				},
+			},
+		},
+	}
+
+	app := NewApp(data)
+
+	app.selectedLeftPanel = 7
+	app.switchToSelectedLeftPanel()
+
+	if app.currentView != "rules" {
+		t.Fatalf("Expected currentView 'rules' after switch, got %q", app.currentView)
+	}
+
+	rendered := app.detailsContent.GetText(true)
+
+	for _, want := range []string{
+		"Rule Issues (2)", // aggregate over the rules' IssueCount
+		"sensitive-content",
+		"IsFreeOfKeywords",
+		"archive.zip > inner.txt",
+		"config.yaml",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Errorf("Details content missing %q, got:\n%s", want, rendered)
+		}
+	}
+
+	// The navigation chip counts the section it switches to.
+	app.populateLeftSections()
+	if sections := app.leftSections.GetText(true); !strings.Contains(sections, "Rules (1)") {
+		t.Errorf("Left sections missing rule count, got:\n%s", sections)
+	}
+}
+
+// TestRulesPanelEmptyState pins the guard for a run without rule attribution:
+// the panel renders its own placeholder instead of an empty document.
+func TestRulesPanelEmptyState(t *testing.T) {
+	app := NewApp(&ScanResult{Timestamp: "2024-01-14T10:30:00Z"})
+
+	app.selectedLeftPanel = 7
+	app.switchToSelectedLeftPanel()
+
+	rendered := app.detailsContent.GetText(true)
+	if !strings.Contains(rendered, "No rule attribution") {
+		t.Errorf("Empty rule section missing placeholder, got:\n%s", rendered)
+	}
+
+	app.populateLeftSections()
+	if sections := app.leftSections.GetText(true); !strings.Contains(sections, "Rules (0)") {
+		t.Errorf("Left sections missing empty rule count, got:\n%s", sections)
+	}
+}
+
+// TestRulesSectionIsReachable pins the navigation bound: Metadata (6) was the
+// last section before Rules, so one step right must land on Rules (7) and a
+// further step must not move past it.
+func TestRulesSectionIsReachable(t *testing.T) {
+	app := NewApp(&ScanResult{
+		Timestamp: "2024-01-14T10:30:00Z",
+		DetailsRuleFocused: []RuleDetails{
+			{Rule: "sensitive-content", Checkname: "IsFreeOfKeywords", IssueCount: 1,
+				Subjects: []RuleSubject{{Subject: "config.yaml", IssueCount: 1}}},
+		},
+	})
+
+	app.selectedLeftPanel = 6 // Metadata, the last section before Rules
+	app.navigateLeftPanelRight()
+
+	if app.selectedLeftPanel != 7 {
+		t.Fatalf("Expected Rules section (7) after navigating right, got %d", app.selectedLeftPanel)
+	}
+
+	app.navigateLeftPanelRight()
+
+	if app.selectedLeftPanel != 7 {
+		t.Errorf("Navigation moved past the last section: got %d, want 7", app.selectedLeftPanel)
+	}
+}
+
+// TestSummaryOmitsRuleNames guards ONE artefact: the TUI's clipboard summary.
+//
+// That text is copied by a curator and sent to the DEPOSITOR — it is prefixed
+// by the configured summaryIntroText ("We have analyzed your data
+// package..."). Rule names are the operator's own configuration vocabulary
+// (internal grouping labels), so they are kept out of THAT text, no matter how
+// the rule section grows. This says nothing about the other outputs: the
+// server's analyze response deliberately carries details_rule_focused, by an
+// explicit operator decision that the section behaves like its two sibling
+// sections everywhere.
+func TestSummaryOmitsRuleNames(t *testing.T) {
+	const ruleName = "internal-only-rule-name"
+
+	data := &ScanResult{
+		Timestamp: "2024-01-14T10:30:00Z",
+		DetailsCheckFocused: []CheckDetails{
+			{
+				Checkname: "IsFreeOfKeywords",
+				Issues: []SubjectIssue{
+					{Subject: "config.yaml", Path: "/path/config.yaml", Message: "Found 'PASSWORD'"},
+				},
+			},
+		},
+		DetailsRuleFocused: []RuleDetails{
+			{
+				Rule:       ruleName,
+				Checkname:  "IsFreeOfKeywords",
+				IssueCount: 1,
+				Subjects: []RuleSubject{
+					{Subject: "config.yaml", Path: "/path/config.yaml", IssueCount: 1},
+				},
+			},
+		},
+	}
+
+	sg := NewSummaryGenerator(data, "my-package", "We have analyzed your data package.", 5, 3)
+	result := sg.Generate()
+
+	if strings.Contains(result, ruleName) {
+		t.Errorf("Depositor summary leaked rule name %q, got:\n%s", ruleName, result)
+	}
+
+	// Sanity: the summary really did render findings, so the check above is not
+	// passing on an empty document.
+	if !strings.Contains(result, "config.yaml") {
+		t.Fatalf("Summary rendered no findings, got:\n%s", result)
+	}
+}
 
 func TestNewApp(t *testing.T) {
 	// Create test data

@@ -94,6 +94,63 @@ func TestPlainFormatter_FormatResults_WithIssues(t *testing.T) {
 	}
 }
 
+// TestPlainFormatter_FormatResults_RuleBreakdown verifies the "Rules:" section:
+// findings are counted per configured rule rather than per check, findings
+// without a rule are not counted at all, and the lines are sorted.
+func TestPlainFormatter_FormatResults_RuleBreakdown(t *testing.T) {
+	formatter := NewPlainFormatter()
+
+	file1 := structs.File{Name: "test1.txt", Path: "/path/test1.txt"}
+	file2 := structs.File{Name: "test2.txt", Path: "/path/test2.txt"}
+
+	// Same check, different rules, fed in reverse-alphabetical order.
+	messages := []structs.Message{
+		{Content: "zeta issue 1", Source: file1, TestName: "IsFreeOfKeywords", Rule: "zeta-rule"},
+		{Content: "zeta issue 2", Source: file1, TestName: "IsFreeOfKeywords", Rule: "zeta-rule"},
+		{Content: "alpha issue", Source: file2, TestName: "IsFreeOfKeywords", Rule: "alpha-rule"},
+		{Content: "no rule issue", Source: file2, TestName: "IsFreeOfKeywords"},
+	}
+
+	result := formatter.FormatResults("test/path", messages, 4, nil)
+
+	if !strings.Contains(result, "\nRules:\n") {
+		t.Errorf("Expected a 'Rules:' section, got: %s", result)
+	}
+
+	// Two rules of the same check are counted separately.
+	if !strings.Contains(result, "• zeta-rule: 2") {
+		t.Errorf("Expected zeta-rule count of 2, got: %s", result)
+	}
+	if !strings.Contains(result, "• alpha-rule: 1") {
+		t.Errorf("Expected alpha-rule count of 1, got: %s", result)
+	}
+
+	// The rule-less message is excluded: the check total is 4, the rule
+	// lines account for only 3, and no empty rule line is rendered.
+	if !strings.Contains(result, "IsFreeOfKeywords: 4") {
+		t.Errorf("Expected all 4 issues counted for the check, got: %s", result)
+	}
+	if strings.Contains(result, "• : 1") {
+		t.Errorf("A rule-less message must not produce a rule line, got: %s", result)
+	}
+	if got := strings.Count(result, "-rule: "); got != 2 {
+		t.Errorf("Expected exactly 2 rule lines, got %d: %s", got, result)
+	}
+
+	// Rule lines are sorted, not input-ordered.
+	if strings.Index(result, "alpha-rule: 1") > strings.Index(result, "zeta-rule: 2") {
+		t.Errorf("Expected alpha-rule before zeta-rule, got: %s", result)
+	}
+
+	// No rule-carrying message means no heading.
+	withoutRules := formatter.FormatResults("test/path", []structs.Message{
+		{Content: "no rule issue", Source: file1, TestName: "IsFreeOfKeywords"},
+	}, 1, nil)
+	if strings.Contains(withoutRules, "Rules:") {
+		t.Errorf("Expected no 'Rules:' section without rule-carrying messages, got: %s", withoutRules)
+	}
+}
+
 func TestPlainFormatter_FormatResults_RepositoryIssues(t *testing.T) {
 	formatter := NewPlainFormatter()
 

@@ -501,6 +501,108 @@ func TestGenerateReport_ContentValidation(t *testing.T) {
 	}
 }
 
+type TestRuleSubject struct {
+	Subject     string `json:"subject"`
+	ArchiveName string `json:"archive_name,omitempty"`
+	IssueCount  int    `json:"issue_count"`
+}
+
+type TestRuleDetails struct {
+	Rule       string            `json:"rule"`
+	Checkname  string            `json:"checkname"`
+	IssueCount int               `json:"issue_count"`
+	Subjects   []TestRuleSubject `json:"subjects"`
+}
+
+type TestScanResultWithRules struct {
+	TestScanResult
+	DetailsRuleFocused []TestRuleDetails `json:"details_rule_focused"`
+}
+
+func TestGenerateReport_RulesSection(t *testing.T) {
+	timestamp := time.Now().UTC().Format(time.RFC3339)
+	tempDir := t.TempDir()
+	formatter := NewHTMLFormatter()
+
+	withRules := TestScanResultWithRules{
+		TestScanResult: TestScanResult{Timestamp: timestamp},
+		DetailsRuleFocused: []TestRuleDetails{
+			{
+				Rule:       "sensitive-content",
+				Checkname:  "IsFreeOfKeywords",
+				IssueCount: 2,
+				Subjects: []TestRuleSubject{
+					{Subject: "notes.txt", ArchiveName: "bundle.zip", IssueCount: 1},
+					{Subject: "readme.md", IssueCount: 1},
+				},
+			},
+		},
+	}
+
+	jsonData, err := json.Marshal(withRules)
+	if err != nil {
+		t.Fatalf("Failed to marshal rule-focused test data: %v", err)
+	}
+
+	rulesPath := filepath.Join(tempDir, "rules_report.html")
+	if err := formatter.GenerateReport(string(jsonData), rulesPath); err != nil {
+		t.Fatalf("GenerateReport failed with rule-focused data: %v", err)
+	}
+
+	content, err := os.ReadFile(rulesPath)
+	if err != nil {
+		t.Fatalf("Failed to read generated HTML file: %v", err)
+	}
+	htmlContent := string(content)
+
+	// Verify the embedded data carries the rule entry verbatim
+	if !strings.Contains(htmlContent, string(jsonData)) {
+		t.Error("Generated HTML does not embed the rule-focused scan data")
+	}
+
+	// Verify the rendering path for the Rules section exists
+	if !strings.Contains(htmlContent, "onclick=\"showAllDetails('rules')\"") {
+		t.Error("Generated HTML is missing the Rules navigation section")
+	}
+
+	if !strings.Contains(htmlContent, "populateRulesCount();") {
+		t.Error("Generated HTML never calls populateRulesCount()")
+	}
+
+	if !strings.Contains(htmlContent, "case 'rules':") {
+		t.Error("Generated HTML is missing the 'rules' case in showAllDetails")
+	}
+
+	// Reports without a details_rule_focused key must still render
+	withoutRules, err := json.Marshal(TestScanResult{Timestamp: timestamp})
+	if err != nil {
+		t.Fatalf("Failed to marshal rule-less test data: %v", err)
+	}
+
+	if strings.Contains(string(withoutRules), "details_rule_focused") {
+		t.Fatal("Rule-less fixture unexpectedly contains details_rule_focused")
+	}
+
+	noRulesPath := filepath.Join(tempDir, "no_rules_report.html")
+	if err := formatter.GenerateReport(string(withoutRules), noRulesPath); err != nil {
+		t.Fatalf("GenerateReport failed without rule-focused data: %v", err)
+	}
+
+	content, err = os.ReadFile(noRulesPath)
+	if err != nil {
+		t.Fatalf("Failed to read generated HTML file: %v", err)
+	}
+	htmlContent = string(content)
+
+	if !strings.Contains(htmlContent, "Package Checker Scanner Report") {
+		t.Error("Generated HTML without rule data is missing title")
+	}
+
+	if !strings.Contains(htmlContent, "onclick=\"showAllDetails('rules')\"") {
+		t.Error("Generated HTML without rule data is missing the Rules navigation section")
+	}
+}
+
 func TestGenerateReport_FilePermissions(t *testing.T) {
 	scanResult := TestScanResult{
 		Timestamp: time.Now().UTC().Format(time.RFC3339),

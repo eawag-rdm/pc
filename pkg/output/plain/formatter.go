@@ -2,6 +2,7 @@ package plain
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/eawag-rdm/pc/pkg/metadata"
@@ -144,6 +145,34 @@ func (f *PlainFormatter) FormatResults(location string, messages []structs.Messa
 		output.WriteString("\nIssue types:\n")
 		for checkName, count := range checkCounts {
 			output.WriteString(fmt.Sprintf("  • %s: %d\n", checkName, count))
+		}
+	}
+
+	// Rule breakdown: which CONFIGURED rule reported, as opposed to which check.
+	// A finding with no rule of its own is not counted - no rule name explains
+	// it. That covers metadata findings and the findings of synthesized default
+	// rules, neither of which is ever tagged; unlike the JSON section, this loop
+	// does not filter by source, so it relies on that tagging invariant.
+	ruleCounts := make(map[string]int)
+	for _, msg := range issueMessages {
+		if msg.Rule == "" {
+			continue
+		}
+		ruleCounts[msg.Rule]++
+	}
+
+	if len(ruleCounts) > 0 {
+		// Sorted, unlike the map-ordered block above: this section is compared
+		// in tests and read by humans across runs.
+		ruleNames := make([]string, 0, len(ruleCounts))
+		for ruleName := range ruleCounts {
+			ruleNames = append(ruleNames, ruleName)
+		}
+		sort.Strings(ruleNames)
+
+		output.WriteString("\nRules:\n")
+		for _, ruleName := range ruleNames {
+			output.WriteString(fmt.Sprintf("  • %s: %d\n", ruleName, ruleCounts[ruleName]))
 		}
 	}
 

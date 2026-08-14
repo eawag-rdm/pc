@@ -9,6 +9,7 @@ type ScanResult struct {
 	Skipped               []SkippedFile       `json:"skipped"`
 	DetailsSubjectFocused []SubjectDetails    `json:"details_subject_focused"`
 	DetailsCheckFocused   []CheckDetails      `json:"details_check_focused"`
+	DetailsRuleFocused    []RuleDetails       `json:"details_rule_focused"`
 	DetailsMetadata       []MetadataDetails   `json:"details_metadata"`
 	PDFFiles              []string            `json:"pdf_files"`
 	Errors                []output.LogMessage `json:"errors"`
@@ -53,7 +54,9 @@ func (sr *ScanResult) BuildCache() {
 		sr.checkIndex[check.Checkname] = check
 	}
 
-	// Calculate total issues once
+	// Calculate total issues once. The rule section is deliberately absent here:
+	// it re-groups findings already counted through Scanned + repository +
+	// metadata, so adding it would double-count every issue in the header.
 	sr.cachedTotalIssues = 0
 	for _, file := range sr.Scanned {
 		for _, issue := range file.Issues {
@@ -91,6 +94,24 @@ type SubjectDetails struct {
 type CheckDetails struct {
 	Checkname string         `json:"checkname"`
 	Issues    []SubjectIssue `json:"issues"`
+}
+
+// RuleSubject is one subject a rule flagged, with that subject's finding
+// count instead of the message text.
+type RuleSubject struct {
+	Subject     string `json:"subject"`
+	Path        string `json:"path"`
+	ArchiveName string `json:"archive_name,omitempty"` // Parent archive if file is inside archive
+	IssueCount  int    `json:"issue_count"`
+}
+
+// RuleDetails holds the findings of one configured rule. IssueCount equals
+// the sum of the subjects' counts.
+type RuleDetails struct {
+	Rule       string        `json:"rule"`
+	Checkname  string        `json:"checkname"`
+	IssueCount int           `json:"issue_count"`
+	Subjects   []RuleSubject `json:"subjects"`
 }
 
 // MetadataDetails holds the metadata-check findings for one entity

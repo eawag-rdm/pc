@@ -2,10 +2,60 @@ package tui
 
 import (
 	"encoding/json"
-	"github.com/eawag-rdm/pc/pkg/output"
 	"testing"
 	"time"
+
+	"github.com/eawag-rdm/pc/pkg/output"
+	jsonformatter "github.com/eawag-rdm/pc/pkg/output/json"
+	"github.com/eawag-rdm/pc/pkg/structs"
 )
+
+// TestScanResultDecodesRuleSectionFromFormatter is the ONLY compile-independent
+// link between the two copies of this schema: the TUI's ScanResult hand-mirrors
+// the JSON formatter's response types, and nothing but this test fails when the
+// two drift. Renaming details_rule_focused (or any key under it) on the
+// formatter side would otherwise leave the whole suite green while the TUI
+// silently rendered an empty Rules section in production.
+func TestScanResultDecodesRuleSectionFromFormatter(t *testing.T) {
+	file := structs.File{Name: "config.yaml", Path: "/path/config.yaml"}
+
+	messages := []structs.Message{
+		{Content: "Found 'PASSWORD'", Source: file, TestName: "IsFreeOfKeywords", Rule: "sensitive-content"},
+		{Content: "Found 'SECRET'", Source: file, TestName: "IsFreeOfKeywords", Rule: "sensitive-content"},
+	}
+
+	encoded, err := jsonformatter.NewJSONFormatter().FormatResults("test/path", "LocalCollector", messages, 1, nil, nil)
+	if err != nil {
+		t.Fatalf("FormatResults failed: %v", err)
+	}
+
+	var decoded ScanResult
+	if err := json.Unmarshal([]byte(encoded), &decoded); err != nil {
+		t.Fatalf("Failed to unmarshal formatter output into tui.ScanResult: %v", err)
+	}
+
+	if len(decoded.DetailsRuleFocused) != 1 {
+		t.Fatalf("Expected 1 rule entry, got %d, from:\n%s", len(decoded.DetailsRuleFocused), encoded)
+	}
+
+	rule := decoded.DetailsRuleFocused[0]
+	if rule.Rule != "sensitive-content" {
+		t.Errorf("Rule name mismatch: got %q, want sensitive-content", rule.Rule)
+	}
+	if rule.Checkname != "IsFreeOfKeywords" {
+		t.Errorf("Checkname mismatch: got %q, want IsFreeOfKeywords", rule.Checkname)
+	}
+	if rule.IssueCount != 2 {
+		t.Errorf("IssueCount mismatch: got %d, want 2", rule.IssueCount)
+	}
+
+	if len(rule.Subjects) != 1 {
+		t.Fatalf("Expected 1 rule subject, got %d, from:\n%s", len(rule.Subjects), encoded)
+	}
+	if rule.Subjects[0].Subject != "config.yaml" || rule.Subjects[0].IssueCount != 2 {
+		t.Errorf("Rule subject mismatch: got %+v, want config.yaml with 2 issues", rule.Subjects[0])
+	}
+}
 
 func TestScanResult_JSONSerialization(t *testing.T) {
 	// Test data
@@ -144,6 +194,65 @@ func TestSubjectDetails_Structure(t *testing.T) {
 
 	if len(subject.Issues) != 2 {
 		t.Errorf("Expected 2 issues, got %d", len(subject.Issues))
+	}
+}
+
+// TestRuleSectionDoesNotDoubleCountTotal pins the header total against the
+// rule section. DetailsRuleFocused is a re-grouping of findings already counted
+// through Scanned, the repository subject and DetailsMetadata, so adding its
+// counts to cachedTotalIssues would double every issue shown in the header.
+func TestRuleSectionDoesNotDoubleCountTotal(t *testing.T) {
+	base := func() ScanResult {
+		return ScanResult{
+			Timestamp: "2024-01-14T10:30:00Z",
+			Scanned: []ScannedFile{
+				{Filename: "config.yaml", Issues: []CheckSummary{{Checkname: "IsFreeOfKeywords", IssueCount: 2}}},
+			},
+			DetailsSubjectFocused: []SubjectDetails{
+				{Subject: "config.yaml", Path: "/path/config.yaml", Issues: []CheckIssue{
+					{Checkname: "IsFreeOfKeywords", Message: "Found 'PASSWORD'"},
+					{Checkname: "IsFreeOfKeywords", Message: "Found 'SECRET'"},
+				}},
+				{Subject: "repository", Issues: []CheckIssue{{Checkname: "HasReadme", Message: "No README"}}},
+			},
+			DetailsMetadata: []MetadataDetails{
+				{Kind: "package", Name: "my-package", Issues: []CheckIssue{{Checkname: "MetadataCheck", Message: "Missing author"}}},
+			},
+		}
+	}
+
+	withoutRules := base()
+	withoutRules.BuildCache()
+
+	withRules := base()
+	// Same findings, only re-grouped by the rule that produced them.
+	withRules.DetailsRuleFocused = []RuleDetails{
+		{
+			Rule:       "sensitive-content",
+			Checkname:  "IsFreeOfKeywords",
+			IssueCount: 2,
+			Subjects: []RuleSubject{
+				{Subject: "config.yaml", Path: "/path/config.yaml", IssueCount: 2},
+			},
+		},
+		{
+			Rule:       "documentation",
+			Checkname:  "HasReadme",
+			IssueCount: 1,
+			Subjects: []RuleSubject{
+				{Subject: "repository", IssueCount: 1},
+			},
+		},
+	}
+	withRules.BuildCache()
+
+	if withRules.cachedTotalIssues != withoutRules.cachedTotalIssues {
+		t.Errorf("Rule section changed the header total: got %d, want %d",
+			withRules.cachedTotalIssues, withoutRules.cachedTotalIssues)
+	}
+
+	if withoutRules.cachedTotalIssues != 4 {
+		t.Errorf("Baseline total mismatch: got %d, want 4", withoutRules.cachedTotalIssues)
 	}
 }
 

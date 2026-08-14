@@ -29,6 +29,12 @@ func copyToClipboardOSC52(text string) error {
 	return err
 }
 
+// leftPanelSections are the navigation sections in index order. The bound in
+// navigateLeftPanelRight and the switch in switchToSelectedLeftPanel are
+// keyed by these indices, so a section is added here and there, never in one
+// place alone.
+var leftPanelSections = []string{"Subjects", "Checks", "PDFs", "Skipped", "Warnings", "Errors", "Metadata", "Rules"}
+
 type App struct {
 	app                              *tview.Application
 	data                             *ScanResult
@@ -83,6 +89,7 @@ func NewScanningApp() *App {
 		Skipped:               []SkippedFile{},
 		DetailsSubjectFocused: []SubjectDetails{},
 		DetailsCheckFocused:   []CheckDetails{},
+		DetailsRuleFocused:    []RuleDetails{},
 		DetailsMetadata:       []MetadataDetails{},
 		PDFFiles:              []string{},
 		Errors:                []output.LogMessage{},
@@ -513,10 +520,9 @@ func (a *App) formatSectionsResponsive(sectionTexts []string) (string, int) {
 }
 
 func (a *App) populateLeftSections() {
-	sections := []string{"Subjects", "Checks", "PDFs", "Skipped", "Warnings", "Errors", "Metadata"}
 	var sectionTexts []string
 
-	for i, section := range sections {
+	for i, section := range leftPanelSections {
 		var count int
 		switch i {
 		case 0: // Subjects
@@ -537,6 +543,8 @@ func (a *App) populateLeftSections() {
 			count = len(a.data.Errors)
 		case 6: // Metadata
 			count = len(a.data.DetailsMetadata)
+		case 7: // Rules
+			count = len(a.data.DetailsRuleFocused)
 		}
 
 		var sectionText string
@@ -704,7 +712,7 @@ func (a *App) navigateLeftPanelLeft() {
 }
 
 func (a *App) navigateLeftPanelRight() {
-	if a.selectedLeftPanel < 6 { // 7 categories (0-6)
+	if a.selectedLeftPanel < len(leftPanelSections)-1 {
 		a.selectedLeftPanel++
 		a.populateLeftSections()
 		a.switchToSelectedLeftPanel()
@@ -768,6 +776,13 @@ func (a *App) switchToSelectedLeftPanel() {
 		a.currentView = "metadata"
 		a.showEmptyLeftPanel("Metadata")
 		a.showMetadataDetails()
+		a.app.SetFocus(a.detailsContent)
+		a.detailsContent.SetBorderColor(tcell.ColorGreen)
+
+	case 7: // Rules
+		a.currentView = "rules"
+		a.showEmptyLeftPanel("Rules")
+		a.showRulesDetails()
 		a.app.SetFocus(a.detailsContent)
 		a.detailsContent.SetBorderColor(tcell.ColorGreen)
 	}
@@ -876,6 +891,42 @@ func (a *App) getMetadataContent() string {
 			sb.WriteString("   ")
 			sb.WriteString(issue.Message)
 			sb.WriteString("\n")
+		}
+	}
+	return sb.String()
+}
+
+func (a *App) showRulesDetails() {
+	a.detailsContent.SetText(a.getRulesContent())
+}
+
+func (a *App) getRulesContent() string {
+	if len(a.data.DetailsRuleFocused) == 0 {
+		return "[dim]No rule attribution[white]"
+	}
+
+	total := 0
+	subjects := 0
+	for _, rule := range a.data.DetailsRuleFocused {
+		total += rule.IssueCount
+		subjects += len(rule.Subjects)
+	}
+
+	var sb strings.Builder
+	sb.Grow(64 + len(a.data.DetailsRuleFocused)*80 + subjects*100)
+	sb.WriteString(fmt.Sprintf("[yellow]Rule Issues (%d):[white]\n", total))
+
+	for _, rule := range a.data.DetailsRuleFocused {
+		sb.WriteString(fmt.Sprintf("\n[green]%s (%d)[white]\n", rule.Rule, rule.IssueCount))
+		sb.WriteString("[dim]Check: ")
+		sb.WriteString(rule.Checkname)
+		sb.WriteString("[white]\n")
+		for i, subject := range rule.Subjects {
+			name := subject.Subject
+			if subject.ArchiveName != "" {
+				name = subject.ArchiveName + " > " + subject.Subject
+			}
+			sb.WriteString(fmt.Sprintf("[cyan]%d.[white] %s [dim](%d)[white]\n", i+1, name, subject.IssueCount))
 		}
 	}
 	return sb.String()

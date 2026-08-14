@@ -448,6 +448,13 @@ const htmlTemplate = `<!DOCTYPE html>
                 </div>
 
                 <div class="nav-section">
+                    <div class="nav-section-header" onclick="showAllDetails('rules')" id="rules-header">
+                        <span>Rules</span>
+                        <span class="nav-section-count" id="rules-count">0</span>
+                    </div>
+                </div>
+
+                <div class="nav-section">
                     <div class="nav-section-header" onclick="showAllDetails('pdfs')" id="pdfs-header">
                         <span>PDF Files</span>
                         <span class="nav-section-count" id="pdfs-count">0</span>
@@ -716,6 +723,12 @@ const htmlTemplate = `<!DOCTYPE html>
                     html = generateAllMetadataDetails();
                     break;
 
+                case 'rules':
+                    title = 'Rules';
+                    subtitle = getRulesEntityCount() + ' rules, ' + getRulesIssueCount() + ' issues';
+                    html = generateAllRulesDetails();
+                    break;
+
                 case 'pdfs':
                     title = 'PDF Files';
                     subtitle = scanData.pdf_files ? scanData.pdf_files.length + ' files' : '0 files';
@@ -794,6 +807,7 @@ const htmlTemplate = `<!DOCTYPE html>
             populateSubjectsNav();
             populateChecksNav();
             populateMetadataCount();
+            populateRulesCount();
             populatePDFsCount();
             populateSkippedCount();
             populateWarningsCount();
@@ -1033,6 +1047,50 @@ const htmlTemplate = `<!DOCTYPE html>
                 });
             } else {
                 html = '<div class="detail-item"><div class="detail-content">No metadata issues found.</div></div>';
+            }
+            return html;
+        }
+
+        // Rules section
+        function populateRulesCount() {
+            const countElement = document.getElementById('rules-count');
+            countElement.textContent = scanData.details_rule_focused ? scanData.details_rule_focused.length : '0';
+        }
+
+        function getRulesEntityCount() {
+            return scanData.details_rule_focused ? scanData.details_rule_focused.length : 0;
+        }
+
+        function getRulesIssueCount() {
+            let total = 0;
+            if (scanData.details_rule_focused) {
+                scanData.details_rule_focused.forEach(rule => {
+                    total += rule.issue_count ? rule.issue_count : 0;
+                });
+            }
+            return total;
+        }
+
+        function generateAllRulesDetails() {
+            let html = '';
+            if (scanData.details_rule_focused && scanData.details_rule_focused.length > 0) {
+                scanData.details_rule_focused.forEach(rule => {
+                    html += '<div class="detail-item">';
+                    html += '<div class="detail-header">' + escapeHtml(rule.rule) + '</div>';
+                    html += '<div class="detail-path">' + escapeHtml(rule.checkname) + '</div>';
+                    html += '<div class="detail-content">' + (rule.issue_count ? rule.issue_count : 0) + ' issues</div>';
+                    if (rule.subjects && rule.subjects.length > 0) {
+                        rule.subjects.forEach(subject => {
+                            const label = subject.archive_name ? subject.archive_name + ' > ' + subject.subject : subject.subject;
+                            html += '<div class="detail-content">' + escapeHtml(label) + ' (' + (subject.issue_count ? subject.issue_count : 0) + ')</div>';
+                        });
+                    } else {
+                        html += '<div class="detail-content">No subjects.</div>';
+                    }
+                    html += '</div>';
+                });
+            } else {
+                html = '<div class="detail-item"><div class="detail-content">No rule issues found.</div></div>';
             }
             return html;
         }
