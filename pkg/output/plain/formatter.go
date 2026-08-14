@@ -16,8 +16,11 @@ func NewPlainFormatter() *PlainFormatter {
 	return &PlainFormatter{}
 }
 
-// FormatResults formats scan results as a concise plain text summary
-func (f *PlainFormatter) FormatResults(location string, collectorName string, messages []structs.Message, totalFiles int, pdfFiles []string) string {
+// FormatResults formats scan results as a concise plain text summary.
+// Diagnostics are rendered as a trailing section, one line each: this is
+// the terse surface, so a diagnostic gets its level, its subject when it
+// has one, and its message - nothing more.
+func (f *PlainFormatter) FormatResults(location string, messages []structs.Message, totalFiles int, diagnostics []structs.Diagnostic) string {
 	var output strings.Builder
 
 	// Header
@@ -42,6 +45,7 @@ func (f *PlainFormatter) FormatResults(location string, collectorName string, me
 	if len(issueMessages) == 0 {
 		output.WriteString("\n✅ No issues found!\n")
 		writeSkippedSection(&output, skippedFiles)
+		writeDiagnosticsSection(&output, diagnostics)
 		return output.String()
 	}
 
@@ -144,6 +148,7 @@ func (f *PlainFormatter) FormatResults(location string, collectorName string, me
 	}
 
 	writeSkippedSection(&output, skippedFiles)
+	writeDiagnosticsSection(&output, diagnostics)
 
 	return output.String()
 }
@@ -169,5 +174,34 @@ func writeSkippedSection(output *strings.Builder, skippedFiles []structs.Message
 			reason = msg.Content
 		}
 		output.WriteString(fmt.Sprintf("  • %s: %s\n", name, reason))
+	}
+}
+
+// writeDiagnosticsSection renders the run's operator-facing diagnostics.
+// Errors come before warnings so the worst news reads first. Info is
+// dropped deliberately, matching the JSON formatter's error/warning split
+// (pkg/output/json/formatter.go), and so is any unrecognised level: an
+// info-only run renders no section at all, not an empty heading.
+func writeDiagnosticsSection(output *strings.Builder, diagnostics []structs.Diagnostic) {
+	rendered := false
+	for _, level := range []structs.DiagLevel{structs.DiagError, structs.DiagWarning} {
+		prefix := "  ERROR   "
+		if level == structs.DiagWarning {
+			prefix = "  WARNING "
+		}
+		for _, d := range diagnostics {
+			if d.Level != level {
+				continue
+			}
+			if !rendered {
+				output.WriteString("\n=== Diagnostics ===\n")
+				rendered = true
+			}
+			if d.Subject != "" {
+				fmt.Fprintf(output, "%s%s: %s\n", prefix, d.Subject, d.Message)
+				continue
+			}
+			fmt.Fprintf(output, "%s%s\n", prefix, d.Message)
+		}
 	}
 }

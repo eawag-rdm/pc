@@ -485,7 +485,8 @@ func (h *Handler) runAnalysis(ctx context.Context, packageID, token string) (bod
 	// buffer having been cleared in time. Then any remaining absolute FileStore
 	// paths are blanked from the outgoing messages. The CLI shares none of this:
 	// its JSON, HTML and TUI outputs render the same diagnostics with full paths
-	// (--plain renders none at all).
+	// (--plain renders errors and warnings; info-level diagnostics reach no CLI
+	// surface at all).
 	messages = append(messages, h.convertScanDiagnostics(ctx, packageID, res.Diagnostics)...)
 	scrubMessagePaths(messages)
 

@@ -290,7 +290,7 @@ func main() {
 			fmt.Println(jsonResult)
 		} else if *plainOutput {
 			plainFormatter := plainformatter.NewPlainFormatter()
-			plainResult := plainFormatter.FormatResults(*folder_or_url, collectorName, res.Messages, len(files), helpers.PDFTracker.SnapshotFiles())
+			plainResult := plainFormatter.FormatResults(*folder_or_url, res.Messages, len(files), res.Diagnostics)
 			fmt.Print(plainResult)
 		}
 		// If only --no-tui (with or without --html), no stdout output beyond HTML message

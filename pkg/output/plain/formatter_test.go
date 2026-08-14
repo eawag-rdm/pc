@@ -10,7 +10,7 @@ import (
 func TestPlainFormatter_FormatResults_NoIssues(t *testing.T) {
 	formatter := NewPlainFormatter()
 
-	result := formatter.FormatResults("test/path", "LocalCollector", []structs.Message{}, 5, []string{})
+	result := formatter.FormatResults("test/path", []structs.Message{}, 5, nil)
 
 	if !strings.Contains(result, "✅ No issues found!") {
 		t.Errorf("Expected no issues message, got: %s", result)
@@ -45,7 +45,7 @@ func TestPlainFormatter_FormatResults_WithIssues(t *testing.T) {
 		},
 	}
 
-	result := formatter.FormatResults("test/path", "LocalCollector", messages, 10, []string{})
+	result := formatter.FormatResults("test/path", messages, 10, nil)
 
 	// Check header
 	if !strings.Contains(result, "=== PC Scan Results ===") {
@@ -107,7 +107,7 @@ func TestPlainFormatter_FormatResults_RepositoryIssues(t *testing.T) {
 		},
 	}
 
-	result := formatter.FormatResults("test/path", "LocalCollector", messages, 5, []string{})
+	result := formatter.FormatResults("test/path", messages, 5, nil)
 
 	// Check repository section
 	if !strings.Contains(result, "📁 Repository Issues:") {
@@ -138,7 +138,7 @@ func TestPlainFormatter_FormatResults_SkippedOnly(t *testing.T) {
 		},
 	}
 
-	result := formatter.FormatResults("test/path", "LocalCollector", messages, 1, []string{})
+	result := formatter.FormatResults("test/path", messages, 1, nil)
 
 	// Skip-only input must not be reported as issues.
 	if !strings.Contains(result, "✅ No issues found!") {
@@ -175,7 +175,7 @@ func TestPlainFormatter_FormatResults_SkipDoesNotInflateIssues(t *testing.T) {
 		{Content: "Found keyword 'secret'", Source: ok, TestName: "IsFreeOfKeywords"},
 	}
 
-	result := formatter.FormatResults("test/path", "LocalCollector", messages, 2, []string{})
+	result := formatter.FormatResults("test/path", messages, 2, nil)
 
 	if !strings.Contains(result, "❌ Found 1 issues in 1 files") {
 		t.Errorf("Expected exactly 1 counted issue, got: %s", result)
@@ -188,5 +188,83 @@ func TestPlainFormatter_FormatResults_SkipDoesNotInflateIssues(t *testing.T) {
 	}
 	if !strings.Contains(result, "Skipped files (1)") {
 		t.Errorf("Expected skipped file to appear in skipped section, got: %s", result)
+	}
+}
+
+// TestPlainFormatter_FormatResults_Diagnostics verifies the trailing
+// diagnostics section: errors and warnings are rendered with their level and
+// optional subject, info is not, and no diagnostics means no section.
+func TestPlainFormatter_FormatResults_Diagnostics(t *testing.T) {
+	formatter := NewPlainFormatter()
+
+	file := structs.File{Name: "ok.txt", Path: "/path/ok.txt"}
+	messages := []structs.Message{
+		{Content: "Found keyword 'secret'", Source: file, TestName: "IsFreeOfKeywords"},
+	}
+	diagnostics := []structs.Diagnostic{
+		{Level: structs.DiagWarning, Message: "rule matched no file"},
+		{Level: structs.DiagError, Message: "archive unreadable", Subject: "broken.zip"},
+		{Level: structs.DiagInfo, Message: "info diagnostic text"},
+	}
+
+	result := formatter.FormatResults("test/path", messages, 1, diagnostics)
+
+	if !strings.Contains(result, "=== Diagnostics ===") {
+		t.Errorf("Expected diagnostics section, got: %s", result)
+	}
+	if !strings.Contains(result, "ERROR   broken.zip: archive unreadable") {
+		t.Errorf("Expected error diagnostic with subject, got: %s", result)
+	}
+	if !strings.Contains(result, "WARNING rule matched no file") {
+		t.Errorf("Expected warning diagnostic, got: %s", result)
+	}
+	if strings.Contains(result, "info diagnostic text") {
+		t.Errorf("Info diagnostics must not be rendered, got: %s", result)
+	}
+
+	// Errors sort before warnings regardless of input order (the slice above is
+	// warning-first).
+	if strings.Index(result, "archive unreadable") > strings.Index(result, "rule matched no file") {
+		t.Errorf("Expected error diagnostic before warning diagnostic, got: %s", result)
+	}
+
+	// A diagnostic with a subject renders exactly one line, not one per branch.
+	if got := strings.Count(result, "archive unreadable"); got != 1 {
+		t.Errorf("Expected subject diagnostic rendered once, rendered %d times: %s", got, result)
+	}
+
+	withoutDiagnostics := formatter.FormatResults("test/path", messages, 1, nil)
+	if strings.Contains(withoutDiagnostics, "=== Diagnostics ===") {
+		t.Errorf("Expected no diagnostics section without diagnostics, got: %s", withoutDiagnostics)
+	}
+
+	infoOnly := formatter.FormatResults("test/path", messages, 1, []structs.Diagnostic{
+		{Level: structs.DiagInfo, Message: "info diagnostic text"},
+	})
+	if strings.Contains(infoOnly, "=== Diagnostics ===") {
+		t.Errorf("Expected no diagnostics section for info-only diagnostics, got: %s", infoOnly)
+	}
+}
+
+// TestPlainFormatter_FormatResults_DiagnosticsOnCleanRun verifies that a run
+// without any issue Messages still reports its diagnostics: "No issues found"
+// must not be the whole story when a diagnostic says otherwise.
+func TestPlainFormatter_FormatResults_DiagnosticsOnCleanRun(t *testing.T) {
+	formatter := NewPlainFormatter()
+
+	diagnostics := []structs.Diagnostic{
+		{Level: structs.DiagWarning, Message: "rule matched no file", Subject: "IsFreeOfKeywords"},
+	}
+
+	result := formatter.FormatResults("test/path", nil, 3, diagnostics)
+
+	if !strings.Contains(result, "No issues found") {
+		t.Errorf("Expected 'No issues found' for message-free input, got: %s", result)
+	}
+	if !strings.Contains(result, "=== Diagnostics ===") {
+		t.Errorf("Expected diagnostics section on a clean run, got: %s", result)
+	}
+	if !strings.Contains(result, "WARNING IsFreeOfKeywords: rule matched no file") {
+		t.Errorf("Expected warning diagnostic on a clean run, got: %s", result)
 	}
 }
