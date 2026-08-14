@@ -193,6 +193,34 @@ func TestCompileAggregatesLoadErrors(t *testing.T) {
 	}
 }
 
+// TestCompileReportsTwinsWithSiblingFaults is the same contract one level down,
+// where a check's own rules are assembled: a twin - two rules of one check that
+// differ only in their name - does not take the check's remaining rules out of
+// the load, so a sibling's fault is reported in the SAME run rather than on the
+// day the twin is removed and the load rerun. Only Compile can show it: the
+// sibling's fault here is its selector's, and selectors are compiled here.
+func TestCompileReportsTwinsWithSiblingFaults(t *testing.T) {
+	cfg := planConfig(nil)
+	cfg.Rules = []config.RuleSpec{
+		asciiRule("ascii-a", []string{"file"}, `\.csv$`),
+		asciiRule("ascii-b", []string{"file"}, `\.csv$`),
+		asciiRule("ascii-bad", []string{"file"}, "("),
+	}
+	cfg = withRequiredAnchors(cfg)
+	_, err := Compile(&cfg, checks.NewRegistry())
+	if err == nil {
+		t.Fatal("a twin rule and an uncompilable pattern must both refuse the load")
+	}
+	for _, want := range []string{
+		`rule "ascii-b": resolves to the same rule as "ascii-a"`,
+		`selector for rule "ascii-bad"`,
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the aggregate must report %q alongside the check's other fault: %v", want, err)
+		}
+	}
+}
+
 // TestCompileSynthesizesDefaultRules is the guard against silently deleting a
 // check no [test.X] section names: the shipped configs leave ReadMeContainsTOC
 // (and, in testdata, three name checks) section-less. It asserts the BOUND

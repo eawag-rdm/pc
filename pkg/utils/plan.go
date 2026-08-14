@@ -155,19 +155,14 @@ func Compile(cfg *config.Config, reg checks.Registry) (*Plan, error) {
 	return plan, nil
 }
 
-// ruleScopes resolves the scopes a rule serves: the ones it names, or the
-// check's own when it names none. A scope the check does not support is a load
-// error, and so is a scope named twice - the rule would be added to that
-// scope's plan twice, doubling its findings.
+// ruleScopes resolves the scopes a rule serves: the ones it names, or - through
+// checks.DefaultScopes, so the plan and the load's duplicate refusal read an
+// undeclared scope the same way - the check's own when it names none. A scope
+// the check does not support is a load error, and so is a scope named twice -
+// the rule would be added to that scope's plan twice, doubling its findings.
 func ruleScopes(spec config.RuleSpec, def checks.CheckDef) ([]checks.Scope, error) {
 	if len(spec.Scope) == 0 {
-		var scopes []checks.Scope
-		for scope := checks.Scope(0); scope < checks.NumScopes; scope++ {
-			if def.Scopes.Has(scope) {
-				scopes = append(scopes, scope)
-			}
-		}
-		return scopes, nil
+		return checks.DefaultScopes(def), nil
 	}
 	scopes := make([]checks.Scope, 0, len(spec.Scope))
 	for _, name := range spec.Scope {

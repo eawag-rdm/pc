@@ -3,6 +3,7 @@ package checks
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"regexp"
 	"slices"
 	"sort"
@@ -39,7 +40,9 @@ func AnchoredChecks() []string {
 // section, else - anchoredChecks excepted - a synthesized default rule with an
 // empty selector and the parameters its own Bind produces for the zero spec;
 // without that, assembly would silently delete every check no config names.
-// Errors are aggregated into one joined error, not short-circuited.
+// Two rules of one check that differ only in their name are refused as well -
+// see duplicateRuleErrors. Errors are aggregated into one joined error, not
+// short-circuited.
 func RuleSpecs(cfg *config.Config, reg Registry) ([]config.RuleSpec, error) {
 	var errs []error
 	byCheck := make(map[string][]config.RuleSpec, len(cfg.Rules))
@@ -78,6 +81,10 @@ func RuleSpecs(cfg *config.Config, reg Registry) ([]config.RuleSpec, error) {
 				errs = append(errs, fmt.Errorf("check %q allows exactly one rule (it defines what counts as the readme), got %d", def.Name, len(rules)))
 				continue
 			}
+			// The twins are assembled anyway: the joined error fails the load
+			// either way, and dropping the check's remaining rules here would
+			// hide their faults until the twin is removed and the load rerun.
+			errs = append(errs, duplicateRuleErrors(rules, def)...)
 			specs = append(specs, rules...)
 		case section != nil:
 			specs = append(specs, legacySectionSpec(def.Name, section))
@@ -92,6 +99,186 @@ func RuleSpecs(cfg *config.Config, reg Registry) ([]config.RuleSpec, error) {
 	}
 	errs = append(errs, shareReadmeNames(specs, tocSynthesized)...)
 	return specs, errors.Join(errs...)
+}
+
+// duplicateRuleErrors refuses a check's rules that differ ONLY in their name:
+// the config says one thing twice and every finding the pair produces is
+// reported twice. The comparison is SYNTACTIC, over identity keys, so what it
+// catches is one rule written twice UP TO SPELLING - ruleIdentityOf resolves
+// the no-op spellings (an empty list against an omitted one, scope order, the
+// subject default) and nothing further. A pair made distinct by a field that
+// does no work here (ignoreCase with no pattern to fold, a subject with no
+// pattern to read it from) or by a pattern that matches nothing passes it and
+// still reports every finding twice; that is the run-scoped rule-overlap
+// notice's subject (pkg/utils/rule_report.go), which judges what the rules
+// actually matched.
+//
+// It runs on the DECLARED specs, before shareReadmeNames rewrites params,
+// provenance and (for a synthesized TOC) selectors - a comparison after that
+// would judge normalization output rather than what the operator wrote. Each
+// twin is reported against the FIRST rule it repeats, so N copies name one
+// original.
+//
+// Disabled rules are compared too: a disabled twin does no work today, but
+// this is config hygiene, and Compile already validates disabled rules
+// deliberately, so a config the checks cannot honour fails at load rather than
+// on the day someone re-enables it.
+func duplicateRuleErrors(rules []config.RuleSpec, def CheckDef) []error {
+	identities := make([]ruleIdentity, len(rules))
+	for i, rule := range rules {
+		identities[i] = ruleIdentityOf(rule, def)
+	}
+	var errs []error
+	for j := 1; j < len(identities); j++ {
+		for i := 0; i < j; i++ {
+			if reflect.DeepEqual(identities[i], identities[j]) {
+				errs = append(errs, fmt.Errorf("rule %q: resolves to the same rule as %q; remove one", rules[j].Name, rules[i].Name))
+				break
+			}
+		}
+	}
+	return errs
+}
+
+// ruleIdentity is what makes two rules of one check the SAME rule: every
+// declared field that does work, under the readings the rest of the load gives
+// it. Name is not among them - it is the one field a twin may differ in, and
+// leaving it out is the whole statement of that. The key is EXPLICIT rather
+// than the whole config.RuleSpec so that a field added in pkg/config joins the
+// identity relation only when someone decides it belongs here.
+type ruleIdentity struct {
+	Check      string
+	Scope      []string // resolved and sorted: a set, not a declaration order
+	Enabled    bool
+	IgnoreCase bool
+	Legacy     bool
+	Include    []string
+	Exclude    []string
+	Params     []map[string]interface{}
+	Attrs      map[string]interface{}
+
+	// NameSubject and PathSubject are the rule's subject reading per scope
+	// CLASS, the two readings CompileRuleSelectors compiles, and each is set
+	// only where the rule's scopes contain a scope that reads it. A check
+	// serving both classes - IsFreeOfKeywords, over files AND archive members -
+	// therefore carries two readings, and two of its rules are the same rule
+	// only where they agree on both: an undeclared subject and a spelled-out
+	// subject = "path" are one rule at the archive-member scope and two
+	// different ones at the file scope, where the first gates on the base name
+	// and the second on the path. Neither reading describes a LEGACY spec: that
+	// one compiles through legacyRuleSelectors, which reads no declared subject
+	// at all.
+	NameSubject string
+	PathSubject string
+}
+
+// ruleIdentityOf reads one declared spec into its identity key, so a comparison
+// sees what a rule DOES rather than how it was spelled. Three no-op config
+// edits that would evade a raw compare are resolved:
+//
+//  1. Empty against nil: an omitted key decodes to nil, a declared empty list
+//     (include = [], params = []) to a non-nil empty value, so the two are one
+//     filter in two shapes. Only a non-empty value enters the key. An empty
+//     [rule.params] TABLE is not one of these shapes - it decodes to ONE empty
+//     parameter set, which every check but the secret scan refuses at bind -
+//     and is therefore kept as declared.
+//  2. Scope: an omitted (or empty) scope resolves through DefaultScopes, the
+//     resolution utils.Compile plans by, so scope = [] and a spelled-out list
+//     of every supported scope are one set. The names are sorted either way -
+//     declaration order is no part of the meaning.
+//  3. Subject: one reading per scope class, over the same scope switch
+//     CompileRuleSelectors compiles by - see ruleIdentity.
+func ruleIdentityOf(spec config.RuleSpec, def CheckDef) ruleIdentity {
+	id := ruleIdentity{
+		Check:      spec.Check,
+		Enabled:    spec.Enabled,
+		IgnoreCase: spec.IgnoreCase,
+		Legacy:     spec.Legacy,
+	}
+	if len(spec.Include) > 0 {
+		id.Include = spec.Include
+	}
+	if len(spec.Exclude) > 0 {
+		id.Exclude = spec.Exclude
+	}
+	if len(spec.Params) > 0 {
+		id.Params = spec.Params
+	}
+	// Only the legacy surface fills Attrs, and it becomes one spec per section:
+	// this arm guards hand-built specs, which the exported RuleSpecs admits.
+	if len(spec.Attrs) > 0 {
+		id.Attrs = spec.Attrs
+	}
+	scopes := DefaultScopes(def)
+	names := make([]string, 0, NumScopes)
+	if len(spec.Scope) == 0 {
+		for _, scope := range scopes {
+			names = append(names, scope.String())
+		}
+	} else {
+		names = append(names, spec.Scope...) // never sort the caller's slice
+		scopes = make([]Scope, 0, len(spec.Scope))
+		for _, name := range spec.Scope {
+			// A name no scope answers to is Compile's error to report; here it
+			// is simply a scope no subject can be read from.
+			if scope, err := ParseScope(name); err == nil {
+				scopes = append(scopes, scope)
+			}
+		}
+	}
+	sort.Strings(names)
+	id.Scope = names
+	// The scopes are walked over the same switch CompileRuleSelectors compiles
+	// by, so the key records the reading each of them is actually gated on.
+	declared, resolved := declaredSubject(spec), resolvedSubject(spec, scopes)
+	for _, scope := range scopes {
+		switch scope {
+		case ScopeArchiveMember, ScopeRepository:
+			id.PathSubject = resolved
+		default:
+			id.NameSubject = declared
+		}
+	}
+	return id
+}
+
+// DefaultScopes returns the scopes a rule serves when it declares none: the
+// check's own, in dispatch order. It is the ONE statement of that default -
+// utils.Compile resolves a rule's scopes through it and the duplicate refusal
+// normalizes through it - so the plan and the refusal cannot come to disagree
+// about what an undeclared scope means.
+func DefaultScopes(def CheckDef) []Scope {
+	var scopes []Scope
+	for scope := Scope(0); scope < NumScopes; scope++ {
+		if def.Scopes.Has(scope) {
+			scopes = append(scopes, scope)
+		}
+	}
+	return scopes
+}
+
+// resolvedSubject is the subject a rule addresses over the given scopes: the
+// one it declares, or - undeclared - "path" where those scopes include the
+// archive-member or repository scope and "name" otherwise (see
+// CompileRuleSelectors for why those two default to the path). It is the ONE
+// statement of that default: CompileRuleSelectors compiles the path scopes'
+// selector through it and the duplicate refusal normalizes through it.
+func resolvedSubject(spec config.RuleSpec, scopes []Scope) string {
+	if spec.Subject != "" {
+		return spec.Subject
+	}
+	if slices.Contains(scopes, ScopeArchiveMember) || slices.Contains(scopes, ScopeRepository) {
+		return "path"
+	}
+	return "name"
+}
+
+// declaredSubject is the reading every scope but the archive-member and
+// repository ones compiles from: the rule's own subject, defaulted through
+// selector.ParseSubject rather than restated here.
+func declaredSubject(spec config.RuleSpec) string {
+	subject, _ := selector.ParseSubject(spec.Subject)
+	return subject.String()
 }
 
 // shareReadmeNames keeps "what counts as the readme" single-sourced: the one
@@ -212,8 +399,10 @@ func CompileRuleSelectors(spec config.RuleSpec, scopes []Scope) ([]RuleSelectors
 		return nil, err
 	}
 	pathSel := sel
-	if spec.Subject == "" && (slices.Contains(scopes, ScopeArchiveMember) || slices.Contains(scopes, ScopeRepository)) {
-		pathSel, err = selector.Compile(ruleSelectorSpec(spec, "path"))
+	if subject := resolvedSubject(spec, scopes); subject != sel.Subject().String() {
+		// The scope set resolves an undeclared subject to one sel was not
+		// compiled for, so the scopes that address the path get their own.
+		pathSel, err = selector.Compile(ruleSelectorSpec(spec, subject))
 		if err != nil {
 			return nil, err // unreachable: same patterns as above, valid subject
 		}

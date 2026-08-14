@@ -24,7 +24,8 @@
 # ignoreCase is set. keywords/disallowed_names/readme_names are literal
 # strings, never regexes. A repeated [[rule.params]] block declares several
 # parameter sets on one rule. Most checks without a rule run with defaults;
-# IsFreeOfKeywords, IsValidName and HasReadme must be declared.
+# IsFreeOfKeywords, IsValidName and HasReadme must be declared. Two rules of
+# one check that differ only in their name are refused.
 #####################################################################################
 
 [general]

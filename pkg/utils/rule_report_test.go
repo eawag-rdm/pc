@@ -194,9 +194,17 @@ func TestRuleReportOverlapOnFilteredPath(t *testing.T) {
 func TestRuleReportUnfilteredFastPathMarksEveryRule(t *testing.T) {
 	files := ruleReportFiles(t, "alpha.csv", "beta.csv", "gamma.txt")
 	cfg := planConfig(nil)
+	// The two rules must differ in something the loader can see - two rules of
+	// one check identical but for their name are a load error - and they may not
+	// differ by include/exclude, which would take them off the fast path this
+	// test exists for. ignoreCase is that difference, and it stays inside the one
+	// scope this case is about: with no pattern to fold it admits exactly what
+	// wide-one admits.
+	wideTwo := asciiRule("wide-two", []string{"file"})
+	wideTwo.IgnoreCase = true
 	cfg.Rules = []config.RuleSpec{
 		asciiRule("wide-one", []string{"file"}),
-		asciiRule("wide-two", []string{"file"}),
+		wideTwo,
 	}
 	plan := compilePlan(t, cfg)
 	entries := plan.scope(checks.ScopeFile)
@@ -234,9 +242,14 @@ func TestRuleReportUnfilteredFastPathMarksEveryRule(t *testing.T) {
 // exercised would call every rule of the plan dead.
 func TestRuleReportEmptyPackageStaysSilent(t *testing.T) {
 	cfg := planConfig(nil)
+	// Same difference as above, and for the same reason: the loader rejects two
+	// rules of one check that differ only in their name, and an include pattern
+	// would take the pair off the fast path this case has to reach.
+	wideTwo := asciiRule("wide-two", []string{"file"})
+	wideTwo.IgnoreCase = true
 	cfg.Rules = []config.RuleSpec{
 		asciiRule("wide-one", []string{"file"}),
-		asciiRule("wide-two", []string{"file"}),
+		wideTwo,
 	}
 	plan := compilePlan(t, cfg)
 	// The pair would be recorded wholesale if the guard let the empty pass mark:
@@ -423,7 +436,10 @@ func TestRuleReportRepositoryScopeStaysSilent(t *testing.T) {
 		// Two rules of one check that admit every file: at any other scope this
 		// is the overlap notice's textbook case.
 		{Name: "toc-one", Check: "ReadMeContainsTOC", Enabled: true},
-		{Name: "toc-two", Check: "ReadMeContainsTOC", Enabled: true},
+		// ignoreCase only makes the twin distinguishable to the loader, which
+		// refuses two rules differing in nothing but the name; with no include
+		// or exclude patterns it folds nothing and both still admit every file.
+		{Name: "toc-two", Check: "ReadMeContainsTOC", Enabled: true, IgnoreCase: true},
 	}
 	plan := compilePlan(t, cfg)
 
@@ -674,6 +690,15 @@ func TestRuleReportOffStaysInert(t *testing.T) {
 // recorded, pairLeft never reaches zero, and the previous-file cache is the only
 // thing left to decay the O(rules^2) scan - which is the case that cache exists
 // for.
+//
+// The rules are the KEYWORD check's because the loader refuses two rules of one
+// check that differ only in their name, and only a parameterised check can carry
+// a difference the SELECTION PASS never reads: the per-rule info string. Their
+// include lists stay byte-identical, so the identical-selector worst case this
+// benchmark exists for is intact, and a third pattern per rule would put a regex
+// on the files the first two reject rather than measuring the recorder.
+// IsFreeOfKeywords is anchored, so declaring it here is also what keeps
+// withRequiredAnchors from adding a section of its own alongside these rules.
 func benchCollisionPlan(b *testing.B, ruleCount int, dead bool) *Plan {
 	b.Helper()
 	cfg := planConfig(nil)
@@ -682,15 +707,23 @@ func benchCollisionPlan(b *testing.B, ruleCount int, dead bool) *Plan {
 		if dead && i == ruleCount-1 {
 			include = []string{`\.no-such-extension$`}
 		}
-		cfg.Rules = append(cfg.Rules, asciiRule(fmt.Sprintf("collide-%02d", i), []string{"file"}, include...))
+		name := fmt.Sprintf("collide-%02d", i)
+		cfg.Rules = append(cfg.Rules, config.RuleSpec{
+			Name:    name,
+			Check:   "IsFreeOfKeywords",
+			Scope:   []string{"file"},
+			Enabled: true,
+			Include: include,
+			Params:  []map[string]interface{}{{"keywords": []string{"password"}, "info": name}},
+		})
 	}
 	plan := benchPipelinePlan(b, withRequiredAnchors(cfg))
 	for _, entry := range plan.scope(checks.ScopeFile) {
-		if entry.def.Name == "HasOnlyASCII" && len(entry.rules) == ruleCount {
+		if entry.def.Name == "IsFreeOfKeywords" && len(entry.rules) == ruleCount {
 			return plan
 		}
 	}
-	b.Fatalf("expected one HasOnlyASCII entry of %d rules", ruleCount)
+	b.Fatalf("expected one IsFreeOfKeywords entry of %d rules", ruleCount)
 	return nil
 }
 
