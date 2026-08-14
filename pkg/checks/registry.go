@@ -255,10 +255,17 @@ func (r *BoundRule) narrow(repository structs.Repository) structs.Repository {
 	return repository
 }
 
-// tag stamps a rule's name onto the findings it produced. Messages a check
-// emits for ITSELF - the skip acknowledgements - keep an empty Rule: they are
-// the acquisition's own voice, not the rule's, and no rule name explains them.
+// tag stamps a rule's name onto the findings it produced, so a reader can tell
+// WHICH configured rule reported. Two classes keep an empty Rule: the skip
+// acknowledgements a check emits for ITSELF - the acquisition's own voice,
+// which no rule name explains - and the findings of a SYNTHESIZED default
+// rule, whose name lives in a namespace reserved from operators
+// (config.DefaultRulePrefix): it names no configuration the operator wrote,
+// and it is rendered to end users.
 func tag(rule string, messages []structs.Message) []structs.Message {
+	if strings.HasPrefix(rule, config.DefaultRulePrefix) {
+		return messages
+	}
 	for i := range messages {
 		if messages[i].Skipped {
 			continue

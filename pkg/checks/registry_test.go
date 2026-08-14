@@ -283,6 +283,21 @@ func TestArchiveFileListBaseNames(t *testing.T) {
 	}
 }
 
+// TestDefaultRuleLeavesMessagesUntagged pins which rule names reach a reader:
+// a SYNTHESIZED default rule's name lives in a namespace reserved from
+// operators, names no configuration anyone wrote, and must never be rendered -
+// while an operator-authored rule name still stamps its findings.
+func TestDefaultRuleLeavesMessagesUntagged(t *testing.T) {
+	synthesized := tag(config.DefaultRulePrefix+"ReadMeContainsTOC", []structs.Message{{Content: "no table of contents"}})
+	if len(synthesized) != 1 || synthesized[0].Rule != "" {
+		t.Errorf("a synthesized default rule must leave Rule empty, got %q", synthesized[0].Rule)
+	}
+	authored := tag("readme-present", []structs.Message{{Content: "no README"}})
+	if len(authored) != 1 || authored[0].Rule != "readme-present" {
+		t.Errorf("an operator-authored rule must stamp its name, got %q", authored[0].Rule)
+	}
+}
+
 // TestBindKeywordsMultipleParamSets pins the [[rule.params]] batching: ONE
 // rule carries N parameter sets, each matched and reported with its own info -
 // exactly as a legacy section's keywordArguments list bound.
