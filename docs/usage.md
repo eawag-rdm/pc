@@ -27,65 +27,241 @@ If no `-config` flag is given, `./pc.toml` is used.
 | Section | Used by | Purpose |
 |---|---|---|
 | `[general]` | both | memory/scan limits, summary text |
-| `[test.<CheckName>]` | both | per-check configuration (see below) |
+| `[[rule]]` | both | check rules - the check-configuration surface (see below) |
+| `[test.<CheckName>]` | both | legacy per-check configuration, superseded by `[[rule]]` |
 | `[collector.LocalCollector]` | CLI | local file system collector; `attrs`: `maxFolderDepth` (0 = top level only, N = descend N levels; boundary-depth folders are listed but not entered), `maxFileCount` (walk stops after N collected entries, 0 = no cap), `includeFolders` (legacy, true = unlimited recursion; an explicit `maxFolderDepth` wins) |
 | `[collector.CkanCollector]` | both | CKAN URL, server-side token, TLS verify, storage path |
 | `[operation.main]` | CLI | which collector the CLI uses |
 | `[server]`, `[server.smtp]` | server | listen address, rate limits, timeouts, CORS, admin alerts |
 
-**Startup validation:** both binaries fail fast with a clear error when the
-configuration is unusable - the CLI checks the `[test.*]` sections it needs;
-the server additionally validates every `[server]` value and the
-`[collector.CkanCollector]` attrs. The sections `[test.IsFreeOfKeywords]`,
-`[test.IsValidName]` and `[test.HasReadme]` are **required** (the checks
-dereference them). `[test.IsFreeOfSecrets]` is optional; when present its
-`attrs` are validated (types, unknown keys, timeout vs. server timeout).
+**Startup validation:** the `[[rule]]` surface is checked exhaustively; the rest
+of the file is not. Both binaries compile the whole rule set before anything is
+scanned, so inside a rule an unknown key, a wrong-typed value, an unknown
+parameter key, an uncompilable pattern, an unknown check or an unknown scope
+refuses the start - and so do an unknown top-level table, a `[test.X]` section
+naming no known check, and any wrong-typed `[server]` value.
 
-### Per-check configuration
+Everywhere else a key nobody reads is **silently ignored**: unknown keys in
+`[general]`, `[server]`, `[server.smtp]`, `[collector.X].attrs` and `[test.X]`
+do nothing, and the older `[general]` byte sizes keep their default when
+wrong-typed (`maxArchiveFileSize = "10MB"`; `maxArchiveMemberCount`,
+`maxPDFPages`, `maxPDFFileSize` and `maxCores` do fail). The worst of it is a
+legacy `[test.X] whitelist = [1, 2]`: both elements are dropped, the filter ends
+up empty, and the check runs **unfiltered**.
 
-Each `[test.<CheckName>]` section accepts:
+Faults are aggregated per stage: one failed load names every rule that stage
+faulted on. It does not cross stages - a decode fault (an unknown or wrong-typed
+key) returns before any pattern, scope or parameter is compiled.
 
-- `blacklist` - files matching these patterns are excluded from the check
-- `whitelist` - only files matching these patterns are checked
-- `keywordArguments` - check-specific arguments
+The server additionally validates every `[server]` value and the
+`[collector.CkanCollector]` attrs. The checks `IsFreeOfKeywords`, `IsValidName`
+and `HasReadme` must be declared (see below); `IsFreeOfSecrets` is optional, and
+when it is configured its knobs are validated too (types, unknown keys, scan
+timeout vs. the server's request timeout).
 
-Only one of `blacklist`/`whitelist` may be non-empty per check.
+### Check rules (`[[rule]]`)
 
-**Regex is only supported in `blacklist` and `whitelist`** (file-path
-filtering):
+A `[[rule]]` is one named instance of a check with its own file selector and its
+own parameters. A check may carry several rules, and each reports under its own
+name. `pc.toml.example` carries the full key list and every check name; the
+surface itself is:
+
+```toml
+[[rule]]
+# Sensitive keywords in file contents, everywhere
+name  = "sensitive-content"
+check = "IsFreeOfKeywords"
+  [[rule.params]]
+  keywords = ["password", "api_key", "secret"]
+  info     = "Sensitive data found:"
+  [[rule.params]]
+  keywords = ["/Users/", "C:\\"]
+  info     = "Hardcoded paths found:"
+
+[[rule]]
+# A second rule of the same check, over one subtree of the collection only
+name    = "notebook-todos"
+check   = "IsFreeOfKeywords"
+scope   = ["file"]
+subject = "path"
+include = ["^notebooks/"]
+  [[rule.params]]
+  keywords = ["TODO", "FIXME"]
+  info     = "Unfinished notes:"
+```
+
+- `name` - operator-chosen, and unique across the whole run. It names the rule
+  in the diagnostics and in the rule-focused results. The `default:` prefix is
+  reserved for the rules pc synthesizes itself and is refused on a declared rule.
+- `check` - the check the rule instantiates.
+- `scope` - the dispatch phases the rule runs in: `file`, `archive-file-list`,
+  `archive-member`, `repository`. Omitted means the check's own scopes, which
+  `pc.toml.example` lists per check; naming a scope the check does not serve, or
+  naming one twice, fails the load.
+- `subject` - `name` or `path`, the string the patterns are matched against.
+  **The default depends on the scope** (see below).
+- `include` / `exclude` - RE2 regexes, matched **unanchored** and
+  case-sensitively unless `ignoreCase = true`. `exclude` wins: a subject any
+  exclude pattern matches is out, whatever `include` says. An absent or empty
+  `include` admits everything. The same pattern in both lists is a load error -
+  exclude wins, so the rule could never match it.
+- `enabled = false` - the rule stays out of the run and its check is not
+  dispatched for it. It is validated at load all the same, so a config the
+  checks could not honour fails now rather than on the day someone re-enables
+  the rule.
+- `[[rule.params]]` - the check's own parameters, type-checked at load by the
+  check itself; an unknown parameter key fails the load. Repeating the table
+  declares several parameter sets on one rule - each keyword group above reports
+  with its own `info`. The single-bracket `[rule.params]` is the one-set
+  spelling.
+
+What `subject` selects, per scope:
+
+| Scope | `subject = "name"` | `subject = "path"` | default |
+|---|---|---|---|
+| `file` | the file's name | its collection-relative path | `name` |
+| `archive-file-list` | the member's base name | the member path in the archive | `name` |
+| `archive-member` | the member's base name | the member path in the archive | `path` |
+| `repository` | the file's name | its collection-relative path | `path` |
+
+A declared `subject` holds for every scope the rule serves; only the default
+varies by scope. The two path defaults are the strings those phases address in
+practice: they are why `include = ["data/"]` on an archive-member rule matches
+member paths as written instead of silently matching nothing, and why a migrated
+repository pattern like `^raw/` keeps matching. An archive-member rule selects
+**members, not archives** - every archive is opened, and the patterns decide
+which members inside it are read.
+
+Parameters are never patterns: `keywords`, `disallowed_names` and `readme_names`
+are literal strings (keywords are matched case-insensitively). `"pass.*"` looks
+for the literal text `pass.*`.
+
+### Checks that must be declared
+
+`IsFreeOfKeywords`, `IsValidName` and `HasReadme` must be declared - by a
+`[[rule]]` or by a legacy `[test.X]` section - or the load fails. It is the
+declaration that is required, not the parameters: a rule with no
+`[[rule.params]]` loads, and `HasReadme` then falls back to its built-in readme
+filename list (`pc.toml.example` ships exactly that rule). A keyword or name
+rule without parameters has nothing to look for and reports nothing.
+
+Every other check runs whether or not a config mentions it: pc synthesizes a
+default rule named `default:<CheckName>` with an empty selector and the check's
+built-in defaults, so deleting a section never silently deletes a check. The
+exception is `IsFreeOfSecrets`, whose synthesized rule is disabled - the secret
+scan is opt-in (see below).
+
+`HasReadme` takes exactly **one** rule: it defines what counts as the repository
+readme, and a second definition is refused. `ReadMeContainsTOC` takes no
+parameters of its own - it reads that rule's `readme_names`.
+
+### Legacy `[test.<CheckName>]` sections
+
+The `[test.X]` surface still works and will be removed in a future release. Each
+section accepts `blacklist`, `whitelist`, `keywordArguments` and an `attrs`
+table, and only one of `blacklist`/`whitelist` may be non-empty (a `[[rule]]`
+may set both, since `exclude` wins). Only `IsFreeOfSecrets` reads `attrs`: it is
+where the legacy surface carries the scan's knobs and its `enabled` flag.
+**One surface per check:** configuring the same check with a `[[rule]]` *and* a
+`[test.X]` section is a load error.
+
+The translation is mechanical - `whitelist` → `include`, `blacklist` →
+`exclude`, one `keywordArguments` entry → one `[[rule.params]]` table:
 
 ```toml
 [test.IsFreeOfKeywords]
-blacklist = [".*\\.log$", "temp.*", "test[0-9]+\\.txt"]
+blacklist = [".*\\.log$", "temp.*"]
+keywordArguments = [
+    { keywords = ["password", "api_key", "secret"], info = "Sensitive data found:" }
+]
 ```
-
-**`keywords` and `disallowed_names` are literal strings** (keywords are matched
-case-insensitively):
 
 ```toml
-[test.IsFreeOfKeywords]
-keywordArguments = [
-    { keywords = ["password", "api_key", "secret"], info = "Sensitive data found:" },
-    { keywords = ["/Users/", "C:\\"], info = "Hardcoded paths found:" }
-]
-
-[test.IsValidName]
-keywordArguments = [
-    { disallowed_names = [".DS_Store", "__pycache__", ".vscode"] }
-]
-
-[test.HasReadme]
-# filenames recognized as the repository readme (case-insensitive);
-# shared by HasReadme and ReadMeContainsTOC
-keywordArguments = [
-    { readme_names = ["readme.md", "readme.txt", "readme", "read me", "read me.txt", "read me.md", "read-me", "read-me.txt", "read-me.md", "read_me", "read_me.txt", "read_me.md"] }
-]
+[[rule]]
+name    = "sensitive-content"
+check   = "IsFreeOfKeywords"
+exclude = [".*\\.log$", "temp.*"]
+  [[rule.params]]
+  keywords = ["password", "api_key", "secret"]
+  info     = "Sensitive data found:"
 ```
 
-Do **not** use regex in keywords - `"pass.*"` looks for the literal text
-`pass.*`, not a pattern.
+**The patterns may behave differently afterwards.** A legacy list carries two
+historical readings at once, while a `[[rule]]`'s patterns have exactly one -
+regexes against the rule's declared subject:
 
-### Secret scan: `[test.IsFreeOfSecrets]`
+- At `file` and `repository` scope both surfaces read the list as regexes over
+  the same subject, so those translate unchanged.
+- At `archive-file-list` scope a legacy list is matched against the **whole
+  member path**; a `[[rule]]` with the default `subject = "name"` is matched
+  against the member's **base name**. A pattern that named a directory (`^docs/`)
+  needs `subject = "path"` after the translation.
+- At `archive-member` scope a legacy list is read **twice**: as regexes over the
+  archive's own name, which decides whether the archive is opened at all, and as
+  **case-insensitive literal substrings** over the member path, which decides
+  which members are read. A `[[rule]]` has only the second reading - its
+  dispatch gate admits every archive - and reads the patterns as case-sensitive
+  regexes, so metacharacters have to be escaped (as a regex, `data.csv` also
+  matches `dataXcsv`) and `ignoreCase = true` restores the case folding. A
+  pattern that named an **archive** therefore stops gating anything: over a
+  `bundle.zip` of three files, `blacklist = ["bundle.zip"]` scanned none of them
+  while `exclude = ["bundle.zip"]` scans all three, and `whitelist =
+  ["notes.txt"]` never opened the archive while the translated `include` (plus
+  `ignoreCase`) scans the one member it names. This is the one translation that
+  silently **widens** the scan - nothing errors.
+
+### Two identical rules are refused
+
+Two rules of one check that differ only in their `name` fail the load: the config
+says one thing twice, and every finding the pair produces would be reported
+twice.
+
+The comparison resolves the spellings that do no work, so none of them saves a
+duplicate: an omitted key against a declared empty one (`include = []`), the
+order scopes are written in, an omitted `scope` against the check's own scopes
+spelled out, and the scope-dependent `subject` default against that same subject
+written out.
+
+It is a **syntactic** comparison, deliberately: nothing static can decide whether
+two different patterns select the same files. So a pair made distinct by a field
+that does no work - an `ignoreCase` with no patterns to fold, a `subject` no
+pattern reads - or by an extra pattern that matches nothing does load, and then
+reports everything twice. That case is the overlap warning's, below: it judges
+what the rules actually matched rather than how they were written.
+
+### Rule diagnostics
+
+Two warnings about the rule configuration itself, produced once per run that
+finished. A cancelled run - a server analysis stopped by `requestTimeoutSeconds`,
+say - emits neither: a scan that stopped early says nothing about the
+configuration.
+
+- **Dead rule** - a rule that matched no file this run, named with its check and
+  its scope. Usually a typo in a pattern, or a rule left behind by a config
+  edit. A phase that never ran reports nothing: a package with no archives says
+  nothing about archive rules.
+- **Overlap** - two rules of one check both applied to the same file. The file is
+  read once, but both rules report on it, so findings double. This is frequently
+  deliberate - the two keyword rules above overlap on every notebook by design -
+  so the warning informs rather than accuses. Ignore it when the two rules carry
+  different parameters and you want both verdicts; act on it when they carry the
+  same ones, because then one of them is redundant.
+
+Both are reported at `file` and `archive-file-list` scope only. At
+`archive-member` scope the dispatch gate admits every archive and the patterns
+decide inside it, so a mark taken there would call every member rule alive as
+soon as the package holds one archive. At `repository` scope a rule always runs
+whatever its selector admits, so "matched no file" would accuse a rule of doing
+its job - `HasReadme` over an empty set is exactly how "there is no readme" gets
+said.
+
+Both are operator-facing. On the CLI they appear in `warnings` (`-json`, HTML,
+TUI) and in the `=== Diagnostics ===` block of `-plain`. Server responses never
+carry them: their `warnings`/`errors` arrays are always empty (see the server
+section below), so on the server every diagnostic goes to the log as a
+`scan_diagnostic` record keyed by `request_id` instead.
+
+### Secret scan: `IsFreeOfSecrets`
 
 > **Status (2026-08-04): dormant.** The scan is shipped disabled
 > (`enabled = false` in the example configs) because the current scanner runs
@@ -102,20 +278,25 @@ directory first. Findings are condensed to one message per file (rule ids +
 line numbers); secret values themselves never appear in any output.
 
 ```toml
-[test.IsFreeOfSecrets]
-blacklist = []
-whitelist = []
-# enabled: toggle the scan; binary: scanner executable (name in PATH or absolute path);
-# timeoutSeconds: whole-scan cap (must not exceed [server] requestTimeoutSeconds);
-# maxProcs: CPU cores the scanner may use, capped by the configured [general] maxCores (the lower wins)
-attrs = {enabled = false, binary = "betterleaks", timeoutSeconds = 120, maxProcs = 3}
+[[rule]]
+name    = "secret-scan"
+check   = "IsFreeOfSecrets"
+# enabled: toggle the scan - the rule's own key, not a parameter
+enabled = false
+  [rule.params]
+  # binary: scanner executable (name in PATH or absolute path);
+  # timeoutSeconds: whole-scan cap (must not exceed [server] requestTimeoutSeconds);
+  # maxProcs: CPU cores the scanner may use, capped by the configured [general] maxCores (the lower wins)
+  binary         = "betterleaks"
+  timeoutSeconds = 120
+  maxProcs       = 3
 ```
 
 The CLI needs the `betterleaks` binary on PATH (or `binary` set to an absolute
 path); the server's Docker image ships it. The scanner runs fully offline - no
 finding validation calls, nothing leaves the machine. Note that low-entropy
 plain passwords (e.g. `password = hunter2`) are below the scanner's generic-rule
-entropy threshold; add a `password` keyword group to `[test.IsFreeOfKeywords]`
+entropy threshold; add a `password` keyword group to an `IsFreeOfKeywords` rule
 if you want a literal-match safety net for those.
 
 ### `[general]` limits
@@ -240,6 +421,28 @@ Which collector the CLI uses comes from the config:
 [operation.main]
 collector = "LocalCollector"   # or "CkanCollector"
 ```
+
+### Result sections
+
+`-json` writes the result document, `-html` renders it and the TUI browses it
+(`-plain` prints a summary of the same findings). Beside `scanned`, `skipped`,
+`pdf_files`, `warnings` and `errors`, the document carries four detail sections -
+the same findings, indexed by four different questions:
+
+| Section | Answers |
+|---|---|
+| `details_subject_focused` | what is wrong with this file? |
+| `details_check_focused` | which files failed this check? |
+| `details_rule_focused` | which configured rule reported this? |
+| `details_metadata` | what is wrong with the package metadata? (CKAN only) |
+
+`details_rule_focused` holds one entry per rule that found something - its total
+and one line per affected subject, the message text staying in the two sections
+above. A rule that found nothing does not appear, and neither does a finding that
+no configured rule owns: a skip acknowledgement, a CKAN metadata finding, or a
+finding of a synthesized `default:` rule. On a `[test.X]` config every rule is
+named after its check, so the section restates `details_check_focused`; it earns
+its place when a check carries several rules.
 
 ### Using the CLI against CKAN
 

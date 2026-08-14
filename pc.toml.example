@@ -5,9 +5,16 @@
 # check with its own file selector and its own [rule.params].
 #
 #   name       unique rule name (shown in diagnostics)
-#   check      check to run (HasOnlyASCII, HasNoWhiteSpace, IsFreeOfKeywords,
-#              IsValidName, HasFileNameSpecialChars, IsFileNameTooLong,
-#              IsFreeOfSecrets, HasReadme, ReadMeContainsTOC)
+#   check      check to run, with the scopes it serves (a rule may name a subset):
+#              HasOnlyASCII             file, archive-file-list
+#              HasNoWhiteSpace          file, archive-file-list
+#              IsFreeOfKeywords         file, archive-member
+#              IsValidName              file, archive-file-list
+#              HasFileNameSpecialChars  file
+#              IsFileNameTooLong        file
+#              IsFreeOfSecrets          repository
+#              HasReadme                repository
+#              ReadMeContainsTOC        repository
 #   scope      dispatch phases, default = the check's own
 #              (file, archive-file-list, archive-member, repository)
 #   subject    what patterns match: "name" | "path"; per scope:
