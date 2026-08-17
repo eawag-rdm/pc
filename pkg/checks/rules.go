@@ -43,6 +43,11 @@ func AnchoredChecks() []string {
 // Two rules of one check that differ only in their name are refused as well -
 // see duplicateRuleErrors. Errors are aggregated into one joined error, not
 // short-circuited.
+//
+// The assembled specs are returned beside a non-nil error - a provisional
+// signature: the caller binds and compiles them to collect the faults assembly
+// cannot see, so one load reports every fault of the specs returned here. A
+// non-nil error still means the load must fail.
 func RuleSpecs(cfg *config.Config, reg Registry) ([]config.RuleSpec, error) {
 	var errs []error
 	byCheck := make(map[string][]config.RuleSpec, len(cfg.Rules))
@@ -75,15 +80,16 @@ func RuleSpecs(cfg *config.Config, reg Registry) ([]config.RuleSpec, error) {
 			// same verdict here rather than a silent surface preference.
 			errs = append(errs, fmt.Errorf("check %q is configured by both [[rule]] and [test.%s]: use one surface per check", def.Name, def.Name))
 		case present:
-			// "What counts as the readme" must have exactly one definition;
-			// a second HasReadme rule would declare a second one.
+			// "What counts as the readme" must have exactly one definition; a
+			// second HasReadme rule would declare a second one, switched off
+			// today or not.
 			if def.Name == "HasReadme" && len(rules) > 1 {
 				errs = append(errs, fmt.Errorf("check %q allows exactly one rule (it defines what counts as the readme), got %d", def.Name, len(rules)))
-				continue
 			}
-			// The twins are assembled anyway: the joined error fails the load
-			// either way, and dropping the check's remaining rules here would
-			// hide their faults until the twin is removed and the load rerun.
+			// The rules this arm refuses are assembled anyway: the joined error
+			// fails the load either way, and dropping the check's remaining rules
+			// here would hide their faults until the refusal is settled and the
+			// load rerun.
 			errs = append(errs, duplicateRuleErrors(rules, def)...)
 			specs = append(specs, rules...)
 		case section != nil:
@@ -285,7 +291,8 @@ func declaredSubject(spec config.RuleSpec) string {
 // ENABLED HasReadme rule defines it (RuleSpecs refuses a second, and a
 // disabled one contributes nothing - the TOC check then falls back to the
 // built-in default names), and every ReadMeContainsTOC spec reads that rule's
-// parameters. Declaring parameters on a TOC [[rule]] is refused, so the two
+// parameters. Two DECLARED HasReadme rules elect neither, enabled or not - see
+// electReadme. Declaring parameters on a TOC [[rule]] is refused, so the two
 // checks can never disagree; a legacy TOC section's own keywordArguments were
 // always ignored in favour of the readme's list and keep being dropped. The
 // inherited params carry their surface's Legacy flag with them, so a lenient
@@ -295,13 +302,7 @@ func declaredSubject(spec config.RuleSpec) string {
 // [test.*] surface always behaved; a declared one keeps its own.
 func shareReadmeNames(specs []config.RuleSpec, tocSynthesized bool) []error {
 	var errs []error
-	var readme *config.RuleSpec
-	for i := range specs {
-		if specs[i].Check == "HasReadme" && specs[i].Enabled {
-			readme = &specs[i]
-			break
-		}
-	}
+	readme := electReadme(specs)
 	for i := range specs {
 		spec := &specs[i]
 		if spec.Check != "ReadMeContainsTOC" {
@@ -324,6 +325,30 @@ func shareReadmeNames(specs []config.RuleSpec, tocSynthesized bool) []error {
 		}
 	}
 	return errs
+}
+
+// electReadme returns the rule that defines what counts as the readme: the one
+// enabled HasReadme spec, or nothing where none is enabled. More than one
+// DECLARED HasReadme spec - the config RuleSpecs refuses - elects nothing
+// either: the operator wrote two, and honouring either would pick one for them.
+// A spec switched off today still declares a readme, so it is counted here
+// although it can never be elected.
+func electReadme(specs []config.RuleSpec) *config.RuleSpec {
+	var readme *config.RuleSpec
+	declared := 0
+	for i := range specs {
+		if specs[i].Check != "HasReadme" {
+			continue
+		}
+		declared++
+		if specs[i].Enabled {
+			readme = &specs[i]
+		}
+	}
+	if declared > 1 {
+		return nil
+	}
+	return readme
 }
 
 // legacySectionSpec translates one legacy [test.X] section into a rule spec.

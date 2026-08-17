@@ -343,6 +343,56 @@ check = "ReadMeContainsTOC"
 `, "toc-one", "toc-two", "takes no parameters")
 }
 
+// TestRuleAmbiguousReadmeBlamesOnlyDeclaredRules pins the other ordering of the
+// refused pair - the parameter fault on the FIRST readme rule - and what the
+// refusal must not make of it: two DECLARED definitions of the readme elect
+// neither, so the synthesized TOC rule binds its own defaults and an ambiguous
+// readme blames no rule but the two the operator wrote. Both rules carry a bad
+// key, so electing either of them would show up, and both faults must be named.
+// Switching the second one off changes nothing: the config still declares the
+// readme twice, and the refusal and the sharing read that same count.
+func TestRuleAmbiguousReadmeBlamesOnlyDeclaredRules(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		second string
+	}{
+		{"both enabled", ""},
+		{"second disabled", "enabled = false\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := loadAndCompile(t, anchors("HasReadme")+`
+[[rule]]
+name  = "readme-one"
+check = "HasReadme"
+  [rule.params]
+  readme_nmaes = ["manual.rst"]
+
+[[rule]]
+name  = "readme-two"
+check = "HasReadme"
+`+tc.second+`
+  [rule.params]
+  raedme_names = ["handbook.rst"]
+`)
+			if err == nil {
+				t.Fatal("expected a load error")
+			}
+			for _, want := range []string{
+				`check "HasReadme" allows exactly one rule`,
+				`rule "readme-one": params: unknown key "readme_nmaes"`,
+				`rule "readme-two": params: unknown key "raedme_names"`,
+			} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error must name %q: %v", want, err)
+				}
+			}
+			if phantom := config.DefaultRulePrefix + "ReadMeContainsTOC"; strings.Contains(err.Error(), phantom) {
+				t.Errorf("no fault may be reported against %q, which no config declares: %v", phantom, err)
+			}
+		})
+	}
+}
+
 // TestRuleDisabledReadmeLeavesTOCDefaults pins the disabled half of the same
 // contract: a DISABLED HasReadme rule contributes nothing, so the synthesized
 // ReadMeContainsTOC falls back to the check's default names - which recognize

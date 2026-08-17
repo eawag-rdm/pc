@@ -381,6 +381,65 @@ func TestRuleSpecsReportsFaultsBesideTwins(t *testing.T) {
 	}
 }
 
+// TestRuleSpecsReportsFaultsBesideASecondReadmeRule pins the same aggregation
+// around the readme's own refusal: a second HasReadme rule is refused - "what
+// counts as the readme" has one definition - and the pair is still assembled,
+// so every other fault of those rules is reported in the same load rather than
+// one refusal per load.
+func TestRuleSpecsReportsFaultsBesideASecondReadmeRule(t *testing.T) {
+	specs, err := assembleRuleSpecs(
+		config.RuleSpec{Name: "readme-one", Check: "HasReadme", Enabled: true},
+		config.RuleSpec{Name: "readme-two", Check: "HasReadme", Enabled: true},
+	)
+	if err == nil {
+		t.Fatal("a second HasReadme rule must be refused")
+	}
+	if want := `check "HasReadme" allows exactly one rule`; !strings.Contains(err.Error(), want) {
+		t.Errorf("error must name %q: %v", want, err)
+	}
+	// Assembly is what carries the pair on to the parameter binding and the
+	// selector compilation, which report the faults RuleSpecs cannot see.
+	if got := specsForCheck(specs, "HasReadme"); len(got) != 2 {
+		t.Errorf("both readme rules must be assembled, got %d", len(got))
+	}
+}
+
+// TestRuleSpecsSharesNoNamesFromAmbiguousReadmeRules pins what the refused pair
+// must NOT do: two enabled HasReadme rules define the readme twice, so NEITHER
+// is elected and the TOC check keeps its own default names. Both rules carry
+// parameters AND a file filter - everything a synthesized TOC inherits from the
+// readme rule - so electing either of them shows up here. What it guards is the
+// election alone: dropping the pair from the assembly instead would satisfy it
+// too, because unassembled rules elect nothing either.
+func TestRuleSpecsSharesNoNamesFromAmbiguousReadmeRules(t *testing.T) {
+	specs, err := assembleRuleSpecs(
+		config.RuleSpec{Name: "readme-one", Check: "HasReadme", Enabled: true,
+			Include: []string{"^one/"}, Exclude: []string{"^one/draft/"},
+			Subject: "path", IgnoreCase: true,
+			Params: []map[string]interface{}{{"readme_names": []string{"one.md"}}}},
+		config.RuleSpec{Name: "readme-two", Check: "HasReadme", Enabled: true,
+			Include: []string{"^two/"}, Exclude: []string{"^two/draft/"},
+			Subject: "name", IgnoreCase: true,
+			Params: []map[string]interface{}{{"readme_names": []string{"two.md"}}}},
+	)
+	if err == nil {
+		t.Fatal("a second HasReadme rule must be refused")
+	}
+	if want := `check "HasReadme" allows exactly one rule`; !strings.Contains(err.Error(), want) {
+		t.Errorf("error must name %q: %v", want, err)
+	}
+	toc := specsForCheck(specs, "ReadMeContainsTOC")
+	if len(toc) != 1 {
+		t.Fatalf("the TOC check must synthesize its default rule, got %d", len(toc))
+	}
+	if len(toc[0].Params) > 0 {
+		t.Errorf("rule %q inherited an ambiguous readme definition: %v", toc[0].Name, toc[0].Params)
+	}
+	if len(toc[0].Include) > 0 || len(toc[0].Exclude) > 0 || toc[0].Subject != "" || toc[0].IgnoreCase {
+		t.Errorf("rule %q inherited an ambiguous readme rule's filter: %+v", toc[0].Name, toc[0])
+	}
+}
+
 // TestRuleSpecFieldNamesAreDecidedAbout is the tripwire on ruleIdentity, which
 // names the fields it compares and therefore cannot notice a new one by itself:
 // a field added to config.RuleSpec has to be decided about - does it make two
