@@ -23,7 +23,6 @@ import (
 	plainformatter "github.com/eawag-rdm/pc/pkg/output/plain"
 	"github.com/eawag-rdm/pc/pkg/output/tui"
 	"github.com/eawag-rdm/pc/pkg/structs"
-	"github.com/eawag-rdm/pc/pkg/utils"
 )
 
 func main() {
@@ -110,7 +109,7 @@ func main() {
 	// so a bad pattern, a wrong-typed parameter or an unknown section is an
 	// operator error before anything scans - not a silently unfiltered (or
 	// fully filtered) run.
-	plan, err := utils.Compile(generalConfig, checks.NewRegistry())
+	plan, err := checks.Compile(generalConfig, checks.NewRegistry())
 	if err != nil {
 		outputError("config_error", fmt.Sprintf("Invalid config: %v", err))
 		return

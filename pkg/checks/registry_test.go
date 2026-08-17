@@ -35,11 +35,10 @@ func rulesWithAnchors(rules []config.RuleSpec) []config.RuleSpec {
 }
 
 // bindTestRule binds EVERY rule cfg declares for the named check, through the
-// SAME assembly and selector compilation utils.Compile uses at startup
-// (RuleSpecs + CompileRuleSelectors, both in this package precisely so the two
-// callers cannot drift - pkg/utils cannot be imported here, it imports this
-// package). The batch mirrors Compile's member-admission decision through the
-// same MemberAdmission call Compile makes.
+// SAME assembly and selector compilation Compile uses at startup (RuleSpecs +
+// CompileRuleSelectors), so the two callers cannot drift apart. The batch
+// mirrors Compile's member-admission decision through the same MemberAdmission
+// call Compile makes.
 func bindTestRule(t testing.TB, name string, cfg config.Config, scope Scope) (CheckDef, []*BoundRule, *Batch) {
 	t.Helper()
 	registry := NewRegistry()
@@ -152,8 +151,8 @@ func TestRegistryScopesCoverDispatch(t *testing.T) {
 	}
 }
 
-// TestRegistryDeclaredOrder pins the order utils.Compile adds the rules to the
-// plan in, which is the order a file's checks run in and therefore the order
+// TestRegistryDeclaredOrder pins the order Compile adds the rules to the plan
+// in, which is the order a file's checks run in and therefore the order
 // findings are rendered in. It is the order of the five dispatch tables this
 // registry replaced (file scope, then the archive file list and archive member
 // subsets of it, then the repository phase with the leak scan first), so a

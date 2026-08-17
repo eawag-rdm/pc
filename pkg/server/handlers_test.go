@@ -19,15 +19,14 @@ import (
 	"github.com/eawag-rdm/pc/pkg/checks"
 	"github.com/eawag-rdm/pc/pkg/config"
 	"github.com/eawag-rdm/pc/pkg/structs"
-	"github.com/eawag-rdm/pc/pkg/utils"
 )
 
 // testPlan compiles the rule plan NewHandler requires, the way server.New does
 // at boot. A handler test that never analyses still needs one: a nil plan would
 // dispatch nothing and report every package clean. Configs built without a
-// [general] section get the shipped defaults, which is what utils.Compile
+// [general] section get the shipped defaults, which is what checks.Compile
 // refuses to invent for itself.
-func testPlan(pcConfig *config.Config) *utils.Plan {
+func testPlan(pcConfig *config.Config) *checks.Plan {
 	cfg := config.Config{}
 	if pcConfig != nil {
 		cfg = *pcConfig
@@ -52,7 +51,7 @@ func testPlan(pcConfig *config.Config) *utils.Plan {
 		}
 	}
 	cfg.Rules = rules
-	plan, err := utils.Compile(&cfg, checks.NewRegistry())
+	plan, err := checks.Compile(&cfg, checks.NewRegistry())
 	if err != nil {
 		panic("server test plan: " + err.Error())
 	}

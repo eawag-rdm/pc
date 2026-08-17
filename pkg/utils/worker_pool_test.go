@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eawag-rdm/pc/pkg/checks"
 	"github.com/eawag-rdm/pc/pkg/output"
 	"github.com/eawag-rdm/pc/pkg/structs"
 )
@@ -117,7 +118,7 @@ func TestWorkerPool_ProcessWork(t *testing.T) {
 
 	// Create test work item
 	testFile := structs.File{Name: "test.txt", Path: "/test/test.txt"}
-	workItem := workItem{File: testFile, Checks: []checkRules{testCheck}}
+	workItem := workItem{File: testFile, Checks: []checks.PlanEntry{testCheck}}
 
 	// Submit work
 	success := pool.submit(workItem)
@@ -160,7 +161,7 @@ func TestWorkerPool_MultipleChecks(t *testing.T) {
 	})
 
 	testFile := structs.File{Name: "test.txt", Path: "/test/test.txt"}
-	workItem := workItem{File: testFile, Checks: []checkRules{check1, check2, check3}}
+	workItem := workItem{File: testFile, Checks: []checks.PlanEntry{check1, check2, check3}}
 
 	pool.submit(workItem)
 
@@ -187,7 +188,7 @@ func TestWorkerPool_ConcurrentProcessing(t *testing.T) {
 	// Submit multiple work items
 	for i := 0; i < numJobs; i++ {
 		testFile := structs.File{Name: fmt.Sprintf("test%d.txt", i), Path: "/test/"}
-		if pool.submit(workItem{File: testFile, Checks: []checkRules{testCheck}}) {
+		if pool.submit(workItem{File: testFile, Checks: []checks.PlanEntry{testCheck}}) {
 			submitted++
 		}
 	}
@@ -219,7 +220,7 @@ func TestWorkerPool_ChannelFullHandling(t *testing.T) {
 		return []structs.Message{}
 	})
 
-	workItem := workItem{File: testFile, Checks: []checkRules{testCheck}}
+	workItem := workItem{File: testFile, Checks: []checks.PlanEntry{testCheck}}
 
 	// Submit should succeed when workers are running
 	success := pool.submit(workItem)
@@ -260,7 +261,7 @@ func TestWorkerPool_PanickingCheck_DoesNotKillProcess(t *testing.T) {
 	defer pool.stop()
 
 	file := structs.File{Name: "a.txt", Path: "/tmp/a.txt"}
-	if !pool.submit(workItem{File: file, Checks: []checkRules{panicking, healthy}}) {
+	if !pool.submit(workItem{File: file, Checks: []checks.PlanEntry{panicking, healthy}}) {
 		t.Fatal("submit failed")
 	}
 

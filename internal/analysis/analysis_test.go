@@ -13,7 +13,6 @@ import (
 	"github.com/eawag-rdm/pc/pkg/metadata"
 	"github.com/eawag-rdm/pc/pkg/output"
 	"github.com/eawag-rdm/pc/pkg/structs"
-	"github.com/eawag-rdm/pc/pkg/utils"
 )
 
 // buildFiles writes a tiny PDF-free file set that makes the file pipeline emit
@@ -58,9 +57,9 @@ func testConfig(t *testing.T) config.Config {
 }
 
 // planFor compiles the rules the way each frontend does at startup.
-func planFor(t *testing.T, cfg config.Config) *utils.Plan {
+func planFor(t *testing.T, cfg config.Config) *checks.Plan {
 	t.Helper()
-	plan, err := utils.Compile(&cfg, checks.NewRegistry())
+	plan, err := checks.Compile(&cfg, checks.NewRegistry())
 	if err != nil {
 		t.Fatalf("compile rules: %v", err)
 	}

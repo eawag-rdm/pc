@@ -194,7 +194,7 @@ func TestRuleReportOverlapOnFilteredPath(t *testing.T) {
 
 	// Anti-vacuity: two files carry BOTH rules, so a per-file notice would show
 	// up as two.
-	if allUnfiltered(plan.scope(checks.ScopeFile)) {
+	if allUnfiltered(plan.Scope(checks.ScopeFile)) {
 		t.Fatal("the fixture must take the filtered selection path")
 	}
 
@@ -226,7 +226,7 @@ func TestRuleReportUnfilteredFastPathMarksEveryRule(t *testing.T) {
 		wideTwo,
 	}
 	plan := compilePlan(t, cfg)
-	entries := plan.scope(checks.ScopeFile)
+	entries := plan.Scope(checks.ScopeFile)
 	if !allUnfiltered(entries) {
 		t.Fatal("the fixture must take the unfiltered fast path")
 	}
@@ -241,7 +241,7 @@ func TestRuleReportUnfilteredFastPathMarksEveryRule(t *testing.T) {
 	for i, row := range marks.hit {
 		for j, hit := range row {
 			if !hit {
-				t.Errorf("rule %q of check %s was not marked alive on the fast path", entries[i].rules[j].Rule, entries[i].def.Name)
+				t.Errorf("rule %q of check %s was not marked alive on the fast path", entries[i].Rules[j].Rule, entries[i].Def.Name)
 			}
 		}
 	}
@@ -273,7 +273,7 @@ func TestRuleReportEmptyPackageStaysSilent(t *testing.T) {
 	plan := compilePlan(t, cfg)
 	// The pair would be recorded wholesale if the guard let the empty pass mark:
 	// the entry has to be on the fast path for this case to reach it.
-	if !allUnfiltered(plan.scope(checks.ScopeFile)) {
+	if !allUnfiltered(plan.Scope(checks.ScopeFile)) {
 		t.Fatal("the fixture must take the unfiltered fast path")
 	}
 
@@ -406,7 +406,7 @@ func TestRuleReportArchiveMemberScopeStaysSilent(t *testing.T) {
 
 	// The mutation pin: the scope is out of the report's allow-list, and the plan
 	// really does carry rules here, or the nil shape would prove nothing.
-	if len(plan.scope(checks.ScopeArchiveMember)) == 0 {
+	if len(plan.Scope(checks.ScopeArchiveMember)) == 0 {
 		t.Fatal("the fixture must carry archive-member rules, or the missing mark shape proves nothing")
 	}
 	if newRuleReport(plan).scopes[checks.ScopeArchiveMember] != nil {
@@ -415,7 +415,7 @@ func TestRuleReportArchiveMemberScopeStaysSilent(t *testing.T) {
 
 	// Anti-vacuity for the contract below: the container gate really is empty, so
 	// a mark taken here would call both rules alive on any archive at all.
-	for _, rule := range planEntry(t, plan, "IsFreeOfKeywords", checks.ScopeArchiveMember).rules {
+	for _, rule := range planEntry(t, plan, "IsFreeOfKeywords", checks.ScopeArchiveMember).Rules {
 		if !rule.Unfiltered() {
 			t.Fatalf("rule %q: a member rule's dispatch gate must admit every archive", rule.Rule)
 		}
@@ -466,7 +466,7 @@ func TestRuleReportRepositoryScopeStaysSilent(t *testing.T) {
 	// report's allow-list because a repository selector narrows rather than gates,
 	// so a rule admitting nothing still runs and still reports. The plan really
 	// does carry rules here, or the nil shape would mean nothing.
-	if len(plan.scope(checks.ScopeRepository)) == 0 {
+	if len(plan.Scope(checks.ScopeRepository)) == 0 {
 		t.Fatal("the fixture must carry repository rules, or the missing mark shape proves nothing")
 	}
 	if newRuleReport(plan).scopes[checks.ScopeRepository] != nil {
@@ -483,7 +483,7 @@ func TestRuleReportRepositoryScopeStaysSilent(t *testing.T) {
 	}
 
 	sink := &diagSink{rules: newRuleReport(plan)}
-	messages := applyChecksFilteredByRepository(context.Background(), sink, plan.scope(checks.ScopeRepository), files)
+	messages := applyChecksFilteredByRepository(context.Background(), sink, plan.Scope(checks.ScopeRepository), files)
 	diags := append(sink.drain(), sink.rules.diagnostics()...)
 
 	assertRuleDiags(t, diags, structs.DiagWarning, 0, "readme-nowhere")
@@ -560,7 +560,7 @@ func TestRuleReportFoldAccumulatesAcrossArchives(t *testing.T) {
 		asciiRule("list-dead", []string{"archive-file-list"}, "zzz-no-such-member"),
 	}
 	plan := compilePlan(t, cfg)
-	entries := plan.scope(checks.ScopeArchiveFileList)
+	entries := plan.Scope(checks.ScopeArchiveFileList)
 
 	sink := &diagSink{rules: newRuleReport(plan)}
 	// The order is the test: the archive that proves nothing folds LAST.
@@ -593,7 +593,7 @@ func TestRuleReportLocalBuffersArePrivate(t *testing.T) {
 		asciiRule("list-two", []string{"archive-file-list"}, `\.txt$`),
 	}
 	plan := compilePlan(t, cfg)
-	entries := plan.scope(checks.ScopeArchiveFileList)
+	entries := plan.Scope(checks.ScopeArchiveFileList)
 	report := newRuleReport(plan)
 
 	first := report.local(checks.ScopeArchiveFileList, entries)
@@ -636,7 +636,7 @@ func TestRuleReportLocalBuffersArePrivate(t *testing.T) {
 	// Same LENGTH, different backing array. A length test alone cannot tell this
 	// from the plan's own slice, and a reordered copy would file one rule's marks
 	// under another rule's name.
-	copied := append([]checkRules(nil), entries...)
+	copied := append([]checks.PlanEntry(nil), entries...)
 	if got := report.local(checks.ScopeArchiveFileList, copied); got != nil {
 		t.Error("an entry slice that is not the plan's own must switch reporting off")
 	}
@@ -653,7 +653,7 @@ func TestRuleReportOffStaysInert(t *testing.T) {
 		asciiRule("csv-rule", []string{"file"}, `\.csv$`),
 		asciiRule("alpha-rule", []string{"file"}, `^alpha`),
 	}
-	entries := compilePlan(t, cfg).scope(checks.ScopeFile)
+	entries := compilePlan(t, cfg).Scope(checks.ScopeFile)
 
 	// matchRules keeps TWO selection loops - one that records marks and one that
 	// does not - and they must stay semantically identical. Every other
@@ -673,19 +673,19 @@ func TestRuleReportOffStaysInert(t *testing.T) {
 		}
 		for c := range off[i].Checks {
 			offCheck, onCheck := off[i].Checks[c], on[i].Checks[c]
-			if offCheck.def != onCheck.def {
-				t.Fatalf("work item %d check %d: %q with the report off, %q with it on", i, c, offCheck.def.Name, onCheck.def.Name)
+			if offCheck.Def != onCheck.Def {
+				t.Fatalf("work item %d check %d: %q with the report off, %q with it on", i, c, offCheck.Def.Name, onCheck.Def.Name)
 			}
-			if len(offCheck.rules) != len(onCheck.rules) {
-				t.Fatalf("work item %d check %s: %d rules off, %d on", i, offCheck.def.Name, len(offCheck.rules), len(onCheck.rules))
+			if len(offCheck.Rules) != len(onCheck.Rules) {
+				t.Fatalf("work item %d check %s: %d rules off, %d on", i, offCheck.Def.Name, len(offCheck.Rules), len(onCheck.Rules))
 			}
-			if len(offCheck.rules) > 1 {
+			if len(offCheck.Rules) > 1 {
 				multiRule++
 			}
-			for r := range offCheck.rules {
-				if offCheck.rules[r] != onCheck.rules[r] {
+			for r := range offCheck.Rules {
+				if offCheck.Rules[r] != onCheck.Rules[r] {
 					t.Fatalf("work item %d check %s rule %d: %q with the report off, %q with it on",
-						i, offCheck.def.Name, r, offCheck.rules[r].Rule, onCheck.rules[r].Rule)
+						i, offCheck.Def.Name, r, offCheck.Rules[r].Rule, onCheck.Rules[r].Rule)
 				}
 			}
 		}
@@ -718,7 +718,7 @@ func TestRuleReportOffStaysInert(t *testing.T) {
 // on the files the first two reject rather than measuring the recorder.
 // IsFreeOfKeywords is anchored, so declaring it here is also what keeps
 // withRequiredAnchors from adding a rule of its own alongside these.
-func benchCollisionPlan(b *testing.B, ruleCount int, dead bool) *Plan {
+func benchCollisionPlan(b *testing.B, ruleCount int, dead bool) *checks.Plan {
 	b.Helper()
 	cfg := planConfig(nil)
 	for i := 0; i < ruleCount; i++ {
@@ -737,8 +737,8 @@ func benchCollisionPlan(b *testing.B, ruleCount int, dead bool) *Plan {
 		})
 	}
 	plan := benchPipelinePlan(b, withRequiredAnchors(cfg))
-	for _, entry := range plan.scope(checks.ScopeFile) {
-		if entry.def.Name == "IsFreeOfKeywords" && len(entry.rules) == ruleCount {
+	for _, entry := range plan.Scope(checks.ScopeFile) {
+		if entry.Def.Name == "IsFreeOfKeywords" && len(entry.Rules) == ruleCount {
 			return plan
 		}
 	}
@@ -762,8 +762,8 @@ func BenchmarkRuleCollisionAnalysis(b *testing.B) {
 	const fileCount = 5000
 	files := benchFilterFiles(fileCount)
 
-	run := func(b *testing.B, plan *Plan, reported bool) {
-		entries := plan.scope(checks.ScopeFile)
+	run := func(b *testing.B, plan *checks.Plan, reported bool) {
+		entries := plan.Scope(checks.ScopeFile)
 		// The report is built once per RUN in production, so it is built here;
 		// local and fold are what a phase pays, so they are inside the loop.
 		var report *ruleReport

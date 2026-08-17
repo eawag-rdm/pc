@@ -13,9 +13,7 @@ import (
 )
 
 // This file owns the path from declared rules to bindable specs and compiled
-// selectors. It lives HERE, next to the registry, so utils.Compile and the
-// checks tests assemble and compile through the SAME code and cannot drift
-// apart (utils imports checks; checks must not import utils).
+// selectors.
 
 // anchoredChecks must each be DECLARED or the load fails: these checks'
 // parameters are load-bearing enough that a config silent about them is a
@@ -164,7 +162,7 @@ type ruleIdentity struct {
 //     parameter set, which every check but the secret scan refuses at bind -
 //     and is therefore kept as declared.
 //  2. Scope: an omitted (or empty) scope resolves through DefaultScopes, the
-//     resolution utils.Compile plans by, so scope = [] and a spelled-out list
+//     resolution Compile plans by, so scope = [] and a spelled-out list
 //     of every supported scope are one set. The names are sorted either way -
 //     declaration order is no part of the meaning.
 //  3. Subject: one reading per scope class, over the same scope switch
@@ -219,7 +217,7 @@ func ruleIdentityOf(spec config.RuleSpec, def CheckDef) ruleIdentity {
 
 // DefaultScopes returns the scopes a rule serves when it declares none: the
 // check's own, in dispatch order. It is the ONE statement of that default -
-// utils.Compile resolves a rule's scopes through it and the duplicate refusal
+// Compile resolves a rule's scopes through it and the duplicate refusal
 // normalizes through it - so the plan and the refusal cannot come to disagree
 // about what an undeclared scope means.
 func DefaultScopes(def CheckDef) []Scope {
@@ -394,9 +392,9 @@ func ruleSelectorSpec(spec config.RuleSpec, subject string) selector.Spec {
 // still be consulted behind it: ONE rule hands the iterator its own member
 // selector and the gates are skipped - every shipped config's case - while
 // several rules share a union pre-filter that is nobody's own filter, so each
-// rule's gate still decides. utils.Compile records the pair on the batch, over
-// the WHOLE plan; the checks tests mirror the decision through this same
-// function, so the two cannot drift.
+// rule's gate still decides. Compile records the pair on the batch, over the
+// WHOLE plan; the checks tests mirror the decision through this same function,
+// so the two cannot drift.
 func MemberAdmission(rules []*BoundRule) (admit *selector.Selector, perRule bool) {
 	if len(rules) == 0 {
 		return nil, false

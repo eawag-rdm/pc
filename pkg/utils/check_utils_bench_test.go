@@ -43,14 +43,14 @@ func benchFilterFiles(n int) []structs.File {
 
 // benchFileScope compiles cfg and returns its file-scope plan entries, as
 // startup does once.
-func benchFileScope(b *testing.B, cfg config.Config) []checkRules {
+func benchFileScope(b *testing.B, cfg config.Config) []checks.PlanEntry {
 	b.Helper()
 	cfg = withRequiredAnchors(cfg)
-	plan, err := Compile(&cfg, checks.NewRegistry())
+	plan, err := checks.Compile(&cfg, checks.NewRegistry())
 	if err != nil {
 		b.Fatalf("compile rules: %v", err)
 	}
-	return plan.scope(checks.ScopeFile)
+	return plan.Scope(checks.ScopeFile)
 }
 
 // BenchmarkFilterChecksForFiles measures the selection pass over 5000 files x the
@@ -73,13 +73,13 @@ func BenchmarkFilterChecksForFiles(b *testing.B) {
 	entries := benchFileScope(b, benchFilterConfig())
 	noFilter := benchFileScope(b, benchUnfilteredConfig())
 
-	decide := func(b *testing.B, entries []checkRules, wantSkips bool) {
+	decide := func(b *testing.B, entries []checks.PlanEntry, wantSkips bool) {
 		b.ReportAllocs()
 		skipped := 0
 		for b.Loop() {
 			for i := range files {
 				for _, entry := range entries {
-					for _, rule := range entry.rules {
+					for _, rule := range entry.Rules {
 						if !rule.Match(files[i]) {
 							skipped++
 						}

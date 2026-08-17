@@ -38,9 +38,9 @@ func benchPipelineConfig() config.Config {
 }
 
 // benchPipelinePlan compiles cfg against the real registry, as startup does once.
-func benchPipelinePlan(b *testing.B, cfg config.Config) *Plan {
+func benchPipelinePlan(b *testing.B, cfg config.Config) *checks.Plan {
 	b.Helper()
-	plan, err := Compile(&cfg, checks.NewRegistry())
+	plan, err := checks.Compile(&cfg, checks.NewRegistry())
 	if err != nil {
 		b.Fatalf("compile rules: %v", err)
 	}

@@ -3,7 +3,6 @@ package utils
 import (
 	"archive/zip"
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,7 +13,6 @@ import (
 
 	"github.com/eawag-rdm/pc/pkg/checks"
 	"github.com/eawag-rdm/pc/pkg/config"
-	"github.com/eawag-rdm/pc/pkg/selector"
 	"github.com/eawag-rdm/pc/pkg/structs"
 )
 
@@ -53,13 +51,13 @@ func withRequiredAnchors(cfg config.Config) config.Config {
 
 // compilePlan compiles cfg against the real registry, the way both frontends do
 // at startup.
-func compilePlan(t *testing.T, cfg config.Config) *Plan {
+func compilePlan(t *testing.T, cfg config.Config) *checks.Plan {
 	t.Helper()
 	if cfg.General == nil {
 		cfg.General = &config.GeneralConfig{MaxContentScanFileSize: config.DefaultMaxContentScanFileSize}
 	}
 	cfg = withRequiredAnchors(cfg)
-	plan, err := Compile(&cfg, checks.NewRegistry())
+	plan, err := checks.Compile(&cfg, checks.NewRegistry())
 	if err != nil {
 		t.Fatalf("compile rules: %v", err)
 	}
@@ -67,173 +65,30 @@ func compilePlan(t *testing.T, cfg config.Config) *Plan {
 }
 
 // planEntry returns the plan entry of one check in one scope.
-func planEntry(t *testing.T, plan *Plan, name string, scope checks.Scope) checkRules {
+func planEntry(t *testing.T, plan *checks.Plan, name string, scope checks.Scope) checks.PlanEntry {
 	t.Helper()
-	for _, entry := range plan.scope(scope) {
-		if entry.def.Name == name {
+	for _, entry := range plan.Scope(scope) {
+		if entry.Def.Name == name {
 			return entry
 		}
 	}
 	t.Fatalf("%s has no entry in scope %s", name, scope)
-	return checkRules{}
+	return checks.PlanEntry{}
 }
 
 // planRule returns the single bound rule of one check in one scope.
-func planRule(t *testing.T, plan *Plan, name string, scope checks.Scope) *checks.BoundRule {
+func planRule(t *testing.T, plan *checks.Plan, name string, scope checks.Scope) *checks.BoundRule {
 	t.Helper()
-	for _, entry := range plan.scope(scope) {
-		if entry.def.Name == name {
-			if len(entry.rules) != 1 {
-				t.Fatalf("%s@%s: %d rules, want 1", name, scope, len(entry.rules))
+	for _, entry := range plan.Scope(scope) {
+		if entry.Def.Name == name {
+			if len(entry.Rules) != 1 {
+				t.Fatalf("%s@%s: %d rules, want 1", name, scope, len(entry.Rules))
 			}
-			return entry.rules[0]
+			return entry.Rules[0]
 		}
 	}
 	t.Fatalf("%s has no rule in scope %s", name, scope)
 	return nil
-}
-
-func TestCompileRejectsUnknownCheck(t *testing.T) {
-	cfg := planConfig([]config.RuleSpec{
-		{Name: "HasOnlyASCII", Check: "HasOnlyASCII", Enabled: true},
-		{Name: "IsFreeOfKeywordsXX", Check: "IsFreeOfKeywordsXX", Enabled: true},
-	})
-	_, err := Compile(&cfg, checks.NewRegistry())
-	if err == nil {
-		t.Fatal("a declaration naming no known check must fail the compile")
-	}
-	if want := "IsFreeOfKeywordsXX"; !strings.Contains(err.Error(), want) {
-		t.Errorf("error must name the orphan %q: %v", want, err)
-	}
-}
-
-// TestCompileRejectsBadParamType asserts the FAULT each config carries, not
-// merely that the compile failed: the anchors are filled in, so a config whose
-// parameter is corrected compiles clean and the case cannot pass on an
-// unrelated error.
-func TestCompileRejectsBadParamType(t *testing.T) {
-	cases := map[string]struct {
-		config config.Config
-		want   string
-	}{
-		"keywords is not a list": {
-			config: planConfig([]config.RuleSpec{
-				{Name: "IsFreeOfKeywords", Check: "IsFreeOfKeywords", Enabled: true, Params: []map[string]interface{}{
-					{"keywords": "password", "info": "found"},
-				}},
-			}),
-			want: `"keywords" must be a list of strings`,
-		},
-		"info is not a string": {
-			config: planConfig([]config.RuleSpec{
-				{Name: "IsFreeOfKeywords", Check: "IsFreeOfKeywords", Enabled: true, Params: []map[string]interface{}{
-					{"keywords": []string{"password"}, "info": []string{"found"}},
-				}},
-			}),
-			want: `"info" must be a string`,
-		},
-		"disallowed_names missing": {
-			config: planConfig([]config.RuleSpec{
-				{Name: "IsValidName", Check: "IsValidName", Enabled: true, Params: []map[string]interface{}{{"names": []string{".git"}}}},
-			}),
-			want: `unknown key "names"`,
-		},
-		"readme_names is not a list": {
-			config: planConfig([]config.RuleSpec{
-				{Name: "HasReadme", Check: "HasReadme", Enabled: true, Params: []map[string]interface{}{{"readme_names": "readme.md"}}},
-			}),
-			want: `"readme_names" must be a list of strings`,
-		},
-		"a check that takes no parameters": {
-			config: planConfig([]config.RuleSpec{
-				{Name: "HasOnlyASCII", Check: "HasOnlyASCII", Enabled: true, Params: []map[string]interface{}{{"keywords": []string{"x"}}}},
-			}),
-			want: `check "HasOnlyASCII" takes no parameters`,
-		},
-	}
-	for name, test := range cases {
-		t.Run(name, func(t *testing.T) {
-			cfg := withRequiredAnchors(test.config)
-			_, err := Compile(&cfg, checks.NewRegistry())
-			if err == nil {
-				t.Fatal("a wrong-typed parameter must fail the compile")
-			}
-			if !strings.Contains(err.Error(), test.want) {
-				t.Errorf("the compile must fail on %s: %v", test.want, err)
-			}
-		})
-	}
-}
-
-func TestCompileRejectsUnsupportedScope(t *testing.T) {
-	keywords, _ := checks.NewRegistry().Lookup("IsFreeOfKeywords")
-
-	// A scope the check does not serve.
-	if _, err := ruleScopes(config.RuleSpec{Check: "IsFreeOfKeywords", Scope: []string{"repository"}}, keywords); err == nil {
-		t.Error("a scope the check does not support must be a load error")
-	}
-	// A scope that does not exist at all.
-	if _, err := ruleScopes(config.RuleSpec{Check: "IsFreeOfKeywords", Scope: []string{"nonsense"}}, keywords); err == nil {
-		t.Error("an unknown scope name must be a load error")
-	}
-	// The scopes it does serve resolve.
-	scopes, err := ruleScopes(config.RuleSpec{Check: "IsFreeOfKeywords", Scope: []string{"file", "archive-member"}}, keywords)
-	if err != nil || len(scopes) != 2 {
-		t.Errorf("supported scopes must resolve, got (%v, %v)", scopes, err)
-	}
-	// Naming none takes the check's own.
-	if scopes, err = ruleScopes(config.RuleSpec{Check: "IsFreeOfKeywords"}, keywords); err != nil || len(scopes) != 2 {
-		t.Errorf("a rule naming no scope takes the check's own, got (%v, %v)", scopes, err)
-	}
-}
-
-// TestCompileAggregatesLoadErrors pins that a config author is told every fault
-// at once - all bad patterns, and every rule that names no check - rather than
-// one per run.
-func TestCompileAggregatesLoadErrors(t *testing.T) {
-	cfg := planConfig([]config.RuleSpec{
-		{Name: "HasOnlyASCII", Check: "HasOnlyASCII", Enabled: true, Include: []string{"("}},
-		{Name: "HasNoWhiteSpace", Check: "HasNoWhiteSpace", Enabled: true, Exclude: []string{"[a-"}},
-		{Name: "IsValidName", Check: "IsValidName", Enabled: true, Exclude: []string{"keep.txt", ""}},
-		{Name: "NoSuchCheck", Check: "NoSuchCheck", Enabled: true},
-	})
-	_, err := Compile(&cfg, checks.NewRegistry())
-	if err == nil {
-		t.Fatal("expected a load error")
-	}
-	for _, want := range []string{"HasOnlyASCII", "HasNoWhiteSpace", "IsValidName", "NoSuchCheck"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("aggregated error must name %q: %v", want, err)
-		}
-	}
-}
-
-// TestCompileReportsTwinsWithSiblingFaults is the same contract one level down,
-// where a check's own rules are assembled: a twin - two rules of one check that
-// differ only in their name - does not take the check's remaining rules out of
-// the load, so a sibling's fault is reported in the SAME run rather than on the
-// day the twin is removed and the load rerun. Only Compile can show it: the
-// sibling's fault here is its selector's, and selectors are compiled here.
-func TestCompileReportsTwinsWithSiblingFaults(t *testing.T) {
-	cfg := planConfig(nil)
-	cfg.Rules = []config.RuleSpec{
-		asciiRule("ascii-a", []string{"file"}, `\.csv$`),
-		asciiRule("ascii-b", []string{"file"}, `\.csv$`),
-		asciiRule("ascii-bad", []string{"file"}, "("),
-	}
-	cfg = withRequiredAnchors(cfg)
-	_, err := Compile(&cfg, checks.NewRegistry())
-	if err == nil {
-		t.Fatal("a twin rule and an uncompilable pattern must both refuse the load")
-	}
-	for _, want := range []string{
-		`rule "ascii-b": resolves to the same rule as "ascii-a"`,
-		`selector for rule "ascii-bad"`,
-	} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("the aggregate must report %q alongside the check's other fault: %v", want, err)
-		}
-	}
 }
 
 // TestCompileSynthesizesDefaultRules is the guard against silently deleting a
@@ -271,7 +126,7 @@ func TestCompileSynthesizesDefaultRules(t *testing.T) {
 		{Path: readme, Name: "myreadme.md", RelPath: "myreadme.md"},
 		{Path: filepath.Join(dir, "data.csv"), Name: "data.csv", RelPath: "data.csv"},
 	}}
-	msgs := applyChecksFilteredByRepository(context.Background(), &diagSink{}, plan.scope(checks.ScopeRepository), repo.Files)
+	msgs := applyChecksFilteredByRepository(context.Background(), &diagSink{}, plan.Scope(checks.ScopeRepository), repo.Files)
 	toc := 0
 	for _, m := range msgs {
 		if m.TestName == "ReadMeContainsTOC" {
@@ -289,71 +144,6 @@ func TestCompileSynthesizesDefaultRules(t *testing.T) {
 	}
 }
 
-// TestCompileSkipsDisabledSecretScan pins the phase gate's new home: the leak
-// scan runs off its rule's enabled flag, so a disabled scan is simply not in
-// the plan.
-func TestCompileSkipsDisabledSecretScan(t *testing.T) {
-	for _, enabled := range []bool{false, true} {
-		cfg := planConfig([]config.RuleSpec{
-			{Name: "IsFreeOfSecrets", Check: "IsFreeOfSecrets", Enabled: enabled},
-		})
-		plan := compilePlan(t, cfg)
-		found := false
-		for _, entry := range plan.scope(checks.ScopeRepository) {
-			found = found || entry.def.Name == "IsFreeOfSecrets"
-		}
-		if found != enabled {
-			t.Errorf("enabled = %v: leak rule in plan = %v", enabled, found)
-		}
-	}
-}
-
-// TestCompileRejectsMissingGeneral pins that the scan bounds are never
-// fabricated: a zero GeneralConfig means maxContentScanFileSize = 0, i.e. every
-// file skipped as oversized, which must be a load error rather than a silent
-// no-scan.
-func TestCompileRejectsMissingGeneral(t *testing.T) {
-	cfg := config.Config{Rules: []config.RuleSpec{{Name: "HasOnlyASCII", Check: "HasOnlyASCII", Enabled: true}}}
-	if _, err := Compile(&cfg, checks.NewRegistry()); err == nil {
-		t.Fatal("a config without [general] must fail the compile")
-	}
-}
-
-// TestCompileRejectsEmptyRegistry pins that a zero-value Registry{} never
-// compiles: a plan with no entries runs no checks, so every package would scan
-// clean and the server would cache that as authoritative.
-func TestCompileRejectsEmptyRegistry(t *testing.T) {
-	cfg := planConfig(nil)
-	if _, err := Compile(&cfg, checks.Registry{}); err == nil {
-		t.Fatal("an empty check registry must fail the compile")
-	}
-}
-
-// TestCompileRejectsNilConfig pins that a nil config is an error, not a panic.
-func TestCompileRejectsNilConfig(t *testing.T) {
-	if _, err := Compile(nil, checks.NewRegistry()); err == nil {
-		t.Fatal("a nil config must fail the compile")
-	}
-}
-
-// TestCompileErrorExposesSelectorFault pins that a pattern fault stays
-// MATCHABLE through the aggregate: callers that want the faulty patterns rather
-// than the message text match *selector.CompileError with errors.As.
-func TestCompileErrorExposesSelectorFault(t *testing.T) {
-	cfg := planConfig([]config.RuleSpec{{Name: "HasOnlyASCII", Check: "HasOnlyASCII", Enabled: true, Include: []string{"("}}})
-	_, err := Compile(&cfg, checks.NewRegistry())
-	if err == nil {
-		t.Fatal("an uncompilable pattern must fail the compile")
-	}
-	var compileErr *selector.CompileError
-	if !errors.As(err, &compileErr) {
-		t.Fatalf("the aggregate must stay matchable as *selector.CompileError: %v", err)
-	}
-	if compileErr.Rule != "HasOnlyASCII" || len(compileErr.Faults) == 0 {
-		t.Errorf("the fault must name its rule and its patterns: %+v", compileErr)
-	}
-}
-
 // memberRule builds one [[rule]] spec for the keyword check's archive-member
 // scope, as the config surface produces it.
 func memberRule(name string, include []string, ignoreCase bool) config.RuleSpec {
@@ -366,63 +156,6 @@ func memberRule(name string, include []string, ignoreCase bool) config.RuleSpec 
 		Include:    include,
 		Subject:    "path",
 		Params:     []map[string]interface{}{{"keywords": []string{"password"}, "info": "found"}},
-	}
-}
-
-// TestBuildMemberAdmissionTwoRules pins the plan-wide member decision on the
-// PRODUCTION path - two [[rule]] specs through Compile, never hand-built
-// selectors: with two member rules the iterator gets the UNION of their
-// literals - matched against the member PATH, like the per-rule gates - and
-// the per-rule gates must still run, because the union is nobody's own filter.
-func TestBuildMemberAdmissionTwoRules(t *testing.T) {
-	// Case-SENSITIVE literals: a case-folding selector may never gate a union
-	// skip (selector.UnionLiterals), pinned by the ignoreCase case below.
-	cfg := planConfig(nil)
-	cfg.Rules = []config.RuleSpec{
-		memberRule("data-members", []string{"data/"}, false),
-		memberRule("raw-members", []string{"raw/"}, false),
-	}
-	plan := compilePlan(t, cfg)
-
-	entry := planEntry(t, plan, "IsFreeOfKeywords", checks.ScopeArchiveMember)
-	if len(entry.rules) != 2 {
-		t.Fatalf("expected 2 member rules, got %d", len(entry.rules))
-	}
-	batch := entry.batch
-	if !batch.PerRule {
-		t.Fatal("a union admission is nobody's own filter: the per-rule gates must still run")
-	}
-	if batch.Admit == nil {
-		t.Fatal("two literal member selectors must produce a union pre-filter")
-	}
-	// Subject "path": the union carries member-path literals, so matching it
-	// against a base name would skip every nested member.
-	if !batch.Admit.Match("data/one.csv") || !batch.Admit.Match("raw/two.csv") {
-		t.Error("the union must admit the members of both rules, matched by PATH")
-	}
-	if batch.Admit.Match("docs/three.csv") {
-		t.Error("the union must skip a member no rule can match")
-	}
-	// A member rule's dispatch gate admits every ARCHIVE: the selector
-	// addresses members, so the container is never gated on it.
-	if !entry.rules[0].Unfiltered() {
-		t.Error("a member rule's dispatch gate must admit every archive")
-	}
-
-	// An ignoreCase selector may never gate a union skip: FastMatcher-style
-	// folding is narrower than RE2 (?i), so the pass is disabled entirely.
-	cfg = planConfig(nil)
-	cfg.Rules = []config.RuleSpec{
-		memberRule("data-members", []string{"data/"}, false),
-		memberRule("raw-members", []string{"raw/"}, true),
-	}
-	plan = compilePlan(t, cfg)
-	entry = planEntry(t, plan, "IsFreeOfKeywords", checks.ScopeArchiveMember)
-	if entry.batch.Admit != nil {
-		t.Error("an ignoreCase member rule must disable the union pre-filter")
-	}
-	if !entry.batch.PerRule {
-		t.Error("without a union, the per-rule gates are the only member filter")
 	}
 }
 
@@ -468,7 +201,7 @@ func TestMemberRulesUnionScansPerRule(t *testing.T) {
 	plan := compilePlan(t, cfg)
 
 	archive := structs.ToFile(zipPath, "bundle.zip", -1, "")
-	messages := applyChecksFilteredByFileOnArchive(context.Background(), &diagSink{}, plan.scope(checks.ScopeArchiveMember), []structs.File{archive})
+	messages := applyChecksFilteredByFileOnArchive(context.Background(), &diagSink{}, plan.Scope(checks.ScopeArchiveMember), []structs.File{archive})
 
 	found := map[string]string{} // member -> rule that reported it
 	for _, m := range messages {
@@ -498,27 +231,6 @@ func TestMemberRulesUnionScansPerRule(t *testing.T) {
 	}
 }
 
-// TestCompileValidatesDisabledRules pins the gate a disabled rule still passes
-// through: Compile binds its parameters and compiles its selectors exactly like
-// a live rule's - a config the scan could not honour must fail at LOAD, not on
-// the day the dormant rule is re-enabled - and only then leaves it out of the
-// plan (TestCompileSkipsDisabledSecretScan).
-func TestCompileValidatesDisabledRules(t *testing.T) {
-	cfg := planConfig([]config.RuleSpec{
-		{Name: "IsFreeOfSecrets", Check: "IsFreeOfSecrets", Enabled: false, Include: []string{"("}},
-	})
-	if _, err := Compile(&cfg, checks.NewRegistry()); err == nil {
-		t.Fatal("a disabled rule's uncompilable list must refuse the load")
-	}
-	cfg = planConfig([]config.RuleSpec{
-		{Name: "IsFreeOfSecrets", Check: "IsFreeOfSecrets", Enabled: false,
-			Params: []map[string]interface{}{{"nonsense": true}}},
-	})
-	if _, err := Compile(&cfg, checks.NewRegistry()); err == nil {
-		t.Fatal("a disabled rule's unknown parameter must refuse the load")
-	}
-}
-
 // TestRepositoryRuleNarrowsFileSet pins the contract the previously-inert
 // HasReadme lists now have (plan §3.1): a repository rule's selector narrows
 // the file set the check sees, for HasReadme AND for ReadMeContainsTOC, which
@@ -539,9 +251,9 @@ func TestRepositoryRuleNarrowsFileSet(t *testing.T) {
 		{Name: "HasReadme", Check: "HasReadme", Enabled: true,
 			Params: []map[string]interface{}{{"readme_names": []string{"readme.md"}}}},
 	}))
-	report := func(plan *Plan) map[string]string {
+	report := func(plan *checks.Plan) map[string]string {
 		out := map[string]string{}
-		for _, m := range applyChecksFilteredByRepository(context.Background(), &diagSink{}, plan.scope(checks.ScopeRepository), files) {
+		for _, m := range applyChecksFilteredByRepository(context.Background(), &diagSink{}, plan.Scope(checks.ScopeRepository), files) {
 			out[m.TestName] = m.Content
 		}
 		return out
@@ -565,22 +277,6 @@ func TestRepositoryRuleNarrowsFileSet(t *testing.T) {
 	}
 	if _, reported := got["ReadMeContainsTOC"]; reported {
 		t.Error("ReadMeContainsTOC shares HasReadme's rule, so it must see the same narrowed set")
-	}
-}
-
-// TestRepositoryRuleRejectsBadPattern is the other half of the same contract:
-// now that the lists are live, an uncompilable one refuses the boot instead of
-// sitting inert.
-func TestRepositoryRuleRejectsBadPattern(t *testing.T) {
-	cfg := planConfig([]config.RuleSpec{
-		{
-			Name: "HasReadme", Check: "HasReadme", Enabled: true,
-			Include: []string{"^raw/("},
-			Params:  []map[string]interface{}{{"readme_names": []string{"readme.md"}}},
-		},
-	})
-	if _, err := Compile(&cfg, checks.NewRegistry()); err == nil {
-		t.Fatal("an uncompilable HasReadme pattern must refuse the boot")
 	}
 }
 
@@ -640,7 +336,7 @@ func multisetFixture(t *testing.T) []structs.File {
 // countInvocations wraps every runner in the plan, so a real ApplyAllChecks run
 // records the (check, scope) multiset the dispatch actually produced - rather
 // than a second implementation of the selection rules inside the test.
-func countInvocations(plan *Plan) map[string]int {
+func countInvocations(plan *checks.Plan) map[string]int {
 	counts := map[string]int{}
 	var mu sync.Mutex
 	record := func(key string) {
@@ -649,17 +345,18 @@ func countInvocations(plan *Plan) map[string]int {
 		mu.Unlock()
 	}
 	for scope := checks.Scope(0); scope < checks.NumScopes; scope++ {
-		for i := range plan.scopes[scope] {
-			entry := &plan.scopes[scope][i]
-			key := entry.def.Name + "@" + scope.String()
-			if run := entry.def.RunFile; run != nil {
-				entry.def.RunFile = func(ctx context.Context, file structs.File, s checks.Scope, batch *checks.Batch, rules []*checks.BoundRule) []structs.Message {
+		entries := plan.Scope(scope)
+		for i := range entries {
+			entry := &entries[i]
+			key := entry.Def.Name + "@" + scope.String()
+			if run := entry.Def.RunFile; run != nil {
+				entry.Def.RunFile = func(ctx context.Context, file structs.File, s checks.Scope, batch *checks.Batch, rules []*checks.BoundRule) []structs.Message {
 					record(key)
 					return run(ctx, file, s, batch, rules)
 				}
 			}
-			if run := entry.def.RunRepository; run != nil {
-				entry.def.RunRepository = func(ctx context.Context, repo structs.Repository, batch *checks.Batch, rules []*checks.BoundRule) []structs.Message {
+			if run := entry.Def.RunRepository; run != nil {
+				entry.Def.RunRepository = func(ctx context.Context, repo structs.Repository, batch *checks.Batch, rules []*checks.BoundRule) []structs.Message {
 					record(key)
 					return run(ctx, repo, batch, rules)
 				}

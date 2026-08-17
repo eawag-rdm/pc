@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/eawag-rdm/pc/internal/analysis"
+	"github.com/eawag-rdm/pc/pkg/checks"
 	"github.com/eawag-rdm/pc/pkg/collectors"
 	"github.com/eawag-rdm/pc/pkg/config"
 	"github.com/eawag-rdm/pc/pkg/helpers"
@@ -19,7 +20,6 @@ import (
 	"github.com/eawag-rdm/pc/pkg/output"
 	jsonformatter "github.com/eawag-rdm/pc/pkg/output/json"
 	"github.com/eawag-rdm/pc/pkg/structs"
-	"github.com/eawag-rdm/pc/pkg/utils"
 )
 
 // maxAnalyzeBodyBytes caps the request body. The body is a tiny JSON object
@@ -59,7 +59,7 @@ type Handler struct {
 	// (a bad pattern or parameter refuses the boot). It is a REQUIRED
 	// constructor argument: a nil plan dispatches nothing, so every package
 	// would be reported - and cached as - clean.
-	plan *utils.Plan
+	plan *checks.Plan
 
 	// analysisMu is the single serialization gate (concurrency = 1, §4/§9). It
 	// serializes the part of Analyze that touches process-global state
@@ -120,12 +120,12 @@ type Handler struct {
 
 // NewHandler creates a new handler with the given configuration. The slog
 // logger writes JSON access records to stdout. plan is the compiled rule set
-// (utils.Compile) and is REQUIRED: without it the dispatch runs no check at
+// (checks.Compile) and is REQUIRED: without it the dispatch runs no check at
 // all, and the result would be a clean report - cached as such. Construction
 // panics on a nil plan.
-func NewHandler(pcConfig *config.Config, serverCfg Config, logger *slog.Logger, plan *utils.Plan) *Handler {
+func NewHandler(pcConfig *config.Config, serverCfg Config, logger *slog.Logger, plan *checks.Plan) *Handler {
 	if plan == nil {
-		panic("server: NewHandler requires a compiled *utils.Plan")
+		panic("server: NewHandler requires a compiled *checks.Plan")
 	}
 	contact := DefaultContactMessage
 	logClientIP := true

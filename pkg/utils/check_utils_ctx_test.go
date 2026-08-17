@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eawag-rdm/pc/pkg/checks"
 	"github.com/eawag-rdm/pc/pkg/config"
 	"github.com/eawag-rdm/pc/pkg/structs"
 )
@@ -83,7 +84,7 @@ func TestApplyChecksFilteredByFile_CancelledMidScan_ReturnsPromptly(t *testing.T
 
 	done := make(chan struct{})
 	go func() {
-		applyChecksFilteredByFile(ctx, &diagSink{}, []checkRules{slow}, files)
+		applyChecksFilteredByFile(ctx, &diagSink{}, []checks.PlanEntry{slow}, files)
 		close(done)
 	}()
 
@@ -115,7 +116,7 @@ func TestApplyChecksFilteredByFile_PanickingCheck_Parallel(t *testing.T) {
 		return []structs.Message{{Content: "healthy ran", Source: file}}
 	})
 
-	messages := applyChecksFilteredByFile(context.Background(), &diagSink{}, []checkRules{panicking, healthy}, files)
+	messages := applyChecksFilteredByFile(context.Background(), &diagSink{}, []checks.PlanEntry{panicking, healthy}, files)
 
 	healthyCount := 0
 	for _, m := range messages {

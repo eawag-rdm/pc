@@ -66,7 +66,7 @@ func TestResultValueEquivalence(t *testing.T) {
 
 	entry := mockEntry("listCheck", func(structs.File) []structs.Message { return nil })
 	sink := &diagSink{}
-	applyChecksFilteredByFileOnArchiveFileList(context.Background(), sink, config.Config{}, []checkRules{entry}, files)
+	applyChecksFilteredByFileOnArchiveFileList(context.Background(), sink, config.Config{}, []checks.PlanEntry{entry}, files)
 
 	diags := sink.drain()
 	found := false
@@ -107,8 +107,7 @@ func TestDiagnosticsSurviveCancellation(t *testing.T) {
 		panic("boom: simulated check bug")
 	})
 
-	plan := &Plan{}
-	plan.scopes[checks.ScopeFile] = []checkRules{panicking}
+	plan := checks.NewPlan(map[checks.Scope][]checks.PlanEntry{checks.ScopeFile: {panicking}})
 	_, diags := ApplyAllChecks(ctx, config.Config{}, plan, files)
 
 	if len(diags) == 0 {
@@ -179,7 +178,7 @@ func TestDiagnosticsFromParallelArchives(t *testing.T) {
 
 	entry := mockEntry("listCheck", func(structs.File) []structs.Message { return nil })
 	sink := &diagSink{}
-	applyChecksFilteredByFileOnArchiveFileList(context.Background(), sink, config.Config{}, []checkRules{entry}, files)
+	applyChecksFilteredByFileOnArchiveFileList(context.Background(), sink, config.Config{}, []checks.PlanEntry{entry}, files)
 
 	subjects := map[string]bool{}
 	for _, d := range sink.drain() {
@@ -206,14 +205,12 @@ func assertPanicDiagnostic(t *testing.T, diags []structs.Diagnostic) {
 
 // panickingPlan is a check that always panics, declared for one scope, so a
 // phase can be driven into its recover path and asked for the diagnostic.
-func panickingPlan(scope checks.Scope) *Plan {
+func panickingPlan(scope checks.Scope) *checks.Plan {
 	entry := mockEntry("panicking", func(structs.File) []structs.Message {
 		panic("boom: simulated check bug")
 	})
-	entry.def.Scopes = checks.ScopesOf(scope)
-	plan := &Plan{}
-	plan.scopes[scope] = []checkRules{entry}
-	return plan
+	entry.Def.Scopes = checks.ScopesOf(scope)
+	return checks.NewPlan(map[checks.Scope][]checks.PlanEntry{scope: {entry}})
 }
 
 // TestProgressEngineReturnsDiagnostics pins the DEFAULT CLI/TUI path. Its twin
@@ -242,12 +239,11 @@ func TestRepositoryPhaseReturnsDiagnostics(t *testing.T) {
 			panic("boom: simulated repository check bug")
 		},
 	}
-	plan := &Plan{}
-	plan.scopes[checks.ScopeRepository] = []checkRules{{
-		def:   &def,
-		batch: &checks.Batch{},
-		rules: []*checks.BoundRule{{Rule: "panickingRepo"}},
-	}}
+	plan := checks.NewPlan(map[checks.Scope][]checks.PlanEntry{checks.ScopeRepository: {{
+		Def:   &def,
+		Batch: &checks.Batch{},
+		Rules: []*checks.BoundRule{{Rule: "panickingRepo"}},
+	}}})
 
 	_, diags := ApplyAllChecks(context.Background(), config.Config{}, plan, writeTempFiles(t, 1))
 	assertPanicDiagnostic(t, diags)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/eawag-rdm/pc/pkg/checks"
 	"github.com/eawag-rdm/pc/pkg/structs"
 )
 
@@ -36,7 +37,7 @@ func TestArchiveParallelProcessing(t *testing.T) {
 	})
 
 	// Test the function that specifically handles archives
-	messages := applyChecksFilteredByFileOnArchive(context.Background(), &diagSink{}, []checkRules{mockArchiveCheck}, files)
+	messages := applyChecksFilteredByFileOnArchive(context.Background(), &diagSink{}, []checks.PlanEntry{mockArchiveCheck}, files)
 
 	// Verify that all archive files were processed
 	expectedArchiveCount := 6 // 6 archive files

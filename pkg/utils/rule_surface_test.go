@@ -39,7 +39,7 @@ func anchors(except ...string) string {
 
 // loadAndCompile drives doc through the REAL pipeline both frontends use:
 // LoadConfig, then Compile against the real registry.
-func loadAndCompile(t *testing.T, doc string) (*Plan, error) {
+func loadAndCompile(t *testing.T, doc string) (*checks.Plan, error) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "pc.toml")
 	if err := os.WriteFile(path, []byte(baseTOML+doc), 0o600); err != nil {
@@ -49,7 +49,7 @@ func loadAndCompile(t *testing.T, doc string) (*Plan, error) {
 	if err != nil {
 		return nil, err
 	}
-	return Compile(cfg, checks.NewRegistry())
+	return checks.Compile(cfg, checks.NewRegistry())
 }
 
 // mustFail asserts the pipeline refuses doc with an error naming every want.
@@ -204,8 +204,8 @@ enabled = false
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	for _, entry := range plan.scope(checks.ScopeRepository) {
-		if entry.def.Name == "HasReadme" {
+	for _, entry := range plan.Scope(checks.ScopeRepository) {
+		if entry.Def.Name == "HasReadme" {
 			t.Fatal("a disabled rule's check must not be dispatched")
 		}
 	}
@@ -241,7 +241,7 @@ include = ["\\.csv$"]
 	}
 	// One member rule: the iterator filters through that rule's own selector.
 	entry := planEntry(t, plan, "IsFreeOfKeywords", checks.ScopeArchiveMember)
-	if entry.batch.Admit != rule.Member || entry.batch.PerRule {
+	if entry.Batch.Admit != rule.Member || entry.Batch.PerRule {
 		t.Error("with one member rule the iterator must use its selector directly")
 	}
 }
@@ -265,7 +265,7 @@ func TestCompileShippedConfigs(t *testing.T) {
 			if err != nil {
 				t.Fatalf("load config: %v", err)
 			}
-			plan, err := Compile(cfg, checks.NewRegistry())
+			plan, err := checks.Compile(cfg, checks.NewRegistry())
 			if err != nil {
 				t.Fatalf("compile config: %v", err)
 			}
@@ -274,8 +274,8 @@ func TestCompileShippedConfigs(t *testing.T) {
 			// single-member-rule admission: the iterator gets that rule's own
 			// selector and the per-rule gates stay off.
 			entry := planEntry(t, plan, "IsFreeOfKeywords", checks.ScopeArchiveMember)
-			if len(entry.rules) != 1 || entry.batch.PerRule {
-				t.Errorf("shipped configs must keep the single-member-rule fast path: %d rules, PerRule %v", len(entry.rules), entry.batch.PerRule)
+			if len(entry.Rules) != 1 || entry.Batch.PerRule {
+				t.Errorf("shipped configs must keep the single-member-rule fast path: %d rules, PerRule %v", len(entry.Rules), entry.Batch.PerRule)
 			}
 		})
 	}
@@ -419,7 +419,7 @@ enabled = false
 		{Path: filepath.Join(dir, "data.csv"), Name: "data.csv", RelPath: "data.csv"},
 	}
 	toc := 0
-	for _, m := range applyChecksFilteredByRepository(context.Background(), &diagSink{}, plan.scope(checks.ScopeRepository), files) {
+	for _, m := range applyChecksFilteredByRepository(context.Background(), &diagSink{}, plan.Scope(checks.ScopeRepository), files) {
 		if m.TestName == "ReadMeContainsTOC" && strings.Contains(m.Content, "data.csv") {
 			toc++
 		}

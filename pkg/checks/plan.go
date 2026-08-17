@@ -1,23 +1,22 @@
-package utils
+package checks
 
 import (
 	"errors"
 	"fmt"
 	"slices"
 
-	"github.com/eawag-rdm/pc/pkg/checks"
 	"github.com/eawag-rdm/pc/pkg/config"
 )
 
-// checkRules pairs one check with bound rules: in the Plan, every rule of that
+// PlanEntry pairs one check with bound rules: in the Plan, every rule of that
 // scope which names the check; in a work item, the ones that matched the file.
-// def and batch are POINTERS into the Plan, which owns both and outlives every
+// Def and Batch are POINTERS into the Plan, which owns both and outlives every
 // work item - a work item is built per file, and copying a CheckDef into each
 // one costs more than the selection pass it belongs to.
-type checkRules struct {
-	def   *checks.CheckDef
-	batch *checks.Batch
-	rules []*checks.BoundRule
+type PlanEntry struct {
+	Def   *CheckDef
+	Batch *Batch
+	Rules []*BoundRule
 }
 
 // Plan is the compiled rule set, per dispatch scope. It is built once at
@@ -25,47 +24,58 @@ type checkRules struct {
 // so every worker reads it without locking. It is carried explicitly - it never
 // lives in config.Config, which the server copies per request.
 type Plan struct {
-	scopes [checks.NumScopes][]checkRules
+	scopes [NumScopes][]PlanEntry
+}
+
+// NewPlan builds a plan from ready-made entries. It is the only writer outside
+// Compile, and a TEST SEAM: it exists so a dispatch test can drive a synthetic
+// plan without a config. Nothing may call it on a plan Compile has returned -
+// the workers read one locklessly, so a plan is immutable once it is out.
+func NewPlan(entries map[Scope][]PlanEntry) *Plan {
+	plan := &Plan{}
+	for scope, scoped := range entries {
+		plan.scopes[scope] = scoped
+	}
+	return plan
 }
 
 // add files one bound rule under its check, keeping one entry per check so the
 // invocation unit stays (file, check) with that check's rules batched. The
 // entry owns the check definition and the batch its rules share.
-func (p *Plan) add(scope checks.Scope, def checks.CheckDef, general *config.GeneralConfig, rule *checks.BoundRule) {
+func (p *Plan) add(scope Scope, def CheckDef, general *config.GeneralConfig, rule *BoundRule) {
 	entries := p.scopes[scope]
 	for i := range entries {
-		if entries[i].def.Name == def.Name {
-			entries[i].rules = append(entries[i].rules, rule)
+		if entries[i].Def.Name == def.Name {
+			entries[i].Rules = append(entries[i].Rules, rule)
 			return
 		}
 	}
 	owned := def
-	p.scopes[scope] = append(entries, checkRules{
-		def:   &owned,
-		batch: checks.NewBatch(general),
-		rules: []*checks.BoundRule{rule},
+	p.scopes[scope] = append(entries, PlanEntry{
+		Def:   &owned,
+		Batch: NewBatch(general),
+		Rules: []*BoundRule{rule},
 	})
 }
 
-// scope returns the bound rules of one dispatch scope, grouped by check.
-func (p *Plan) scope(s checks.Scope) []checkRules {
+// Scope returns the bound rules of one dispatch scope, grouped by check.
+func (p *Plan) Scope(s Scope) []PlanEntry {
 	return p.scopes[s]
 }
 
 // Compile turns the configured rules into the plan the engine dispatches. It is
-// the boot gate for the whole rule surface: checks.RuleSpecs assembles the
-// specs ([[rule]] sections and synthesized defaults - refusing a config silent
-// about the anchored checks), every rule's parameters are bound and its
-// selectors compiled - DISABLED rules included, so a config the checks could
-// not honour fails at load, not on the day a rule is re-enabled; only enabled
-// rules enter the plan. Every load error is aggregated and named with its
-// rule, so a config author is told all of them at once rather than one per
-// run.
+// the boot gate for the whole rule surface: RuleSpecs assembles the specs
+// ([[rule]] sections and synthesized defaults - refusing a config silent about
+// the anchored checks), every rule's parameters are bound and its selectors
+// compiled - DISABLED rules included, so a config the checks could not honour
+// fails at load, not on the day a rule is re-enabled; only enabled rules enter
+// the plan. Every load error is aggregated and named with its rule, so a config
+// author is told all of them at once rather than one per run.
 //
 // A bad include/exclude pattern is reported as a *selector.CompileError, which
 // errors.As pulls out of the aggregate - callers that want the faulty patterns
 // rather than the message can match on it.
-func Compile(cfg *config.Config, reg checks.Registry) (*Plan, error) {
+func Compile(cfg *config.Config, reg Registry) (*Plan, error) {
 	// A nil config is a caller bug, not a plan: dereferencing it below would
 	// panic, and a fabricated empty config would scan nothing.
 	if cfg == nil {
@@ -86,7 +96,7 @@ func Compile(cfg *config.Config, reg checks.Registry) (*Plan, error) {
 	general := cfg.General
 
 	var errs []error
-	specs, err := checks.RuleSpecs(cfg, reg)
+	specs, err := RuleSpecs(cfg, reg)
 	if err != nil {
 		errs = append(errs, err)
 	}
@@ -124,7 +134,7 @@ func Compile(cfg *config.Config, reg checks.Registry) (*Plan, error) {
 		}
 		// Selectors likewise compile ONCE per rule; the result carries one
 		// placement per scope.
-		selectors, err := checks.CompileRuleSelectors(spec, scopes)
+		selectors, err := CompileRuleSelectors(spec, scopes)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("rule %q: %w", spec.Name, err))
 			continue
@@ -150,17 +160,17 @@ func Compile(cfg *config.Config, reg checks.Registry) (*Plan, error) {
 }
 
 // ruleScopes resolves the scopes a rule serves: the ones it names, or - through
-// checks.DefaultScopes, so the plan and the load's duplicate refusal read an
+// DefaultScopes, so the plan and the load's duplicate refusal read an
 // undeclared scope the same way - the check's own when it names none. A scope
 // the check does not support is a load error, and so is a scope named twice -
 // the rule would be added to that scope's plan twice, doubling its findings.
-func ruleScopes(spec config.RuleSpec, def checks.CheckDef) ([]checks.Scope, error) {
+func ruleScopes(spec config.RuleSpec, def CheckDef) ([]Scope, error) {
 	if len(spec.Scope) == 0 {
-		return checks.DefaultScopes(def), nil
+		return DefaultScopes(def), nil
 	}
-	scopes := make([]checks.Scope, 0, len(spec.Scope))
+	scopes := make([]Scope, 0, len(spec.Scope))
 	for _, name := range spec.Scope {
-		scope, err := checks.ParseScope(name)
+		scope, err := ParseScope(name)
 		if err != nil {
 			return nil, err
 		}
@@ -194,21 +204,21 @@ func contradictorySelector(spec config.RuleSpec) error {
 
 // buildMemberAdmission records, on every archive-member entry, the member
 // pre-filter the iterator runs and whether the per-rule member gates still
-// have to run behind it. The decision is checks.MemberAdmission's, made over
-// the WHOLE plan and recorded on the entry: it describes what the iterator was
-// given, which the rules matching one archive cannot tell.
+// have to run behind it. The decision is MemberAdmission's, made over the WHOLE
+// plan and recorded on the entry: it describes what the iterator was given,
+// which the rules matching one archive cannot tell.
 func (p *Plan) buildMemberAdmission() {
-	entries := p.scopes[checks.ScopeArchiveMember]
-	var rules []*checks.BoundRule
+	entries := p.scopes[ScopeArchiveMember]
+	var rules []*BoundRule
 	for _, entry := range entries {
-		rules = append(rules, entry.rules...)
+		rules = append(rules, entry.Rules...)
 	}
 	if len(rules) == 0 {
 		return
 	}
-	admit, perRule := checks.MemberAdmission(rules)
+	admit, perRule := MemberAdmission(rules)
 	for i := range entries {
-		entries[i].batch.Admit = admit
-		entries[i].batch.PerRule = perRule
+		entries[i].Batch.Admit = admit
+		entries[i].Batch.PerRule = perRule
 	}
 }

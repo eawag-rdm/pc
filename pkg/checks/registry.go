@@ -79,7 +79,7 @@ type CheckDef struct {
 	// Called on the ZERO RuleSpec it yields the check's defaults: the defaults
 	// live in Bind itself, which is what default-rule synthesis relies on. Bind
 	// does not fill the dispatch selector in: a selector carries no check
-	// knowledge, so utils.Compile compiles one per scope and sets it.
+	// knowledge, so Compile compiles one per scope and sets it.
 	Bind func(spec config.RuleSpec, general *config.GeneralConfig) (*BoundRule, error)
 
 	// RunFile acquires this file's content once and hands it to every rule that
@@ -114,12 +114,12 @@ type Batch struct {
 	// Admit is the member admission filter an archive-member acquisition runs in
 	// front of the per-rule gates: the single member rule's own member selector -
 	// every shipped config's case - and the union of their literals otherwise.
-	// utils.Compile builds it; nil admits every member.
+	// Compile builds it; nil admits every member.
 	Admit *selector.Selector
 
 	// PerRule says the per-rule member gates must still be consulted after
-	// Admit, because Admit is not one rule's own filter. utils.Compile decides
-	// it over the WHOLE plan; it must never be inferred from the rules that
+	// Admit, because Admit is not one rule's own filter. Compile decides it
+	// over the WHOLE plan; it must never be inferred from the rules that
 	// happen to match one archive, which says nothing about what Admit is.
 	PerRule bool
 }
@@ -149,7 +149,7 @@ const (
 // the CheckDef.
 type BoundRule struct {
 	Rule string            // rule name: diagnostics, and Message.Rule
-	sel  selector.Selector // the DISPATCH gate, compiled per scope by utils.Compile
+	sel  selector.Selector // the DISPATCH gate, compiled per scope by Compile
 
 	// Member is the archive-member gate: the rule's own selector, matched
 	// against the member path, or against the base of that path where the
@@ -275,9 +275,9 @@ func tag(rule string, messages []structs.Message) []structs.Message {
 }
 
 // Registry holds every registered check. Its DECLARED ORDER is load-bearing:
-// utils.Compile adds the rules to the plan in it, so it is the order the
-// dispatch runs the checks of one file in, and therefore the order findings are
-// rendered in. Lookup is by name; Defs preserves the order.
+// Compile adds the rules to the plan in it, so it is the order the dispatch
+// runs the checks of one file in, and therefore the order findings are rendered
+// in. Lookup is by name; Defs preserves the order.
 type Registry struct {
 	defs  []CheckDef
 	index map[string]int

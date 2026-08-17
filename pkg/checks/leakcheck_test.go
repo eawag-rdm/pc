@@ -341,10 +341,10 @@ func TestLeakSelectorAdmission(t *testing.T) {
 // scan. The scan itself no longer compiles anything, so there is no runtime
 // fail-closed branch left to test.
 //
-// The gate is utils.Compile, which validates DISABLED rules too - the leak rule
+// The gate is Compile, which validates DISABLED rules too - the leak rule
 // ships disabled, and its lists are compiled through exactly the constructor
-// exercised here (RuleSpecs + CompileRuleSelectors). The utils side of the same
-// contract is pinned by utils.TestCompileValidatesDisabledRules.
+// exercised here (RuleSpecs + CompileRuleSelectors). That Compile validates a
+// disabled rule at all is pinned by TestCompileValidatesDisabledRules.
 func TestLeakSelectorRejectedAtLoad(t *testing.T) {
 	tests := []struct {
 		name    string

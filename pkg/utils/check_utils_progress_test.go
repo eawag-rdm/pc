@@ -48,7 +48,7 @@ func TestRunChecksPool_ProgressTickRegimes(t *testing.T) {
 				ran.Add(1)
 				return nil
 			})
-			workItems := filterChecksForFiles([]checkRules{entry}, checks.ScopeFile, files, nil)
+			workItems := filterChecksForFiles([]checks.PlanEntry{entry}, checks.ScopeFile, files, nil)
 			if len(workItems) != items {
 				t.Fatalf("work list holds %d items, want %d", len(workItems), items)
 			}
@@ -147,8 +147,9 @@ func TestApplyAllChecksWithProgress_PanickingTick_KeepsScanning(t *testing.T) {
 // counters can be asserted exactly.
 func TestApplyAllChecksWithProgress_ReportsPhasesAndFileCounts(t *testing.T) {
 	files := progressFiles(6)
-	plan := &Plan{}
-	plan.scopes[checks.ScopeFile] = []checkRules{mockEntry("counted", func(structs.File) []structs.Message { return nil })}
+	plan := checks.NewPlan(map[checks.Scope][]checks.PlanEntry{
+		checks.ScopeFile: {mockEntry("counted", func(structs.File) []structs.Message { return nil })},
+	})
 
 	// Reports arrive on the collect loop's goroutine, which is this one, so an
 	// unguarded slice is safe here.

@@ -16,7 +16,7 @@ import (
 )
 
 // testChecksTOML is a small, well-typed check configuration on the [[rule]]
-// surface; boot validation is utils.Compile, which binds every rule's
+// surface; boot validation is checks.Compile, which binds every rule's
 // parameters at server.New.
 const testChecksTOML = "" +
 	"[[rule]]\n" +

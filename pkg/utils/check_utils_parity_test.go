@@ -245,10 +245,10 @@ func TestApplyAllChecksWithProgress_TotalCountsDispatchedItems(t *testing.T) {
 	// would dispatch it again. Asked of the compiled gates, not of the config:
 	// one check may carry several rules, and only the gates say what each admits.
 	naive := structs.File{Name: excluded, RelPath: excluded}
-	for _, entry := range plan.scope(checks.ScopeFile) {
-		for _, rule := range entry.rules {
+	for _, entry := range plan.Scope(checks.ScopeFile) {
+		for _, rule := range entry.Rules {
 			if rule.Match(naive) {
-				t.Fatalf("rule %q of check %q admits %q - it would still be dispatched", rule.Rule, entry.def.Name, excluded)
+				t.Fatalf("rule %q of check %q admits %q - it would still be dispatched", rule.Rule, entry.Def.Name, excluded)
 			}
 		}
 	}

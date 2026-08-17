@@ -26,8 +26,8 @@ import (
 func TestApplyAllChecks_NoFilesNotice(t *testing.T) {
 	plan := compilePlan(t, config.Config{})
 	repositoryChecks := map[string]bool{}
-	for _, entry := range plan.scope(checks.ScopeRepository) {
-		repositoryChecks[entry.def.Name] = true
+	for _, entry := range plan.Scope(checks.ScopeRepository) {
+		repositoryChecks[entry.Def.Name] = true
 	}
 	cases := map[string]func() []structs.Message{
 		"ApplyAllChecks": func() []structs.Message {
@@ -351,7 +351,7 @@ func TestMatchPatterns(t *testing.T) {
 // mockEntry wraps a plain per-file function as a one-rule plan entry - the shape
 // every dispatch function takes - so a dispatch test can exercise the dispatch
 // rather than a real check.
-func mockEntry(name string, run func(structs.File) []structs.Message) checkRules {
+func mockEntry(name string, run func(structs.File) []structs.Message) checks.PlanEntry {
 	def := checks.CheckDef{
 		Name: name,
 		// The dispatch asserts the scope it hands RunFile against these, so a
@@ -365,10 +365,10 @@ func mockEntry(name string, run func(structs.File) []structs.Message) checkRules
 			return messages
 		},
 	}
-	return checkRules{
-		def:   &def,
-		batch: &checks.Batch{},
-		rules: []*checks.BoundRule{{Rule: name}},
+	return checks.PlanEntry{
+		Def:   &def,
+		Batch: &checks.Batch{},
+		Rules: []*checks.BoundRule{{Rule: name}},
 	}
 }
 
@@ -383,13 +383,13 @@ func mockCheckFail(file structs.File) []structs.Message {
 func TestApplyChecksFilteredByFile(t *testing.T) {
 	// A real file-scope check, on a name it would otherwise flag: an empty
 	// result proves the filter, not a silent check.
-	whitespaceEntries := func(t *testing.T, rule config.RuleSpec) []checkRules {
+	whitespaceEntries := func(t *testing.T, rule config.RuleSpec) []checks.PlanEntry {
 		t.Helper()
 		cfg := config.Config{Rules: []config.RuleSpec{rule}}
 		plan := compilePlan(t, cfg)
-		for _, entry := range plan.scope(checks.ScopeFile) {
-			if entry.def.Name == "HasNoWhiteSpace" {
-				return []checkRules{entry}
+		for _, entry := range plan.Scope(checks.ScopeFile) {
+			if entry.Def.Name == "HasNoWhiteSpace" {
+				return []checks.PlanEntry{entry}
 			}
 		}
 		t.Fatal("HasNoWhiteSpace has no file-scope rule")
@@ -398,25 +398,25 @@ func TestApplyChecksFilteredByFile(t *testing.T) {
 
 	tests := []struct {
 		name     string
-		entries  []checkRules
+		entries  []checks.PlanEntry
 		files    []structs.File
 		expected []structs.Message
 	}{
 		{
 			name:     "Single file, single check pass",
-			entries:  []checkRules{mockEntry("mockCheckPass", mockCheckPass)},
+			entries:  []checks.PlanEntry{mockEntry("mockCheckPass", mockCheckPass)},
 			files:    []structs.File{{Name: "test.txt"}},
 			expected: []structs.Message{{Content: "Check passed", TestName: "mockCheckPass"}},
 		},
 		{
 			name:     "Single file, single check fail",
-			entries:  []checkRules{mockEntry("mockCheckFail", mockCheckFail)},
+			entries:  []checks.PlanEntry{mockEntry("mockCheckFail", mockCheckFail)},
 			files:    []structs.File{{Name: "test.txt"}},
 			expected: []structs.Message{{Content: "Check failed", TestName: "mockCheckFail"}},
 		},
 		{
 			name: "Multiple files, multiple checks",
-			entries: []checkRules{
+			entries: []checks.PlanEntry{
 				mockEntry("mockCheckPass", mockCheckPass),
 				mockEntry("mockCheckFail", mockCheckFail),
 			},
@@ -492,9 +492,9 @@ func TestArchiveFileListChecks_WalkCapSkipsArchive(t *testing.T) {
 	path := buildNamedZip(t, []string{"a file.txt", "b file.txt", "c file.txt"})
 	archive := structs.File{Path: path, Name: "members.zip", DisplayName: "members.zip", IsArchive: true}
 	plan := compilePlan(t, config.Config{})
-	var nameChecks []checkRules
-	for _, entry := range plan.scope(checks.ScopeArchiveFileList) {
-		if entry.def.Name == "HasNoWhiteSpace" {
+	var nameChecks []checks.PlanEntry
+	for _, entry := range plan.Scope(checks.ScopeArchiveFileList) {
+		if entry.Def.Name == "HasNoWhiteSpace" {
 			nameChecks = append(nameChecks, entry)
 		}
 	}

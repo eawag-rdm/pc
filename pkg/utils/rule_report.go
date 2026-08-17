@@ -30,7 +30,7 @@ type ruleMarks struct {
 // newRuleMarks builds the mark shape of one scope. It returns nil for a scope
 // with no entries, which is the same "nothing to report" answer a report that
 // is switched off gives - so every caller has one nil check, not two.
-func newRuleMarks(entries []checkRules) *ruleMarks {
+func newRuleMarks(entries []checks.PlanEntry) *ruleMarks {
 	if len(entries) == 0 {
 		return nil
 	}
@@ -46,7 +46,7 @@ func newRuleMarks(entries []checkRules) *ruleMarks {
 	prevBuf := make([]int, ruleCount(entries))
 	widest, off := 0, 0
 	for i, entry := range entries {
-		k := len(entry.rules)
+		k := len(entry.Rules)
 		m.hit[i] = make([]bool, k)
 		// A single rule has no pair to record: no row, and pairLeft 0 makes
 		// recordOverlaps a load and a branch for that entry forever after.
@@ -125,7 +125,7 @@ func (m *ruleMarks) markAllAlive() {
 // joined.
 type ruleReport struct {
 	mu     sync.Mutex
-	plan   *Plan
+	plan   *checks.Plan
 	scopes [checks.NumScopes]*ruleMarks // folded totals; nil when the scope has no entries
 	ran    [checks.NumScopes]bool       // the scope's phase actually iterated candidates
 }
@@ -134,7 +134,7 @@ type ruleReport struct {
 // A nil report - a nil plan here, or a sink built without one, which is what
 // the tests and benchmarks use - switches reporting off through the nil
 // receiver of every method below.
-func newRuleReport(plan *Plan) *ruleReport {
+func newRuleReport(plan *checks.Plan) *ruleReport {
 	if plan == nil {
 		return nil
 	}
@@ -160,8 +160,8 @@ func newRuleReport(plan *Plan) *ruleReport {
 	// admits no file still reports - HasReadme over an empty set tells the user
 	// the repository has no ReadMe. "Matched no file" would then warn about a rule
 	// that did exactly its job.
-	r.scopes[checks.ScopeFile] = newRuleMarks(plan.scope(checks.ScopeFile))
-	r.scopes[checks.ScopeArchiveFileList] = newRuleMarks(plan.scope(checks.ScopeArchiveFileList))
+	r.scopes[checks.ScopeFile] = newRuleMarks(plan.Scope(checks.ScopeFile))
+	r.scopes[checks.ScopeArchiveFileList] = newRuleMarks(plan.Scope(checks.ScopeArchiveFileList))
 	return r
 }
 
@@ -183,11 +183,11 @@ func newRuleReport(plan *Plan) *ruleReport {
 // safeRun, which would turn the panic into a subject-tagged diagnostic and thus
 // into a depositor-facing "this archive could not be fully scanned" - a bug in
 // here must never become a message to the end user.
-func (r *ruleReport) local(scope checks.Scope, entries []checkRules) *ruleMarks {
+func (r *ruleReport) local(scope checks.Scope, entries []checks.PlanEntry) *ruleMarks {
 	if r == nil || r.scopes[scope] == nil {
 		return nil
 	}
-	planned := r.plan.scope(scope)
+	planned := r.plan.Scope(scope)
 	if len(entries) != len(planned) || (len(entries) > 0 && &entries[0] != &planned[0]) {
 		return nil
 	}
@@ -265,7 +265,7 @@ func (r *ruleReport) diagnostics() []structs.Diagnostic {
 		if marks == nil {
 			continue
 		}
-		for i, entry := range r.plan.scope(scope) {
+		for i, entry := range r.plan.Scope(scope) {
 			if r.ran[scope] {
 				for j, hit := range marks.hit[i] {
 					if !hit {
@@ -273,7 +273,7 @@ func (r *ruleReport) diagnostics() []structs.Diagnostic {
 						// be a synthesized one inheriting another rule's
 						// selectors, so naming its own patterns would be wrong.
 						items = append(items, newDiagnosticAt(structs.DiagWarning, "",
-							fmt.Sprintf("rule %q of check %s (scope %s) %s", entry.rules[j].Rule, entry.def.Name, scope, deadRuleReason), stamp))
+							fmt.Sprintf("rule %q of check %s (scope %s) %s", entry.Rules[j].Rule, entry.Def.Name, scope, deadRuleReason), stamp))
 					}
 				}
 			}
@@ -281,7 +281,7 @@ func (r *ruleReport) diagnostics() []structs.Diagnostic {
 			if len(seen) == 0 {
 				continue
 			}
-			k := len(entry.rules)
+			k := len(entry.Rules)
 			for a := 0; a < k-1; a++ {
 				base := pairBase(a, k)
 				for b := a + 1; b < k; b++ {
@@ -301,7 +301,7 @@ func (r *ruleReport) diagnostics() []structs.Diagnostic {
 						// rest (pkg/output/json/formatter.go), and every other
 						// CLI renderer is built from that JSON.
 						items = append(items, newDiagnosticAt(structs.DiagWarning, "",
-							fmt.Sprintf("rules %q and %q of check %s (scope %s) both apply to the same file - it is read once, but both rules report on it", entry.rules[a].Rule, entry.rules[b].Rule, entry.def.Name, scope), stamp))
+							fmt.Sprintf("rules %q and %q of check %s (scope %s) both apply to the same file - it is read once, but both rules report on it", entry.Rules[a].Rule, entry.Rules[b].Rule, entry.Def.Name, scope), stamp))
 					}
 				}
 			}

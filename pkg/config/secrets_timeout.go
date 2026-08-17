@@ -11,7 +11,7 @@ const DefaultSecretsTimeoutSeconds = 120
 // the server's whole-request timeout: the scan cannot see the request deadline
 // (check functions take no context), so it could keep the scanner running past
 // the analysis deadline. The one cross-SECTION constraint the config layer
-// keeps - everything per-check moved into the checks' own Bind (utils.Compile).
+// keeps - everything per-check moved into the checks' own Bind (checks.Compile).
 // It runs only when an IsFreeOfSecrets rule EXISTS - a config with no secrets
 // configuration declares no timeout to validate - but then covers EVERY
 // declared rule and every parameter set carrying a timeout, disabled rules

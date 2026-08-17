@@ -10,6 +10,7 @@ package analysis
 import (
 	"context"
 
+	"github.com/eawag-rdm/pc/pkg/checks"
 	"github.com/eawag-rdm/pc/pkg/config"
 	"github.com/eawag-rdm/pc/pkg/metadata"
 	"github.com/eawag-rdm/pc/pkg/output"
@@ -48,7 +49,7 @@ type Result struct {
 // emits progress ticks.
 //
 // plan carries the bound rules of every check, compiled once at startup by each
-// frontend (utils.Compile) so a bad pattern or parameter fails the boot rather
+// frontend (checks.Compile) so a bad pattern or parameter fails the boot rather
 // than a run.
 // Run is also the run's single MERGE POINT for diagnostics: it drains
 // output.GlobalLogger - which the collectors have already written to by the time
@@ -66,7 +67,7 @@ type Result struct {
 // guarantee. Passing the logger in would remove the constraint, at the cost of
 // a parameter every caller fills with the same global - revisit when the
 // remaining producers migrate.
-func Run(ctx context.Context, cfg config.Config, plan *utils.Plan, files []structs.File, md *metadata.Metadata, progress utils.ProgressCallback) Result {
+func Run(ctx context.Context, cfg config.Config, plan *checks.Plan, files []structs.File, md *metadata.Metadata, progress utils.ProgressCallback) Result {
 	messages := metadata.RunChecks(md)
 	var fileMessages []structs.Message
 	var diagnostics []structs.Diagnostic

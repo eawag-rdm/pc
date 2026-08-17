@@ -12,7 +12,6 @@ import (
 	"github.com/eawag-rdm/pc/pkg/checks"
 	"github.com/eawag-rdm/pc/pkg/config"
 	"github.com/eawag-rdm/pc/pkg/output"
-	"github.com/eawag-rdm/pc/pkg/utils"
 )
 
 // writeTimeoutMargin is added to the configured request timeout to derive the
@@ -66,7 +65,7 @@ func New(cfg Config) (*Server, error) {
 	// compile, an unknown section or a wrong-typed parameter is an operator
 	// error, so it refuses the boot instead of failing (and alerting on) every
 	// /analyze request.
-	plan, err := utils.Compile(pcConfig, checks.NewRegistry())
+	plan, err := checks.Compile(pcConfig, checks.NewRegistry())
 	if err != nil {
 		return nil, fmt.Errorf("invalid PC config: %w", err)
 	}

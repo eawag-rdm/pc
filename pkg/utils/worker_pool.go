@@ -35,7 +35,7 @@ type workerPool struct {
 type workItem struct {
 	File   structs.File
 	Scope  checks.Scope
-	Checks []checkRules
+	Checks []checks.PlanEntry
 }
 
 // workResult represents the result of processing a work item
@@ -113,7 +113,7 @@ func (wp *workerPool) processWorkItem(work workItem) []structs.Message {
 		if len(messages) > 0 {
 			// Add test name to each message
 			for i := range messages {
-				messages[i].TestName = entry.def.Name
+				messages[i].TestName = entry.Def.Name
 			}
 			allMessages = append(allMessages, messages...)
 		}
@@ -150,20 +150,20 @@ func safeRun(sink *diagSink, what, subject string, fn func() []structs.Message) 
 // label is built inside the recover branch, not handed in: concatenating it up
 // front cost a string and an allocation for every check that did NOT panic -
 // which is every check, on every file.
-func safeRunCheck(ctx context.Context, sink *diagSink, entry checkRules, file structs.File, scope checks.Scope) (messages []structs.Message) {
+func safeRunCheck(ctx context.Context, sink *diagSink, entry checks.PlanEntry, file structs.File, scope checks.Scope) (messages []structs.Message) {
 	defer func() {
 		if r := recover(); r != nil {
-			logPanic(sink, "Check "+entry.def.Name+" on file '"+file.Name+"'", file.GetDisplayName(), r)
+			logPanic(sink, "Check "+entry.Def.Name+" on file '"+file.Name+"'", file.GetDisplayName(), r)
 			messages = nil
 		}
 	}()
-	if !entry.def.Scopes.Has(scope) {
+	if !entry.Def.Scopes.Has(scope) {
 		// Wrong-phase dispatch would silently swap the acquisition (a file's own
 		// content for an archive's members). The guard is one bit test; safeRun's
 		// recover turns it into a logged internal error rather than bad results.
-		panic("check " + entry.def.Name + " does not serve scope " + scope.String())
+		panic("check " + entry.Def.Name + " does not serve scope " + scope.String())
 	}
-	return entry.def.RunFile(ctx, file, scope, entry.batch, entry.rules)
+	return entry.Def.RunFile(ctx, file, scope, entry.Batch, entry.Rules)
 }
 
 // submit adds a work item to the processing queue (blocks until space is available)

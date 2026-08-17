@@ -27,10 +27,10 @@ import (
 // archive-member scope take - see newRuleReport. The other unreported scope,
 // repository, never reaches here at all: it dispatches per entry through
 // RunRepository, with no per-file selection.
-func matchRules(entry checkRules, file structs.File, backing []*checks.BoundRule, marks *ruleMarks, entryIdx int) ([]*checks.BoundRule, []*checks.BoundRule) {
+func matchRules(entry checks.PlanEntry, file structs.File, backing []*checks.BoundRule, marks *ruleMarks, entryIdx int) ([]*checks.BoundRule, []*checks.BoundRule) {
 	start := len(backing)
 	if marks == nil {
-		for _, rule := range entry.rules {
+		for _, rule := range entry.Rules {
 			if rule.Match(file) {
 				backing = append(backing, rule)
 			}
@@ -39,7 +39,7 @@ func matchRules(entry checkRules, file structs.File, backing []*checks.BoundRule
 	}
 	hit := marks.hit[entryIdx]
 	marks.idx = marks.idx[:0]
-	for j, rule := range entry.rules {
+	for j, rule := range entry.Rules {
 		if rule.Match(file) {
 			backing = append(backing, rule)
 			hit[j] = true
@@ -57,31 +57,31 @@ func matchRules(entry checkRules, file structs.File, backing []*checks.BoundRule
 // to allocate a pair per file (and, for an archive file list, per member).
 type matchScratch struct {
 	backing []*checks.BoundRule
-	matched []checkRules
+	matched []checks.PlanEntry
 	marks   *ruleMarks // the walk's own rule-report buffer; nil when reporting is off
 }
 
 // newMatchScratch sizes the scratch to the worst case of one file: every rule
 // of every check matches. backing therefore never grows during a file, so the
 // sub-slices handed out within one file stay valid.
-func newMatchScratch(entries []checkRules, marks *ruleMarks) matchScratch {
+func newMatchScratch(entries []checks.PlanEntry, marks *ruleMarks) matchScratch {
 	return matchScratch{
 		backing: make([]*checks.BoundRule, 0, ruleCount(entries)),
-		matched: make([]checkRules, 0, len(entries)),
+		matched: make([]checks.PlanEntry, 0, len(entries)),
 		marks:   marks,
 	}
 }
 
 // match is matchChecksForFile over the scratch. The result is valid until the
 // next call - the caller must run the checks before matching the next file.
-func (s *matchScratch) match(entries []checkRules, file structs.File) []checkRules {
+func (s *matchScratch) match(entries []checks.PlanEntry, file structs.File) []checks.PlanEntry {
 	s.backing, s.matched = s.backing[:0], s.matched[:0]
 	for i, entry := range entries {
 		var rules []*checks.BoundRule
 		rules, s.backing = matchRules(entry, file, s.backing, s.marks, i)
 		if len(rules) > 0 {
 			hit := entry
-			hit.rules = rules
+			hit.Rules = rules
 			s.matched = append(s.matched, hit)
 		}
 	}
@@ -89,23 +89,23 @@ func (s *matchScratch) match(entries []checkRules, file structs.File) []checkRul
 }
 
 // ruleCount is the size the per-file backing array is preallocated to.
-func ruleCount(entries []checkRules) int {
+func ruleCount(entries []checks.PlanEntry) int {
 	total := 0
 	for _, entry := range entries {
-		total += len(entry.rules)
+		total += len(entry.Rules)
 	}
 	return total
 }
 
-func applyChecksFilteredByFile(ctx context.Context, sink *diagSink, entries []checkRules, files []structs.File) []structs.Message {
+func applyChecksFilteredByFile(ctx context.Context, sink *diagSink, entries []checks.PlanEntry, files []structs.File) []structs.Message {
 	return applyFileChecks(ctx, sink, entries, files, nil)
 }
 
 // allUnfiltered reports whether every rule of every entry admits every file -
 // the shipped configs' case, decided once per pass, not per file.
-func allUnfiltered(entries []checkRules) bool {
+func allUnfiltered(entries []checks.PlanEntry) bool {
 	for _, entry := range entries {
-		for _, rule := range entry.rules {
+		for _, rule := range entry.Rules {
 			if !rule.Unfiltered() {
 				return false
 			}
@@ -127,7 +127,7 @@ func allUnfiltered(entries []checkRules) bool {
 // (every rule of every check matches every file) and therefore never
 // reallocated: sub-slices carved out of them stay valid, and the pass
 // allocates twice rather than twice per file. Workers only read them.
-func filterChecksForFiles(entries []checkRules, scope checks.Scope, files []structs.File, marks *ruleMarks) []workItem {
+func filterChecksForFiles(entries []checks.PlanEntry, scope checks.Scope, files []structs.File, marks *ruleMarks) []workItem {
 	if len(entries) == 0 {
 		return nil
 	}
@@ -147,7 +147,7 @@ func filterChecksForFiles(entries []checkRules, scope checks.Scope, files []stru
 	}
 	total := ruleCount(entries)
 	ruleArena := make([]*checks.BoundRule, 0, len(files)*total)
-	checkArena := make([]checkRules, 0, len(files)*len(entries))
+	checkArena := make([]checks.PlanEntry, 0, len(files)*len(entries))
 	for _, file := range files {
 		start := len(checkArena)
 		for i, entry := range entries {
@@ -155,7 +155,7 @@ func filterChecksForFiles(entries []checkRules, scope checks.Scope, files []stru
 			rules, ruleArena = matchRules(entry, file, ruleArena, marks, i)
 			if len(rules) > 0 {
 				hit := entry
-				hit.rules = rules
+				hit.Rules = rules
 				checkArena = append(checkArena, hit)
 			}
 		}
@@ -286,7 +286,7 @@ func runChecksPool(ctx context.Context, sink *diagSink, workItems []workItem, nu
 // and a blocked goroutine releases its P - so even a one-CPU budget overlaps
 // that waiting, which a sequential walk turns into a sum. At least two workers
 // for the same reason.
-func applyFileChecks(ctx context.Context, sink *diagSink, entries []checkRules, files []structs.File, begin func(int) func(int)) []structs.Message {
+func applyFileChecks(ctx context.Context, sink *diagSink, entries []checks.PlanEntry, files []structs.File, begin func(int) func(int)) []structs.Message {
 	for _, file := range files {
 		helpers.PDFTracker.AddFileIfPDF("", file)
 	}
@@ -317,7 +317,7 @@ func applyFileChecks(ctx context.Context, sink *diagSink, entries []checkRules, 
 			if ret != nil {
 				// Add test name to each message
 				for j := range ret {
-					ret[j].TestName = entry.def.Name
+					ret[j].TestName = entry.Def.Name
 				}
 				messages = append(messages, ret...)
 			}
@@ -329,7 +329,7 @@ func applyFileChecks(ctx context.Context, sink *diagSink, entries []checkRules, 
 	return messages
 }
 
-func applyChecksFilteredByFileOnArchiveFileList(ctx context.Context, sink *diagSink, config config.Config, entries []checkRules, files []structs.File) []structs.Message {
+func applyChecksFilteredByFileOnArchiveFileList(ctx context.Context, sink *diagSink, config config.Config, entries []checks.PlanEntry, files []structs.File) []structs.Message {
 	// Filter to only archive files
 	var archiveFiles []structs.File
 	for _, file := range files {
@@ -365,7 +365,7 @@ func applyChecksFilteredByFileOnArchiveFileList(ctx context.Context, sink *diagS
 // ReadArchiveFileList parses untrusted archive bytes, and on the parallel path
 // this function runs in a bare worker goroutine where an unrecovered panic
 // would kill the process.
-func processArchiveFileList(ctx context.Context, sink *diagSink, cfg config.Config, entries []checkRules, archiveFile structs.File) []structs.Message {
+func processArchiveFileList(ctx context.Context, sink *diagSink, cfg config.Config, entries []checks.PlanEntry, archiveFile structs.File) []structs.Message {
 	return safeRun(sink, "Processing archive '"+archiveFile.Name+"'", archiveFile.GetDisplayName(), func() []structs.Message {
 		return archiveFileListChecks(ctx, sink, cfg, entries, archiveFile)
 	})
@@ -398,7 +398,7 @@ func archiveWalkSkipMessage(archiveFile structs.File, maxMembers int) structs.Me
 	}
 }
 
-func archiveFileListChecks(ctx context.Context, sink *diagSink, cfg config.Config, entries []checkRules, archiveFile structs.File) []structs.Message {
+func archiveFileListChecks(ctx context.Context, sink *diagSink, cfg config.Config, entries []checks.PlanEntry, archiveFile structs.File) []structs.Message {
 	var messages []structs.Message
 
 	maxMembers, maxTotalMemory := archiveWalkLimits(cfg)
@@ -434,7 +434,7 @@ func archiveFileListChecks(ctx context.Context, sink *diagSink, cfg config.Confi
 			ret := safeRunCheck(ctx, sink, entry, archivedFile, checks.ScopeArchiveFileList)
 			if ret != nil {
 				for j := range ret {
-					ret[j].TestName = entry.def.Name
+					ret[j].TestName = entry.Def.Name
 				}
 				messages = append(messages, ret...)
 			}
@@ -445,7 +445,7 @@ func archiveFileListChecks(ctx context.Context, sink *diagSink, cfg config.Confi
 
 // applyArchiveFileListChecksParallel processes archive file list checks in parallel across archives
 // Each archive is processed by a single worker, keeping files within each archive sequential
-func applyArchiveFileListChecksParallel(ctx context.Context, sink *diagSink, cfg config.Config, entries []checkRules, archiveFiles []structs.File) []structs.Message {
+func applyArchiveFileListChecksParallel(ctx context.Context, sink *diagSink, cfg config.Config, entries []checks.PlanEntry, archiveFiles []structs.File) []structs.Message {
 	numWorkers := runtime.GOMAXPROCS(0)
 	if len(archiveFiles) < numWorkers {
 		numWorkers = len(archiveFiles)
@@ -498,7 +498,7 @@ func applyArchiveFileListChecksParallel(ctx context.Context, sink *diagSink, cfg
 // applyChecksFilteredByFileOnArchive is the archive-member phase. It takes no
 // rule marks: what its selection decides is the CONTAINER's gate, not the member
 // rule's own selector, so nothing observable here is reportable (newRuleReport).
-func applyChecksFilteredByFileOnArchive(ctx context.Context, sink *diagSink, entries []checkRules, files []structs.File) []structs.Message {
+func applyChecksFilteredByFileOnArchive(ctx context.Context, sink *diagSink, entries []checks.PlanEntry, files []structs.File) []structs.Message {
 	// Filter to only archive files
 	var archiveFiles []structs.File
 	for _, file := range files {
@@ -529,7 +529,7 @@ func applyChecksFilteredByFileOnArchive(ctx context.Context, sink *diagSink, ent
 			if ret != nil {
 				// Add test name to each message
 				for j := range ret {
-					ret[j].TestName = entry.def.Name
+					ret[j].TestName = entry.Def.Name
 				}
 				messages = append(messages, ret...)
 			}
@@ -550,21 +550,21 @@ func archiveWorkers(procs int) int {
 
 // applyArchiveChecksParallel processes archive files in parallel. Archive
 // extraction is memory-intensive, so it uses a fraction of the CPU budget.
-func applyArchiveChecksParallel(ctx context.Context, sink *diagSink, entries []checkRules, files []structs.File) []structs.Message {
+func applyArchiveChecksParallel(ctx context.Context, sink *diagSink, entries []checks.PlanEntry, files []structs.File) []structs.Message {
 	numWorkers := archiveWorkers(runtime.GOMAXPROCS(0))
 	return runChecksPool(ctx, sink, filterChecksForFiles(entries, checks.ScopeArchiveMember, files, nil), numWorkers, nil)
 }
 
-func applyChecksFilteredByRepository(ctx context.Context, sink *diagSink, entries []checkRules, files []structs.File) []structs.Message {
+func applyChecksFilteredByRepository(ctx context.Context, sink *diagSink, entries []checks.PlanEntry, files []structs.File) []structs.Message {
 	var messages = []structs.Message{}
 	repo := structs.Repository{Files: files}
 	for _, entry := range entries {
 		if ctx.Err() != nil {
 			return messages
 		}
-		testName := entry.def.Name
+		testName := entry.Def.Name
 		ret := safeRun(sink, "Check "+testName, "", func() []structs.Message {
-			return entry.def.RunRepository(ctx, repo, entry.batch, entry.rules)
+			return entry.Def.RunRepository(ctx, repo, entry.Batch, entry.Rules)
 		})
 		if ret != nil {
 			// Add test name to each message
@@ -633,17 +633,17 @@ func noFilesNotice() structs.Message {
 // output.GlobalLogger, so a caller wanting everything must drain that too -
 // internal/analysis.Run does exactly that and returns the union. See
 // structs.Diagnostic for who may see which.
-func ApplyAllChecks(ctx context.Context, config config.Config, plan *Plan, files []structs.File) ([]structs.Message, []structs.Diagnostic) {
+func ApplyAllChecks(ctx context.Context, config config.Config, plan *checks.Plan, files []structs.File) ([]structs.Message, []structs.Diagnostic) {
 	if plan == nil {
-		panic("utils: ApplyAllChecks requires a compiled *utils.Plan")
+		panic("utils: ApplyAllChecks requires a compiled *checks.Plan")
 	}
 	var messages []structs.Message
 	sink := &diagSink{rules: newRuleReport(plan)}
 
-	messages = append(messages, applyChecksFilteredByFile(ctx, sink, plan.scope(checks.ScopeFile), files)...)
-	messages = append(messages, applyChecksFilteredByFileOnArchiveFileList(ctx, sink, config, plan.scope(checks.ScopeArchiveFileList), files)...)
-	messages = append(messages, applyChecksFilteredByFileOnArchive(ctx, sink, plan.scope(checks.ScopeArchiveMember), files)...)
-	messages = append(messages, applyChecksFilteredByRepository(ctx, sink, plan.scope(checks.ScopeRepository), files)...)
+	messages = append(messages, applyChecksFilteredByFile(ctx, sink, plan.Scope(checks.ScopeFile), files)...)
+	messages = append(messages, applyChecksFilteredByFileOnArchiveFileList(ctx, sink, config, plan.Scope(checks.ScopeArchiveFileList), files)...)
+	messages = append(messages, applyChecksFilteredByFileOnArchive(ctx, sink, plan.Scope(checks.ScopeArchiveMember), files)...)
+	messages = append(messages, applyChecksFilteredByRepository(ctx, sink, plan.Scope(checks.ScopeRepository), files)...)
 
 	// Surface a clear, non-issue notice when there was nothing to analyse.
 	if len(files) == 0 {
@@ -683,17 +683,17 @@ func ApplyAllChecks(ctx context.Context, config config.Config, plan *Plan, files
 // result set, with ctx.Err() as the caller's only signal.
 // The diagnostics return carries the same contract as its twin's, the verdicts
 // on the rule configuration and their cancellation gate included.
-func ApplyAllChecksWithProgress(ctx context.Context, config config.Config, plan *Plan, files []structs.File, progressCallback ProgressCallback) ([]structs.Message, []structs.Diagnostic) {
+func ApplyAllChecksWithProgress(ctx context.Context, config config.Config, plan *checks.Plan, files []structs.File, progressCallback ProgressCallback) ([]structs.Message, []structs.Diagnostic) {
 	if plan == nil {
-		panic("utils: ApplyAllChecksWithProgress requires a compiled *utils.Plan")
+		panic("utils: ApplyAllChecksWithProgress requires a compiled *checks.Plan")
 	}
 	var messages []structs.Message
 	sink := &diagSink{rules: newRuleReport(plan)}
 
-	fileChecks := plan.scope(checks.ScopeFile)
-	listChecks := plan.scope(checks.ScopeArchiveFileList)
-	memberChecks := plan.scope(checks.ScopeArchiveMember)
-	repositoryChecks := plan.scope(checks.ScopeRepository)
+	fileChecks := plan.Scope(checks.ScopeFile)
+	listChecks := plan.Scope(checks.ScopeArchiveFileList)
+	memberChecks := plan.Scope(checks.ScopeArchiveMember)
+	repositoryChecks := plan.Scope(checks.ScopeRepository)
 
 	// Calculate total number of tests (including skipped tests). The file phase's
 	// term, added by begin below, counts WORK ITEMS (one per file) where phases
