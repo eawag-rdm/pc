@@ -270,8 +270,7 @@ func (r *ruleReport) diagnostics() []structs.Diagnostic {
 				for j, hit := range marks.hit[i] {
 					if !hit {
 						// Only the fact, no diagnosis of the surface: the rule may
-						// be a legacy [test.X] section (whitelist/blacklist keys)
-						// or a synthesized one inheriting another rule's
+						// be a synthesized one inheriting another rule's
 						// selectors, so naming its own patterns would be wrong.
 						items = append(items, newDiagnosticAt(structs.DiagWarning, "",
 							fmt.Sprintf("rule %q of check %s (scope %s) %s", entry.rules[j].Rule, entry.def.Name, scope, deadRuleReason), stamp))

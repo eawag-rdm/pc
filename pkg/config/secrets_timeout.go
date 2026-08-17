@@ -12,11 +12,11 @@ const DefaultSecretsTimeoutSeconds = 120
 // (check functions take no context), so it could keep the scanner running past
 // the analysis deadline. The one cross-SECTION constraint the config layer
 // keeps - everything per-check moved into the checks' own Bind (utils.Compile).
-// It runs only when an IsFreeOfSecrets rule or section EXISTS - a config with
-// no secrets configuration declares no timeout to validate - but then covers
-// EVERY declared rule and every parameter set carrying a timeout, disabled
-// rules included: a bad combination fails at load, not on the day the dormant
-// scan is reactivated.
+// It runs only when an IsFreeOfSecrets rule EXISTS - a config with no secrets
+// configuration declares no timeout to validate - but then covers EVERY
+// declared rule and every parameter set carrying a timeout, disabled rules
+// included: a bad combination fails at load, not on the day the dormant scan
+// is reactivated.
 func secretsTimeoutWithinRequestBudget(c *Config) error {
 	if c.Server == nil || c.Server.RequestTimeoutSeconds <= 0 {
 		return nil
@@ -27,15 +27,6 @@ func secretsTimeoutWithinRequestBudget(c *Config) error {
 			return fmt.Errorf("IsFreeOfSecrets timeoutSeconds (%d) must not exceed [server] requestTimeoutSeconds (%d)", timeout, budget)
 		}
 		return nil
-	}
-	if leaks := c.Tests["IsFreeOfSecrets"]; leaks != nil {
-		timeout := int64(DefaultSecretsTimeoutSeconds)
-		if n, ok := leaks.Attrs["timeoutSeconds"].(int64); ok {
-			timeout = n
-		}
-		if err := exceeds(timeout); err != nil {
-			return err
-		}
 	}
 	for _, rule := range c.Rules {
 		if rule.Check != "IsFreeOfSecrets" {

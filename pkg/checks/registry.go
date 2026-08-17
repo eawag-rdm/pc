@@ -151,10 +151,10 @@ type BoundRule struct {
 	Rule string            // rule name: diagnostics, and Message.Rule
 	sel  selector.Selector // the DISPATCH gate, compiled per scope by utils.Compile
 
-	// Member is the archive-member gate, which reads the same configured lists
-	// under the other legacy semantics: case-insensitive literals over the
-	// member path. nil admits every member. Only an archive-member rule
-	// carries one.
+	// Member is the archive-member gate: the rule's own selector, matched
+	// against the member path, or against the base of that path where the
+	// selector's subject is the name - see matchMember. nil admits every
+	// member. Only an archive-member rule carries one.
 	Member *selector.Selector
 
 	// unfiltered caches "the dispatch selector admits everything", the shipped
@@ -164,9 +164,8 @@ type BoundRule struct {
 	unfiltered bool
 
 	// baseNames says the dispatch gate's "name" subject means the BASE name of
-	// the file's member path (archive-file-list scope of a [[rule]], where the
-	// synthetic file's Name is the full member path). Legacy rules never set
-	// it: their gates historically read the whole member path.
+	// the file's member path (archive-file-list scope, where the synthetic
+	// file's Name is the full member path).
 	baseNames bool
 
 	// apply scans one acquisition: its entries, their shared lowercase copies -
@@ -369,15 +368,10 @@ func bindNoParams(check func(structs.File) []structs.Message) func(config.RuleSp
 }
 
 // ruleSets returns a rule's parameter sets, the unit the batched runners loop
-// over: each [rule.params] table is one set, a translated legacy section's
-// keywordArguments list its N. The zero RuleSpec carries none, which is the
-// check's default. allowed names the keys the check reads; on the [[rule]]
-// surface any other key is a load error - legacy sets keep their lenient
-// reading until the sugar is removed.
+// over: each [rule.params] table is one set, the repeated [[rule.params]] form
+// its N. The zero RuleSpec carries none, which is the check's default. allowed
+// names the keys the check reads; any other key is a load error.
 func ruleSets(spec config.RuleSpec, allowed ...string) ([]map[string]interface{}, error) {
-	if spec.Legacy {
-		return spec.Params, nil
-	}
 	for _, set := range spec.Params {
 		keys := make([]string, 0, len(set))
 		for key := range set {

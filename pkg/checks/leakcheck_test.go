@@ -357,72 +357,12 @@ func TestLeakSelectorRejectedAtLoad(t *testing.T) {
 			// Through the same assembly + selector compilation the boot gate
 			// runs, with the scan DISABLED - the shipped state - so the refusal
 			// is the one an operator would hit.
-			cfg := &config.Config{Rules: rulesWithAnchors(nil, []config.RuleSpec{{
+			cfg := &config.Config{Rules: rulesWithAnchors([]config.RuleSpec{{
 				Name: "IsFreeOfSecrets", Check: "IsFreeOfSecrets", Enabled: false,
 				Include: tt.include, Exclude: tt.exclude,
 			}})}
 			assertLeakListsRefused(t, cfg)
 		})
-	}
-}
-
-// TestLeakLegacyBothListsRejectedAtLoad keeps the one list fault that has no
-// successor: a [test.X] section fills the whitelist OR the blacklist, never
-// both (selector.ErrBothLists), while a [[rule]] takes include AND exclude
-// together. The refusal goes with the section, not with the scan.
-//
-// legacy surface; deleted with it
-func TestLeakLegacyBothListsRejectedAtLoad(t *testing.T) {
-	tests := map[string]*config.TestConfig{
-		"IsFreeOfSecrets": {
-			Whitelist: []string{`\.txt$`},
-			Blacklist: []string{`\.log$`},
-			Attrs:     map[string]interface{}{"enabled": false},
-		},
-	}
-	assertLeakListsRefused(t, &config.Config{Rules: rulesWithAnchors(tests, nil), Tests: tests})
-}
-
-// TestLeakLegacyRepositoryGateReadsPath pins the reading the legacy translation
-// gives a section's lists at REPOSITORY scope: the subject is the file's path,
-// so a blacklist like `^sub/` keeps reaching nested files, as it did before the
-// lists were compiled per rule. The [[rule]] surface states this subject itself
-// and is pinned by TestLeakFilterGatesFilesAndMembers.
-//
-// legacy surface; deleted with it
-func TestLeakLegacyRepositoryGateReadsPath(t *testing.T) {
-	tests := map[string]*config.TestConfig{
-		"IsFreeOfSecrets": {Blacklist: []string{`^sub/`}, Attrs: map[string]interface{}{"enabled": true}},
-	}
-	cfg := &config.Config{Rules: rulesWithAnchors(tests, nil), Tests: tests}
-	specs, err := RuleSpecs(cfg, NewRegistry())
-	if err != nil {
-		t.Fatalf("assemble rule specs: %v", err)
-	}
-	rule := &BoundRule{}
-	gated := false
-	for _, spec := range specs {
-		if spec.Check != "IsFreeOfSecrets" {
-			continue
-		}
-		selectors, serr := CompileRuleSelectors(spec, []Scope{ScopeRepository})
-		if serr != nil {
-			t.Fatalf("compile selectors: %v", serr)
-		}
-		rule.SetSelectors(selectors[0])
-		gated = true
-	}
-	if !gated {
-		t.Fatal("no IsFreeOfSecrets spec assembled")
-	}
-
-	nested := structs.File{Name: "creds.txt", RelPath: "sub/creds.txt"}
-	if rule.Match(nested) {
-		t.Errorf("%q must be filtered by the path pattern, so the gate reads the path, not the name", nested.RelPath)
-	}
-	topLevel := structs.File{Name: "creds.txt", RelPath: "creds.txt"}
-	if !rule.Match(topLevel) {
-		t.Errorf("%q is outside the pattern and must stay admitted", topLevel.RelPath)
 	}
 }
 
@@ -619,33 +559,24 @@ func TestSecretScanChildInheritsMaxCores(t *testing.T) {
 	}
 }
 
-// TestSecretScanReadsLegacySectionAttrs pins the bind's legacy arm: a [test.X]
-// section carries the scan's knobs in its ATTRS table, not in parameter sets,
-// so the section's own binary is the one the child scanner is started from.
-//
-// legacy surface; deleted with it
-func TestSecretScanReadsLegacySectionAttrs(t *testing.T) {
-	content := tempFile([]byte("nothing to find\n"))
-	defer os.Remove(content)
-
-	bin, argsFile := fakeScanner(t, "null")
-	tests := map[string]*config.TestConfig{
-		"IsFreeOfSecrets": {Attrs: map[string]interface{}{"enabled": true, "binary": bin}},
+// TestSecretParamsRefuseEnabled pins that "enabled" stays the RULE's own key:
+// a parameter set carrying it is a load error, not a second switch over the
+// scan that the rule's own one would silently disagree with.
+func TestSecretParamsRefuseEnabled(t *testing.T) {
+	cfg := leakTestConfig("betterleaks", nil)
+	spec := leakRule(t, &cfg)
+	if len(spec.Params) != 1 {
+		t.Fatalf("the leak rule carries %d parameter sets, want the fixture's one", len(spec.Params))
 	}
-	cfg := config.Config{
-		General: &config.GeneralConfig{
-			MaxArchiveFileSize:     10 * 1024 * 1024,
-			MaxTotalArchiveMemory:  100 * 1024 * 1024,
-			MaxContentScanFileSize: 1024 * 1024 * 1024,
-		},
-		Tests: tests,
+	spec.Params[0]["enabled"] = true
+
+	def, known := NewRegistry().Lookup("IsFreeOfSecrets")
+	if !known {
+		t.Fatal("check \"IsFreeOfSecrets\" is not registered")
 	}
-
-	file := structs.File{Path: content, Name: "data.txt", Size: 10}
-	runRepoRule(t, "IsFreeOfSecrets", cfg, structs.Repository{Files: []structs.File{file}})
-
-	if _, err := os.ReadFile(argsFile); err != nil {
-		t.Errorf("the section's attrs binary never ran, so the bind read the knobs elsewhere: %v", err)
+	_, err := def.Bind(*spec, cfg.General)
+	if err == nil || !strings.Contains(err.Error(), "enabled") {
+		t.Errorf("a parameter set carrying enabled must be refused by name: %v", err)
 	}
 }
 
@@ -720,15 +651,20 @@ func TestIsFreeOfSecretsRealBinary(t *testing.T) {
 }
 
 // TestCheckSecretAttrsUnknownKeyLists pins the unknown-key error's allowed-key
-// list against the surface it reports for: the legacy attrs table accepts
-// "enabled", the [[rule]] parameter set does not.
+// list: it names every knob a parameter set may carry, so a typo tells the
+// operator what to write instead - and never "enabled", which is the rule's
+// own key rather than a knob.
 func TestCheckSecretAttrsUnknownKeyLists(t *testing.T) {
-	legacyErr := checkSecretAttrs(map[string]interface{}{"nonsense": true}, true)
-	if legacyErr == nil || !strings.Contains(legacyErr.Error(), "enabled, binary") {
-		t.Errorf("the legacy allowed-key list must name enabled: %v", legacyErr)
+	ruleErr := checkSecretAttrs(map[string]interface{}{"nonsense": true})
+	if ruleErr == nil {
+		t.Fatal("an unknown parameter key must be a load error")
 	}
-	ruleErr := checkSecretAttrs(map[string]interface{}{"nonsense": true}, false)
-	if ruleErr == nil || strings.Contains(ruleErr.Error(), "enabled") {
+	for _, knob := range []string{"binary", "timeoutSeconds", "maxProcs"} {
+		if !strings.Contains(ruleErr.Error(), knob) {
+			t.Errorf("the allowed-key list must name %q: %v", knob, ruleErr)
+		}
+	}
+	if strings.Contains(ruleErr.Error(), "enabled") {
 		t.Errorf("the rule allowed-key list must not name enabled: %v", ruleErr)
 	}
 }

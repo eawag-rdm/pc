@@ -18,7 +18,7 @@ import (
 	"github.com/eawag-rdm/pc/pkg/structs"
 )
 
-// Defaults for the [test.IsFreeOfSecrets] attrs table.
+// Defaults for the leak check's parameter set.
 const (
 	defaultLeakBinary   = "betterleaks"
 	defaultLeakMaxProcs = 3
@@ -26,8 +26,8 @@ const (
 	leakMaxLinesShown = 5
 )
 
-// leakAttrs holds the operational knobs of the leak check, read from the
-// attrs table of [test.IsFreeOfSecrets] and type-checked once, at load.
+// leakAttrs holds the operational knobs of the leak check, read from its
+// rule's parameter set and type-checked once, at load.
 type leakAttrs struct {
 	binary         string
 	timeoutSeconds int
@@ -72,21 +72,17 @@ func leakAttrsFrom(attrs map[string]interface{}, general *config.GeneralConfig) 
 // Typing is strict: an unknown or wrong-typed knob is a load error, validated
 // for a DISABLED rule too (Compile binds those and then leaves them out of the
 // plan), so a config the scan could not honour fails at load, not on the day
-// the dormant scan is reactivated. A legacy section carries the knobs in its
-// attrs table, which also holds "enabled"; a [[rule]] carries them as its ONE
+// the dormant scan is reactivated. A rule carries the knobs as its ONE
 // parameter set, where "enabled" is the rule's own key and refused here.
 func bindSecrets(spec config.RuleSpec, general *config.GeneralConfig) (*BoundRule, error) {
-	table := spec.Attrs
-	if !spec.Legacy {
-		if len(spec.Params) > 1 {
-			return nil, fmt.Errorf("check %q takes one parameter set", spec.Check)
-		}
-		table = nil
-		if len(spec.Params) == 1 {
-			table = spec.Params[0]
-		}
+	if len(spec.Params) > 1 {
+		return nil, fmt.Errorf("check %q takes one parameter set", spec.Check)
 	}
-	if err := checkSecretAttrs(table, spec.Legacy); err != nil {
+	var table map[string]interface{}
+	if len(spec.Params) == 1 {
+		table = spec.Params[0]
+	}
+	if err := checkSecretAttrs(table); err != nil {
 		return nil, err
 	}
 	// The child's cap comes from the CONFIG, never the live runtime - see leakAttrsFrom.
@@ -99,9 +95,8 @@ func bindSecrets(spec config.RuleSpec, general *config.GeneralConfig) (*BoundRul
 	}, nil
 }
 
-// checkSecretAttrs type-checks the scan's knobs once, at load. allowEnabled
-// admits the legacy attrs table's "enabled" key.
-func checkSecretAttrs(attrs map[string]interface{}, allowEnabled bool) error {
+// checkSecretAttrs type-checks the scan's knobs once, at load.
+func checkSecretAttrs(attrs map[string]interface{}) error {
 	keys := make([]string, 0, len(attrs))
 	for key := range attrs {
 		keys = append(keys, key)
@@ -112,10 +107,7 @@ func checkSecretAttrs(attrs map[string]interface{}, allowEnabled bool) error {
 		var typeOK bool
 		switch key {
 		case "enabled":
-			if !allowEnabled {
-				return fmt.Errorf("params: %q is the rule's own key, not a parameter", key)
-			}
-			_, typeOK = v.(bool)
+			return fmt.Errorf("params: %q is the rule's own key, not a parameter", key)
 		case "binary":
 			s, isStr := v.(string)
 			typeOK = isStr && s != ""
@@ -123,11 +115,7 @@ func checkSecretAttrs(attrs map[string]interface{}, allowEnabled bool) error {
 			n, isInt := v.(int64)
 			typeOK = isInt && n > 0
 		default:
-			allowed := "binary, timeoutSeconds, maxProcs"
-			if allowEnabled {
-				allowed = "enabled, " + allowed
-			}
-			return fmt.Errorf("unknown key %q (allowed: %s)", key, allowed)
+			return fmt.Errorf("unknown key %q (allowed: binary, timeoutSeconds, maxProcs)", key)
 		}
 		if !typeOK {
 			return fmt.Errorf("%q has the wrong type or an invalid value (%v)", key, v)

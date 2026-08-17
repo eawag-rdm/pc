@@ -14,21 +14,17 @@ import (
 
 // This file owns the path from declared rules to bindable specs and compiled
 // selectors. It lives HERE, next to the registry, so utils.Compile and the
-// checks tests translate and compile through the SAME code and cannot drift
-// apart (utils imports checks; checks must not import utils). The legacy
-// [test.X] translation inside it is sugar for one more release and dies with
-// that surface.
+// checks tests assemble and compile through the SAME code and cannot drift
+// apart (utils imports checks; checks must not import utils).
 
-// anchoredChecks must each be DECLARED on one surface or the load fails - the
-// contract the old [test.X] validation enforced: these checks' parameters are
-// load-bearing enough that a config silent about them is a mistake, not a
-// default. Every other check synthesizes a default rule.
+// anchoredChecks must each be DECLARED or the load fails: these checks'
+// parameters are load-bearing enough that a config silent about them is a
+// mistake, not a default. Every other check synthesizes a default rule.
 var anchoredChecks = []string{"IsFreeOfKeywords", "IsValidName", "HasReadme"}
 
 // AnchoredChecks returns, as a copy, the checks that must be explicitly
-// configured - declared on one surface - for a config to load. Fixtures derive
-// their anchor declarations from it, so adding an anchor cannot desynchronise
-// them.
+// configured for a config to load. Fixtures derive their anchor declarations
+// from it, so adding an anchor cannot desynchronise them.
 func AnchoredChecks() []string {
 	return append([]string(nil), anchoredChecks...)
 }
@@ -36,10 +32,10 @@ func AnchoredChecks() []string {
 // RuleSpecs assembles the rule specs one config declares, in the registry's
 // DECLARED order by check - that order is the order the dispatch runs a file's
 // checks in, and therefore the order findings are rendered in. Per check: its
-// [[rule]] sections in config order, else its translated legacy [test.X]
-// section, else - anchoredChecks excepted - a synthesized default rule with an
-// empty selector and the parameters its own Bind produces for the zero spec;
-// without that, assembly would silently delete every check no config names.
+// [[rule]] sections in config order, else - anchoredChecks excepted - a
+// synthesized default rule with an empty selector and the parameters its own
+// Bind produces for the zero spec; without that, assembly would silently
+// delete every check no config names.
 // Two rules of one check that differ only in their name are refused as well -
 // see duplicateRuleErrors. Errors are aggregated into one joined error, not
 // short-circuited.
@@ -58,27 +54,12 @@ func RuleSpecs(cfg *config.Config, reg Registry) ([]config.RuleSpec, error) {
 		}
 		byCheck[rule.Check] = append(byCheck[rule.Check], rule)
 	}
-	orphans := make([]string, 0, len(cfg.Tests))
-	for name := range cfg.Tests {
-		if _, known := reg.Lookup(name); !known {
-			orphans = append(orphans, name)
-		}
-	}
-	sort.Strings(orphans) // map order is random; error order must not be
-	for _, name := range orphans {
-		errs = append(errs, fmt.Errorf("config section [test.%s] names no known check", name))
-	}
 
 	specs := make([]config.RuleSpec, 0, reg.Len()+len(cfg.Rules))
 	tocSynthesized := false
 	for _, def := range reg.Defs() {
 		rules, present := byCheck[def.Name]
-		section := cfg.Tests[def.Name]
 		switch {
-		case present && section != nil:
-			// ParseConfig refuses the mix already; a hand-built config gets the
-			// same verdict here rather than a silent surface preference.
-			errs = append(errs, fmt.Errorf("check %q is configured by both [[rule]] and [test.%s]: use one surface per check", def.Name, def.Name))
 		case present:
 			// "What counts as the readme" must have exactly one definition; a
 			// second HasReadme rule would declare a second one, switched off
@@ -92,10 +73,8 @@ func RuleSpecs(cfg *config.Config, reg Registry) ([]config.RuleSpec, error) {
 			// load rerun.
 			errs = append(errs, duplicateRuleErrors(rules, def)...)
 			specs = append(specs, rules...)
-		case section != nil:
-			specs = append(specs, legacySectionSpec(def.Name, section))
 		case slices.Contains(anchoredChecks, def.Name):
-			errs = append(errs, fmt.Errorf("check %q is not configured: declare a [[rule]] for it (or a legacy [test.%s] section)", def.Name, def.Name))
+			errs = append(errs, fmt.Errorf("check %q is not configured: declare a [[rule]] for it", def.Name))
 		default:
 			if def.Name == "ReadMeContainsTOC" {
 				tocSynthesized = true
@@ -157,11 +136,9 @@ type ruleIdentity struct {
 	Scope      []string // resolved and sorted: a set, not a declaration order
 	Enabled    bool
 	IgnoreCase bool
-	Legacy     bool
 	Include    []string
 	Exclude    []string
 	Params     []map[string]interface{}
-	Attrs      map[string]interface{}
 
 	// NameSubject and PathSubject are the rule's subject reading per scope
 	// CLASS, the two readings CompileRuleSelectors compiles, and each is set
@@ -171,9 +148,7 @@ type ruleIdentity struct {
 	// only where they agree on both: an undeclared subject and a spelled-out
 	// subject = "path" are one rule at the archive-member scope and two
 	// different ones at the file scope, where the first gates on the base name
-	// and the second on the path. Neither reading describes a LEGACY spec: that
-	// one compiles through legacyRuleSelectors, which reads no declared subject
-	// at all.
+	// and the second on the path.
 	NameSubject string
 	PathSubject string
 }
@@ -199,7 +174,6 @@ func ruleIdentityOf(spec config.RuleSpec, def CheckDef) ruleIdentity {
 		Check:      spec.Check,
 		Enabled:    spec.Enabled,
 		IgnoreCase: spec.IgnoreCase,
-		Legacy:     spec.Legacy,
 	}
 	if len(spec.Include) > 0 {
 		id.Include = spec.Include
@@ -209,11 +183,6 @@ func ruleIdentityOf(spec config.RuleSpec, def CheckDef) ruleIdentity {
 	}
 	if len(spec.Params) > 0 {
 		id.Params = spec.Params
-	}
-	// Only the legacy surface fills Attrs, and it becomes one spec per section:
-	// this arm guards hand-built specs, which the exported RuleSpecs admits.
-	if len(spec.Attrs) > 0 {
-		id.Attrs = spec.Attrs
 	}
 	scopes := DefaultScopes(def)
 	names := make([]string, 0, NumScopes)
@@ -293,13 +262,9 @@ func declaredSubject(spec config.RuleSpec) string {
 // built-in default names), and every ReadMeContainsTOC spec reads that rule's
 // parameters. Two DECLARED HasReadme rules elect neither, enabled or not - see
 // electReadme. Declaring parameters on a TOC [[rule]] is refused, so the two
-// checks can never disagree; a legacy TOC section's own keywordArguments were
-// always ignored in favour of the readme's list and keep being dropped. The
-// inherited params carry their surface's Legacy flag with them, so a lenient
-// legacy list never gets the [[rule]] surface's strict key check (whose faults
-// would be misattributed to the TOC rule). A synthesized TOC - no surface of
-// its own - additionally takes the readme rule's file filter, exactly as the
-// [test.*] surface always behaved; a declared one keeps its own.
+// checks can never disagree. A synthesized TOC - no declaration of its own -
+// additionally takes the readme rule's file filter; a declared one keeps its
+// own.
 func shareReadmeNames(specs []config.RuleSpec, tocSynthesized bool) []error {
 	var errs []error
 	readme := electReadme(specs)
@@ -309,16 +274,13 @@ func shareReadmeNames(specs []config.RuleSpec, tocSynthesized bool) []error {
 			continue
 		}
 		if len(spec.Params) > 0 {
-			if !spec.Legacy {
-				errs = append(errs, fmt.Errorf("rule %q: ReadMeContainsTOC takes no parameters (what counts as the readme is the HasReadme rule's readme_names)", spec.Name))
-				continue
-			}
-			spec.Params = nil
+			errs = append(errs, fmt.Errorf("rule %q: ReadMeContainsTOC takes no parameters (what counts as the readme is the HasReadme rule's readme_names)", spec.Name))
+			continue
 		}
 		if readme == nil {
 			continue
 		}
-		spec.Params, spec.Legacy = readme.Params, readme.Legacy
+		spec.Params = readme.Params
 		if tocSynthesized {
 			spec.Include, spec.Exclude = readme.Include, readme.Exclude
 			spec.Subject, spec.IgnoreCase = readme.Subject, readme.IgnoreCase
@@ -351,27 +313,6 @@ func electReadme(specs []config.RuleSpec) *config.RuleSpec {
 	return readme
 }
 
-// legacySectionSpec translates one legacy [test.X] section into a rule spec.
-// One section becomes ONE rule carrying its N parameter sets, never N rules.
-func legacySectionSpec(name string, section *config.TestConfig) config.RuleSpec {
-	spec := config.RuleSpec{
-		Name:    name,
-		Check:   name,
-		Enabled: true,
-		Legacy:  true,
-		Include: section.Whitelist,
-		Exclude: section.Blacklist,
-		Params:  section.KeywordArguments,
-		Attrs:   section.Attrs,
-	}
-	if name == "IsFreeOfSecrets" {
-		// The scan's phase gate is the rule's own enabled flag; the legacy
-		// surface carries it in the section's attrs table.
-		spec.Enabled, _ = section.Attrs["enabled"].(bool)
-	}
-	return spec
-}
-
 // defaultRuleSpec synthesizes the default rule of a check no config names: an
 // empty selector, the parameters its Bind produces for the zero spec, and a
 // name OUTSIDE the operator's namespace - the prefix is reserved at decode, so
@@ -382,21 +323,17 @@ func defaultRuleSpec(name string) config.RuleSpec {
 }
 
 // RuleSelectors is one rule's compiled filters for ONE scope: the dispatch
-// gate, the archive-member gate (nil admits every member), whether the gate's
-// "name" subject means the BASE name of a member path, and - legacy only -
-// whether the rule's whitelist selected nothing, so the rule has no subject in
-// this scope and is not dispatched there at all.
+// gate, the archive-member gate (nil admits every member), and whether the
+// gate's "name" subject means the BASE name of a member path.
 type RuleSelectors struct {
 	Gate      selector.Selector
 	Member    *selector.Selector
 	BaseNames bool
-	AdmitNone bool
 }
 
 // CompileRuleSelectors compiles one rule's file filters for all the scopes it
-// serves; the returned slice is parallel to scopes. On the [[rule]] surface
-// the patterns compile ONCE per rule; the legacy branch recompiles them per
-// scope (it dies with the sugar) but a fault is reported once either way.
+// serves; the returned slice is parallel to scopes. The patterns compile ONCE
+// per rule, so a fault is reported once.
 //
 // A [[rule]] has ONE selector semantics: regex, case-sensitive unless
 // ignoreCase, matched against its declared subject per scope - at file and
@@ -406,19 +343,10 @@ type RuleSelectors struct {
 // member selector decides inside - gating the container on a member-addressed
 // pattern is exactly the two-readings bug the one semantics removes. At the
 // archive-member and repository scopes an UNDECLARED subject defaults to
-// "path", the string those scopes address in practice and the one the legacy
-// lists always matched there: a "name" default would make a member pattern
-// like include = ["data/"] silently match nothing, and would silently stop a
-// migrated repository blacklist like ["^raw/"] from matching.
-//
-// A translated legacy [test.X] list keeps its TWO readings for the sugar's
-// remaining release: the dispatch gate reads it as regexes over the file (or
-// archive) name - the repository path at repository scope - the member gate as
-// case-insensitive literal substrings over the member path.
+// "path", the string those scopes address in practice: a "name" default would
+// make a member pattern like include = ["data/"] silently match nothing, and
+// would silently stop a repository exclude like ["^raw/"] from matching.
 func CompileRuleSelectors(spec config.RuleSpec, scopes []Scope) ([]RuleSelectors, error) {
-	if spec.Legacy {
-		return legacyRuleSelectors(spec, scopes)
-	}
 	sel, err := selector.Compile(ruleSelectorSpec(spec, spec.Subject))
 	if err != nil {
 		return nil, err
@@ -459,39 +387,6 @@ func ruleSelectorSpec(spec config.RuleSpec, subject string) selector.Spec {
 		Include:    spec.Include,
 		Exclude:    spec.Exclude,
 	}
-}
-
-// legacyRuleSelectors preserves each legacy reading in the place that had it.
-// Every scope compiles the same lists, so a fault is reported from the first
-// scope that hits it and the later, identical verdicts are skipped.
-func legacyRuleSelectors(spec config.RuleSpec, scopes []Scope) ([]RuleSelectors, error) {
-	compiled := make([]RuleSelectors, len(scopes))
-	for i, scope := range scopes {
-		subject := "name"
-		if scope == ScopeRepository {
-			subject = "path"
-		}
-		gate, err := selector.CompileLegacyRegexLists(spec.Name, subject, spec.Include, spec.Exclude)
-		if err != nil {
-			return nil, err
-		}
-		compiled[i].Gate = gate
-		if scope != ScopeArchiveMember {
-			continue
-		}
-		// AdmitNone reports a legacy whitelist that selected nothing, which
-		// must go on selecting nothing.
-		member, admitNone, err := selector.CompileLegacyLists(spec.Name, spec.Include, spec.Exclude)
-		if err != nil {
-			return nil, err
-		}
-		if admitNone {
-			compiled[i] = RuleSelectors{AdmitNone: true}
-			continue
-		}
-		compiled[i].Member = member
-	}
-	return compiled, nil
 }
 
 // MemberAdmission decides the member pre-filter the archive iterator runs for

@@ -21,7 +21,7 @@ func loadTOML(t *testing.T, doc string) (*Config, error) {
 // TestSecretsTimeoutWithinRequestBudget pins the one cross-section constraint
 // the config layer kept when the per-check validation moved into the checks'
 // own Bind: a secret-scan timeout longer than the server's request timeout is
-// refused at load, from either surface, even while the scan is disabled.
+// refused at load, even while the scan is disabled.
 func TestSecretsTimeoutWithinRequestBudget(t *testing.T) {
 	cases := []struct {
 		name string
@@ -29,25 +29,11 @@ func TestSecretsTimeoutWithinRequestBudget(t *testing.T) {
 		ok   bool
 	}{
 		{
-			// legacy surface; deleted with it
-			"legacy attrs timeout over budget",
-			"[server]\nrequestTimeoutSeconds = 60\n" +
-				"[test.IsFreeOfSecrets]\nattrs = {enabled = false, timeoutSeconds = 120}\n",
-			false,
-		},
-		{
 			"rule params timeout over budget",
 			"[server]\nrequestTimeoutSeconds = 60\n" +
 				"[[rule]]\nname = \"secret-scan\"\ncheck = \"IsFreeOfSecrets\"\nenabled = false\n" +
 				"  [rule.params]\n  timeoutSeconds = 120\n",
 			false,
-		},
-		{
-			// legacy surface; deleted with it
-			"legacy attrs timeout within budget",
-			"[server]\nrequestTimeoutSeconds = 300\n" +
-				"[test.IsFreeOfSecrets]\nattrs = {enabled = false, timeoutSeconds = 120}\n",
-			true,
 		},
 		{
 			"rule params timeout within budget",
@@ -57,14 +43,8 @@ func TestSecretsTimeoutWithinRequestBudget(t *testing.T) {
 			true,
 		},
 		{
-			// legacy surface; deleted with it
-			"default timeout within default budget",
-			"[test.IsFreeOfSecrets]\nattrs = {enabled = false}\n",
-			true,
-		},
-		{
-			// The gate runs only when a secrets rule or section exists: with
-			// none there is no timeout to hold against a tight budget.
+			// The gate runs only when a secrets rule exists: with none there is
+			// no timeout to hold against a tight budget.
 			"no secrets configuration ignores the budget",
 			"[server]\nrequestTimeoutSeconds = 60\n",
 			true,

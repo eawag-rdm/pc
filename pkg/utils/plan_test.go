@@ -29,17 +29,9 @@ func planConfig(rules []config.RuleSpec) config.Config {
 
 // withRequiredAnchors copies cfg's rules and fills the anchored checks (which
 // Compile refuses to leave undeclared) with bare rules, so a fixture that
-// configures only the check under test stays a complete config. A check counts
-// as declared on EITHER surface: the fixtures that still carry a [test.X]
-// section - TestCompileRejectsBothLists, TestCompileMemberAdmission and the
-// legacy half of every pair in fixture_migration_test.go - would otherwise be
-// anchored a second time, and a check configured on both surfaces refuses the
-// load.
+// configures only the check under test stays a complete config.
 func withRequiredAnchors(cfg config.Config) config.Config {
 	declared := func(name string) bool {
-		if cfg.Tests[name] != nil {
-			return true
-		}
 		for _, rule := range cfg.Rules {
 			if rule.Check == name {
 				return true
@@ -106,17 +98,12 @@ func TestCompileRejectsUnknownCheck(t *testing.T) {
 		{Name: "HasOnlyASCII", Check: "HasOnlyASCII", Enabled: true},
 		{Name: "IsFreeOfKeywordsXX", Check: "IsFreeOfKeywordsXX", Enabled: true},
 	})
-	// legacy surface; deleted with it - a section naming no check is refused by
-	// its own branch of the assembly, which nothing else reaches
-	cfg.Tests = map[string]*config.TestConfig{"HasOnlyAsciiTypo": {}}
 	_, err := Compile(&cfg, checks.NewRegistry())
 	if err == nil {
 		t.Fatal("a declaration naming no known check must fail the compile")
 	}
-	for _, want := range []string{"HasOnlyAsciiTypo", "IsFreeOfKeywordsXX"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error must name the orphan %q: %v", want, err)
-		}
+	if want := "IsFreeOfKeywordsXX"; !strings.Contains(err.Error(), want) {
+		t.Errorf("error must name the orphan %q: %v", want, err)
 	}
 }
 
@@ -221,29 +208,6 @@ func TestCompileAggregatesLoadErrors(t *testing.T) {
 	}
 }
 
-// TestCompileRejectsBothLists keeps the one list fault that has no successor: a
-// [test.X] section fills the whitelist OR the blacklist, never both
-// (selector.ErrBothLists), while a [[rule]] takes include AND exclude together.
-//
-// legacy surface; deleted with it
-func TestCompileRejectsBothLists(t *testing.T) {
-	cfg := planConfig(nil)
-	cfg.Tests = map[string]*config.TestConfig{
-		"IsFreeOfKeywords": {
-			Whitelist: []string{"keep.txt"},
-			Blacklist: []string{"drop.txt"},
-		},
-	}
-	cfg = withRequiredAnchors(cfg)
-	_, err := Compile(&cfg, checks.NewRegistry())
-	if err == nil {
-		t.Fatal("a section setting both lists must fail the compile")
-	}
-	if !strings.Contains(err.Error(), "both lists are set") {
-		t.Errorf("the error must name the fault, not some other one: %v", err)
-	}
-}
-
 // TestCompileReportsTwinsWithSiblingFaults is the same contract one level down,
 // where a check's own rules are assembled: a twin - two rules of one check that
 // differ only in their name - does not take the check's remaining rules out of
@@ -273,10 +237,10 @@ func TestCompileReportsTwinsWithSiblingFaults(t *testing.T) {
 }
 
 // TestCompileSynthesizesDefaultRules is the guard against silently deleting a
-// check no [test.X] section names: the shipped configs leave ReadMeContainsTOC
-// (and, in testdata, three name checks) section-less. It asserts the BOUND
-// PARAMETERS, not just that a rule exists - a default rule bound to nothing
-// would pass an existence check and check nothing.
+// check no rule names: the shipped configs leave ReadMeContainsTOC (and, in
+// testdata, three name checks) undeclared. It asserts the BOUND PARAMETERS,
+// not just that a rule exists - a default rule bound to nothing would pass an
+// existence check and check nothing.
 func TestCompileSynthesizesDefaultRules(t *testing.T) {
 	dir := t.TempDir()
 	readme := filepath.Join(dir, "myreadme.md")
@@ -341,46 +305,6 @@ func TestCompileSkipsDisabledSecretScan(t *testing.T) {
 		if found != enabled {
 			t.Errorf("enabled = %v: leak rule in plan = %v", enabled, found)
 		}
-	}
-}
-
-// TestCompileMemberAdmission pins §3.2's correction: the iterator's member
-// pre-filter is the single rule's own selector, and nothing is built when there
-// is only one - which is every shipped config.
-func TestCompileMemberAdmission(t *testing.T) {
-	// legacy surface; deleted with it - the two readings below are its own
-	cfg := planConfig(nil)
-	cfg.Tests = map[string]*config.TestConfig{
-		"IsFreeOfKeywords": {Blacklist: []string{".log"}},
-	}
-	plan := compilePlan(t, cfg)
-	entry := planEntry(t, plan, "IsFreeOfKeywords", checks.ScopeArchiveMember)
-	rule := planRule(t, plan, "IsFreeOfKeywords", checks.ScopeArchiveMember)
-	if entry.batch.Admit != rule.Member {
-		t.Error("with one member rule the iterator must filter through that rule's own member selector")
-	}
-	if entry.batch.PerRule {
-		t.Error("with one member rule the per-rule member gates are redundant")
-	}
-	// The legacy member reading: literal, case-insensitive, over the member
-	// path. Asserted through the admission filter the iterator is handed, which
-	// the assertion above pinned to this rule's own member selector.
-	if rule.Member == nil {
-		t.Fatal("member selector must be compiled")
-	}
-	if entry.batch.Admit.Match("deep/run.LOG") {
-		t.Error("the admission filter must keep the case-insensitive literal reading")
-	}
-	// The dispatch gate keeps the OTHER legacy reading: regex over the archive's
-	// own name, case-sensitive. ".log" as a regex matches any character before
-	// "log", so an archive named "catalog.zip" is excluded by it - and a
-	// container named "RUN.LOG.zip" is not, because the regex reading is case
-	// sensitive where the member reading is not.
-	if rule.Match(structs.File{Name: "catalog.zip", RelPath: "catalog.zip"}) {
-		t.Error("the dispatch gate must keep the regex reading of the same list")
-	}
-	if !rule.Match(structs.File{Name: "RUN.LOG.zip", RelPath: "RUN.LOG.zip"}) {
-		t.Error("the dispatch gate must keep the CASE-SENSITIVE regex reading")
 	}
 }
 
@@ -829,6 +753,24 @@ func TestExecutedCheckMultisetUnchanged(t *testing.T) {
 				sort.Strings(diffs)
 				t.Fatalf("executed-check multiset drifted:\n%s", strings.Join(diffs, "\n"))
 			}
+		})
+	}
+}
+
+// TestBenchFixturesCompile keeps the benchmark fixtures in the normal suite's
+// reach: nothing else runs them, so a fixture Compile refuses would surface
+// only on the day someone takes a measurement - and the measurements rest on
+// exactly these three configs. It pins that each still compiles, nothing about
+// the plan they compile to.
+func TestBenchFixturesCompile(t *testing.T) {
+	fixtures := map[string]func() config.Config{
+		"benchFilterConfig":     benchFilterConfig,
+		"benchUnfilteredConfig": benchUnfilteredConfig,
+		"benchPipelineConfig":   benchPipelineConfig,
+	}
+	for name, fixture := range fixtures {
+		t.Run(name, func(t *testing.T) {
+			compilePlan(t, fixture())
 		})
 	}
 }

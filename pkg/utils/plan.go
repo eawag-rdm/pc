@@ -54,18 +54,17 @@ func (p *Plan) scope(s checks.Scope) []checkRules {
 
 // Compile turns the configured rules into the plan the engine dispatches. It is
 // the boot gate for the whole rule surface: checks.RuleSpecs assembles the
-// specs ([[rule]] sections, translated [test.X] sections, synthesized
-// defaults - refusing a config silent about the anchored checks), every rule's
-// parameters are bound and its selectors compiled - DISABLED rules included,
-// so a config the checks could not honour fails at load, not on the day a rule
-// is re-enabled; only enabled rules enter the plan. Every load error is
-// aggregated and named with its rule, so a config author is told all of them
-// at once rather than one per run.
+// specs ([[rule]] sections and synthesized defaults - refusing a config silent
+// about the anchored checks), every rule's parameters are bound and its
+// selectors compiled - DISABLED rules included, so a config the checks could
+// not honour fails at load, not on the day a rule is re-enabled; only enabled
+// rules enter the plan. Every load error is aggregated and named with its
+// rule, so a config author is told all of them at once rather than one per
+// run.
 //
-// A bad include/exclude (or legacy whitelist/blacklist) pattern is reported as
-// a *selector.CompileError, which errors.As pulls out of the aggregate -
-// callers that want the faulty patterns rather than the message can match on
-// it.
+// A bad include/exclude pattern is reported as a *selector.CompileError, which
+// errors.As pulls out of the aggregate - callers that want the faulty patterns
+// rather than the message can match on it.
 func Compile(cfg *config.Config, reg checks.Registry) (*Plan, error) {
 	// A nil config is a caller bug, not a plan: dereferencing it below would
 	// panic, and a fabricated empty config would scan nothing.
@@ -131,11 +130,6 @@ func Compile(cfg *config.Config, reg checks.Registry) (*Plan, error) {
 			continue
 		}
 		for i, scope := range scopes {
-			// A whitelist that selects nothing selects nothing: the rule has no
-			// subject in this scope, so it is not dispatched there at all.
-			if selectors[i].AdmitNone {
-				continue
-			}
 			// Validated like any other rule, but a disabled rule stays out of
 			// the plan.
 			if !spec.Enabled {
@@ -186,12 +180,8 @@ func ruleScopes(spec config.RuleSpec, def checks.CheckDef) ([]checks.Scope, erro
 // because exclude wins. Full regex intersection is undecidable, and a
 // recognizer for "exclude matches everything" could only ever spell out a
 // handful of its infinitely many forms, so the rest is the run-scoped
-// dead-rule report's job. Legacy sections cannot set both lists, so only the
-// [[rule]] surface is checked.
+// dead-rule report's job.
 func contradictorySelector(spec config.RuleSpec) error {
-	if spec.Legacy {
-		return nil
-	}
 	for _, excluded := range spec.Exclude {
 		for _, included := range spec.Include {
 			if included == excluded {

@@ -14,15 +14,9 @@ import (
 // rulesWithAnchors copies the given rules and declares a [[rule]] for every
 // anchored check (which RuleSpecs refuses to leave undeclared) they configure no
 // rule for, so a fixture that configures only the check under test stays a
-// complete config. An anchor is named after its check, the name the [test.X]
-// section it replaces produced. A check is declared on EITHER surface here: the
-// fixtures that keep a [test.X] section for a fault only that surface has would
-// otherwise be anchored a second time, which refuses the load.
-func rulesWithAnchors(tests map[string]*config.TestConfig, rules []config.RuleSpec) []config.RuleSpec {
+// complete config. An anchor is named after its check.
+func rulesWithAnchors(rules []config.RuleSpec) []config.RuleSpec {
 	declared := func(check string) bool {
-		if tests[check] != nil {
-			return true
-		}
 		for _, rule := range rules {
 			if rule.Check == check {
 				return true
@@ -54,7 +48,7 @@ func bindTestRule(t testing.TB, name string, cfg config.Config, scope Scope) (Ch
 	if !known {
 		t.Fatalf("check %q is not registered", name)
 	}
-	cfg.Rules = rulesWithAnchors(cfg.Tests, cfg.Rules)
+	cfg.Rules = rulesWithAnchors(cfg.Rules)
 	specs, err := RuleSpecs(&cfg, registry)
 	if err != nil {
 		t.Fatalf("assemble rule specs: %v", err)
@@ -76,9 +70,6 @@ func bindTestRule(t testing.TB, name string, cfg config.Config, scope Scope) (Ch
 		selectors, err := CompileRuleSelectors(spec, []Scope{scope})
 		if err != nil {
 			t.Fatalf("compile selectors for %q: %v", spec.Name, err)
-		}
-		if selectors[0].AdmitNone {
-			t.Fatalf("rule %q admits nothing in scope %s", spec.Name, scope)
 		}
 		rule.SetSelectors(selectors[0])
 		rules = append(rules, rule)

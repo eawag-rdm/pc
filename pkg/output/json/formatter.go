@@ -72,10 +72,6 @@ type RuleSubject struct {
 // the subjects' counts. Grouping is by rule name alone, which is sound
 // because rule names are unique run-wide (enforced in pkg/utils/plan.go when
 // the plan is compiled), so one rule belongs to exactly one check.
-//
-// On a legacy [test.X] config every rule is named after its check, so this
-// section degrades to a message-less relabelling of details_check_focused;
-// it earns its place on [[rule]] configs with several rules per check.
 type RuleDetails struct {
 	Rule       string        `json:"rule"`
 	Checkname  string        `json:"checkname"`

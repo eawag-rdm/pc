@@ -447,7 +447,7 @@ func TestRuleSpecsSharesNoNamesFromAmbiguousReadmeRules(t *testing.T) {
 // retire the refusal outright - and then listed here. The declaration ORDER is
 // not the contract, the set of names is.
 func TestRuleSpecFieldNamesAreDecidedAbout(t *testing.T) {
-	want := []string{"Attrs", "Check", "Enabled", "Exclude", "IgnoreCase", "Include", "Legacy", "Name", "Params", "Scope", "Subject"}
+	want := []string{"Check", "Enabled", "Exclude", "IgnoreCase", "Include", "Name", "Params", "Scope", "Subject"}
 	specType := reflect.TypeOf(config.RuleSpec{})
 	got := make([]string, 0, specType.NumField())
 	for i := 0; i < specType.NumField(); i++ {

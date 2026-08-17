@@ -24,61 +24,6 @@ func createTempConfigFile(t *testing.T, content string) string {
 	return tmpfile.Name()
 }
 
-func TestLoadConfig(t *testing.T) {
-	tests := []struct {
-		name        string
-		configData  string
-		expectPanic bool
-	}{
-		{
-			name: "ValidConfig",
-			configData: `
-				[operation]
-				collector = "collector1"
-
-				[test.test1]
-				blacklist = ["item1", "item2"]
-
-				[collector.collector1.attrs]
-				attr1 = "value1"
-			`,
-			expectPanic: false,
-		},
-		{
-			name: "InvalidConfigBothLists",
-			configData: `
-				[test.test1]
-				blacklist = ["item1"]
-				whitelist = ["item2"]
-			`,
-			expectPanic: true,
-		},
-		{
-			name: "InvalidConfigNoLists",
-			configData: `
-				[test.test1]
-			`,
-			expectPanic: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			configFile := createTempConfigFile(t, tt.configData)
-			defer os.Remove(configFile)
-
-			config, err := LoadConfig(configFile)
-			if tt.expectPanic {
-				assert.Error(t, err)
-				assert.Nil(t, config)
-			} else {
-				assert.NoError(t, err)
-				assert.NotNil(t, config)
-			}
-		})
-	}
-}
-
 func TestConfigFile(t *testing.T) {
 	// Read the config file in testdata
 	cfg, err := ParseConfig("../../testdata/test_config.toml")
@@ -87,7 +32,6 @@ func TestConfigFile(t *testing.T) {
 	}
 	// Check if the config file is loaded correctly: the checks are configured
 	// as [[rule]] sections since the rules migration.
-	assert.Equal(t, 0, len(cfg.Tests))
 	assert.Equal(t, 5, len(cfg.Rules))
 	assert.Equal(t, 2, len(cfg.Collectors))
 
@@ -127,16 +71,6 @@ func TestParseConfig(t *testing.T) {
 	[operation.main]
 	collector = "collector1"
 
-	[test.test1]
-	blacklist = ["item1", "item2"]
-	keywordArguments = [{ "arg1" = "value1" }, {"arg1" = "value1", "arg2" = ["value2", "value3"] }]
-
-	[test.test3]
-	whitelist = ["item3"]
-
-	[test.test2]
-	keywordArguments = [{"arg1" = "value1", "arg2" = ["/path/", "C:/path/"] }]
-
 	[collector.collector1]
 	attrs = { "key1" = "value1", "key2" = ["value2", "value3"] }
 	`
@@ -157,25 +91,6 @@ func TestParseConfig(t *testing.T) {
 	assert.NotNil(t, config)
 
 	// Validate the parsed data
-	testConfig, ok := config.Tests["test1"]
-	assert.True(t, ok)
-	assert.ElementsMatch(t, []string{"item1", "item2"}, testConfig.Blacklist)
-	assert.Len(t, testConfig.KeywordArguments, 2)
-	assert.ElementsMatch(t, []string{"value2", "value3"}, testConfig.KeywordArguments[1]["arg2"])
-	assert.Equal(t, "item1", testConfig.Blacklist[0])
-	assert.Equal(t, "value1", testConfig.KeywordArguments[0]["arg1"])
-
-	testConfig3, ok := config.Tests["test3"]
-	assert.True(t, ok)
-	assert.ElementsMatch(t, []string{"item3"}, testConfig3.Whitelist)
-
-	testConfig2, ok := config.Tests["test2"]
-	assert.True(t, ok)
-	assert.Len(t, testConfig2.KeywordArguments, 1)
-	assert.Equal(t, "value1", testConfig2.KeywordArguments[0]["arg1"])
-	assert.ElementsMatch(t, []string{"/path/", "C:/path/"}, testConfig2.KeywordArguments[0]["arg2"])
-	assert.Equal(t, 2, len(testConfig2.KeywordArguments[0]["arg2"].([]string)))
-
 	collectorConfig, ok := config.Collectors["collector1"]
 	assert.True(t, ok)
 	assert.Equal(t, "value1", collectorConfig.Attrs["key1"])
@@ -185,29 +100,6 @@ func TestParseConfig(t *testing.T) {
 	assert.True(t, ok)
 	assert.Equal(t, "collector1", operationConfig.Collector)
 
-}
-
-func TestAssesLists(t *testing.T) {
-	tests := []struct {
-		blacklist []string
-		whitelist []string
-		expectErr bool
-	}{
-		{[]string{"item1"}, []string{}, false},
-		{[]string{}, []string{"item1"}, false},
-		{[]string{}, []string{}, false},
-		{[]string{"item1"}, []string{"item2"}, true},
-		{[]string{"item1"}, []string{"item1"}, true},
-	}
-
-	for _, tt := range tests {
-		err := assesLists(tt.blacklist, tt.whitelist)
-		if tt.expectErr {
-			assert.Error(t, err)
-		} else {
-			assert.NoError(t, err)
-		}
-	}
 }
 
 func TestParseSummaryIntroText(t *testing.T) {
@@ -971,8 +863,8 @@ func TestParseServerConfigMissingKeyKeepsDefault(t *testing.T) {
 
 // TestParseShippedConfigsLoad confirms the shipped, correctly-typed configs
 // still load cleanly. It goes through LoadConfig, the entry point both
-// frontends use, so the whitelist/blacklist check ParseConfig now owns is
-// exercised against the configs it is meant to gate.
+// frontends use, so the strict top-level and [[rule]] decode ParseConfig owns
+// is exercised against the configs it is meant to gate.
 func TestParseShippedConfigsLoad(t *testing.T) {
 	for _, path := range []string{
 		"../../pc.toml",
@@ -987,67 +879,6 @@ func TestParseShippedConfigsLoad(t *testing.T) {
 			assert.NoError(t, err)
 			assert.NotNil(t, cfg)
 		})
-	}
-}
-
-// TestRuleMixedWithTestSection pins the no-merge rule: a [[rule]] and a
-// [test.X] section for the SAME check is a load error, never a merge.
-func TestRuleMixedWithTestSection(t *testing.T) {
-	_, err := loadTOML(t, `
-[test.HasOnlyASCII]
-blacklist = []
-
-[[rule]]
-name  = "ascii"
-check = "HasOnlyASCII"
-`)
-	if err == nil {
-		t.Fatal("a [[rule]] and a [test.X] for one check must refuse the load")
-	}
-	for _, want := range []string{"HasOnlyASCII", "one surface"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error must name %q: %v", want, err)
-		}
-	}
-	// Different checks on different surfaces are fine.
-	cfg, err := loadTOML(t, `
-[test.HasOnlyASCII]
-blacklist = []
-
-[[rule]]
-name  = "whitespace"
-check = "HasNoWhiteSpace"
-`)
-	if err != nil {
-		t.Fatalf("distinct checks may use distinct surfaces: %v", err)
-	}
-	if len(cfg.Rules) != 1 || cfg.Rules[0].Name != "whitespace" {
-		t.Fatalf("rule not decoded: %+v", cfg.Rules)
-	}
-
-	// Several collisions are reported at once, not one per load.
-	_, err = loadTOML(t, `
-[test.HasOnlyASCII]
-blacklist = []
-
-[test.HasNoWhiteSpace]
-blacklist = []
-
-[[rule]]
-name  = "a"
-check = "HasOnlyASCII"
-
-[[rule]]
-name  = "b"
-check = "HasNoWhiteSpace"
-`)
-	if err == nil {
-		t.Fatal("expected a load error")
-	}
-	for _, want := range []string{"HasOnlyASCII", "HasNoWhiteSpace"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("aggregated error must name the %q collision: %v", want, err)
-		}
 	}
 }
 
@@ -1083,7 +914,7 @@ check = "HasOnlyASCII"
 	}
 	full := cfg.Rules[0]
 	if full.Name != "credentials" || full.Check != "IsFreeOfKeywords" ||
-		full.Subject != "path" || full.Enabled || !full.IgnoreCase || full.Legacy {
+		full.Subject != "path" || full.Enabled || !full.IgnoreCase {
 		t.Errorf("rule fields decoded wrong: %+v", full)
 	}
 	if len(full.Scope) != 2 || full.Scope[0] != "file" || full.Scope[1] != "archive-member" {
@@ -1170,6 +1001,13 @@ func TestParseConfigRejectsUnknownTopLevel(t *testing.T) {
 	_, err = loadTOML(t, "[generall]\nmaxPDFPages = 3\n")
 	if err == nil || !strings.Contains(err.Error(), "generall") {
 		t.Fatalf("an unknown top-level table must be a load error naming it: %v", err)
+	}
+	// The same guard is what an operator whose config still carries a [test.X]
+	// section hits: the surface is gone, so the section is an unknown key and
+	// the load fails instead of silently dropping what it configured.
+	_, err = loadTOML(t, "[test.HasOnlyASCII]\nwhitelist = [\"\\\\.csv$\"]\n")
+	if err == nil || !strings.Contains(err.Error(), "unknown top-level config key(s): test") {
+		t.Fatalf("a leftover [test.X] section must be a load error naming the key: %v", err)
 	}
 }
 

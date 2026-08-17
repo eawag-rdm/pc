@@ -10,17 +10,6 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-// Structures for final parsed configuration
-type TestConfig struct {
-	Blacklist        []string
-	Whitelist        []string
-	KeywordArguments []map[string]interface{}
-	// Attrs holds check-specific scalar settings (e.g. the [test.IsFreeOfSecrets]
-	// attrs table). Values are stored verbatim; the check's own Bind type-checks
-	// them when utils.Compile builds the plan, so wrong-typed values fail at load.
-	Attrs map[string]interface{}
-}
-
 // DefaultRulePrefix marks the names of synthesized default rules
 // (checks.RuleSpecs). parseRuleSpec refuses it on declared rules, so synthesis
 // can never collide with an operator's rule name.
@@ -29,9 +18,7 @@ const DefaultRulePrefix = "default:"
 // RuleSpec is the declarative form of one rule: a named instance of a check
 // with its own parameters and its own file selector. It holds strings and raw
 // TOML values only and knows nothing about the check it names - pkg/utils
-// compiles it against the check registry. [[rule]] sections decode into these;
-// the legacy [test.X] sections are translated into them (checks.RuleSpecs)
-// until that sugar is removed.
+// compiles it against the check registry. [[rule]] sections decode into these.
 type RuleSpec struct {
 	Name       string   // unique, operator-chosen
 	Check      string   // registered check name
@@ -42,19 +29,9 @@ type RuleSpec struct {
 	Include    []string // selector include patterns
 	Exclude    []string // selector exclude patterns
 	// Params holds the check-specific parameter sets, type-checked by the
-	// check's Bind: each [rule.params] table is one set, the repeated
-	// [[rule.params]] form carries several, and a translated legacy section's
-	// keywordArguments list lands here unchanged.
+	// check's Bind: each [rule.params] table is one set and the repeated
+	// [[rule.params]] form carries several.
 	Params []map[string]interface{}
-	// Attrs is a translated legacy section's attrs table, verbatim; only the
-	// leak check reads one. The [[rule]] surface never sets it - its knobs are
-	// ordinary params - and it dies with the legacy sugar.
-	Attrs map[string]interface{}
-	// Legacy marks a spec translated from a [test.X] section: its lists keep
-	// the two historical readings (regex over names at dispatch,
-	// case-insensitive literals over member paths) until the sugar is removed.
-	// The [[rule]] surface never sets it.
-	Legacy bool
 }
 
 type CollectorConfig struct {
@@ -209,7 +186,6 @@ type ServerConfig struct {
 type Config struct {
 	General    *GeneralConfig
 	Server     *ServerConfig
-	Tests      map[string]*TestConfig
 	Rules      []RuleSpec // [[rule]] sections, in config order
 	Operation  map[string]*OperationConfig
 	Collectors map[string]*CollectorConfig
@@ -228,7 +204,7 @@ func ParseConfig(filename string) (*Config, error) {
 	var unknownTop []string
 	for key := range raw {
 		switch key {
-		case "general", "server", "test", "rule", "collector", "operation":
+		case "general", "server", "rule", "collector", "operation":
 		default:
 			unknownTop = append(unknownTop, key)
 		}
@@ -273,7 +249,6 @@ func ParseConfig(filename string) (*Config, error) {
 				Port: DefaultServerSMTPPort,
 			},
 		},
-		Tests:      map[string]*TestConfig{},
 		Operation:  map[string]*OperationConfig{},
 		Collectors: map[string]*CollectorConfig{},
 	}
@@ -283,25 +258,6 @@ func ParseConfig(filename string) (*Config, error) {
 		for _, item := range data {
 			if s, ok := item.(string); ok {
 				result = append(result, s)
-			}
-		}
-		return result
-	}
-
-	parseKeywordArguments := func(data []interface{}) []map[string]interface{} {
-		var result []map[string]interface{}
-		for _, kwItem := range data {
-			if kwMap, ok := kwItem.(map[string]interface{}); ok {
-				kwSet := make(map[string]interface{})
-				for k, v := range kwMap {
-					switch val := v.(type) {
-					case string:
-						kwSet[k] = val
-					case []interface{}:
-						kwSet[k] = parseStringSlice(val)
-					}
-				}
-				result = append(result, kwSet)
 			}
 		}
 		return result
@@ -435,40 +391,6 @@ func ParseConfig(filename string) (*Config, error) {
 		}
 	}
 
-	if testData, ok := raw["test"].(map[string]interface{}); ok {
-		for name, section := range testData {
-			tc := &TestConfig{}
-			if sectionMap, ok := section.(map[string]interface{}); ok {
-				if bl, ok := sectionMap["blacklist"].([]interface{}); ok {
-					tc.Blacklist = parseStringSlice(bl)
-				}
-				if wl, ok := sectionMap["whitelist"].([]interface{}); ok {
-					tc.Whitelist = parseStringSlice(wl)
-				}
-				if kwArgs, ok := sectionMap["keywordArguments"].([]interface{}); ok {
-					tc.KeywordArguments = parseKeywordArguments(kwArgs)
-				}
-				if attrs, ok := sectionMap["attrs"].(map[string]interface{}); ok {
-					tc.Attrs = attrs
-				}
-			}
-			c.Tests[name] = tc
-		}
-		// Every faulty section at once, in a stable order: map iteration is
-		// random, so reporting the first would name a different section per run
-		// and a config author would fix them one load at a time.
-		var faulty []string
-		for name, tc := range c.Tests {
-			if err := assesLists(tc.Blacklist, tc.Whitelist); err != nil {
-				faulty = append(faulty, name)
-			}
-		}
-		if len(faulty) > 0 {
-			sort.Strings(faulty)
-			return nil, fmt.Errorf("error in test %s: only one is allowed to have entries. Either the blacklist OR the whitelist", strings.Join(faulty, ", "))
-		}
-	}
-
 	// [[rule]] sections: the primary check-configuration surface. Decoding is
 	// fail-fast throughout - a wrong-typed or unknown key is a load error, never
 	// a silently inert setting. Faulty rules are aggregated, so a config author
@@ -490,18 +412,6 @@ func ParseConfig(filename string) (*Config, error) {
 		}
 		if len(ruleErrs) > 0 {
 			return nil, errors.Join(ruleErrs...)
-		}
-		// One surface per check: a [[rule]] and a [test.X] section for the SAME
-		// check would need a merge policy nobody can remember. Load error
-		// instead, with every collision reported at once.
-		var surfaceErrs []error
-		for _, rule := range c.Rules {
-			if _, both := c.Tests[rule.Check]; both {
-				surfaceErrs = append(surfaceErrs, fmt.Errorf("check %q is configured by [[rule]] %q AND [test.%s]: use one surface per check", rule.Check, rule.Name, rule.Check))
-			}
-		}
-		if len(surfaceErrs) > 0 {
-			return nil, errors.Join(surfaceErrs...)
 		}
 	}
 
@@ -631,9 +541,9 @@ func parseRuleSpec(index int, table map[string]interface{}) (RuleSpec, error) {
 	}
 
 	// [rule.params] declares ONE parameter set; the repeated [[rule.params]]
-	// form declares several, batched exactly like the legacy keywordArguments
-	// list. Values keep the shapes the checks' Bind type-checks: string, bool,
-	// integer, list of strings. Anything else fails the load here.
+	// form declares N, which the check's runner batches. Values keep the shapes
+	// the checks' Bind type-checks: string, bool, integer, list of strings.
+	// Anything else fails the load here.
 	if paramsRaw, present := table["params"]; present {
 		var paramsTables []map[string]interface{}
 		switch pv := paramsRaw.(type) {
@@ -642,8 +552,8 @@ func parseRuleSpec(index int, table map[string]interface{}) (RuleSpec, error) {
 		case []map[string]interface{}:
 			paramsTables = pv
 		case []interface{}:
-			// The inline form params = [{...}, {...}] - the direct spelling of
-			// the legacy keywordArguments list - decodes as []interface{}.
+			// The inline form params = [{...}, {...}] - one line's spelling of
+			// the repeated [[rule.params]] form - decodes as []interface{}.
 			paramsTables = make([]map[string]interface{}, 0, len(pv))
 			for _, item := range pv {
 				m, ok := item.(map[string]interface{})
@@ -813,17 +723,6 @@ func serverStringSlice(m map[string]interface{}, key string, dst *[]string) erro
 		result = append(result, s)
 	}
 	*dst = result
-	return nil
-}
-
-// assesLists checks that there is no overlap between blacklist and whitelist
-// and ensures that only one of the two is defined
-func assesLists(blacklist []string, whitelist []string) error {
-	if !((len(blacklist) > 0 && len(whitelist) == 0) ||
-		(len(blacklist) == 0 && len(whitelist) > 0) ||
-		(len(blacklist) == 0 && len(whitelist) == 0)) {
-		return fmt.Errorf("only one is allowed to have entries. Either the blacklist OR the whitelist")
-	}
 	return nil
 }
 
