@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -494,6 +495,73 @@ func TestIsValidNameExtended(t *testing.T) {
 	}
 }
 
+// TestValidNameEmptyListIsNotTheEmptyString pins the IsValidName dedup key
+// against the pair a separator-joined key spells the same way while they behave
+// oppositely: disallowed_names = [] forbids nothing, and [""] flags every file -
+// "" is a suffix of every name. One unit for the two loses the second rule's
+// findings or reports the first rule's file under a rule that forbids nothing,
+// depending on which is declared first, so both orders are run.
+func TestValidNameEmptyListIsNotTheEmptyString(t *testing.T) {
+	forbidNothing := config.RuleSpec{
+		Name: "names-csv", Check: "IsValidName", Enabled: true, Include: []string{`\.csv$`},
+		Params: []map[string]interface{}{{"disallowed_names": []string{}}},
+	}
+	forbidEverything := config.RuleSpec{
+		Name: "names-txt", Check: "IsValidName", Enabled: true, Include: []string{`\.txt$`},
+		Params: []map[string]interface{}{{"disallowed_names": []string{""}}},
+	}
+
+	orders := []struct {
+		name  string
+		specs []config.RuleSpec
+	}{
+		{"the empty list first", []config.RuleSpec{forbidNothing, forbidEverything}},
+		{"the empty string first", []config.RuleSpec{forbidEverything, forbidNothing}},
+	}
+	files := []struct {
+		name string
+		want []structs.Message
+	}{
+		{"a.csv", nil},
+		{"a.txt", []structs.Message{{Content: "File has an invalid suffix: a.txt"}}},
+	}
+
+	for _, order := range orders {
+		t.Run(order.name, func(t *testing.T) {
+			def, rules, batch := bindTestRule(t, "IsValidName", config.Config{Rules: order.specs}, ScopeFile)
+			if got := len(batch.merged.units); got != 2 {
+				t.Fatalf("two different disallowed-name lists must be two units, got %d", got)
+			}
+			for _, tc := range files {
+				file := structs.File{Name: tc.name, RelPath: tc.name}
+				// The selection the dispatch runs per (file, rule) before it
+				// invokes the check: one rule admits each of these files.
+				var matched []*BoundRule
+				for _, rule := range rules {
+					if rule.Match(file) {
+						matched = append(matched, rule)
+					}
+				}
+				if len(matched) != 1 {
+					t.Fatalf("%s: %d rules admit the file, want 1", tc.name, len(matched))
+				}
+				msgs := def.RunFile(context.Background(), file, ScopeFile, batch, matched)
+				if len(msgs) != len(tc.want) {
+					t.Fatalf("%s: rule %q reported %v, want %v", tc.name, matched[0].Rule, msgs, tc.want)
+				}
+				for i, want := range tc.want {
+					if msgs[i].Content != want.Content {
+						t.Errorf("%s: finding %q, want %q", tc.name, msgs[i].Content, want.Content)
+					}
+					if !slices.Equal(msgs[i].Rules, []string{matched[0].Rule}) {
+						t.Errorf("%s: the finding names %q, want the rule that produced it, %q", tc.name, msgs[i].Rules, matched[0].Rule)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestIsTextFile(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -941,6 +1009,13 @@ func TestIsArchiveFreeOfKeywords_MemberSkipsEmitMessages(t *testing.T) {
 // plant keywords around sits exactly at streamChunkSize.
 func streamTestFile(t *testing.T, size int, plants map[int]string) structs.File {
 	t.Helper()
+	return streamTestFileNamed(t, "series.txt", size, plants)
+}
+
+// streamTestFileNamed is streamTestFile under a name of the caller's choosing,
+// for a fixture whose name a rule's selector reads.
+func streamTestFileNamed(t *testing.T, name string, size int, plants map[int]string) structs.File {
+	t.Helper()
 	line := []byte("2026-08-11 sensor=alpha depth_m=12.5 temperature_c=8.71 status=ok\n")
 	content := make([]byte, size)
 	for i := 0; i < size; i += len(line) {
@@ -949,11 +1024,11 @@ func streamTestFile(t *testing.T, size int, plants map[int]string) structs.File 
 	for offset, plant := range plants {
 		copy(content[offset:], plant)
 	}
-	path := filepath.Join(t.TempDir(), "series.txt")
+	path := filepath.Join(t.TempDir(), name)
 	if err := os.WriteFile(path, content, 0o600); err != nil {
 		t.Fatalf("write stream fixture: %v", err)
 	}
-	return structs.File{Path: path, Name: "series.txt", DisplayName: "series.txt"}
+	return structs.File{Path: path, Name: name, DisplayName: name}
 }
 
 // TestIsFreeOfKeywords_StreamedLargeFile pins the streamed acquisition for text
@@ -1062,25 +1137,29 @@ func TestIsFreeOfKeywords_StreamedLargeFile(t *testing.T) {
 	}
 }
 
-// TestStreamedDedupIsPerRule pins the rule half of the streamed dedup key. Two
-// rules that report the SAME content on one streamed file are two findings, one
+// TestStreamedDedupIsPerUnit pins the unit half of the streamed dedup key. Two
+// units that report the SAME content on one streamed file are two findings, one
 // each: the whole-file acquisition reports both, and a file must not lose a
-// rule's verdict - or that rule's name off the finding - by growing past the
+// unit's verdict - or its rule's name off the finding - by growing past the
 // streaming threshold. The dedup collapses what the CHUNKS repeat, never what
-// two rules say about one file.
-func TestStreamedDedupIsPerRule(t *testing.T) {
+// two units say about one file.
+func TestStreamedDedupIsPerUnit(t *testing.T) {
 	// The keyword sits in both chunks, so the counts below also prove the dedup
-	// still spans the file: one finding per rule, not one per rule per chunk.
+	// still spans the file: one finding per unit, not one per unit per chunk.
 	file := streamTestFile(t, streamChunkSize+512*1024, map[int]string{1000: "password", streamChunkSize + 200*1024: "password"})
-	// Same parameters, different selectors: that is what makes these two rules
-	// instead of one rule said twice, and it keeps their findings identical down
-	// to the message text - which is what the rule half of the key must separate.
-	params := []map[string]interface{}{{"keywords": []string{"password"}, "info": "Keywords found:"}}
+	// Two keyword lists, one info: the lists differ - so the rules bind two
+	// units rather than sharing one - while only "password" is in the file, so
+	// their findings stay identical down to the message text, which is what the
+	// unit half of the key must separate.
 	cfg := config.Config{
 		General: &config.GeneralConfig{MaxContentScanFileSize: 1024 * 1024 * 1024},
 		Rules: []config.RuleSpec{
-			{Name: "credentials-by-name", Check: "IsFreeOfKeywords", Enabled: true, Include: []string{`series`}, Params: params},
-			{Name: "credentials-by-suffix", Check: "IsFreeOfKeywords", Enabled: true, Include: []string{`\.txt$`}, Params: params},
+			{Name: "credentials-narrow", Check: "IsFreeOfKeywords", Enabled: true, Params: []map[string]interface{}{
+				{"keywords": []string{"password"}, "info": "Keywords found:"},
+			}},
+			{Name: "credentials-wide", Check: "IsFreeOfKeywords", Enabled: true, Params: []map[string]interface{}{
+				{"keywords": []string{"password", "passphrase"}, "info": "Keywords found:"},
+			}},
 		},
 	}
 
@@ -1097,8 +1176,67 @@ func TestStreamedDedupIsPerRule(t *testing.T) {
 		}
 		reported[m.Rules[0]]++
 	}
-	if len(reported) != 2 || reported["credentials-by-name"] != 1 || reported["credentials-by-suffix"] != 1 {
-		t.Errorf("findings by rule = %v, want one each from credentials-by-name and credentials-by-suffix", reported)
+	if len(reported) != 2 || reported["credentials-narrow"] != 1 || reported["credentials-wide"] != 1 {
+		t.Errorf("findings by rule = %v, want one each from credentials-narrow and credentials-wide", reported)
+	}
+}
+
+// TestStreamedSharedUnitNamesEveryMatchingRule is the merge's own case on the
+// streamed path: two rules with the same keywords and info bind ONE unit, so a
+// file both gates admit is scanned once and reports ONE finding naming both,
+// while a file only one gate admits reports one naming only that rule. It is
+// the multi-contributor case - every other merged-path pin in this package
+// runs a unit one rule contributed.
+func TestStreamedSharedUnitNamesEveryMatchingRule(t *testing.T) {
+	// Same parameters, different selectors: that is what makes these two rules
+	// instead of one rule said twice, and it is what makes them one unit.
+	params := []map[string]interface{}{{"keywords": []string{"password"}, "info": "Keywords found:"}}
+	cfg := config.Config{
+		General: &config.GeneralConfig{MaxContentScanFileSize: 1024 * 1024 * 1024},
+		Rules: []config.RuleSpec{
+			{Name: "credentials-by-name", Check: "IsFreeOfKeywords", Enabled: true, Include: []string{`^series`}, Params: params},
+			{Name: "credentials-by-suffix", Check: "IsFreeOfKeywords", Enabled: true, Include: []string{`\.txt$`}, Params: params},
+		},
+	}
+	def, rules, batch := bindTestRule(t, "IsFreeOfKeywords", cfg, ScopeFile)
+	if got := len(batch.merged.units); got != 1 {
+		t.Fatalf("two rules that bound the same parameters must be one unit, got %d", got)
+	}
+
+	// The keyword sits in both chunks, so one finding per file also proves the
+	// dedup still spans the file.
+	plants := map[int]string{1000: "password", streamChunkSize + 200*1024: "password"}
+	cases := []struct {
+		file structs.File
+		want []string
+	}{
+		{streamTestFile(t, streamChunkSize+512*1024, plants), []string{"credentials-by-name", "credentials-by-suffix"}},
+		{streamTestFileNamed(t, "notes.txt", streamChunkSize+512*1024, plants), []string{"credentials-by-suffix"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.file.Name, func(t *testing.T) {
+			// The selection the dispatch runs per (file, rule) before it
+			// invokes the check.
+			var matched []*BoundRule
+			for _, rule := range rules {
+				if rule.Match(tc.file) {
+					matched = append(matched, rule)
+				}
+			}
+			if len(matched) != len(tc.want) {
+				t.Fatalf("%d rules admit the file, want %d", len(matched), len(tc.want))
+			}
+			msgs := def.RunFile(context.Background(), tc.file, ScopeFile, batch, matched)
+			if len(msgs) != 1 {
+				t.Fatalf("the shared unit must report once, got %d: %v", len(msgs), msgs)
+			}
+			if want := "Keywords found: 'password'"; msgs[0].Content != want {
+				t.Errorf("finding %q, want %q", msgs[0].Content, want)
+			}
+			if !slices.Equal(msgs[0].Rules, tc.want) {
+				t.Errorf("the finding names %q, want %q", msgs[0].Rules, tc.want)
+			}
+		})
 	}
 }
 

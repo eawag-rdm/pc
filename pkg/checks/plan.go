@@ -3,6 +3,7 @@ package checks
 import (
 	"errors"
 	"fmt"
+	"math/bits"
 	"slices"
 	"strings"
 
@@ -159,6 +160,10 @@ func Compile(cfg *config.Config, reg Registry) (*Plan, error) {
 			plan.add(scope, def, general, &scoped)
 		}
 	}
+	// Merging is a post-pass over the finished plan, so its faults join the
+	// rules' own: a config author is told about a check that outgrew the merge
+	// mask beside whatever else the load found.
+	errs = append(errs, plan.buildMergeNodes()...)
 	if len(errs) > 0 {
 		return nil, errors.Join(errs...)
 	}
@@ -230,4 +235,103 @@ func (p *Plan) buildMemberAdmission() {
 		entries[i].Batch.admit = admit
 		entries[i].Batch.perRule = perRule
 	}
+}
+
+// mergedScopes are the dispatch scopes whose entries are merged: the ones that
+// acquire ONCE per (file, check) and hand that acquisition to every rule that
+// matched the file, which is exactly what a shared unit set can serve.
+//
+// The archive-member scope is out because its member gate decides per MEMBER,
+// behind the dispatch gate the merge would fold. The repository scope is out
+// because each of its rules is handed a file set narrowed by its own selector -
+// the one thing a merged pass would have to share.
+var mergedScopes = [...]Scope{ScopeFile, ScopeArchiveFileList}
+
+// buildMergeNodes records, on every entry of the merged scopes, the entry's
+// rules folded into one pass over deduplicated units.
+//
+// Rule i of the entry becomes bit 1<<i - the same i pkg/utils' rule report
+// indexes its per-rule marks by, so the ENTRY'S RULE LIST STAYS AS COMPILED:
+// nothing here reorders it, filters it or renumbers it, and the node is a
+// sibling structure that only references it.
+func (p *Plan) buildMergeNodes() []error {
+	var errs []error
+	for _, scope := range mergedScopes {
+		entries := p.scopes[scope]
+		for i := range entries {
+			node, err := mergeUnits(entries[i].Rules)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("check %q (scope %s): %w", entries[i].Def.Name, scope, err))
+				continue
+			}
+			entries[i].Batch.merged = node
+		}
+	}
+	return errs
+}
+
+// maxMergedRules is what one entry's contributor mask holds. Past it the load
+// fails rather than falling back to a per-rule pass: an untested second loop on
+// the acquisition's hot path is worse than a refusal a config author can read,
+// and no configuration comes near 64 rules of ONE check in ONE scope.
+const maxMergedRules = 64
+
+// mergeUnits folds one entry's rules into its merge node: every rule's units in
+// declared order, each either a new unit or a contributor bit on the unit whose
+// parameters it repeats. It also stamps each rule with its bit.
+func mergeUnits(rules []*BoundRule) (*mergeNode, error) {
+	if len(rules) > maxMergedRules {
+		return nil, fmt.Errorf("%d rules exceed the %d one check may hold in one scope", len(rules), maxMergedRules)
+	}
+	node := &mergeNode{trivial: len(rules) == 1}
+	for i, rule := range rules {
+		rule.bit = 1 << i
+		for _, u := range rule.units {
+			if j := node.find(u.key); j >= 0 {
+				node.units[j].mask |= rule.bit
+				continue
+			}
+			u.mask = rule.bit
+			node.units = append(node.units, u)
+		}
+	}
+	// Attribution is interned once every contributor of a unit is known, so a
+	// finding is tagged with a slice built here rather than one per message.
+	for i := range node.units {
+		u := &node.units[i]
+		u.single = make([][]string, len(rules))
+		for j := range rules {
+			if u.mask&(1<<j) != 0 {
+				u.single[j] = rules[j].Rules
+			}
+		}
+		if bits.OnesCount64(u.mask) == 1 {
+			// One contributor: its own interned names, nil for a synthesized
+			// default rule - which is how a default's findings stay untagged.
+			u.names = u.single[bits.TrailingZeros64(u.mask)]
+			continue
+		}
+		names := make([]string, 0, bits.OnesCount64(u.mask))
+		for rest := u.mask; rest != 0; rest &= rest - 1 {
+			names = append(names, u.single[bits.TrailingZeros64(rest)]...)
+		}
+		u.names = names
+	}
+	return node, nil
+}
+
+// find returns the index of the unit these parameters already bound, or -1. A
+// unit that binds no key merges with nothing: every bind that emits one sets a
+// key, and folding two unkeyed units into one would silently drop a check's
+// findings.
+func (m *mergeNode) find(key any) int {
+	if key == nil {
+		return -1
+	}
+	for i := range m.units {
+		if m.units[i].key == key {
+			return i
+		}
+	}
+	return -1
 }

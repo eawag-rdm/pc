@@ -56,15 +56,19 @@ func benchGeneral() *config.GeneralConfig {
 	}
 }
 
-// benchKeywordRules binds n keyword rules, one keyword group each - the fanout
-// the gate is stated over. They share one acquisition per (file, check). The
-// first rule carries benchKeywordSecondSet as a second param set, so an archive
-// member both sets hit yields several findings for ONE rule and per-finding
-// costs (message build, Source boxing) stay visible to the archive benchmarks.
-func benchKeywordRules(b *testing.B, n int) (CheckDef, *Batch, []*BoundRule) {
+// benchKeywordRules binds n keyword rules for one scope, one keyword group
+// each - the fanout the gate is stated over. They share one acquisition per
+// (file, check). The first rule carries benchKeywordSecondSet as a second param
+// set, so an archive member both sets hit yields several findings for ONE rule
+// and per-finding costs (message build, Source boxing) stay visible to the
+// archive benchmarks.
+//
+// The binding goes through the REAL Compile, so the batch carries the merge
+// node the dispatch walks: bound by hand, these benchmarks measured a path
+// production never takes.
+func benchKeywordRules(b *testing.B, n int, scope Scope) (CheckDef, *Batch, []*BoundRule) {
 	b.Helper()
-	def, _ := NewRegistry().Lookup("IsFreeOfKeywords")
-	rules := make([]*BoundRule, 0, n)
+	specs := make([]config.RuleSpec, 0, n)
 	for i := 0; i < n; i++ {
 		sets := []map[string]interface{}{
 			{"keywords": benchKeywordGroups[i], "info": benchKeywordInfos[i]},
@@ -74,20 +78,18 @@ func benchKeywordRules(b *testing.B, n int) (CheckDef, *Batch, []*BoundRule) {
 				"keywords": benchKeywordSecondSet, "info": benchKeywordSecondInfo,
 			})
 		}
-		rule, err := def.Bind(config.RuleSpec{
+		specs = append(specs, config.RuleSpec{
 			Name:    benchKeywordInfos[i],
 			Check:   "IsFreeOfKeywords",
 			Enabled: true,
 			Params:  sets,
-		}, benchGeneral())
-		if err != nil {
-			b.Fatalf("bind rule %d: %v", i, err)
-		}
-		rules = append(rules, rule)
+		})
 	}
-	// One member-scope rule filters through its own member selector, as Compile
-	// wires it: nothing configured here, so the batch admits every member.
-	return def, newBatch(benchGeneral()), rules
+	def, rules, batch := bindTestRule(b, "IsFreeOfKeywords", config.Config{General: benchGeneral(), Rules: specs}, scope)
+	if len(rules) != n {
+		b.Fatalf("expected %d bound rules in scope %s, got %d", n, scope, len(rules))
+	}
+	return def, batch, rules
 }
 
 // benchTextBody builds ~256 KiB of realistic prose lines, seeded with exactly
@@ -180,7 +182,7 @@ func benchPDFFile(b *testing.B) structs.File {
 
 func benchmarkIsFreeOfKeywords(b *testing.B, ruleCount int) {
 	file := benchTextFile(b)
-	def, batch, rules := benchKeywordRules(b, ruleCount)
+	def, batch, rules := benchKeywordRules(b, ruleCount, ScopeFile)
 
 	b.ReportAllocs()
 	for b.Loop() {
@@ -225,7 +227,7 @@ func benchStreamFile(b *testing.B, size int, nonASCII bool) structs.File {
 // rules are handed are allocated once for the whole file.
 func benchmarkIsFreeOfKeywordsStream(b *testing.B, ruleCount, size int, nonASCII bool) {
 	file := benchStreamFile(b, size, nonASCII)
-	def, batch, rules := benchKeywordRules(b, ruleCount)
+	def, batch, rules := benchKeywordRules(b, ruleCount, ScopeFile)
 
 	b.ReportAllocs()
 	for b.Loop() {
@@ -258,7 +260,7 @@ func BenchmarkIsFreeOfKeywordsStreamLargeNonASCII(b *testing.B) {
 
 func benchmarkIsArchiveFreeOfKeywords(b *testing.B, ruleCount int) {
 	file := benchArchiveFile(b)
-	def, batch, rules := benchKeywordRules(b, ruleCount)
+	def, batch, rules := benchKeywordRules(b, ruleCount, ScopeArchiveMember)
 
 	// Each keyword group hits benchArchiveMembers/5 members once; the first
 	// rule's second set hits the group-0 members again, so those members carry
@@ -279,7 +281,7 @@ func BenchmarkIsArchiveFreeOfKeywordsRules3(b *testing.B) { benchmarkIsArchiveFr
 
 func benchmarkPDFRulesFanout(b *testing.B, ruleCount int) {
 	file := benchPDFFile(b)
-	def, batch, rules := benchKeywordRules(b, ruleCount)
+	def, batch, rules := benchKeywordRules(b, ruleCount, ScopeFile)
 
 	b.ReportAllocs()
 	for b.Loop() {
@@ -295,9 +297,13 @@ func BenchmarkPDFRulesFanout1(b *testing.B) { benchmarkPDFRulesFanout(b, 1) }
 func BenchmarkPDFRulesFanout3(b *testing.B) { benchmarkPDFRulesFanout(b, 3) }
 
 // The name-rule fanout: one rule of a PARAMETER-LESS check versus three, over
-// one file set. Where the keyword fanout above shares an acquisition, there is
-// nothing to share here - the check reads the file name - so what three rules
-// cost over one is three scans of that name and three copies of every finding.
+// one file set. The three rules bind the SAME unit, so the entry scans a name
+// ONCE and reports one finding naming all three - where a unit per rule scanned
+// it three times and reported the same fault three times. The pair therefore no
+// longer measures three times the work against one: both produce the same
+// findings, and what 3 costs over 1 is what the rule count still costs around a
+// single scan - the contributor mask, the wider attribution, and the selection
+// that got here.
 //
 // benchNameCheck is the check the pair is stated over. Its finding path
 // allocates - the offending runes are accumulated into the message - so a
@@ -361,17 +367,24 @@ func benchmarkNameRules(b *testing.B, ruleCount int) {
 	files := benchNameFileSet()
 	def, batch, rules := benchNameRules(b, ruleCount)
 
-	// Every rule reports on every non-ASCII name, so one such name yields one
-	// finding per rule - the repetition a merged scan is stated against.
-	want := ruleCount * benchNameFindings
+	// One finding per non-ASCII name however many rules matched it: the count
+	// stopped scaling with ruleCount when the rules' units merged. The NAMES on
+	// those findings still scale, because the finding names every rule that
+	// contributed it - so a merge that collapsed the scan and lost the
+	// attribution would satisfy the finding count and fail here.
+	wantFound, wantNamed := benchNameFindings, ruleCount*benchNameFindings
 	b.ReportAllocs()
 	for b.Loop() {
-		found := 0
+		found, named := 0, 0
 		for _, file := range files {
-			found += len(def.RunFile(context.Background(), file, ScopeFile, batch, rules))
+			messages := def.RunFile(context.Background(), file, ScopeFile, batch, rules)
+			found += len(messages)
+			for _, message := range messages {
+				named += len(message.Rules)
+			}
 		}
-		if found != want {
-			b.Fatalf("expected %d findings, got %d - the benchmark measures the wrong thing", want, found)
+		if found != wantFound || named != wantNamed {
+			b.Fatalf("expected %d findings naming %d rules in total, got %d and %d - the benchmark measures the wrong thing", wantFound, wantNamed, found, named)
 		}
 		benchMsgSink += found
 	}

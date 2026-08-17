@@ -2,6 +2,7 @@ package checks
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -440,6 +441,99 @@ func TestCompileValidatesDisabledRules(t *testing.T) {
 	})
 	if _, err := Compile(&cfg, NewRegistry()); err == nil {
 		t.Fatal("a disabled rule's unknown parameter must refuse the load")
+	}
+}
+
+// TestMergeBitMatchesReportIndex pins what the merge may not disturb: a plan
+// entry's rule list stays the one Compile planned - every rule, in declared
+// order - and the merge node references those rules by exactly the index
+// pkg/utils' rule report keys its per-rule marks and its triangular pair table
+// by, rule i being bit 1<<i. Reorder, filter or renumber that list and the
+// dead-rule and overlap diagnostics name the wrong rules, silently.
+func TestMergeBitMatchesReportIndex(t *testing.T) {
+	declared := []config.RuleSpec{
+		{Name: "ascii-csv", Check: "HasOnlyASCII", Enabled: true, Include: []string{`\.csv$`}},
+		{Name: "ascii-names", Check: "HasOnlyASCII", Enabled: true},
+		{Name: "ascii-logs", Check: "HasOnlyASCII", Enabled: true, Include: []string{`\.log$`}},
+	}
+	entry := planEntry(t, compileAnchored(t, anchoredConfig(declared)), "HasOnlyASCII", ScopeFile)
+	if len(entry.Rules) != len(declared) {
+		t.Fatalf("the entry holds %d rules, want the %d declared", len(entry.Rules), len(declared))
+	}
+	for i, spec := range declared {
+		if entry.Rules[i].Rule != spec.Name {
+			t.Fatalf("rule %d is %q, want %q - this list is what the rule report indexes by", i, entry.Rules[i].Rule, spec.Name)
+		}
+		if want := uint64(1) << i; entry.Rules[i].bit != want {
+			t.Errorf("rule %q carries bit %b, want %b", spec.Name, entry.Rules[i].bit, want)
+		}
+	}
+	// A check that reads no parameters binds one unit for all of them, so its
+	// contributor mask is every rule's bit.
+	units := entry.Batch.merged.units
+	if len(units) != 1 {
+		t.Fatalf("expected the three rules to bind one unit, got %d", len(units))
+	}
+	if want := uint64(1)<<len(declared) - 1; units[0].mask != want {
+		t.Errorf("the merged unit's contributor mask is %b, want %b", units[0].mask, want)
+	}
+}
+
+// TestCompileRefusesMoreThan64RulesOfOneCheck pins the merge mask's edge: an
+// entry's contributor bits are a uint64, so a 65th rule of one check in one
+// scope is a LOAD ERROR rather than a second, untested pass on the
+// acquisition's hot path. 64 still compiles, so what the load refuses is that
+// boundary and not some smaller limit nobody stated.
+func TestCompileRefusesMoreThan64RulesOfOneCheck(t *testing.T) {
+	// Rules of a parameter-less check that differ only in their name are
+	// refused as twins, so each gets a pattern of its own.
+	specs := func(n int) []config.RuleSpec {
+		rules := make([]config.RuleSpec, 0, n)
+		for i := 0; i < n; i++ {
+			rules = append(rules, config.RuleSpec{
+				Name:    fmt.Sprintf("ascii-%02d", i),
+				Check:   "HasOnlyASCII",
+				Enabled: true,
+				Include: []string{fmt.Sprintf(`_%02d\.csv$`, i)},
+			})
+		}
+		return rules
+	}
+
+	cfg := anchoredConfig(specs(64))
+	if _, err := Compile(&cfg, NewRegistry()); err != nil {
+		t.Fatalf("64 rules of one check must compile: %v", err)
+	}
+	cfg = anchoredConfig(specs(65))
+	_, err := Compile(&cfg, NewRegistry())
+	if err == nil {
+		t.Fatal("a 65th rule of one check must refuse the load")
+	}
+	for _, want := range []string{`check "HasOnlyASCII"`, "65"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal must name %s: %v", want, err)
+		}
+	}
+}
+
+// TestMergeKeepsKeylessUnitsApart covers the guard behind "every bind that
+// emits a unit sets a key": two units that bound none are compared as nil ==
+// nil, so folding them would silently run one check's scan in place of the
+// other's. No configuration reaches this - the rules are assembled here, not
+// compiled - which is exactly why the guard needs a pin of its own.
+func TestMergeKeepsKeylessUnitsApart(t *testing.T) {
+	keyless := func() *BoundRule { return &BoundRule{units: []unit{{}}} }
+	node, err := mergeUnits([]*BoundRule{keyless(), keyless()})
+	if err != nil {
+		t.Fatalf("merge units: %v", err)
+	}
+	if len(node.units) != 2 {
+		t.Fatalf("units that bound no key must not merge, got %d", len(node.units))
+	}
+	for i := range node.units {
+		if want := uint64(1) << i; node.units[i].mask != want {
+			t.Errorf("unit %d carries the contributor mask %b, want %b", i, node.units[i].mask, want)
+		}
 	}
 }
 

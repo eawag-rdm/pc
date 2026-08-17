@@ -3,6 +3,7 @@ package checks
 import (
 	"context"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 
@@ -106,6 +107,20 @@ func bindTestRule(t testing.TB, name string, cfg config.Config, scope Scope) (Ch
 		t.Fatalf("no rule of check %q resolves to scope %s; the check serves %v", name, scope, defaultScopes(def))
 	}
 	return CheckDef{}, nil, nil
+}
+
+// mergedBatch is the batch a plan entry carries, for rules bound BY HAND: the
+// scan bounds plus the merge node, which every acquisition of a merged scope
+// walks. A fixture that goes through bindTestRule gets both from the plan.
+func mergedBatch(t testing.TB, general *config.GeneralConfig, rules ...*BoundRule) *Batch {
+	t.Helper()
+	batch := newBatch(general)
+	node, err := mergeUnits(rules)
+	if err != nil {
+		t.Fatalf("merge units: %v", err)
+	}
+	batch.merged = node
+	return batch
 }
 
 // runRule runs one check over one file through its bound rules, batched as the
@@ -357,6 +372,101 @@ func TestDefaultRuleLeavesMessagesUntagged(t *testing.T) {
 	}
 }
 
+// TestMergedFindingNamesEveryContributingRule is what the merge is for: two
+// rules of a check that reads no parameters bind the SAME unit, so a file both
+// admit is checked once and carries ONE finding naming both rules - where a
+// unit per rule ran the same scan twice and reported the same fault twice.
+func TestMergedFindingNamesEveryContributingRule(t *testing.T) {
+	// Two rules the loader accepts as different rules while both admit every
+	// file: what separates them is a field that does no work without a pattern
+	// to apply it to.
+	cfg := config.Config{Rules: []config.RuleSpec{
+		{Name: "ascii-names", Check: "HasOnlyASCII", Enabled: true},
+		{Name: "ascii-names-folded", Check: "HasOnlyASCII", Enabled: true, IgnoreCase: true},
+	}}
+	def, rules, batch := bindTestRule(t, "HasOnlyASCII", cfg, ScopeFile)
+	if len(rules) != 2 {
+		t.Fatalf("expected both rules in the plan, got %d", len(rules))
+	}
+
+	file := structs.File{Name: "grösse.csv", RelPath: "grösse.csv"}
+	msgs := def.RunFile(context.Background(), file, ScopeFile, batch, rules)
+	if len(msgs) != 1 {
+		t.Fatalf("two rules that bound one unit must report once, got %d: %v", len(msgs), msgs)
+	}
+	if got := msgs[0].Rules; len(got) != 2 || got[0] != "ascii-names" || got[1] != "ascii-names-folded" {
+		t.Errorf("the finding must name every contributing rule, got %q", got)
+	}
+	// The attribution of "all contributors matched" is interned at graph build:
+	// the finding carries the node's own slice, never one built per message.
+	if names := batch.merged.units[0].names; &msgs[0].Rules[0] != &names[0] {
+		t.Error("the finding must carry the interned attribution, not a fresh slice")
+	}
+}
+
+// TestMergedAttributionExcludesNonMatchingRules is the other half: a merged
+// unit runs for whoever matched, and names only them. The rules that share it
+// gate different files, so the same unit reports under two names on one file
+// and under one on the next - a finding must never claim a rule whose selector
+// refused the file.
+func TestMergedAttributionExcludesNonMatchingRules(t *testing.T) {
+	cfg := config.Config{Rules: []config.RuleSpec{
+		{Name: "ascii-csv", Check: "HasOnlyASCII", Enabled: true, Include: []string{`\.csv$`}},
+		{Name: "ascii-messwerte", Check: "HasOnlyASCII", Enabled: true, Include: []string{`^messwerte`}},
+		{Name: "ascii-logs", Check: "HasOnlyASCII", Enabled: true, Include: []string{`\.log$`}},
+	}}
+	def, rules, batch := bindTestRule(t, "HasOnlyASCII", cfg, ScopeFile)
+
+	cases := []struct {
+		name string
+		want []string
+	}{
+		{"messwerte_grösse.csv", []string{"ascii-csv", "ascii-messwerte"}},
+		{"grösse.log", []string{"ascii-logs"}},
+	}
+	for _, tc := range cases {
+		file := structs.File{Name: tc.name, RelPath: tc.name}
+		// The selection the dispatch runs per (file, rule) before it invokes
+		// the check.
+		var matched []*BoundRule
+		for _, rule := range rules {
+			if rule.Match(file) {
+				matched = append(matched, rule)
+			}
+		}
+		if len(matched) != len(tc.want) {
+			t.Fatalf("%s: %d rules admit the file, want %d", tc.name, len(matched), len(tc.want))
+		}
+		msgs := def.RunFile(context.Background(), file, ScopeFile, batch, matched)
+		if len(msgs) != 1 {
+			t.Fatalf("%s: the shared unit must report once, got %d: %v", tc.name, len(msgs), msgs)
+		}
+		if got := msgs[0].Rules; !slices.Equal(got, tc.want) {
+			t.Errorf("%s: the finding names %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestEntryWithNoMatchedRuleRunsNoUnit pins the merged walk's gate: an entry
+// dispatched with no matched rule reports nothing. The one-rule entry every
+// shipped config compiles to answers "which rules matched" from the rule count
+// rather than from the bits, so without the empty case it would run its unit
+// and attribute the finding to a rule whose gate refused the file.
+func TestEntryWithNoMatchedRuleRunsNoUnit(t *testing.T) {
+	cfg := config.Config{Rules: []config.RuleSpec{
+		{Name: "ascii-csv", Check: "HasOnlyASCII", Enabled: true, Include: []string{`\.csv$`}},
+	}}
+	def, rules, batch := bindTestRule(t, "HasOnlyASCII", cfg, ScopeFile)
+
+	file := structs.File{Name: "grösse.log", RelPath: "grösse.log"}
+	if rules[0].Match(file) {
+		t.Fatal("the fixture's rule must refuse the file, or the dispatch would hand it over")
+	}
+	if msgs := def.RunFile(context.Background(), file, ScopeFile, batch, nil); len(msgs) != 0 {
+		t.Errorf("no rule matched the file, so nothing may report on it: %v", msgs)
+	}
+}
+
 // TestBindKeywordsMultipleParamSets pins the [[rule.params]] batching: ONE
 // rule carries N parameter sets, each matched and reported with its own info -
 // exactly as a legacy section's keywordArguments list bound.
@@ -375,7 +485,8 @@ func TestBindKeywordsMultipleParamSets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bind: %v", err)
 	}
-	msgs := def.RunFile(context.Background(), structs.File{Path: path, Name: "notes.txt"}, ScopeFile, newBatch(general), []*BoundRule{rule})
+	rules := []*BoundRule{rule}
+	msgs := def.RunFile(context.Background(), structs.File{Path: path, Name: "notes.txt"}, ScopeFile, mergedBatch(t, general, rules...), rules)
 	if len(msgs) != 2 {
 		t.Fatalf("expected one finding per parameter set, got %v", msgs)
 	}
@@ -403,7 +514,8 @@ func TestBindValidNameMultipleParamSets(t *testing.T) {
 		t.Fatalf("bind: %v", err)
 	}
 	file := structs.File{Name: "__pycache__/notes.Rhistory", Path: "__pycache__/notes.Rhistory"}
-	msgs := def.RunFile(context.Background(), file, ScopeFile, newBatch(general), []*BoundRule{rule})
+	rules := []*BoundRule{rule}
+	msgs := def.RunFile(context.Background(), file, ScopeFile, mergedBatch(t, general, rules...), rules)
 	if len(msgs) != 2 {
 		t.Fatalf("expected one finding per parameter set, got %v", msgs)
 	}

@@ -256,6 +256,10 @@ func isTextFile(filePath string) (bool, error) {
 // the info string every finding of the set is reported with. Keyword lists are
 // never merged into one automaton - each match must stay attributable to its
 // own info string - so there is one matcher per set, not per rule.
+//
+// It doubles as that set's dedup key: optimization.GetMatcher interns matchers
+// by keyword list, so two sets with the same keywords hold the same pointer and
+// two rules that bound the same set are one unit.
 type keywordSet struct {
 	matcher *optimization.FastMatcher
 	info    string
@@ -287,6 +291,7 @@ func bindKeywords(spec config.RuleSpec, _ *config.GeneralConfig) (*BoundRule, er
 			scan: func(ctx context.Context, _ structs.File, body, lowered [][]byte, report reporting) []structs.Message {
 				return scanKeywords(ctx, bound, body, lowered, report)
 			},
+			key: unitKeyOf(bound),
 		})
 	}
 	return &BoundRule{
@@ -493,8 +498,6 @@ func keywordsInFile(ctx context.Context, file structs.File, batch *Batch, rules 
 		return messages
 	}
 
-	limits := batch.limits
-
 	// Check if file exceeds the configured maximum size for content scanning.
 	// Emit a skip acknowledgement Message so every output (CLI plain, TUI, JSON)
 	// surfaces that the file's content was not scanned.
@@ -508,12 +511,12 @@ func keywordsInFile(ctx context.Context, file structs.File, batch *Batch, rules 
 	// through (handled = false) when the file does not open as a zip, so a
 	// text file misnamed .xlsx keeps being scanned as text below.
 	if kind := readers.OOXMLKind(file.Path); kind != "" {
-		if msgs, handled := scanOOXMLFile(ctx, file, limits, rules, kind); handled {
+		if msgs, handled := scanOOXMLFile(ctx, file, batch, rules, kind); handled {
 			return append(messages, msgs...)
 		}
 	}
 	if strings.EqualFold(filepath.Ext(file.Path), ".pdf") {
-		if msgs, handled := scanPDFFile(ctx, file, limits, rules); handled {
+		if msgs, handled := scanPDFFile(ctx, file, batch, rules); handled {
 			return append(messages, msgs...)
 		}
 	}
@@ -526,7 +529,7 @@ func keywordsInFile(ctx context.Context, file structs.File, batch *Batch, rules 
 	if isText {
 		// Stream files larger than one chunk (reduced threshold for better performance)
 		if fileInfo.Size() > streamChunkSize {
-			return append(messages, streamKeywords(ctx, file, rules)...)
+			return append(messages, streamKeywords(ctx, file, batch, rules)...)
 		}
 		// Use regular reading for smaller files
 		content, err := os.ReadFile(file.Path)
@@ -537,12 +540,7 @@ func keywordsInFile(ctx context.Context, file structs.File, batch *Batch, rules 
 		body := [][]byte{content}
 		lowered := lowerAll(body)
 		var src structs.Source // the file boxed once, shared by every finding
-		for _, rule := range rules {
-			for _, u := range rule.units {
-				found := sourceAll(&src, file, u.scan(ctx, file, body, lowered, reportJoined))
-				messages = append(messages, tag(rule.Rules, found)...)
-			}
-		}
+		messages = scanUnits(ctx, messages, file, batch, rules, body, lowered, reportJoined, &src)
 	} else {
 		// Handle binary files
 		body, skipMsg := tryReadBinary(file)
@@ -550,53 +548,79 @@ func keywordsInFile(ctx context.Context, file structs.File, batch *Batch, rules 
 			messages = append(messages, *skipMsg)
 		}
 		lowered := lowerAll(body)
-		for _, rule := range rules {
-			for _, u := range rule.units {
-				messages = append(messages, tag(rule.Rules, u.scan(ctx, file, body, lowered, reportIndexed))...)
-			}
-		}
+		// tryReadBinary hands over an empty body, so no unit can report here and
+		// there is nothing to stamp.
+		messages = scanUnits(ctx, messages, file, batch, rules, body, lowered, reportIndexed, nil)
 	}
 	return messages
 }
 
 // streamKey identifies one finding of a streamed file across its chunks: the
-// rule that reported it and its lowered content. The pair IS the key, as a
-// comparable struct - joining the two into one string allocated per finding per
-// chunk, and every chunk re-finds what the chunks before it already reported.
-// Keying on the rule keeps two rules' verdicts on one file two findings, the
-// way every acquisition that does not deduplicate at all reports them.
+// unit that reported it - its position in this file's walk - and its lowered
+// content. The pair IS the key, as a comparable struct - joining the two into
+// one string allocated per finding per chunk, and every chunk re-finds what the
+// chunks before it already reported. Keying on the unit keeps two units'
+// verdicts on one file two findings, the way every acquisition that does not
+// deduplicate at all reports them; two rules that bound the SAME unit report
+// once, naming both.
 type streamKey struct {
-	rule    string
+	unit    int
 	content string
 }
 
+// keepNew appends the findings one unit reported that the chunks before it did
+// not already carry.
+func keepNew(messages []structs.Message, seen map[streamKey]struct{}, unit int, found []structs.Message) []structs.Message {
+	for _, message := range found {
+		// The content half is the LOWERED message: findings carry the original
+		// case of the chunk they were found in, so "Admin" in one chunk and
+		// "ADMIN" in another are one finding, once.
+		key := streamKey{unit: unit, content: strings.ToLower(message.Content)}
+		if _, duplicate := seen[key]; duplicate {
+			continue
+		}
+		seen[key] = struct{}{}
+		messages = append(messages, message)
+	}
+	return messages
+}
+
+// streamUnit is one unit of a streamed file's walk, resolved before the first
+// chunk: which units run, and the names their findings carry, are properties of
+// the FILE - and a partially matched unit's names are BUILT, so resolving them
+// per chunk would rebuild them for every chunk of a multi-gigabyte file.
+type streamUnit struct {
+	unit  *unit
+	names []string
+}
+
 // streamKeywords scans a text file too large to hold: it is read ONCE, chunk by
-// chunk, and every rule sees every chunk. Findings are deduplicated across
-// chunks, so a keyword on every line is still reported once.
-func streamKeywords(ctx context.Context, file structs.File, rules []*BoundRule) []structs.Message {
+// chunk, and every unit sees every chunk. Findings are deduplicated across
+// chunks, so a keyword on every line is still reported once. It walks the units
+// itself rather than through scanUnits, because the dedup happens per message.
+func streamKeywords(ctx context.Context, file structs.File, batch *Batch, rules []*BoundRule) []structs.Message {
 	var messages []structs.Message
 	var src structs.Source // the file boxed once, shared by every finding
 	seen := make(map[streamKey]struct{})
 	// One wrapper pair for the whole file, not one per chunk: a scan borrows
 	// both and never retains them.
 	body, loweredBody := make([][]byte, 1), make([][]byte, 1)
+	merged := batch.merged
+	active := merged.active(rules)
+	scans := make([]streamUnit, 0, len(merged.units))
+	for i := range merged.units {
+		u := &merged.units[i]
+		hit := u.mask & active
+		if hit == 0 {
+			continue
+		}
+		scans = append(scans, streamUnit{unit: u, names: u.attribution(hit)})
+	}
 	err := streamChunks(ctx, file.Path, func(chunk, lowered []byte) {
 		body[0], loweredBody[0] = chunk, lowered
-		for _, rule := range rules {
-			for _, u := range rule.units {
-				found := sourceAll(&src, file, u.scan(ctx, file, body, loweredBody, reportEach))
-				for _, message := range tag(rule.Rules, found) {
-					// The content half is the LOWERED message: findings carry the
-					// original case of the chunk they were found in, so "Admin" in
-					// one chunk and "ADMIN" in another are one finding, once.
-					key := streamKey{rule: rule.Rule, content: strings.ToLower(message.Content)}
-					if _, duplicate := seen[key]; duplicate {
-						continue
-					}
-					seen[key] = struct{}{}
-					messages = append(messages, message)
-				}
-			}
+		for i, s := range scans {
+			found := sourceAll(&src, file, s.unit.scan(ctx, file, body, loweredBody, reportEach))
+			messages = keepNew(messages, seen, i, tag(s.names, found))
 		}
 	})
 	if err != nil {
@@ -631,7 +655,8 @@ func lowerAll(body [][]byte) [][]byte {
 // scanOOXMLFile extracts and keyword-scans a top-level OOXML container.
 // handled = false means the file did not open as a zip container at all and
 // the caller's generic text/binary flow should decide instead.
-func scanOOXMLFile(ctx context.Context, file structs.File, limits readers.ArchiveLimits, rules []*BoundRule, kind string) ([]structs.Message, bool) {
+func scanOOXMLFile(ctx context.Context, file structs.File, batch *Batch, rules []*BoundRule, kind string) ([]structs.Message, bool) {
+	limits := batch.limits
 	var content [][]byte
 	var truncated bool
 	var err error
@@ -662,13 +687,7 @@ func scanOOXMLFile(ctx context.Context, file structs.File, limits readers.Archiv
 
 	lowered := lowerAll(content)
 	var src structs.Source // the file boxed once, shared by every finding
-	for _, rule := range rules {
-		for _, u := range rule.units {
-			found := sourceAll(&src, file, u.scan(ctx, file, content, lowered, reportIndexed))
-			messages = append(messages, tag(rule.Rules, found)...)
-		}
-	}
-	return messages, true
+	return scanUnits(ctx, messages, file, batch, rules, content, lowered, reportIndexed, &src), true
 }
 
 // pdfLimits packs the effective PDF extraction bounds: the new page knob,
@@ -705,7 +724,7 @@ func pdfTooLargeReason(limit int64) string {
 // sniffed from the first 1028 bytes (1024 + the 4 magic bytes) BEFORE the
 // whole-file read, so a large non-PDF named .pdf costs ~1 KiB of I/O here
 // instead of a full read that gets discarded.
-func scanPDFFile(ctx context.Context, file structs.File, archiveLimits readers.ArchiveLimits, rules []*BoundRule) ([]structs.Message, bool) {
+func scanPDFFile(ctx context.Context, file structs.File, batch *Batch, rules []*BoundRule) ([]structs.Message, bool) {
 	ack := func(reason string) []structs.Message {
 		return []structs.Message{{Content: reason, Source: file, Skipped: true, Reason: reason}}
 	}
@@ -730,7 +749,7 @@ func scanPDFFile(ctx context.Context, file structs.File, archiveLimits readers.A
 		return nil, false
 	}
 
-	limits := pdfLimits(archiveLimits)
+	limits := pdfLimits(batch.limits)
 
 	// Stat failure is fail-closed: without a size the oversize gate cannot
 	// run, and an unbounded read is exactly what it exists to prevent.
@@ -787,13 +806,7 @@ func scanPDFFile(ctx context.Context, file structs.File, archiveLimits readers.A
 
 	lowered := lowerAll(pages)
 	var src structs.Source // the file boxed once, shared by every finding
-	for _, rule := range rules {
-		for _, u := range rule.units {
-			found := sourceAll(&src, file, u.scan(ctx, file, pages, lowered, reportPaged))
-			messages = append(messages, tag(rule.Rules, found)...)
-		}
-	}
-	return messages, true
+	return scanUnits(ctx, messages, file, batch, rules, pages, lowered, reportPaged, &src), true
 }
 
 // tryReadBinary acknowledges genuine binary files (not archives - those go
@@ -829,6 +842,11 @@ func bindValidName(spec config.RuleSpec, _ *config.GeneralConfig) (*BoundRule, e
 			scan: func(_ context.Context, file structs.File, _, _ [][]byte, _ reporting) []structs.Message {
 				return isValidNameCore(file, disallowed)
 			},
+			// The list itself, quoted at load: two rules forbidding the same
+			// names are one unit. Quoting is what keeps that faithful - a
+			// separator alone spells [] and [""] the same way, and they are
+			// opposites, "" being a suffix of every name.
+			key: unitKeyOf(fmt.Sprintf("%q", disallowed)),
 		})
 	}
 	return &BoundRule{
