@@ -186,27 +186,39 @@ func TestMatchMemberGateNilAdmitsEverything(t *testing.T) {
 
 // TestMatchMemberGate pins the member gate the archive loop consults once per
 // member: a rule carrying a member selector admits the members its pattern
-// reaches, case-insensitively, and refuses the rest.
+// reaches, case-insensitively, and refuses the rest - and it matches the
+// subject its rule declares - the full member path, or the member's BASE name
+// for subject "name", where a pattern that only a directory component carries
+// must miss.
 func TestMatchMemberGate(t *testing.T) {
-	spec := config.RuleSpec{
-		Name: "IsFreeOfKeywords", Check: "IsFreeOfKeywords", Enabled: true,
-		IgnoreCase: true, Include: []string{`\.log`},
+	bind := func(subject string, include []string) *BoundRule {
+		t.Helper()
+		spec := config.RuleSpec{Name: "member-rule", Check: "IsFreeOfKeywords", Enabled: true, Subject: subject, IgnoreCase: true, Include: include}
+		selectors, err := CompileRuleSelectors(spec, []Scope{ScopeArchiveMember})
+		if err != nil {
+			t.Fatalf("compile selectors: %v", err)
+		}
+		rule := &BoundRule{}
+		rule.SetSelectors(selectors[0])
+		return rule
 	}
-	selectors, err := CompileRuleSelectors(spec, []Scope{ScopeArchiveMember})
-	if err != nil {
-		t.Fatalf("compile selectors: %v", err)
-	}
-	gated := &BoundRule{}
-	gated.SetSelectors(selectors[0])
+	byPath := bind("", []string{`\.log`})
+	byName := bind("name", []string{"deep"})
 
+	// The two "name" rows are not independent guards: "deep" sits in the base
+	// name AND in the full path of "logs/deep_scan.txt", so that row holds
+	// under either reading and is a positive control only. The negative row is
+	// the one that pins the base-name reading.
 	cases := []struct {
 		name string
 		rule *BoundRule
 		path string
 		want bool
 	}{
-		{"case-insensitive pattern over the member path", gated, "deep/run.LOG", true},
-		{"non-matching path refused", gated, "deep/notes.txt", false},
+		{"case-insensitive pattern over the member path", byPath, "deep/run.LOG", true},
+		{"non-matching path refused", byPath, "deep/notes.txt", false},
+		{`a "name" subject reads the base name`, byName, "logs/deep_scan.txt", true},
+		{`a "name" subject never reads a directory component`, byName, "deep/notes.txt", false},
 	}
 	for _, tc := range cases {
 		if got := tc.rule.matchMember(tc.path); got != tc.want {
