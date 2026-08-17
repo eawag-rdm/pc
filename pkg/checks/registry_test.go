@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/eawag-rdm/pc/pkg/config"
-	"github.com/eawag-rdm/pc/pkg/selector"
 	"github.com/eawag-rdm/pc/pkg/structs"
 )
 
@@ -186,15 +185,19 @@ func TestMatchMemberGateNilAdmitsEverything(t *testing.T) {
 }
 
 // TestMatchMemberGate pins the member gate the archive loop consults once per
-// member: a compiled legacy member selector keeps the case-insensitive LITERAL
-// reading over the full member path.
+// member: a rule carrying a member selector admits the members its pattern
+// reaches, case-insensitively, and refuses the rest.
 func TestMatchMemberGate(t *testing.T) {
-	member, admitNone, err := selector.CompileLegacyLists("IsFreeOfKeywords", []string{".log"}, nil)
-	if err != nil || admitNone || member == nil {
-		t.Fatalf("compile member selector: (%v, %v, %v)", member, admitNone, err)
+	spec := config.RuleSpec{
+		Name: "IsFreeOfKeywords", Check: "IsFreeOfKeywords", Enabled: true,
+		IgnoreCase: true, Include: []string{`\.log`},
+	}
+	selectors, err := CompileRuleSelectors(spec, []Scope{ScopeArchiveMember})
+	if err != nil {
+		t.Fatalf("compile selectors: %v", err)
 	}
 	gated := &BoundRule{}
-	gated.SetSelectors(RuleSelectors{Member: member})
+	gated.SetSelectors(selectors[0])
 
 	cases := []struct {
 		name string
@@ -202,7 +205,7 @@ func TestMatchMemberGate(t *testing.T) {
 		path string
 		want bool
 	}{
-		{"case-insensitive literal over the member path", gated, "deep/run.LOG", true},
+		{"case-insensitive pattern over the member path", gated, "deep/run.LOG", true},
 		{"non-matching path refused", gated, "deep/notes.txt", false},
 	}
 	for _, tc := range cases {

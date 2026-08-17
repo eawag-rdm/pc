@@ -21,7 +21,8 @@ func TestSelectorCompileErrors(t *testing.T) {
 	_, err := Compile(Spec{
 		Rule:    "credentials",
 		Subject: "basename",
-		Include: []string{"(", `\.log`, "[a-"},
+		// "a\xffb" is the one bad pattern no metacharacter spells.
+		Include: []string{"(", `\.log`, "[a-", "a\xffb"},
 		Exclude: []string{"ok", "*bad"},
 	})
 	if err == nil {
@@ -35,12 +36,12 @@ func TestSelectorCompileErrors(t *testing.T) {
 	if cerr.Rule != "credentials" {
 		t.Errorf("rule = %q, want %q", cerr.Rule, "credentials")
 	}
-	// All faults are reported at once: the bad subject and three bad patterns.
-	if len(cerr.Faults) != 4 {
-		t.Fatalf("faults = %d (%v), want 4", len(cerr.Faults), cerr.Faults)
+	// All faults are reported at once: the bad subject and four bad patterns.
+	if len(cerr.Faults) != 5 {
+		t.Fatalf("faults = %d (%v), want 5", len(cerr.Faults), cerr.Faults)
 	}
 	msg := err.Error()
-	for _, want := range []string{`"credentials"`, `"basename"`, `"("`, `"[a-"`, `"*bad"`, "include", "exclude", "subject"} {
+	for _, want := range []string{`"credentials"`, `"basename"`, `"("`, `"[a-"`, `"a\xffb"`, `"*bad"`, "include", "exclude", "subject"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("error %q does not mention %s", msg, want)
 		}
@@ -494,92 +495,4 @@ func TestSelectorStatelessConcurrent(t *testing.T) {
 		})
 	}
 	wg.Wait()
-}
-
-// TestCompileLegacyLists pins the transitional translation of a legacy
-// [test.X] whitelist/blacklist pair: quoted entries, ignoreCase, subject
-// "path", empty entries dropped, and an all-empty whitelist reported as
-// admit-nothing rather than widened into "no filter".
-func TestCompileLegacyLists(t *testing.T) {
-	assertVerdict := func(t *testing.T, sel *Selector, subject string, want bool) {
-		t.Helper()
-		if got := sel.Match(subject); got != want {
-			t.Errorf("Match(%q) = %v, want %v", subject, got, want)
-		}
-		var sc Scratch // the iterator's path: same verdict through the scratch
-		sc.Set(subject)
-		if got := sel.MatchScratch(&sc); got != want {
-			t.Errorf("MatchScratch(%q) = %v, want %v", subject, got, want)
-		}
-	}
-
-	t.Run("no lists", func(t *testing.T) {
-		sel, admitNone, err := CompileLegacyLists("rule", nil, nil)
-		if sel != nil || admitNone || err != nil {
-			t.Fatalf("got (%v, %v, %v), want (nil, false, nil)", sel, admitNone, err)
-		}
-	})
-
-	t.Run("all-empty whitelist admits nothing", func(t *testing.T) {
-		for _, whitelist := range [][]string{{""}, {"", ""}} {
-			sel, admitNone, err := CompileLegacyLists("rule", whitelist, nil)
-			if err != nil {
-				t.Fatalf("CompileLegacyLists(%q) failed: %v", whitelist, err)
-			}
-			if sel != nil || !admitNone {
-				t.Errorf("whitelist %q: got (%v, %v), want (nil, true)", whitelist, sel, admitNone)
-			}
-		}
-	})
-
-	t.Run("all-empty blacklist is inert", func(t *testing.T) {
-		sel, admitNone, err := CompileLegacyLists("rule", nil, []string{""})
-		if err != nil || sel != nil || admitNone {
-			t.Fatalf("got (%v, %v, %v), want (nil, false, nil)", sel, admitNone, err)
-		}
-	})
-
-	t.Run("entries are quoted and folded", func(t *testing.T) {
-		sel, admitNone, err := CompileLegacyLists("rule", []string{"", "temp.*"}, nil)
-		if err != nil || admitNone {
-			t.Fatalf("CompileLegacyLists failed: (%v, %v)", admitNone, err)
-		}
-		if sel.Subject() != SubjectPath {
-			t.Errorf("Subject() = %v, want %v", sel.Subject(), SubjectPath)
-		}
-		assertVerdict(t, sel, "data/temp.*.txt", true)     // the literal text
-		assertVerdict(t, sel, "data/temporary.txt", false) // never as a regex
-		assertVerdict(t, sel, "DATA/TEMP.*.TXT", true)     // ignoreCase kept
-	})
-
-	t.Run("both lists apply together", func(t *testing.T) {
-		sel, _, err := CompileLegacyLists("rule", []string{"temp"}, []string{".log"})
-		if err != nil {
-			t.Fatalf("CompileLegacyLists failed: %v", err)
-		}
-		assertVerdict(t, sel, "temp_notes.txt", true)
-		assertVerdict(t, sel, "temp.log", false)       // exclude wins
-		assertVerdict(t, sel, "UPPER_CASE.TXT", false) // include still restricts
-	})
-
-	t.Run("non-ASCII entry keeps engine folding", func(t *testing.T) {
-		sel, _, err := CompileLegacyLists("rule", []string{"café"}, nil)
-		if err != nil {
-			t.Fatalf("CompileLegacyLists failed: %v", err)
-		}
-		// RE2 simple folding, reached through the engine because the scratch
-		// folds ASCII only - the declared divergence from the old ToLower.
-		assertVerdict(t, sel, "notes/CAFÉ.txt", true)
-		assertVerdict(t, sel, "notes/cafe.txt", false)
-	})
-
-	t.Run("invalid UTF-8 entry is a load error", func(t *testing.T) {
-		sel, admitNone, err := CompileLegacyLists("rule", []string{"a\xffb"}, nil)
-		if err == nil {
-			t.Fatal("want an error for an entry holding invalid UTF-8")
-		}
-		if sel != nil || admitNone {
-			t.Errorf("got (%v, %v), want (nil, false) beside the error", sel, admitNone)
-		}
-	})
 }

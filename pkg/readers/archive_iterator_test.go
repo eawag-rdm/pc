@@ -182,48 +182,53 @@ func TestIteratorEdgeCases(t *testing.T) {
 	}
 }
 
-// legacyMemberFilter translates a [test.X] whitelist/blacklist pair exactly as
-// the production callers do, so the table below exercises the shipped
-// translation and not a test-only reading of it. A translation failure aborts
-// the row - degrading to an unfiltered iterator would assert nothing.
-// admitNone (a whitelist that selects nothing) has no iterator-level form: the
-// callers return before constructing one, so the table asserts the empty
-// unpack set that follows from it.
-func legacyMemberFilter(t *testing.T, whitelist, blacklist []string) (*selector.Selector, bool) {
-	t.Helper()
-	sel, admitNone, err := selector.CompileLegacyLists("test", whitelist, blacklist)
-	require.NoError(t, err)
-	return sel, admitNone
+// memberSpec is one member filter's declaration: the patterns a row carries,
+// under the frame the rows share - matched over the full member path, and
+// case-insensitively, which a [[rule]] does not do by default. The frame is the
+// fixture's own choice, not a reading anything forces.
+//
+// Three benchmarks in archive_iterator_bench_test.go compile through it too, so
+// editing the frame to suit a table row moves their numbers.
+func memberSpec(include, exclude []string) selector.Spec {
+	return selector.Spec{Rule: "test", Subject: "path", IgnoreCase: true, Include: include, Exclude: exclude}
 }
 
-// mustMemberFilter is legacyMemberFilter for the rows outside the frozen table,
-// which never feed an admit-nothing list.
-func mustMemberFilter(t *testing.T, whitelist, blacklist []string) *selector.Selector {
+// mustMemberFilter compiles one member selector through the only constructor
+// production has, so a row's verdict is the production matcher's and not a
+// test-only reading of it. A compile failure aborts the row - degrading to an
+// unfiltered iterator would assert nothing.
+func mustMemberFilter(t *testing.T, spec selector.Spec) *selector.Selector {
 	t.Helper()
-	sel, admitNone := legacyMemberFilter(t, whitelist, blacklist)
-	require.False(t, admitNone, "this fixture needs a filter, not an admit-nothing verdict")
-	return sel
+	sel, err := selector.Compile(spec)
+	require.NoError(t, err)
+	return &sel
 }
 
 func TestFiltersDuringArchiveIteration(t *testing.T) {
-	// FROZEN TABLE - scope: the ARCHIVE MEMBER FILTER only, i.e. the [test.X]
-	// pattern lists translated by selector.CompileLegacyLists and read by
+	// FROZEN TABLE - scope: the ARCHIVE MEMBER FILTER only, i.e. the
+	// selector.Spec each row carries, compiled by selector.Compile and read by
 	// admitMember -> Selector.MatchScratch, exactly as the two production
 	// callers do it. The file-check filter site is a different mechanism,
 	// already migrated at HEAD; nothing here asserts anything about it.
 	//
-	// Every row asserts the member-filter semantics after the Selector
-	// migration, with the legacy lists translated (each entry quoted,
-	// ignoreCase, subject "path"):
-	// - a quoted legacy entry still matches as a literal substring, never as a
-	//   regex, and still case-insensitively;
+	// The rows carried [test.X] whitelist/blacklist lists until the legacy
+	// translation was deleted - the row names still say so, because names are
+	// frozen - and every pattern below is that translation's output, quoted by
+	// hand (`.log` -> `\.log`) under the frame it forced: ignoreCase, subject
+	// "path". Each row therefore still asserts the member-filter semantics the
+	// Selector migration declared:
+	// - a quoted entry still matches as a literal substring, never as a regex,
+	//   and still case-insensitively;
 	// - still matched over the FULL member path, not the basename;
-	// - an empty list entry is still inert: the translation drops it, and a
-	//   whitelist left with nothing selects nothing exactly as before;
 	// - CHANGED (the one user-visible move of this migration): both lists now
 	//   apply together - a member must match the whitelist AND avoid the
 	//   blacklist, where a non-empty blacklist used to disable the whitelist
 	//   entirely.
+	//
+	// An empty list entry was inert while the translation dropped it before
+	// compiling. The rows carrying one went with the translation, because
+	// selector.Compile refuses an empty pattern outright - a refusal
+	// TestArchiveFilterRejectsInvalidPatterns pins in their place.
 	//
 	// Two further declared changes have no row here because no fixture can hold
 	// their input:
@@ -233,7 +238,8 @@ func TestFiltersDuringArchiveIteration(t *testing.T) {
 	//   subject, so a blacklist now admits it and a whitelist rejects it. Pinned
 	//   by TestAdmitMemberEmptyName.
 	// - an entry holding a NON-ASCII byte keeps RE2 simple folding instead of
-	//   Unicode ToLower (see selector.CompileLegacyLists).
+	//   Unicode ToLower (pinned by selector.TestSelectorLiteralFastPathEquivalence,
+	//   whose "test" x "teſt.csv" pair the two schemes disagree on).
 	//
 	// Legal moves for the Selector migration commit:
 	// - the EXPECTATIONS of existing rows MAY change - that diff IS the
@@ -242,14 +248,12 @@ func TestFiltersDuringArchiveIteration(t *testing.T) {
 	// - a row MAY be deleted ONLY when its input becomes unconstructible at
 	//   this layer (rejected at selector compile time), and the deleting
 	//   commit MUST re-assert that input's rejection in
-	//   TestArchiveFilterRejectsInvalidPatterns in this package (to be created
-	//   by that commit);
-	// - the commit that deletes the legacy translation MAY rewrite the row
-	//   INPUTS from whitelist/blacklist lists to selector.Spec values, since
-	//   the lists stop existing at this layer - a declared move, not a
-	//   silent one;
-	// - row names and row order are otherwise stable, and names describe the
-	//   INPUT, never the outcome.
+	//   TestArchiveFilterRejectsInvalidPatterns in this package;
+	// - row names and row order are otherwise stable. A name describes its
+	//   row's INPUT, never the outcome, in the whitelist/blacklist spelling the
+	//   inputs had when the table was frozen; the spelling is kept deliberately
+	//   so a semantics change still reads as an expectation diff and not as a
+	//   rename.
 	//
 	// The one_of_each archives contain:
 	// - an empty file
@@ -268,62 +272,52 @@ func TestFiltersDuringArchiveIteration(t *testing.T) {
 	// - temp.*.txt          the only member holding the literal text `temp.*`
 	// - temporary_notes.txt regex `temp.*` selects it, the literal never does
 	// - UPPER_CASE.TXT      uppercase name, reached by a lowercase pattern only
-	//                       because the translated rule keeps ignoreCase
+	//                       because the rule matches with ignoreCase
 	baseTests := []struct {
 		name          string
 		baseFile      string
 		maxLen        int
-		whitelist     []string
-		blacklist     []string
+		filter        selector.Spec
 		unpackedFiles []string
 	}{
-		{"Archive with maxSize filter", "one_of_each", 2 * 1024 * 1024, []string{}, []string{}, []string{"large_valid.txt", "very_large_but_valid.txt", "black/to_be_blacklisted.blst", "white/to_be_whitelisted.wlst"}},
-		{"Archive with smaller maxSize filter", "one_of_each", 0.5 * 1024 * 1024, []string{}, []string{}, []string{"large_valid.txt", "black/to_be_blacklisted.blst", "white/to_be_whitelisted.wlst"}},
-		{"Archive with whitelist filter", "one_of_each", 2 * 1024 * 1024, []string{".wlst"}, []string{}, []string{"white/to_be_whitelisted.wlst"}},
-		{"Archive with whitelist filter 2", "one_of_each", 2 * 1024 * 1024, []string{"to_be_whitelisted"}, []string{}, []string{"white/to_be_whitelisted.wlst"}},
-		{"Archive with blacklist filter", "one_of_each", 2 * 1024 * 1024, []string{}, []string{".blst"}, []string{"large_valid.txt", "very_large_but_valid.txt", "white/to_be_whitelisted.wlst"}},
-		{"Archive with overlapping filters", "one_of_each", 0.5 * 1024 * 1024, []string{}, []string{".blst"}, []string{"large_valid.txt", "white/to_be_whitelisted.wlst"}},
-		{"Archive with overlapping filters 2", "one_of_each", 10, []string{"wlst"}, []string{}, []string{}},
-		// Regex metacharacters are quoted, so they still match themselves: no
-		// member path holds the text `.*\.log$`, so the whitelist admits nothing
-		// and the blacklist excludes nothing - app.log survives both. A raw
-		// (unquoted) `.*\.log$` is now a regex that would select app.log - the
-		// expressiveness the legacy translation deliberately withholds.
-		{"Archive with whitelist `.*\\.log$`", "filter_semantics", 2 * 1024 * 1024, []string{`.*\.log$`}, []string{}, []string{}},
-		{"Archive with blacklist `.*\\.log$`", "filter_semantics", 2 * 1024 * 1024, []string{}, []string{`.*\.log$`}, []string{"app.log", "temp.*.txt", "temporary_notes.txt", "UPPER_CASE.TXT"}},
+		{"Archive with maxSize filter", "one_of_each", 2 * 1024 * 1024, memberSpec(nil, nil), []string{"large_valid.txt", "very_large_but_valid.txt", "black/to_be_blacklisted.blst", "white/to_be_whitelisted.wlst"}},
+		{"Archive with smaller maxSize filter", "one_of_each", 0.5 * 1024 * 1024, memberSpec(nil, nil), []string{"large_valid.txt", "black/to_be_blacklisted.blst", "white/to_be_whitelisted.wlst"}},
+		{"Archive with whitelist filter", "one_of_each", 2 * 1024 * 1024, memberSpec([]string{`\.wlst`}, nil), []string{"white/to_be_whitelisted.wlst"}},
+		{"Archive with whitelist filter 2", "one_of_each", 2 * 1024 * 1024, memberSpec([]string{"to_be_whitelisted"}, nil), []string{"white/to_be_whitelisted.wlst"}},
+		{"Archive with blacklist filter", "one_of_each", 2 * 1024 * 1024, memberSpec(nil, []string{`\.blst`}), []string{"large_valid.txt", "very_large_but_valid.txt", "white/to_be_whitelisted.wlst"}},
+		{"Archive with overlapping filters", "one_of_each", 0.5 * 1024 * 1024, memberSpec(nil, []string{`\.blst`}), []string{"large_valid.txt", "white/to_be_whitelisted.wlst"}},
+		{"Archive with overlapping filters 2", "one_of_each", 10, memberSpec([]string{"wlst"}, nil), []string{}},
+		// The quoted metacharacters still match themselves: no member path holds
+		// the text `.*\.log$`, so the whitelist admits nothing and the blacklist
+		// excludes nothing - app.log survives both. A raw (unquoted) `.*\.log$`
+		// is a regex that would select app.log - the expressiveness the legacy
+		// translation withheld.
+		{"Archive with whitelist `.*\\.log$`", "filter_semantics", 2 * 1024 * 1024, memberSpec([]string{`\.\*\\\.log\$`}, nil), []string{}},
+		{"Archive with blacklist `.*\\.log$`", "filter_semantics", 2 * 1024 * 1024, memberSpec(nil, []string{`\.\*\\\.log\$`}), []string{"app.log", "temp.*.txt", "temporary_notes.txt", "UPPER_CASE.TXT"}},
 		// `temp.*` reaches only the member that spells it out, never the one a
 		// regex would reach through `.*`.
-		{"Archive with whitelist `temp.*`", "filter_semantics", 2 * 1024 * 1024, []string{"temp.*"}, []string{}, []string{"temp.*.txt"}},
-		// A glob-shaped pattern stays a literal: quoting turns what RE2 would
+		{"Archive with whitelist `temp.*`", "filter_semantics", 2 * 1024 * 1024, memberSpec([]string{`temp\.\*`}, nil), []string{"temp.*.txt"}},
+		// A glob-shaped entry survives as a literal: quoting turns what RE2 would
 		// reject as a regex into a pattern matching the text `*.txt`.
-		{"Archive with whitelist `*.txt`", "filter_semantics", 2 * 1024 * 1024, []string{"*.txt"}, []string{}, []string{"temp.*.txt"}},
+		{"Archive with whitelist `*.txt`", "filter_semantics", 2 * 1024 * 1024, memberSpec([]string{`\*\.txt`}, nil), []string{"temp.*.txt"}},
 		// Matching is case-insensitive in both directions.
-		{"Archive with lowercase whitelist `upper_case`", "filter_semantics", 2 * 1024 * 1024, []string{"upper_case"}, []string{}, []string{"UPPER_CASE.TXT"}},
-		{"Archive with uppercase blacklist `TEMPORARY`", "filter_semantics", 2 * 1024 * 1024, []string{}, []string{"TEMPORARY"}, []string{"app.log", "temp.*.txt", "UPPER_CASE.TXT"}},
+		{"Archive with lowercase whitelist `upper_case`", "filter_semantics", 2 * 1024 * 1024, memberSpec([]string{"upper_case"}, nil), []string{"UPPER_CASE.TXT"}},
+		{"Archive with uppercase blacklist `TEMPORARY`", "filter_semantics", 2 * 1024 * 1024, memberSpec(nil, []string{"TEMPORARY"}), []string{"app.log", "temp.*.txt", "UPPER_CASE.TXT"}},
 		// Matching runs over the full member path, so a directory component is
 		// a usable pattern - a basename-only subject would admit nothing here.
-		{"Archive with whitelist on a directory component", "one_of_each", 2 * 1024 * 1024, []string{"white/"}, []string{}, []string{"white/to_be_whitelisted.wlst"}},
+		{"Archive with whitelist on a directory component", "one_of_each", 2 * 1024 * 1024, memberSpec([]string{"white/"}, nil), []string{"white/to_be_whitelisted.wlst"}},
 		// Both lists set: include AND NOT exclude, so `temp` restricts what the
 		// blacklist leaves - UPPER_CASE.TXT is no longer admitted, the one
-		// verdict the whitelist-suppression rule used to produce. The
-		// translation compiles both lists, so this input is constructible here
-		// even though the config layer rejects both-set.
-		{"Archive with whitelist `temp` and blacklist `.log`", "filter_semantics", 2 * 1024 * 1024, []string{"temp"}, []string{".log"}, []string{"temp.*.txt", "temporary_notes.txt"}},
-		// An empty entry is dropped by the translation, so beside a real entry it
-		// is inert; a whitelist left with no entry at all still selects nothing,
-		// because the translation reports it as admit-nothing rather than
-		// widening it into "no filter".
-		{"Archive with empty whitelist entry", "filter_semantics", 2 * 1024 * 1024, []string{""}, []string{}, []string{}},
-		{"Archive with empty blacklist entry", "filter_semantics", 2 * 1024 * 1024, []string{}, []string{""}, []string{"app.log", "temp.*.txt", "temporary_notes.txt", "UPPER_CASE.TXT"}},
-		{"Archive with empty and non-empty whitelist entries", "filter_semantics", 2 * 1024 * 1024, []string{"", "temp.*"}, []string{}, []string{"temp.*.txt"}},
+		// verdict the whitelist-suppression rule used to produce. Include and
+		// exclude are legal together on the [[rule]] surface.
+		{"Archive with whitelist `temp` and blacklist `.log`", "filter_semantics", 2 * 1024 * 1024, memberSpec([]string{"temp"}, []string{`\.log`}), []string{"temp.*.txt", "temporary_notes.txt"}},
 	}
 
 	var tests []struct {
 		name          string
 		filepath      string
 		maxLen        int
-		whitelist     []string
-		blacklist     []string
+		filter        selector.Spec
 		unpackedFiles []string
 	}
 
@@ -335,15 +329,13 @@ func TestFiltersDuringArchiveIteration(t *testing.T) {
 				name          string
 				filepath      string
 				maxLen        int
-				whitelist     []string
-				blacklist     []string
+				filter        selector.Spec
 				unpackedFiles []string
 			}{
 				name:          fmt.Sprintf("%s (%s)", base.name, ext),
 				filepath:      fmt.Sprintf("../../testdata/archives/%s%s", base.baseFile, ext),
 				maxLen:        base.maxLen,
-				whitelist:     base.whitelist,
-				blacklist:     base.blacklist,
+				filter:        base.filter,
 				unpackedFiles: base.unpackedFiles,
 			})
 		}
@@ -353,14 +345,7 @@ func TestFiltersDuringArchiveIteration(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			parts := strings.Split(test.filepath, "/")
 			filename := parts[len(parts)-1]
-			memberFilter, admitNone := legacyMemberFilter(t, test.whitelist, test.blacklist)
-			if admitNone {
-				// The callers never reach the iterator in this case, so the row
-				// asserts what they produce instead: nothing unpacked.
-				assert.Empty(t, test.unpackedFiles, "an admit-nothing filter can only expect an empty unpack set")
-				return
-			}
-			nfi := InitArchiveIterator(test.filepath, filename, ArchiveLimits{MaxMemberSize: int64(test.maxLen), MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 1000}, memberFilter)
+			nfi := InitArchiveIterator(test.filepath, filename, ArchiveLimits{MaxMemberSize: int64(test.maxLen), MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 1000}, mustMemberFilter(t, test.filter))
 			if len(test.unpackedFiles) == 0 {
 				assert.False(t, nfi.HasFilesToUnpack(), "Expected archive to have valid files")
 			} else {
@@ -392,23 +377,26 @@ func TestFiltersDuringArchiveIteration(t *testing.T) {
 // stops at: the iterator's filter is constructible only through
 // selector.Compile, which refuses what the old literal matcher swallowed - an
 // empty entry (inert then) and an uncompilable regex (a plain literal then).
-// The empty-entry rows of the table survive only because the transitional
-// translation drops those entries before compiling.
+// The transitional translation dropped an empty entry before compiling, and the
+// frozen table held rows for the inputs that reached it that way; the
+// translation is gone, so this rejection is the whole story for them.
 func TestArchiveFilterRejectsInvalidPatterns(t *testing.T) {
 	for _, spec := range []selector.Spec{
 		{Rule: "member", Subject: "path", IgnoreCase: true, Include: []string{""}},
 		{Rule: "member", Subject: "path", IgnoreCase: true, Exclude: []string{""}},
 		{Rule: "member", Subject: "path", IgnoreCase: true, Include: []string{"temp", ""}},
-		{Rule: "member", Subject: "path", IgnoreCase: true, Include: []string{"("}},
+		// The receipt for the deleted "empty and non-empty whitelist entries"
+		// row: the sibling above covers the same class, this one covers that
+		// row's own input.
+		{Rule: "member", Subject: "path", IgnoreCase: true, Include: []string{"", `temp\.\*`}},
 	} {
 		_, err := selector.Compile(spec)
-		assert.Error(t, err, "%+v must not compile into a member filter", spec)
+		assert.ErrorIs(t, err, selector.ErrEmptyPattern, "%+v must not compile into a member filter", spec)
 	}
 
-	dropped, admitNone, err := selector.CompileLegacyLists("member", []string{""}, nil)
-	require.NoError(t, err)
-	assert.Nil(t, dropped, "an all-empty whitelist compiles to no selector")
-	assert.True(t, admitNone, "and to admit-nothing, never to no filter")
+	// The uncompilable regex is refused by a different error.
+	_, err := selector.Compile(selector.Spec{Rule: "member", Subject: "path", IgnoreCase: true, Include: []string{"("}})
+	assert.Error(t, err, "an uncompilable regex must not compile into a member filter")
 }
 
 // TestAdmitMemberEmptyName pins the declared flip for the nameless member a
@@ -970,7 +958,7 @@ func TestMemberCountLimitFilteredMembersDoNotCount(t *testing.T) {
 	assert.NoError(t, os.WriteFile(path, buf.Bytes(), 0o600))
 
 	nfi := InitArchiveIterator(path, "filtered.zip",
-		ArchiveLimits{MaxMemberSize: 1024 * 1024, MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 5}, mustMemberFilter(t, nil, []string{".blst"}))
+		ArchiveLimits{MaxMemberSize: 1024 * 1024, MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 5}, mustMemberFilter(t, memberSpec(nil, []string{`\.blst`})))
 	assert.True(t, nfi.HasFilesToUnpack())
 	count := 0
 	for nfi.HasNext() {
@@ -1057,7 +1045,7 @@ func TestSkipAckPrecedence(t *testing.T) {
 	assert.NoError(t, os.WriteFile(path, buf.Bytes(), 0o600))
 
 	nfi := InitArchiveIterator(path, "prec.zip",
-		ArchiveLimits{MaxMemberSize: 2048, MaxTotalMemory: 2560, MaxMemberCount: 1000}, mustMemberFilter(t, nil, []string{".blst"}))
+		ArchiveLimits{MaxMemberSize: 2048, MaxTotalMemory: 2560, MaxMemberCount: 1000}, mustMemberFilter(t, memberSpec(nil, []string{`\.blst`})))
 	assert.True(t, nfi.HasFilesToUnpack())
 	var yielded []string
 	for nfi.HasNext() {

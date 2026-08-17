@@ -11,7 +11,6 @@ import (
 	"testing"
 
 	"github.com/eawag-rdm/pc/pkg/config"
-	"github.com/eawag-rdm/pc/pkg/selector"
 	"github.com/eawag-rdm/pc/pkg/structs"
 )
 
@@ -289,25 +288,25 @@ func TestExtractArchivesMkdirFailureKeepsAcks(t *testing.T) {
 	}
 }
 
-// TestLeakSelectorAdmission pins what the [test.IsFreeOfSecrets] lists mean now
-// that one compiled selector serves both leak-scan gates. Rows marked
+// TestLeakSelectorAdmission pins what a leak [[rule]]'s include/exclude lists
+// mean now that one compiled selector serves both leak-scan gates. Rows marked
 // "preserved" admit the subject the old per-check filter admitted; rows that
 // moved name their declared change.
 func TestLeakSelectorAdmission(t *testing.T) {
 	tests := []struct {
-		name      string
-		whitelist []string
-		blacklist []string
-		subject   string
-		admit     bool
+		name    string
+		include []string
+		exclude []string
+		subject string
+		admit   bool
 	}{
 		{"no list admits everything (preserved)", nil, nil, "anything.txt", true},
-		{"whitelist regex admits a match (preserved)", []string{`.*\.txt$`}, nil, "notes.txt", true},
-		{"whitelist regex rejects a non-match (preserved)", []string{`.*\.txt$`}, nil, "notes.log", false},
-		{"whitelist matches case-sensitively (preserved)", []string{`^secret`}, nil, "SECRET.txt", false},
-		{"blacklist regex rejects a match (preserved)", nil, []string{`.*\.log$`}, "notes.log", false},
-		{"blacklist regex admits a non-match (preserved)", nil, []string{`.*\.log$`}, "notes.txt", true},
-		{"blacklist matches case-sensitively (preserved)", nil, []string{`\.LOG$`}, "notes.log", true},
+		{"include regex admits a match (preserved)", []string{`.*\.txt$`}, nil, "notes.txt", true},
+		{"include regex rejects a non-match (preserved)", []string{`.*\.txt$`}, nil, "notes.log", false},
+		{"include matches case-sensitively (preserved)", []string{`^secret`}, nil, "SECRET.txt", false},
+		{"exclude regex rejects a match (preserved)", nil, []string{`.*\.log$`}, "notes.log", false},
+		{"exclude regex admits a non-match (preserved)", nil, []string{`.*\.log$`}, "notes.txt", true},
+		{"exclude matches case-sensitively (preserved)", nil, []string{`\.LOG$`}, "notes.log", true},
 		// Change (d): the member gate reads the same regexes as the file gate,
 		// so a metachar pattern filters a member path it could not touch before.
 		{"member path filtered by regex, not by literal (change (d))", nil, []string{`.*\.log$`}, "inner/deep/run.log", false},
@@ -321,11 +320,16 @@ func TestLeakSelectorAdmission(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			sel, err := selector.CompileLegacyRegexLists("IsFreeOfSecrets", "path", tt.whitelist, tt.blacklist)
-			if err != nil {
-				t.Fatalf("compile failed: %v", err)
+			spec := config.RuleSpec{
+				Name: "IsFreeOfSecrets", Check: "IsFreeOfSecrets", Enabled: true,
+				Include: tt.include, Exclude: tt.exclude,
 			}
-			if got := sel.Match(tt.subject); got != tt.admit {
+			selectors, err := CompileRuleSelectors(spec, []Scope{ScopeRepository})
+			if err != nil {
+				t.Fatalf("compile selectors: %v", err)
+			}
+			gate := selectors[0].Gate
+			if got := gate.Match(tt.subject); got != tt.admit {
 				t.Errorf("Match(%q) = %v, want %v", tt.subject, got, tt.admit)
 			}
 		})

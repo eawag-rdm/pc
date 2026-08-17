@@ -35,9 +35,12 @@ func benchMemberNames(n int) []string {
 	return names
 }
 
-// benchMemberLists is the legacy [test.X] filter shape: a handful of literal
-// substrings, exactly what the shipped configs carry.
-var benchMemberLists = []string{"temp", ".log", "backup"}
+// benchMemberLists is the member filter these benchmarks carry: three literal
+// substrings, quoted by hand so they compile to exactly the program the
+// baseline numbers were taken against - respelling them moves those numbers.
+// No shipped config declares a member filter at all, so this measures the cost
+// of having one, not the cost of the usual case.
+var benchMemberLists = []string{"temp", `\.log`, "backup"}
 
 // benchWalkZip writes a zip holding one tiny member per name.
 func benchWalkZip(b *testing.B, names []string) string {
@@ -80,24 +83,24 @@ func BenchmarkArchiveNameWalk1000(b *testing.B) {
 	}
 }
 
-// benchMemberFilter translates the legacy lists the way the callers do.
-func benchMemberFilter(b *testing.B, whitelist, blacklist []string) *selector.Selector {
+func benchMemberFilter(b *testing.B, include, exclude []string) *selector.Selector {
 	b.Helper()
-	sel, admitNone, err := selector.CompileLegacyLists("bench", whitelist, blacklist)
-	if err != nil || admitNone || sel == nil {
-		b.Fatalf("translate legacy lists: (%v, %v, %v)", sel, admitNone, err)
+	sel, err := selector.Compile(memberSpec(include, exclude))
+	if err != nil {
+		b.Fatalf("compile member filter: %v", err)
 	}
-	return sel
+	return &sel
 }
 
 // BenchmarkMemberNameFilter1000 is the gate: the filter decision for 1000
 // members, as the archive walks make it - one iterator, its own scratch, the
-// translated legacy lists as an include list. 0 allocs/op.
+// literal patterns as an include list. 0 allocs/op.
 //
-// The legacy translation forces ignoreCase, so every decision folds the member
-// name once into the scratch; that fold is roughly half the cost measured here
-// and is the price of preserving the old case-insensitive meaning, not of the
-// Selector itself.
+// memberSpec chooses ignoreCase, which a [[rule]] does not do by default, so
+// every decision folds the member name once into the scratch; that fold is
+// roughly half the cost measured here and is the price of case-insensitive
+// matching, not of the Selector itself. The choice stays because dropping it
+// would move these numbers off their baseline.
 func BenchmarkMemberNameFilter1000(b *testing.B) {
 	names := benchMemberNames(1000)
 	u := InitArchiveIterator("bench.zip", "bench.zip", ArchiveLimits{}, benchMemberFilter(b, benchMemberLists, nil))
@@ -117,9 +120,10 @@ func BenchmarkMemberNameFilter1000(b *testing.B) {
 	benchMemberSink += admitted
 }
 
-// BenchmarkMemberNameFilterExclude1000 is the same decision for the shape the
-// shipped configs actually carry when they carry one: a blacklist only, where
-// every admitted member has to be checked against every pattern.
+// BenchmarkMemberNameFilterExclude1000 is the same decision for the other list
+// shape: the same hand-spelled patterns (see benchMemberLists) as an exclude
+// list only, where every admitted member has to be checked against every
+// pattern. No shipped config carries either shape.
 func BenchmarkMemberNameFilterExclude1000(b *testing.B) {
 	names := benchMemberNames(1000)
 	u := InitArchiveIterator("bench.zip", "bench.zip", ArchiveLimits{}, benchMemberFilter(b, nil, benchMemberLists))
@@ -142,19 +146,19 @@ func BenchmarkMemberNameFilterExclude1000(b *testing.B) {
 // BenchmarkArchiveIterationFiltered drains a whole 1000-member archive through
 // the filter, which is where the per-member decision is really paid: zip
 // consults it twice per member (the candidate-count preview, then the unpack
-// walk), and the per-archive translation is amortized over the whole drain.
+// walk), and the per-archive compile is amortized over the whole drain.
 func BenchmarkArchiveIterationFiltered(b *testing.B) {
 	names := benchMemberNames(1000)
 	path := benchWalkZip(b, names)
 
 	b.ReportAllocs()
 	for b.Loop() {
-		filter, admitNone, err := selector.CompileLegacyLists("bench", benchMemberLists, nil)
-		if err != nil || admitNone {
-			b.Fatalf("translate legacy lists: (%v, %v)", admitNone, err)
+		filter, err := selector.Compile(memberSpec(benchMemberLists, nil))
+		if err != nil {
+			b.Fatalf("compile member filter: %v", err)
 		}
 		u := InitArchiveIterator(path, "walk1000.zip",
-			ArchiveLimits{MaxMemberSize: 1024, MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 10000}, filter)
+			ArchiveLimits{MaxMemberSize: 1024, MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 10000}, &filter)
 		scanned := 0
 		for u.HasFilesToUnpack() && u.HasNext() {
 			u.Next()
