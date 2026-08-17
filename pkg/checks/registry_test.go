@@ -34,50 +34,78 @@ func rulesWithAnchors(rules []config.RuleSpec) []config.RuleSpec {
 	return filled
 }
 
-// bindTestRule binds EVERY rule cfg declares for the named check, through the
-// SAME assembly and selector compilation Compile uses at startup (RuleSpecs +
-// CompileRuleSelectors), so the two callers cannot drift apart. The batch
-// mirrors Compile's member-admission decision through the same MemberAdmission
-// call Compile makes.
+// bindTestRule compiles cfg through the REAL boot gate - Compile, the one both
+// frontends run - and returns the plan entry of the named check in one scope,
+// so a check test exercises the rules the scan would actually dispatch.
+//
+// Going through the plan NARROWS what a fixture may say, in five ways the
+// hand-mirrored binding this replaced did not:
+//
+//  1. Only ENABLED rules are planned. A fixture that omits Enabled: true gets
+//     no entry at all, where before it got its rule bound and returned.
+//  2. A rule appears only in the scopes it RESOLVES to. Asking for a scope the
+//     rule does not declare - or the check does not serve - now fails, where
+//     before the rule's selectors were compiled for whatever scope was asked.
+//  3. Member admission is the PLAN-WIDE decision (buildMemberAdmission), taken
+//     over the enabled member rules of every check rather than over this
+//     check's bound rules: a disabled sibling no longer counts towards the
+//     union. Only the keyword check serves that scope today, so the plan-wide
+//     half is not yet observable; the enabled half is.
+//  4. The WHOLE fixture is validated, not just the rules of the check under
+//     test. An unrelated rule with a bad parameter, an uncompilable pattern or
+//     a name reused across checks now fails the check under test with an
+//     opaque "compile rules:" fatal naming that other rule.
+//  5. Off the archive-member scope the batch carries no member admission:
+//     PerRule is false where the old helper set it true for any fixture with
+//     two or more rules. Admit was already nil there - a member selector is
+//     compiled only at that scope - and keywordsInArchive, the only reader of
+//     either, runs only there, so nothing observes the difference today.
+//
+// Pre-existing, and NOT introduced here: a fixture without [general] binds with
+// maxContentScan = 0. Compile rejects only a NIL General, so the zero value
+// fabricated below passes it, exactly as the old helper's did.
 func bindTestRule(t testing.TB, name string, cfg config.Config, scope Scope) (CheckDef, []*BoundRule, *Batch) {
 	t.Helper()
 	registry := NewRegistry()
-	def, known := registry.Lookup(name)
-	if !known {
-		t.Fatalf("check %q is not registered", name)
-	}
 	cfg.Rules = rulesWithAnchors(cfg.Rules)
-	specs, err := RuleSpecs(&cfg, registry)
+	if cfg.General == nil {
+		cfg.General = &config.GeneralConfig{}
+	}
+	plan, err := Compile(&cfg, registry)
 	if err != nil {
-		t.Fatalf("assemble rule specs: %v", err)
+		t.Fatalf("compile rules: %v", err)
+	}
+	for _, entry := range plan.Scope(scope) {
+		if entry.Def.Name == name {
+			return *entry.Def, entry.Rules, entry.Batch
+		}
 	}
 
-	general := cfg.General
-	if general == nil {
-		general = &config.GeneralConfig{}
-	}
-	var rules []*BoundRule
+	// The scope is empty: name WHICH of the three reasons, so a fixture that
+	// forgot Enabled: true does not read like a missing declaration. The specs
+	// are re-assembled rather than guessed at, so the diagnosis cannot disagree
+	// with what Compile planned from.
+	specs, _ := RuleSpecs(&cfg, registry) // its error, if any, already failed the compile
+	assembled, live := 0, 0
 	for _, spec := range specs {
 		if spec.Check != name {
 			continue
 		}
-		rule, err := def.Bind(spec, general)
-		if err != nil {
-			t.Fatalf("bind rule %q: %v", spec.Name, err)
+		assembled++
+		if spec.Enabled {
+			live++
 		}
-		selectors, err := CompileRuleSelectors(spec, []Scope{scope})
-		if err != nil {
-			t.Fatalf("compile selectors for %q: %v", spec.Name, err)
-		}
-		rule.SetSelectors(selectors[0])
-		rules = append(rules, rule)
 	}
-	if len(rules) == 0 {
-		t.Fatalf("no rule spec for check %q", name)
+	switch {
+	case assembled == 0:
+		t.Fatalf("check %q is not registered", name)
+	case live == 0:
+		t.Fatalf("every rule of check %q is disabled, so none is planned", name)
+	default:
+		def, _ := registry.Lookup(name)
+		t.Fatalf("no rule of check %q resolves to scope %s; the check serves %v", name, scope, DefaultScopes(def))
 	}
-	batch := &Batch{limits: archiveLimits(general), maxContentScan: general.MaxContentScanFileSize}
-	batch.Admit, batch.PerRule = MemberAdmission(rules)
-	return def, rules, batch
+	return CheckDef{}, nil, nil
 }
 
 // runRule runs one check over one file through its bound rules, batched as the
