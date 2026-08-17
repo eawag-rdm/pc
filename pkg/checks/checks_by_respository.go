@@ -61,7 +61,8 @@ func bindHasReadme(spec config.RuleSpec, _ *config.GeneralConfig) (*BoundRule, e
 		return nil, err
 	}
 	return &BoundRule{
-		Rule: spec.Name,
+		Rule:  spec.Name,
+		Rules: []string{spec.Name},
 		applyRepo: func(_ context.Context, repository structs.Repository, _ *Batch, _ *selector.Selector) []structs.Message {
 			return hasReadme(repository, names)
 		},
@@ -74,7 +75,8 @@ func bindReadMeContainsTOC(spec config.RuleSpec, _ *config.GeneralConfig) (*Boun
 		return nil, err
 	}
 	return &BoundRule{
-		Rule: spec.Name,
+		Rule:  spec.Name,
+		Rules: []string{spec.Name},
 		applyRepo: func(_ context.Context, repository structs.Repository, _ *Batch, _ *selector.Selector) []structs.Message {
 			return readMeContainsTOC(repository, names)
 		},

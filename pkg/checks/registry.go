@@ -148,8 +148,14 @@ const (
 // over an interface value. Exactly one of Apply / ApplyRepo is set, matching
 // the CheckDef.
 type BoundRule struct {
-	Rule string            // rule name: diagnostics, and Message.Rule
-	sel  selector.Selector // the DISPATCH gate, compiled per scope by Compile
+	Rule string // rule name: diagnostics, and the streaming dedup key
+
+	// Rules is the name set tag stamps onto this rule's findings, interned here
+	// at bind - one allocation per rule, never one per message - and shared by
+	// every finding it tags. Its sole element is Rule.
+	Rules []string
+
+	sel selector.Selector // the DISPATCH gate, compiled per scope by Compile
 
 	// Member is the archive-member gate: the rule's own selector, matched
 	// against the member path, or against the base of that path where the
@@ -254,22 +260,26 @@ func (r *BoundRule) narrow(repository structs.Repository) structs.Repository {
 	return repository
 }
 
-// tag stamps a rule's name onto the findings it produced, so a reader can tell
-// WHICH configured rule reported. Two classes keep an empty Rule: the skip
-// acknowledgements a check emits for ITSELF - the acquisition's own voice,
-// which no rule name explains - and the findings of a SYNTHESIZED default
-// rule, whose name lives in a namespace reserved from operators
-// (config.DefaultRulePrefix): it names no configuration the operator wrote,
-// and it is rendered to end users.
-func tag(rule string, messages []structs.Message) []structs.Message {
-	if strings.HasPrefix(rule, config.DefaultRulePrefix) {
+// tag stamps the names of the rules that produced these findings onto them, so
+// a reader can tell WHICH configured rules reported. Two classes keep an empty
+// Rules: the skip acknowledgements a check emits for ITSELF - the acquisition's
+// own voice, which no rule name explains - and the findings of a SYNTHESIZED
+// default rule, whose name lives in a namespace reserved from operators
+// (config.DefaultRulePrefix): it names no configuration the operator wrote, and
+// it is rendered to end users. A default rule is synthesized only for a check no
+// config names, so it is alone in names and the first name decides.
+//
+// names is the caller's interned slice: it is assigned, never copied, so every
+// tagged message shares one array and tagging allocates nothing.
+func tag(names []string, messages []structs.Message) []structs.Message {
+	if len(names) == 0 || strings.HasPrefix(names[0], config.DefaultRulePrefix) {
 		return messages
 	}
 	for i := range messages {
 		if messages[i].Skipped {
 			continue
 		}
-		messages[i].Rule = rule
+		messages[i].Rules = names
 	}
 	return messages
 }
@@ -335,7 +345,7 @@ func NewRegistry() Registry {
 func runNameRules(ctx context.Context, file structs.File, _ Scope, _ *Batch, rules []*BoundRule) []structs.Message {
 	var messages []structs.Message
 	for _, rule := range rules {
-		messages = append(messages, tag(rule.Rule, rule.apply(ctx, file, nil, nil, reportJoined))...)
+		messages = append(messages, tag(rule.Rules, rule.apply(ctx, file, nil, nil, reportJoined))...)
 	}
 	return messages
 }
@@ -346,7 +356,7 @@ func runNameRules(ctx context.Context, file structs.File, _ Scope, _ *Batch, rul
 func runRepositoryRules(ctx context.Context, repository structs.Repository, batch *Batch, rules []*BoundRule) []structs.Message {
 	var messages []structs.Message
 	for _, rule := range rules {
-		messages = append(messages, tag(rule.Rule, rule.applyRepo(ctx, rule.narrow(repository), batch, &rule.sel))...)
+		messages = append(messages, tag(rule.Rules, rule.applyRepo(ctx, rule.narrow(repository), batch, &rule.sel))...)
 	}
 	return messages
 }
@@ -359,7 +369,8 @@ func bindNoParams(check func(structs.File) []structs.Message) func(config.RuleSp
 			return nil, err
 		}
 		return &BoundRule{
-			Rule: spec.Name,
+			Rule:  spec.Name,
+			Rules: []string{spec.Name},
 			apply: func(_ context.Context, file structs.File, _, _ [][]byte, _ reporting) []structs.Message {
 				return check(file)
 			},

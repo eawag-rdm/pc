@@ -338,8 +338,8 @@ func TestRuleFocusedGroupsByRule(t *testing.T) {
 	testFile := structs.File{Name: "test.txt", Path: "/path/to/test.txt"}
 
 	messages := []structs.Message{
-		{Content: "Found keyword 'password'", Source: testFile, TestName: "IsFreeOfKeywords", Rule: "secrets"},
-		{Content: "Found keyword 'todo'", Source: testFile, TestName: "IsFreeOfKeywords", Rule: "drafts"},
+		{Content: "Found keyword 'password'", Source: testFile, TestName: "IsFreeOfKeywords", Rules: []string{"secrets"}},
+		{Content: "Found keyword 'todo'", Source: testFile, TestName: "IsFreeOfKeywords", Rules: []string{"drafts"}},
 	}
 
 	result.processMessages(messages)
@@ -370,8 +370,8 @@ func TestRuleFocusedKeyedBySubjectKey(t *testing.T) {
 	memberB := structs.ToFileWithDisplay("/path/to/b.zip", "notes.txt", "notes.txt", 100, "", "b.zip")
 
 	messages := []structs.Message{
-		{Content: "Found keyword 'password'", Source: memberA, TestName: "IsFreeOfKeywords", Rule: "secrets"},
-		{Content: "Found keyword 'password'", Source: memberB, TestName: "IsFreeOfKeywords", Rule: "secrets"},
+		{Content: "Found keyword 'password'", Source: memberA, TestName: "IsFreeOfKeywords", Rules: []string{"secrets"}},
+		{Content: "Found keyword 'password'", Source: memberB, TestName: "IsFreeOfKeywords", Rules: []string{"secrets"}},
 	}
 
 	result.processMessages(messages)
@@ -420,10 +420,10 @@ func TestRuleFocusedExcludesRulelessMessages(t *testing.T) {
 	reason := "Skipped content scan of file: file size exceeds maximum."
 	messages := []structs.Message{
 		// Load-bearing: a finding with no rule of its own must not create a rule.
-		{Content: "Filename contains a space", Source: plainFile, TestName: "HasNoWhitespace", Rule: ""},
+		{Content: "Filename contains a space", Source: plainFile, TestName: "HasNoWhitespace"},
 		// Documents an inherited exclusion: skips are routed out earlier in the
 		// message loop, so this section never sees them.
-		{Content: reason, Source: skippedFile, TestName: "IsFreeOfKeywords", Rule: "secrets", Skipped: true, Reason: reason},
+		{Content: reason, Source: skippedFile, TestName: "IsFreeOfKeywords", Rules: []string{"secrets"}, Skipped: true, Reason: reason},
 	}
 
 	result.processMessages(messages)
@@ -433,15 +433,20 @@ func TestRuleFocusedExcludesRulelessMessages(t *testing.T) {
 	}
 }
 
+// TestRuleFocusedTotalEqualsSubjectCounts pins the exact half of the counting
+// invariant: per rule, issue_count is the sum of that rule's subjects' counts.
+// The reconciliation with the check is an inequality - the rules of one check
+// count ATTRIBUTIONS, and only where no finding names two rules do they add up
+// to the check's finding count.
 func TestRuleFocusedTotalEqualsSubjectCounts(t *testing.T) {
 	result := &ScanResult{}
 
 	testFile := structs.File{Name: "test.txt", Path: "/path/to/test.txt"}
 
 	messages := []structs.Message{
-		{Content: "Found keyword 'password' (line 1)", Source: testFile, TestName: "IsFreeOfKeywords", Rule: "secrets"},
-		{Content: "Found keyword 'password' (line 7)", Source: testFile, TestName: "IsFreeOfKeywords", Rule: "secrets"},
-		{Content: "Found keyword 'password' (line 9)", Source: testFile, TestName: "IsFreeOfKeywords", Rule: "secrets"},
+		{Content: "Found keyword 'password' (line 1)", Source: testFile, TestName: "IsFreeOfKeywords", Rules: []string{"secrets"}},
+		{Content: "Found keyword 'password' (line 7)", Source: testFile, TestName: "IsFreeOfKeywords", Rules: []string{"secrets"}},
+		{Content: "Found keyword 'password' (line 9)", Source: testFile, TestName: "IsFreeOfKeywords", Rules: []string{"secrets"}},
 	}
 
 	result.processMessages(messages)
@@ -460,7 +465,9 @@ func TestRuleFocusedTotalEqualsSubjectCounts(t *testing.T) {
 		t.Errorf("Expected subject issue_count 3, got %d", rule.Subjects[0].IssueCount)
 	}
 
-	// The rule's count must reconcile with the same check's issues.
+	// The rule's count must reconcile with the same check's issues. The general
+	// invariant is issue_count >= the check's findings; here it is an equality,
+	// because no finding of this check names more than one rule.
 	checkIssues := 0
 	for _, check := range result.DetailsCheckFocused {
 		if check.Checkname == rule.Checkname {
@@ -470,6 +477,51 @@ func TestRuleFocusedTotalEqualsSubjectCounts(t *testing.T) {
 	if checkIssues != rule.IssueCount {
 		t.Errorf("Rule issue_count %d does not reconcile with check '%s' issues %d",
 			rule.IssueCount, rule.Checkname, checkIssues)
+	}
+}
+
+// TestRuleFocusedCountsSharedFindingUnderEveryRule is the strict case of that
+// inequality: ONE finding produced on behalf of two rules is counted under each
+// of them, while details_check_focused - the authoritative finding count - still
+// counts it once.
+func TestRuleFocusedCountsSharedFindingUnderEveryRule(t *testing.T) {
+	result := &ScanResult{}
+
+	testFile := structs.File{Name: "test.txt", Path: "/path/to/test.txt"}
+
+	messages := []structs.Message{
+		{Content: "Found keyword 'password'", Source: testFile, TestName: "IsFreeOfKeywords", Rules: []string{"secrets", "drafts"}},
+	}
+
+	result.processMessages(messages)
+
+	if len(result.DetailsRuleFocused) != 2 {
+		t.Fatalf("Expected the finding under both rules, got %d: %+v", len(result.DetailsRuleFocused), result.DetailsRuleFocused)
+	}
+	if result.DetailsRuleFocused[0].Rule != "drafts" || result.DetailsRuleFocused[1].Rule != "secrets" {
+		t.Errorf("Expected rules [drafts secrets], got [%s %s]",
+			result.DetailsRuleFocused[0].Rule, result.DetailsRuleFocused[1].Rule)
+	}
+
+	for _, rule := range result.DetailsRuleFocused {
+		if rule.IssueCount != 1 {
+			t.Errorf("Rule '%s': expected issue_count 1, got %d", rule.Rule, rule.IssueCount)
+		}
+		if len(rule.Subjects) != 1 || rule.Subjects[0].IssueCount != 1 {
+			t.Errorf("Rule '%s': expected one subject with issue_count 1, got %+v", rule.Rule, rule.Subjects)
+		}
+	}
+
+	// The two rules sum to 2 attributions of ONE finding; the check section is
+	// the count that must not follow them.
+	checkIssues := 0
+	for _, check := range result.DetailsCheckFocused {
+		if check.Checkname == "IsFreeOfKeywords" {
+			checkIssues = len(check.Issues)
+		}
+	}
+	if checkIssues != 1 {
+		t.Errorf("details_check_focused counted %d issues, want the one finding counted once", checkIssues)
 	}
 }
 
@@ -506,10 +558,10 @@ func TestRuleFocusedOrderStable(t *testing.T) {
 	alpha := structs.File{Name: "alpha.txt", Path: "/path/to/alpha.txt"}
 
 	messages := []structs.Message{
-		{Content: "m1", Source: zebra, TestName: "IsFreeOfKeywords", Rule: "zulu"},
-		{Content: "m2", Source: alpha, TestName: "IsFreeOfKeywords", Rule: "mike"},
-		{Content: "m3", Source: zebra, TestName: "IsFreeOfKeywords", Rule: "alfa"},
-		{Content: "m4", Source: alpha, TestName: "IsFreeOfKeywords", Rule: "alfa"},
+		{Content: "m1", Source: zebra, TestName: "IsFreeOfKeywords", Rules: []string{"zulu"}},
+		{Content: "m2", Source: alpha, TestName: "IsFreeOfKeywords", Rules: []string{"mike"}},
+		{Content: "m3", Source: zebra, TestName: "IsFreeOfKeywords", Rules: []string{"alfa"}},
+		{Content: "m4", Source: alpha, TestName: "IsFreeOfKeywords", Rules: []string{"alfa"}},
 	}
 
 	result.processMessages(messages)

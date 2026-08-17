@@ -285,7 +285,8 @@ func bindKeywords(spec config.RuleSpec, _ *config.GeneralConfig) (*BoundRule, er
 		bound = append(bound, keywordSet{matcher: optimization.GetMatcher(keywords), info: info})
 	}
 	return &BoundRule{
-		Rule: spec.Name,
+		Rule:  spec.Name,
+		Rules: []string{spec.Name},
 		apply: func(ctx context.Context, file structs.File, body, lowered [][]byte, report reporting) []structs.Message {
 			return scanKeywords(ctx, file, bound, body, lowered, report)
 		},
@@ -451,7 +452,7 @@ func keywordsInArchive(ctx context.Context, file structs.File, batch *Batch, rul
 			for i := range found {
 				found[i].Source = src
 			}
-			messages = append(messages, tag(rule.Rule, found)...)
+			messages = append(messages, tag(rule.Rules, found)...)
 		}
 	}
 
@@ -516,7 +517,7 @@ func keywordsInFile(ctx context.Context, file structs.File, batch *Batch, rules 
 		body := [][]byte{content}
 		lowered := lowerAll(body)
 		for _, rule := range rules {
-			messages = append(messages, tag(rule.Rule, rule.apply(ctx, file, body, lowered, reportJoined))...)
+			messages = append(messages, tag(rule.Rules, rule.apply(ctx, file, body, lowered, reportJoined))...)
 		}
 	} else {
 		// Handle binary files
@@ -526,7 +527,7 @@ func keywordsInFile(ctx context.Context, file structs.File, batch *Batch, rules 
 		}
 		lowered := lowerAll(body)
 		for _, rule := range rules {
-			messages = append(messages, tag(rule.Rule, rule.apply(ctx, file, body, lowered, reportIndexed))...)
+			messages = append(messages, tag(rule.Rules, rule.apply(ctx, file, body, lowered, reportIndexed))...)
 		}
 	}
 	return messages
@@ -544,7 +545,7 @@ func streamKeywords(ctx context.Context, file structs.File, rules []*BoundRule) 
 	err := streamChunks(ctx, file.Path, func(chunk, lowered []byte) {
 		body[0], loweredBody[0] = chunk, lowered
 		for _, rule := range rules {
-			for _, message := range tag(rule.Rule, rule.apply(ctx, file, body, loweredBody, reportEach)) {
+			for _, message := range tag(rule.Rules, rule.apply(ctx, file, body, loweredBody, reportEach)) {
 				// The key is the LOWERED message: findings carry the original
 				// case of the chunk they were found in, so "Admin" in one chunk
 				// and "ADMIN" in another are one finding, reported once.
@@ -620,7 +621,7 @@ func scanOOXMLFile(ctx context.Context, file structs.File, limits readers.Archiv
 
 	lowered := lowerAll(content)
 	for _, rule := range rules {
-		messages = append(messages, tag(rule.Rule, rule.apply(ctx, file, content, lowered, reportIndexed))...)
+		messages = append(messages, tag(rule.Rules, rule.apply(ctx, file, content, lowered, reportIndexed))...)
 	}
 	return messages, true
 }
@@ -741,7 +742,7 @@ func scanPDFFile(ctx context.Context, file structs.File, archiveLimits readers.A
 
 	lowered := lowerAll(pages)
 	for _, rule := range rules {
-		messages = append(messages, tag(rule.Rule, rule.apply(ctx, file, pages, lowered, reportPaged))...)
+		messages = append(messages, tag(rule.Rules, rule.apply(ctx, file, pages, lowered, reportPaged))...)
 	}
 	return messages, true
 }
@@ -778,7 +779,8 @@ func bindValidName(spec config.RuleSpec, _ *config.GeneralConfig) (*BoundRule, e
 		names = append(names, disallowed)
 	}
 	return &BoundRule{
-		Rule: spec.Name,
+		Rule:  spec.Name,
+		Rules: []string{spec.Name},
 		apply: func(_ context.Context, file structs.File, _, _ [][]byte, _ reporting) []structs.Message {
 			var messages []structs.Message
 			for _, disallowed := range names {

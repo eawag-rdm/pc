@@ -88,7 +88,8 @@ func bindSecrets(spec config.RuleSpec, general *config.GeneralConfig) (*BoundRul
 	// The child's cap comes from the CONFIG, never the live runtime - see leakAttrsFrom.
 	bound := leakAttrsFrom(table, general)
 	return &BoundRule{
-		Rule: spec.Name,
+		Rule:  spec.Name,
+		Rules: []string{spec.Name},
 		applyRepo: func(ctx context.Context, repository structs.Repository, batch *Batch, sel *selector.Selector) []structs.Message {
 			return isFreeOfSecrets(ctx, repository, bound, batch.limits, batch.maxContentScan, sel)
 		},

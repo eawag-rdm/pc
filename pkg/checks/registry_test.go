@@ -331,13 +331,13 @@ func TestArchiveFileListBaseNames(t *testing.T) {
 // operators, names no configuration anyone wrote, and must never be rendered -
 // while an operator-authored rule name still stamps its findings.
 func TestDefaultRuleLeavesMessagesUntagged(t *testing.T) {
-	synthesized := tag(config.DefaultRulePrefix+"ReadMeContainsTOC", []structs.Message{{Content: "no table of contents"}})
-	if len(synthesized) != 1 || synthesized[0].Rule != "" {
-		t.Errorf("a synthesized default rule must leave Rule empty, got %q", synthesized[0].Rule)
+	synthesized := tag([]string{config.DefaultRulePrefix + "ReadMeContainsTOC"}, []structs.Message{{Content: "no table of contents"}})
+	if len(synthesized) != 1 || len(synthesized[0].Rules) != 0 {
+		t.Errorf("a synthesized default rule must leave Rules empty, got %q", synthesized[0].Rules)
 	}
-	authored := tag("readme-present", []structs.Message{{Content: "no README"}})
-	if len(authored) != 1 || authored[0].Rule != "readme-present" {
-		t.Errorf("an operator-authored rule must stamp its name, got %q", authored[0].Rule)
+	authored := tag([]string{"readme-present"}, []structs.Message{{Content: "no README"}})
+	if len(authored) != 1 || len(authored[0].Rules) != 1 || authored[0].Rules[0] != "readme-present" {
+		t.Errorf("an operator-authored rule must stamp its name, got %q", authored[0].Rules)
 	}
 }
 

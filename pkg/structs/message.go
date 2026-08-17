@@ -12,9 +12,14 @@ type Message struct {
 	Source Source
 	// The test name that generated this message.
 	TestName string
-	// Rule names the configured rule the message came from. Empty for the
-	// synthetic messages the engine and the checks emit for themselves.
-	Rule string
+	// Rules names every configured rule the message came from - one finding read
+	// on behalf of several rules names them all. Empty for the synthetic messages
+	// the engine and the checks emit for themselves.
+	//
+	// IMMUTABLE and SHARED: the slice is interned once per rule when the rule is
+	// bound, and every message that rule tags holds that same array. A consumer
+	// reads it; it must never append to it or write through it.
+	Rules []string
 	// Skipped marks this message as a skip acknowledgement rather than a check
 	// failure. Skip messages describe why a file (or archive member) was not
 	// content-scanned; they are surfaced in every output but never counted as issues.

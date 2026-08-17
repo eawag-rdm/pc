@@ -20,8 +20,8 @@ func TestScanResultDecodesRuleSectionFromFormatter(t *testing.T) {
 	file := structs.File{Name: "config.yaml", Path: "/path/config.yaml"}
 
 	messages := []structs.Message{
-		{Content: "Found 'PASSWORD'", Source: file, TestName: "IsFreeOfKeywords", Rule: "sensitive-content"},
-		{Content: "Found 'SECRET'", Source: file, TestName: "IsFreeOfKeywords", Rule: "sensitive-content"},
+		{Content: "Found 'PASSWORD'", Source: file, TestName: "IsFreeOfKeywords", Rules: []string{"sensitive-content"}},
+		{Content: "Found 'SECRET'", Source: file, TestName: "IsFreeOfKeywords", Rules: []string{"sensitive-content"}},
 	}
 
 	encoded, err := jsonformatter.NewJSONFormatter().FormatResults("test/path", "LocalCollector", messages, 1, nil, nil)

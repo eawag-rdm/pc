@@ -212,10 +212,12 @@ func TestMemberRulesUnionScansPerRule(t *testing.T) {
 		if !ok {
 			t.Fatalf("finding without a file source: %+v", m)
 		}
-		if previous, twice := found[src.Name]; twice && previous != m.Rule {
-			t.Errorf("member %q reported by two rules: %q and %q", src.Name, previous, m.Rule)
+		for _, rule := range m.Rules {
+			if previous, twice := found[src.Name]; twice && previous != rule {
+				t.Errorf("member %q reported by two rules: %q and %q", src.Name, previous, rule)
+			}
+			found[src.Name] = rule
 		}
-		found[src.Name] = m.Rule
 	}
 	want := map[string]string{
 		"data/one.csv": "data-members",

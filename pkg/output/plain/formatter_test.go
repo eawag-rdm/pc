@@ -105,9 +105,9 @@ func TestPlainFormatter_FormatResults_RuleBreakdown(t *testing.T) {
 
 	// Same check, different rules, fed in reverse-alphabetical order.
 	messages := []structs.Message{
-		{Content: "zeta issue 1", Source: file1, TestName: "IsFreeOfKeywords", Rule: "zeta-rule"},
-		{Content: "zeta issue 2", Source: file1, TestName: "IsFreeOfKeywords", Rule: "zeta-rule"},
-		{Content: "alpha issue", Source: file2, TestName: "IsFreeOfKeywords", Rule: "alpha-rule"},
+		{Content: "zeta issue 1", Source: file1, TestName: "IsFreeOfKeywords", Rules: []string{"zeta-rule"}},
+		{Content: "zeta issue 2", Source: file1, TestName: "IsFreeOfKeywords", Rules: []string{"zeta-rule"}},
+		{Content: "alpha issue", Source: file2, TestName: "IsFreeOfKeywords", Rules: []string{"alpha-rule"}},
 		{Content: "no rule issue", Source: file2, TestName: "IsFreeOfKeywords"},
 	}
 

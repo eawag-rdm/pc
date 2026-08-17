@@ -148,17 +148,17 @@ func (f *PlainFormatter) FormatResults(location string, messages []structs.Messa
 		}
 	}
 
-	// Rule breakdown: which CONFIGURED rule reported, as opposed to which check.
-	// A finding with no rule of its own is not counted - no rule name explains
-	// it. That covers metadata findings and the findings of synthesized default
-	// rules, neither of which is ever tagged; unlike the JSON section, this loop
-	// does not filter by source, so it relies on that tagging invariant.
+	// Rule breakdown: which CONFIGURED rules reported, as opposed to which check.
+	// A finding several rules produced counts under each. A finding with no rule
+	// of its own is not counted - no rule name explains it. That covers metadata
+	// findings and the findings of synthesized default rules, neither of which is
+	// ever tagged; unlike the JSON section, this loop does not filter by source,
+	// so it relies on that tagging invariant.
 	ruleCounts := make(map[string]int)
 	for _, msg := range issueMessages {
-		if msg.Rule == "" {
-			continue
+		for _, rule := range msg.Rules {
+			ruleCounts[rule]++
 		}
-		ruleCounts[msg.Rule]++
 	}
 
 	if len(ruleCounts) > 0 {

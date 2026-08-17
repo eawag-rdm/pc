@@ -68,10 +68,16 @@ type RuleSubject struct {
 // does not appear in details_check_focused: every section is built from the
 // run's messages.
 //
-// IssueCount is the authoritative total for the rule and equals the sum of
-// the subjects' counts. Grouping is by rule name alone, which is sound
-// because rule names are unique run-wide (enforced in pkg/utils/plan.go when
-// the plan is compiled), so one rule belongs to exactly one check.
+// This section counts ATTRIBUTIONS, not findings: a finding that names several
+// rules is counted under every one of them. Per rule IssueCount is exact - it
+// equals the sum of the subjects' counts - but over the rules of one check C the
+// counts sum to at least the number of C's findings, with equality iff no
+// finding of C names more than one rule. details_check_focused stays the
+// authoritative finding count.
+//
+// Grouping is by rule name alone, which is sound because rule names are unique
+// run-wide (enforced in pkg/utils/plan.go when the plan is compiled), so one
+// rule belongs to exactly one check.
 type RuleDetails struct {
 	Rule       string        `json:"rule"`
 	Checkname  string        `json:"checkname"`
@@ -266,14 +272,15 @@ func (result *ScanResult) processMessages(messages []structs.Message) {
 			Message:     msg.Content,
 		})
 
-		// Add to rule-focused details. The guard drops findings with no rule of
-		// their own; skip acknowledgements and metadata findings never reach it,
-		// having been routed out earlier in this loop.
-		if msg.Rule != "" {
-			acc := ruleDetailMap[msg.Rule]
+		// Add to rule-focused details, once per rule the finding names: a finding
+		// several rules produced is counted under each of them. A finding with no
+		// rule of its own creates none; skip acknowledgements and metadata findings
+		// never reach here, having been routed out earlier in this loop.
+		for _, ruleName := range msg.Rules {
+			acc := ruleDetailMap[ruleName]
 			if acc == nil {
 				acc = &ruleAccum{checkname: testName, subjects: make(map[string]int)}
-				ruleDetailMap[msg.Rule] = acc
+				ruleDetailMap[ruleName] = acc
 			}
 			acc.count++
 			acc.subjects[subject]++
