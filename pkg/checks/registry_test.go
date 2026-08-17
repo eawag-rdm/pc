@@ -329,13 +329,29 @@ func TestArchiveFileListBaseNames(t *testing.T) {
 // TestDefaultRuleLeavesMessagesUntagged pins which rule names reach a reader:
 // a SYNTHESIZED default rule's name lives in a namespace reserved from
 // operators, names no configuration anyone wrote, and must never be rendered -
-// while an operator-authored rule name still stamps its findings.
+// while an operator-authored rule name still stamps its findings. The verdict
+// is Compile's, taken once at load, so the rules are read off a compiled plan
+// rather than spelled out here: a synthesized rule reaches the scan carrying no
+// names at all, which is what lets tag decide nothing per message.
 func TestDefaultRuleLeavesMessagesUntagged(t *testing.T) {
-	synthesized := tag([]string{config.DefaultRulePrefix + "ReadMeContainsTOC"}, []structs.Message{{Content: "no table of contents"}})
+	// ReadMeContainsTOC is the check the shipped configs leave undeclared, so
+	// the rule below is the synthesized one.
+	plan := compileAnchored(t, anchoredConfig([]config.RuleSpec{
+		{Name: "readme-present", Check: "HasReadme", Enabled: true,
+			Params: []map[string]interface{}{{"readme_names": []string{"readme.md"}}}},
+	}))
+
+	toc := planEntry(t, plan, "ReadMeContainsTOC", ScopeRepository).Rules[0]
+	if toc.Rule != config.DefaultRulePrefix+"ReadMeContainsTOC" {
+		t.Fatalf("expected the synthesized default rule, got %q", toc.Rule)
+	}
+	synthesized := tag(toc.Rules, []structs.Message{{Content: "no table of contents"}})
 	if len(synthesized) != 1 || len(synthesized[0].Rules) != 0 {
 		t.Errorf("a synthesized default rule must leave Rules empty, got %q", synthesized[0].Rules)
 	}
-	authored := tag([]string{"readme-present"}, []structs.Message{{Content: "no README"}})
+
+	readme := planEntry(t, plan, "HasReadme", ScopeRepository).Rules[0]
+	authored := tag(readme.Rules, []structs.Message{{Content: "no README"}})
 	if len(authored) != 1 || len(authored[0].Rules) != 1 || authored[0].Rules[0] != "readme-present" {
 		t.Errorf("an operator-authored rule must stamp its name, got %q", authored[0].Rules)
 	}

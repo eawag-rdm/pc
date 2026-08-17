@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/eawag-rdm/pc/pkg/config"
 )
@@ -131,6 +132,12 @@ func Compile(cfg *config.Config, reg Registry) (*Plan, error) {
 		if err != nil {
 			errs = append(errs, fmt.Errorf("rule %q: %w", spec.Name, err))
 			continue
+		}
+		if strings.HasPrefix(spec.Name, config.DefaultRulePrefix) {
+			// A synthesized default rule names no configuration an operator
+			// wrote and its findings are rendered to end users, so they stay
+			// untagged. Decided ONCE here rather than per message in tag.
+			bound.Rules = nil
 		}
 		// Selectors likewise compile ONCE per rule; the result carries one
 		// placement per scope.

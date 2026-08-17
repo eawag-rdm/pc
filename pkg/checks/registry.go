@@ -179,7 +179,10 @@ type BoundRule struct {
 
 	// Rules is the name set tag stamps onto this rule's findings, interned here
 	// at bind - one allocation per rule, never one per message - and shared by
-	// every finding it tags. Its sole element is Rule.
+	// every finding it tags. Its sole element is Rule, and it is NIL for a
+	// synthesized default rule, whose name names no configuration an operator
+	// wrote: Compile clears it once at load, so no acquisition tests for it per
+	// message.
 	Rules []string
 
 	sel selector.Selector // the DISPATCH gate, compiled per scope by Compile
@@ -288,13 +291,13 @@ func (r *BoundRule) narrow(repository structs.Repository) structs.Repository {
 // own voice, which no rule name explains - and the findings of a SYNTHESIZED
 // default rule, whose name lives in a namespace reserved from operators
 // (config.DefaultRulePrefix): it names no configuration the operator wrote, and
-// it is rendered to end users. A default rule is synthesized only for a check no
-// config names, so it is alone in names and the first name decides.
+// it is rendered to end users. That second class arrives here with no names at
+// all - Compile clears them once, at load - so nothing is decided per message.
 //
 // names is the caller's interned slice: it is assigned, never copied, so every
 // tagged message shares one array and tagging allocates nothing.
 func tag(names []string, messages []structs.Message) []structs.Message {
-	if len(names) == 0 || strings.HasPrefix(names[0], config.DefaultRulePrefix) {
+	if len(names) == 0 {
 		return messages
 	}
 	for i := range messages {
