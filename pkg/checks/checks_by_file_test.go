@@ -1062,6 +1062,46 @@ func TestIsFreeOfKeywords_StreamedLargeFile(t *testing.T) {
 	}
 }
 
+// TestStreamedDedupIsPerRule pins the rule half of the streamed dedup key. Two
+// rules that report the SAME content on one streamed file are two findings, one
+// each: the whole-file acquisition reports both, and a file must not lose a
+// rule's verdict - or that rule's name off the finding - by growing past the
+// streaming threshold. The dedup collapses what the CHUNKS repeat, never what
+// two rules say about one file.
+func TestStreamedDedupIsPerRule(t *testing.T) {
+	// The keyword sits in both chunks, so the counts below also prove the dedup
+	// still spans the file: one finding per rule, not one per rule per chunk.
+	file := streamTestFile(t, streamChunkSize+512*1024, map[int]string{1000: "password", streamChunkSize + 200*1024: "password"})
+	// Same parameters, different selectors: that is what makes these two rules
+	// instead of one rule said twice, and it keeps their findings identical down
+	// to the message text - which is what the rule half of the key must separate.
+	params := []map[string]interface{}{{"keywords": []string{"password"}, "info": "Keywords found:"}}
+	cfg := config.Config{
+		General: &config.GeneralConfig{MaxContentScanFileSize: 1024 * 1024 * 1024},
+		Rules: []config.RuleSpec{
+			{Name: "credentials-by-name", Check: "IsFreeOfKeywords", Enabled: true, Include: []string{`series`}, Params: params},
+			{Name: "credentials-by-suffix", Check: "IsFreeOfKeywords", Enabled: true, Include: []string{`\.txt$`}, Params: params},
+		},
+	}
+
+	reported := map[string]int{}
+	for _, m := range runRule(t, "IsFreeOfKeywords", cfg, ScopeFile, file) {
+		if m.Skipped {
+			t.Fatalf("unexpected skip message: %q", m.Content)
+		}
+		if m.Content != "Keywords found: 'password'" {
+			t.Errorf("unexpected finding %q", m.Content)
+		}
+		if len(m.Rules) != 1 {
+			t.Fatalf("finding %q names %v, want the one rule that produced it", m.Content, m.Rules)
+		}
+		reported[m.Rules[0]]++
+	}
+	if len(reported) != 2 || reported["credentials-by-name"] != 1 || reported["credentials-by-suffix"] != 1 {
+		t.Errorf("findings by rule = %v, want one each from credentials-by-name and credentials-by-suffix", reported)
+	}
+}
+
 func TestIsFreeOfKeywords_BinaryFileEmitsSkipMessage(t *testing.T) {
 	// Null bytes make isTextFile report a binary file; the filename has no
 	// supported-archive extension, so the binary-skip branch fires.

@@ -559,13 +559,24 @@ func keywordsInFile(ctx context.Context, file structs.File, batch *Batch, rules 
 	return messages
 }
 
+// streamKey identifies one finding of a streamed file across its chunks: the
+// rule that reported it and its lowered content. The pair IS the key, as a
+// comparable struct - joining the two into one string allocated per finding per
+// chunk, and every chunk re-finds what the chunks before it already reported.
+// Keying on the rule keeps two rules' verdicts on one file two findings, the
+// way every acquisition that does not deduplicate at all reports them.
+type streamKey struct {
+	rule    string
+	content string
+}
+
 // streamKeywords scans a text file too large to hold: it is read ONCE, chunk by
 // chunk, and every rule sees every chunk. Findings are deduplicated across
 // chunks, so a keyword on every line is still reported once.
 func streamKeywords(ctx context.Context, file structs.File, rules []*BoundRule) []structs.Message {
 	var messages []structs.Message
 	var src structs.Source // the file boxed once, shared by every finding
-	seen := make(map[string]struct{})
+	seen := make(map[streamKey]struct{})
 	// One wrapper pair for the whole file, not one per chunk: a scan borrows
 	// both and never retains them.
 	body, loweredBody := make([][]byte, 1), make([][]byte, 1)
@@ -575,10 +586,10 @@ func streamKeywords(ctx context.Context, file structs.File, rules []*BoundRule) 
 			for _, u := range rule.units {
 				found := sourceAll(&src, file, u.scan(ctx, file, body, loweredBody, reportEach))
 				for _, message := range tag(rule.Rules, found) {
-					// The key is the LOWERED message: findings carry the original
-					// case of the chunk they were found in, so "Admin" in one chunk
-					// and "ADMIN" in another are one finding, reported once.
-					key := rule.Rule + "\x1f" + strings.ToLower(message.Content)
+					// The content half is the LOWERED message: findings carry the
+					// original case of the chunk they were found in, so "Admin" in
+					// one chunk and "ADMIN" in another are one finding, once.
+					key := streamKey{rule: rule.Rule, content: strings.ToLower(message.Content)}
 					if _, duplicate := seen[key]; duplicate {
 						continue
 					}
