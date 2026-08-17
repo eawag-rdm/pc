@@ -440,6 +440,95 @@ func TestRuleSpecsSharesNoNamesFromAmbiguousReadmeRules(t *testing.T) {
 	}
 }
 
+// TestRuleSpecsRefusesSiblingIncludeOfAnExclude pins the file-set contract: the
+// files a check runs on are the CHECK's business, so a rule excluding what a
+// sibling rule includes answers that one question twice and fails the load.
+func TestRuleSpecsRefusesSiblingIncludeOfAnExclude(t *testing.T) {
+	_, err := assembleRuleSpecs(
+		config.RuleSpec{Name: "skip-csv", Check: "HasOnlyASCII", Enabled: true, Exclude: []string{`\.csv$`}},
+		config.RuleSpec{Name: "only-csv", Check: "HasOnlyASCII", Enabled: true, Include: []string{`\.csv$`}},
+	)
+	if err == nil {
+		t.Fatal("one rule's exclude of a pattern a sibling includes must be refused")
+	}
+	// The message must name both rules and the pattern they disagree about; what
+	// it goes on to advise is not this test's business.
+	if want := `check "HasOnlyASCII": rule "skip-csv" excludes "\\.csv$" while rule "only-csv" includes it`; !strings.Contains(err.Error(), want) {
+		t.Errorf("error must name %q: %v", want, err)
+	}
+}
+
+// TestRuleSpecsAllowsCrossScopeIncludeExclude is that refusal's counterweight
+// and its false-positive guard: a pattern excluded at one scope and included at
+// another addresses two different phases of the scan - the files a collection
+// carries, and the members inside an archive - so the two rules disagree about
+// nothing and the config loads.
+func TestRuleSpecsAllowsCrossScopeIncludeExclude(t *testing.T) {
+	specs, err := assembleRuleSpecs(
+		config.RuleSpec{Name: "files", Check: "IsFreeOfKeywords", Enabled: true, Scope: []string{"file"}, Exclude: []string{"^data/"}},
+		config.RuleSpec{Name: "members", Check: "IsFreeOfKeywords", Enabled: true, Scope: []string{"archive-member"}, Include: []string{"^data/"}},
+	)
+	if err != nil {
+		t.Fatalf("rules of different scopes address different phases: %v", err)
+	}
+	if got := specsForCheck(specs, "IsFreeOfKeywords"); len(got) != 2 {
+		t.Fatalf("both rules must be kept, got %d", len(got))
+	}
+}
+
+// TestRuleSpecsComparesPatternsVerbatim pins the refusal's reach: it recognizes
+// one rule's pattern in a sibling's list, not a pattern related to it. Nothing
+// trims or anchors these strings between the decode and the selector compile,
+// and whether two regexes overlap is undecidable in general, so a pattern that
+// merely contains another - in either direction - is a different pattern and
+// loads.
+func TestRuleSpecsComparesPatternsVerbatim(t *testing.T) {
+	cases := []struct {
+		name             string
+		exclude, include string
+	}{
+		{"the include contains the exclude", `\.csv$`, `^raw/.*\.csv$`},
+		{"the exclude contains the include", `^raw/.*\.csv$`, `\.csv$`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			specs, err := assembleRuleSpecs(
+				config.RuleSpec{Name: "skips", Check: "HasOnlyASCII", Enabled: true, Exclude: []string{tc.exclude}},
+				config.RuleSpec{Name: "targets", Check: "HasOnlyASCII", Enabled: true, Include: []string{tc.include}},
+			)
+			if err != nil {
+				t.Fatalf("two different patterns are no contradiction: %v", err)
+			}
+			if got := specsForCheck(specs, "HasOnlyASCII"); len(got) != 2 {
+				t.Fatalf("both rules must be kept, got %d", len(got))
+			}
+		})
+	}
+}
+
+// TestRuleSpecsReportsEveryContradictionAtOnce pins the aggregation the rest of
+// this file promises: a config that contradicts itself in two places is told
+// about both, rather than one refusal per load.
+func TestRuleSpecsReportsEveryContradictionAtOnce(t *testing.T) {
+	_, err := assembleRuleSpecs(
+		config.RuleSpec{Name: "skip-csv", Check: "HasOnlyASCII", Enabled: true, Exclude: []string{`\.csv$`}},
+		config.RuleSpec{Name: "only-csv", Check: "HasOnlyASCII", Enabled: true, Include: []string{`\.csv$`}},
+		config.RuleSpec{Name: "skip-raw", Check: "HasNoWhiteSpace", Enabled: true, Exclude: []string{"^raw/"}},
+		config.RuleSpec{Name: "only-raw", Check: "HasNoWhiteSpace", Enabled: true, Include: []string{"^raw/"}},
+	)
+	if err == nil {
+		t.Fatal("two contradicting pairs must be refused")
+	}
+	for _, want := range []string{
+		`check "HasOnlyASCII": rule "skip-csv" excludes "\\.csv$" while rule "only-csv" includes it`,
+		`check "HasNoWhiteSpace": rule "skip-raw" excludes "^raw/" while rule "only-raw" includes it`,
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error must name %q: %v", want, err)
+		}
+	}
+}
+
 // TestRuleSpecFieldNamesAreDecidedAbout is the tripwire on ruleIdentity, which
 // names the fields it compares and therefore cannot notice a new one by itself:
 // a field added to config.RuleSpec has to be decided about - does it make two

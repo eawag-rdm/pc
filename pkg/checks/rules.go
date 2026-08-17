@@ -70,6 +70,7 @@ func ruleSpecs(cfg *config.Config, reg Registry) ([]config.RuleSpec, error) {
 			// here would hide their faults until the refusal is settled and the
 			// load rerun.
 			errs = append(errs, duplicateRuleErrors(rules, def)...)
+			errs = append(errs, contradictorySiblingErrors(rules, def)...)
 			specs = append(specs, rules...)
 		case slices.Contains(anchoredChecks, def.Name):
 			errs = append(errs, fmt.Errorf("check %q is not configured: declare a [[rule]] for it", def.Name))
@@ -259,6 +260,69 @@ func resolvedSubject(spec config.RuleSpec, scopes []Scope) string {
 func declaredSubject(spec config.RuleSpec) string {
 	subject, _ := selector.ParseSubject(spec.Subject)
 	return subject.String()
+}
+
+// contradictorySiblingErrors refuses one check's rules that answer "which files
+// does this check run on" twice over: rule A excludes the very pattern rule B
+// includes. That question has ONE owner, the check - a [[rule]] block carries a
+// parameter set, it does not buy its rule a file set of its own - so a config
+// giving two answers is a load error rather than a precedence to settle.
+//
+// Nothing is claimed here about what gets scanned: each rule keeps its own
+// selector and B really does scan what A skips, which is why the message says
+// only that the config says two things.
+//
+// Two rules are compared only where their scopes MEET: an exclude at the file
+// scope and an include at the archive-member scope address different phases of
+// the scan and contradict nothing. The patterns are compared VERBATIM, because
+// nothing between the decode and the selector compile trims, folds or anchors
+// them - two patterns that merely overlap as regexes are the run-scoped
+// rule-overlap notice's subject, not this gate's.
+//
+// The pair (i, i) is contradictorySelector's: within ONE rule exclude wins, so
+// its message can say the stronger thing that is true there.
+//
+// Like duplicateRuleErrors it runs on the DECLARED specs, before
+// shareReadmeNames rewrites a synthesized TOC rule's filter from the readme
+// rule's - a comparison after that would refuse selectors the operator never
+// wrote - and it judges disabled rules too, so a parked contradiction is
+// reported now rather than on the day someone re-enables the rule.
+func contradictorySiblingErrors(rules []config.RuleSpec, def CheckDef) []error {
+	scopes := make([][]Scope, len(rules))
+	for i, rule := range rules {
+		// A scope list that does not resolve leaves "do these two meet" with no
+		// answer, and an unresolved rule meets nothing: its nil scopes intersect
+		// nothing below. Compile reports the scope fault itself.
+		resolved, err := ruleScopes(rule, def)
+		if err != nil {
+			continue
+		}
+		scopes[i] = resolved
+	}
+	var errs []error
+	for i := range rules {
+		for j := range rules {
+			if i == j || !scopesMeet(scopes[i], scopes[j]) {
+				continue
+			}
+			for _, excluded := range rules[i].Exclude {
+				if slices.Contains(rules[j].Include, excluded) {
+					errs = append(errs, fmt.Errorf("check %q: rule %q excludes %q while rule %q includes it; one check cannot both skip and target the same pattern, so remove one", def.Name, rules[i].Name, excluded, rules[j].Name))
+				}
+			}
+		}
+	}
+	return errs
+}
+
+// scopesMeet reports whether two rules serve a scope in common.
+func scopesMeet(a, b []Scope) bool {
+	for _, scope := range a {
+		if slices.Contains(b, scope) {
+			return true
+		}
+	}
+	return false
 }
 
 // shareReadmeNames keeps "what counts as the readme" single-sourced: the one
