@@ -87,7 +87,7 @@ func benchKeywordRules(b *testing.B, n int) (CheckDef, *Batch, []*BoundRule) {
 	}
 	// One member-scope rule filters through its own member selector, as Compile
 	// wires it: nothing configured here, so the batch admits every member.
-	return def, NewBatch(benchGeneral()), rules
+	return def, newBatch(benchGeneral()), rules
 }
 
 // benchTextBody builds ~256 KiB of realistic prose lines, seeded with exactly
@@ -332,7 +332,7 @@ func TestArchiveBudgetIndependentOfRuleCount(t *testing.T) {
 	general.MaxArchiveFileSize = 1024
 
 	def, _ := NewRegistry().Lookup("IsFreeOfKeywords")
-	batch := NewBatch(general)
+	batch := newBatch(general)
 	count := func(ruleCount int) (skips, findings int) {
 		rules := make([]*BoundRule, 0, ruleCount)
 		for i := 0; i < ruleCount; i++ {

@@ -27,7 +27,7 @@ func AnchoredChecks() []string {
 	return append([]string(nil), anchoredChecks...)
 }
 
-// RuleSpecs assembles the rule specs one config declares, in the registry's
+// ruleSpecs assembles the rule specs one config declares, in the registry's
 // DECLARED order by check - that order is the order the dispatch runs a file's
 // checks in, and therefore the order findings are rendered in. Per check: its
 // [[rule]] sections in config order, else - anchoredChecks excepted - a
@@ -42,7 +42,7 @@ func AnchoredChecks() []string {
 // signature: the caller binds and compiles them to collect the faults assembly
 // cannot see, so one load reports every fault of the specs returned here. A
 // non-nil error still means the load must fail.
-func RuleSpecs(cfg *config.Config, reg Registry) ([]config.RuleSpec, error) {
+func ruleSpecs(cfg *config.Config, reg Registry) ([]config.RuleSpec, error) {
 	var errs []error
 	byCheck := make(map[string][]config.RuleSpec, len(cfg.Rules))
 	for _, rule := range cfg.Rules {
@@ -160,7 +160,7 @@ type ruleIdentity struct {
 	Params     []map[string]interface{}
 
 	// NameSubject and PathSubject are the rule's subject reading per scope
-	// CLASS, the two readings CompileRuleSelectors compiles, and each is set
+	// CLASS, the two readings compileRuleSelectors compiles, and each is set
 	// only where the rule's scopes contain a scope that reads it. A check
 	// serving both classes - IsFreeOfKeywords, over files AND archive members -
 	// therefore carries two readings, and two of its rules are the same rule
@@ -187,7 +187,7 @@ type ruleIdentity struct {
 //     an omitted scope and a spelled-out list of every supported scope are one
 //     set. The names are sorted - declaration order is no part of the meaning.
 //  3. Subject: one reading per scope class, over the same scope switch
-//     CompileRuleSelectors compiles by - see ruleIdentity.
+//     compileRuleSelectors compiles by - see ruleIdentity.
 func ruleIdentityOf(spec config.RuleSpec, scopes []Scope) ruleIdentity {
 	id := ruleIdentity{
 		Check:      spec.Check,
@@ -209,7 +209,7 @@ func ruleIdentityOf(spec config.RuleSpec, scopes []Scope) ruleIdentity {
 	}
 	sort.Strings(names)
 	id.Scope = names
-	// The scopes are walked over the same switch CompileRuleSelectors compiles
+	// The scopes are walked over the same switch compileRuleSelectors compiles
 	// by, so the key records the reading each of them is actually gated on.
 	declared, resolved := declaredSubject(spec), resolvedSubject(spec, scopes)
 	for _, scope := range scopes {
@@ -223,11 +223,11 @@ func ruleIdentityOf(spec config.RuleSpec, scopes []Scope) ruleIdentity {
 	return id
 }
 
-// DefaultScopes returns the scopes a rule serves when it declares none: the
+// defaultScopes returns the scopes a rule serves when it declares none: the
 // check's own, in dispatch order. It is the ONE statement of that default -
 // ruleScopes resolves through it - so the plan and the duplicate refusal cannot
 // come to disagree about what an undeclared scope means.
-func DefaultScopes(def CheckDef) []Scope {
+func defaultScopes(def CheckDef) []Scope {
 	var scopes []Scope
 	for scope := Scope(0); scope < NumScopes; scope++ {
 		if def.Scopes.Has(scope) {
@@ -240,8 +240,8 @@ func DefaultScopes(def CheckDef) []Scope {
 // resolvedSubject is the subject a rule addresses over the given scopes: the
 // one it declares, or - undeclared - "path" where those scopes include the
 // archive-member or repository scope and "name" otherwise (see
-// CompileRuleSelectors for why those two default to the path). It is the ONE
-// statement of that default: CompileRuleSelectors compiles the path scopes'
+// compileRuleSelectors for why those two default to the path). It is the ONE
+// statement of that default: compileRuleSelectors compiles the path scopes'
 // selector through it and the duplicate refusal normalizes through it.
 func resolvedSubject(spec config.RuleSpec, scopes []Scope) string {
 	if spec.Subject != "" {
@@ -262,7 +262,7 @@ func declaredSubject(spec config.RuleSpec) string {
 }
 
 // shareReadmeNames keeps "what counts as the readme" single-sourced: the one
-// ENABLED HasReadme rule defines it (RuleSpecs refuses a second, and a
+// ENABLED HasReadme rule defines it (ruleSpecs refuses a second, and a
 // disabled one contributes nothing - the TOC check then falls back to the
 // built-in default names), and every ReadMeContainsTOC spec reads that rule's
 // parameters. Two DECLARED HasReadme rules elect neither, enabled or not - see
@@ -296,7 +296,7 @@ func shareReadmeNames(specs []config.RuleSpec, tocSynthesized bool) []error {
 
 // electReadme returns the rule that defines what counts as the readme: the one
 // enabled HasReadme spec, or nothing where none is enabled. More than one
-// DECLARED HasReadme spec - the config RuleSpecs refuses - elects nothing
+// DECLARED HasReadme spec - the config ruleSpecs refuses - elects nothing
 // either: the operator wrote two, and honouring either would pick one for them.
 // A spec switched off today still declares a readme, so it is counted here
 // although it can never be elected.
@@ -327,16 +327,16 @@ func defaultRuleSpec(name string) config.RuleSpec {
 	return config.RuleSpec{Name: config.DefaultRulePrefix + name, Check: name, Enabled: name != "IsFreeOfSecrets"}
 }
 
-// RuleSelectors is one rule's compiled filters for ONE scope: the dispatch
+// ruleSelectors is one rule's compiled filters for ONE scope: the dispatch
 // gate, the archive-member gate (nil admits every member), and whether the
 // gate's "name" subject means the BASE name of a member path.
-type RuleSelectors struct {
+type ruleSelectors struct {
 	Gate      selector.Selector
 	Member    *selector.Selector
 	BaseNames bool
 }
 
-// CompileRuleSelectors compiles one rule's file filters for all the scopes it
+// compileRuleSelectors compiles one rule's file filters for all the scopes it
 // serves; the returned slice is parallel to scopes. The patterns compile ONCE
 // per rule, so a fault is reported once.
 //
@@ -351,7 +351,7 @@ type RuleSelectors struct {
 // "path", the string those scopes address in practice: a "name" default would
 // make a member pattern like include = ["data/"] silently match nothing, and
 // would silently stop a repository exclude like ["^raw/"] from matching.
-func CompileRuleSelectors(spec config.RuleSpec, scopes []Scope) ([]RuleSelectors, error) {
+func compileRuleSelectors(spec config.RuleSpec, scopes []Scope) ([]ruleSelectors, error) {
 	sel, err := selector.Compile(ruleSelectorSpec(spec, spec.Subject))
 	if err != nil {
 		return nil, err
@@ -365,7 +365,7 @@ func CompileRuleSelectors(spec config.RuleSpec, scopes []Scope) ([]RuleSelectors
 			return nil, err // unreachable: same patterns as above, valid subject
 		}
 	}
-	compiled := make([]RuleSelectors, len(scopes))
+	compiled := make([]ruleSelectors, len(scopes))
 	for i, scope := range scopes {
 		switch scope {
 		case ScopeArchiveMember:
@@ -394,15 +394,15 @@ func ruleSelectorSpec(spec config.RuleSpec, subject string) selector.Spec {
 	}
 }
 
-// MemberAdmission decides the member pre-filter the archive iterator runs for
+// memberAdmission decides the member pre-filter the archive iterator runs for
 // a plan's member-scope rules, and whether the per-rule member gates must
 // still be consulted behind it: ONE rule hands the iterator its own member
 // selector and the gates are skipped - every shipped config's case - while
 // several rules share a union pre-filter that is nobody's own filter, so each
-// rule's gate still decides. Compile records the pair on the batch, over the
-// WHOLE plan; the checks tests mirror the decision through this same function,
-// so the two cannot drift.
-func MemberAdmission(rules []*BoundRule) (admit *selector.Selector, perRule bool) {
+// rule's gate still decides. Compile is the only caller: it records the pair on
+// the batch over the WHOLE plan, which is what makes the decision independent
+// of the rules that happen to match one archive.
+func memberAdmission(rules []*BoundRule) (admit *selector.Selector, perRule bool) {
 	if len(rules) == 0 {
 		return nil, false
 	}

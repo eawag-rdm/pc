@@ -145,10 +145,10 @@ func newRuleReport(plan *checks.Plan) *ruleReport {
 	// skip-list is the one that accuses a correct configuration.
 	//
 	// ScopeArchiveMember is out: at that scope a [[rule]]'s patterns compile into
-	// the MEMBER selector and the dispatch gate is left empty
-	// (checks.CompileRuleSelectors), so the container gate the selection pass
-	// observes admits every archive. A mark taken there would call every member
-	// rule alive as soon as the package holds one archive, and would pair two
+	// the MEMBER selector and the dispatch gate is left empty, so the container
+	// gate the selection pass observes admits every archive. A mark taken there
+	// would call every member rule alive as soon as the package holds one
+	// archive, and would pair two
 	// rules with disjoint member patterns that never meet on a single member. The
 	// report that would be honest here belongs where the member gate is actually
 	// consulted - inside the archive acquisition in pkg/checks - which has no

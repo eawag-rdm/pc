@@ -53,7 +53,7 @@ func (p *Plan) add(scope Scope, def CheckDef, general *config.GeneralConfig, rul
 	owned := def
 	p.scopes[scope] = append(entries, PlanEntry{
 		Def:   &owned,
-		Batch: NewBatch(general),
+		Batch: newBatch(general),
 		Rules: []*BoundRule{rule},
 	})
 }
@@ -64,7 +64,7 @@ func (p *Plan) Scope(s Scope) []PlanEntry {
 }
 
 // Compile turns the configured rules into the plan the engine dispatches. It is
-// the boot gate for the whole rule surface: RuleSpecs assembles the specs
+// the boot gate for the whole rule surface: ruleSpecs assembles the specs
 // ([[rule]] sections and synthesized defaults - refusing a config silent about
 // the anchored checks), every rule's parameters are bound and its selectors
 // compiled - DISABLED rules included, so a config the checks could not honour
@@ -96,7 +96,7 @@ func Compile(cfg *config.Config, reg Registry) (*Plan, error) {
 	general := cfg.General
 
 	var errs []error
-	specs, err := RuleSpecs(cfg, reg)
+	specs, err := ruleSpecs(cfg, reg)
 	if err != nil {
 		errs = append(errs, err)
 	}
@@ -111,7 +111,7 @@ func Compile(cfg *config.Config, reg Registry) (*Plan, error) {
 		named[spec.Name] = struct{}{}
 		def, known := reg.Lookup(spec.Check)
 		if !known {
-			// RuleSpecs filtered unknown checks already; hand-built spec lists
+			// ruleSpecs filtered unknown checks already; hand-built spec lists
 			// get the same verdict.
 			errs = append(errs, fmt.Errorf("rule %q: unknown check %q", spec.Name, spec.Check))
 			continue
@@ -134,7 +134,7 @@ func Compile(cfg *config.Config, reg Registry) (*Plan, error) {
 		}
 		// Selectors likewise compile ONCE per rule; the result carries one
 		// placement per scope.
-		selectors, err := CompileRuleSelectors(spec, scopes)
+		selectors, err := compileRuleSelectors(spec, scopes)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("rule %q: %w", spec.Name, err))
 			continue
@@ -148,7 +148,7 @@ func Compile(cfg *config.Config, reg Registry) (*Plan, error) {
 			// One copy per scope, sharing the bound closures: each scope carries
 			// its own selectors, and nothing in a bound rule reads itself.
 			scoped := *bound
-			scoped.SetSelectors(selectors[i])
+			scoped.setSelectors(selectors[i])
 			plan.add(scope, def, general, &scoped)
 		}
 	}
@@ -160,7 +160,7 @@ func Compile(cfg *config.Config, reg Registry) (*Plan, error) {
 }
 
 // ruleScopes resolves the scopes a rule serves: the ones it names, or - through
-// DefaultScopes - the check's own when it names none. It is the ONE reading of
+// defaultScopes - the check's own when it names none. It is the ONE reading of
 // a declared scope list: Compile plans by it and the duplicate refusal takes a
 // rule's identity under it, so a name no scope answers to cannot be a load
 // error on one path and a silent omission on the other. A scope the check does
@@ -168,7 +168,7 @@ func Compile(cfg *config.Config, reg Registry) (*Plan, error) {
 // be added to that scope's plan twice, doubling its findings.
 func ruleScopes(spec config.RuleSpec, def CheckDef) ([]Scope, error) {
 	if len(spec.Scope) == 0 {
-		return DefaultScopes(def), nil
+		return defaultScopes(def), nil
 	}
 	scopes := make([]Scope, 0, len(spec.Scope))
 	for _, name := range spec.Scope {
@@ -206,7 +206,7 @@ func contradictorySelector(spec config.RuleSpec) error {
 
 // buildMemberAdmission records, on every archive-member entry, the member
 // pre-filter the iterator runs and whether the per-rule member gates still
-// have to run behind it. The decision is MemberAdmission's, made over the WHOLE
+// have to run behind it. The decision is memberAdmission's, made over the WHOLE
 // plan and recorded on the entry: it describes what the iterator was given,
 // which the rules matching one archive cannot tell.
 func (p *Plan) buildMemberAdmission() {
@@ -218,9 +218,9 @@ func (p *Plan) buildMemberAdmission() {
 	if len(rules) == 0 {
 		return
 	}
-	admit, perRule := MemberAdmission(rules)
+	admit, perRule := memberAdmission(rules)
 	for i := range entries {
-		entries[i].Batch.Admit = admit
-		entries[i].Batch.PerRule = perRule
+		entries[i].Batch.admit = admit
+		entries[i].Batch.perRule = perRule
 	}
 }

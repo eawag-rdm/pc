@@ -11,7 +11,7 @@ import (
 )
 
 // rulesWithAnchors copies the given rules and declares a [[rule]] for every
-// anchored check (which RuleSpecs refuses to leave undeclared) they configure no
+// anchored check (which ruleSpecs refuses to leave undeclared) they configure no
 // rule for, so a fixture that configures only the check under test stays a
 // complete config. An anchor is named after its check.
 func rulesWithAnchors(rules []config.RuleSpec) []config.RuleSpec {
@@ -56,8 +56,8 @@ func rulesWithAnchors(rules []config.RuleSpec) []config.RuleSpec {
 //     a name reused across checks now fails the check under test with an
 //     opaque "compile rules:" fatal naming that other rule.
 //  5. Off the archive-member scope the batch carries no member admission:
-//     PerRule is false where the old helper set it true for any fixture with
-//     two or more rules. Admit was already nil there - a member selector is
+//     perRule is false where the old helper set it true for any fixture with
+//     two or more rules. admit was already nil there - a member selector is
 //     compiled only at that scope - and keywordsInArchive, the only reader of
 //     either, runs only there, so nothing observes the difference today.
 //
@@ -85,7 +85,7 @@ func bindTestRule(t testing.TB, name string, cfg config.Config, scope Scope) (Ch
 	// forgot Enabled: true does not read like a missing declaration. The specs
 	// are re-assembled rather than guessed at, so the diagnosis cannot disagree
 	// with what Compile planned from.
-	specs, _ := RuleSpecs(&cfg, registry) // its error, if any, already failed the compile
+	specs, _ := ruleSpecs(&cfg, registry) // its error, if any, already failed the compile
 	assembled, live := 0, 0
 	for _, spec := range specs {
 		if spec.Check != name {
@@ -103,7 +103,7 @@ func bindTestRule(t testing.TB, name string, cfg config.Config, scope Scope) (Ch
 		t.Fatalf("every rule of check %q is disabled, so none is planned", name)
 	default:
 		def, _ := registry.Lookup(name)
-		t.Fatalf("no rule of check %q resolves to scope %s; the check serves %v", name, scope, DefaultScopes(def))
+		t.Fatalf("no rule of check %q resolves to scope %s; the check serves %v", name, scope, defaultScopes(def))
 	}
 	return CheckDef{}, nil, nil
 }
@@ -221,12 +221,12 @@ func TestMatchMemberGate(t *testing.T) {
 	bind := func(subject string, include []string) *BoundRule {
 		t.Helper()
 		spec := config.RuleSpec{Name: "member-rule", Check: "IsFreeOfKeywords", Enabled: true, Subject: subject, IgnoreCase: true, Include: include}
-		selectors, err := CompileRuleSelectors(spec, []Scope{ScopeArchiveMember})
+		selectors, err := compileRuleSelectors(spec, []Scope{ScopeArchiveMember})
 		if err != nil {
 			t.Fatalf("compile selectors: %v", err)
 		}
 		rule := &BoundRule{}
-		rule.SetSelectors(selectors[0])
+		rule.setSelectors(selectors[0])
 		return rule
 	}
 	byPath := bind("", []string{`\.log`})
@@ -300,12 +300,12 @@ func TestArchiveFileListBaseNames(t *testing.T) {
 	bind := func(t *testing.T, subject string, include []string, scope Scope) *BoundRule {
 		t.Helper()
 		spec := config.RuleSpec{Name: "list-rule", Check: "HasOnlyASCII", Enabled: true, Subject: subject, Include: include}
-		selectors, err := CompileRuleSelectors(spec, []Scope{scope})
+		selectors, err := compileRuleSelectors(spec, []Scope{scope})
 		if err != nil {
 			t.Fatalf("compile selectors: %v", err)
 		}
 		rule := &BoundRule{}
-		rule.SetSelectors(selectors[0])
+		rule.setSelectors(selectors[0])
 		return rule
 	}
 
@@ -359,7 +359,7 @@ func TestBindKeywordsMultipleParamSets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bind: %v", err)
 	}
-	msgs := def.RunFile(context.Background(), structs.File{Path: path, Name: "notes.txt"}, ScopeFile, NewBatch(general), []*BoundRule{rule})
+	msgs := def.RunFile(context.Background(), structs.File{Path: path, Name: "notes.txt"}, ScopeFile, newBatch(general), []*BoundRule{rule})
 	if len(msgs) != 2 {
 		t.Fatalf("expected one finding per parameter set, got %v", msgs)
 	}

@@ -324,7 +324,7 @@ func TestLeakSelectorAdmission(t *testing.T) {
 				Name: "IsFreeOfSecrets", Check: "IsFreeOfSecrets", Enabled: true,
 				Include: tt.include, Exclude: tt.exclude,
 			}
-			selectors, err := CompileRuleSelectors(spec, []Scope{ScopeRepository})
+			selectors, err := compileRuleSelectors(spec, []Scope{ScopeRepository})
 			if err != nil {
 				t.Fatalf("compile selectors: %v", err)
 			}
@@ -343,7 +343,7 @@ func TestLeakSelectorAdmission(t *testing.T) {
 //
 // The gate is Compile, which validates DISABLED rules too - the leak rule
 // ships disabled, and its lists are compiled through exactly the constructor
-// exercised here (RuleSpecs + CompileRuleSelectors). That Compile validates a
+// exercised here (ruleSpecs + compileRuleSelectors). That Compile validates a
 // disabled rule at all is pinned by TestCompileValidatesDisabledRules.
 func TestLeakSelectorRejectedAtLoad(t *testing.T) {
 	tests := []struct {
@@ -375,7 +375,7 @@ func TestLeakSelectorRejectedAtLoad(t *testing.T) {
 // Compile validates like any other rule.
 func assertLeakListsRefused(t *testing.T, cfg *config.Config) {
 	t.Helper()
-	specs, err := RuleSpecs(cfg, NewRegistry())
+	specs, err := ruleSpecs(cfg, NewRegistry())
 	if err != nil {
 		t.Fatalf("assemble rule specs: %v", err)
 	}
@@ -386,7 +386,7 @@ func assertLeakListsRefused(t *testing.T, cfg *config.Config) {
 		if spec.Enabled {
 			t.Fatal("the fixture ships the scan disabled")
 		}
-		_, serr := CompileRuleSelectors(spec, []Scope{ScopeRepository})
+		_, serr := compileRuleSelectors(spec, []Scope{ScopeRepository})
 		if serr == nil {
 			t.Fatal("expected the selector compile to refuse the lists")
 		}

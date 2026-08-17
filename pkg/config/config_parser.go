@@ -10,9 +10,10 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-// DefaultRulePrefix marks the names of synthesized default rules
-// (checks.RuleSpecs). parseRuleSpec refuses it on declared rules, so synthesis
-// can never collide with an operator's rule name.
+// DefaultRulePrefix marks the names of the default rules pkg/checks
+// synthesizes for the checks a config names no rule for. parseRuleSpec refuses
+// it on declared rules, so synthesis can never collide with an operator's rule
+// name.
 const DefaultRulePrefix = "default:"
 
 // RuleSpec is the declarative form of one rule: a named instance of a check

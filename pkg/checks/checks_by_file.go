@@ -385,7 +385,7 @@ func keywordsInArchive(ctx context.Context, file structs.File, batch *Batch, rul
 		return append(messages, oversizeSkip(file, "archive", fileInfo.Size(), batch.maxContentScan))
 	}
 
-	archiveIterator := readers.InitArchiveIterator(file.Path, file.Name, batch.limits, batch.Admit)
+	archiveIterator := readers.InitArchiveIterator(file.Path, file.Name, batch.limits, batch.admit)
 	defer archiveIterator.Close()
 	if !archiveIterator.HasFilesToUnpack() {
 		// Even with no scannable members, the iterator may have skipped members
@@ -397,9 +397,9 @@ func keywordsInArchive(ctx context.Context, file structs.File, batch *Batch, rul
 	// Get the archive's display name for consistent output
 	archiveDisplayName := file.GetDisplayName()
 	// Whether the per-rule member gates still have to run is a property of what
-	// the iterator was given (batch.Admit), which Compile decided over the whole
+	// the iterator was given (batch.admit), which Compile decided over the whole
 	// plan - never of how many rules this archive happened to match.
-	perRule := batch.PerRule
+	perRule := batch.perRule
 	// One body per archive, not per member: apply reads it and never retains it.
 	body, lowered := make([][]byte, 1), make([][]byte, 1)
 	var memberLower []byte

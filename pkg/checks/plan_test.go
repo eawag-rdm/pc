@@ -2,6 +2,7 @@ package checks
 
 import (
 	"errors"
+	"os"
 	"strings"
 	"testing"
 
@@ -321,18 +322,18 @@ func TestBuildMemberAdmissionTwoRules(t *testing.T) {
 		t.Fatalf("expected 2 member rules, got %d", len(entry.Rules))
 	}
 	batch := entry.Batch
-	if !batch.PerRule {
+	if !batch.perRule {
 		t.Fatal("a union admission is nobody's own filter: the per-rule gates must still run")
 	}
-	if batch.Admit == nil {
+	if batch.admit == nil {
 		t.Fatal("two literal member selectors must produce a union pre-filter")
 	}
 	// Subject "path": the union carries member-path literals, so matching it
 	// against a base name would skip every nested member.
-	if !batch.Admit.Match("data/one.csv") || !batch.Admit.Match("raw/two.csv") {
+	if !batch.admit.Match("data/one.csv") || !batch.admit.Match("raw/two.csv") {
 		t.Error("the union must admit the members of both rules, matched by PATH")
 	}
-	if batch.Admit.Match("docs/three.csv") {
+	if batch.admit.Match("docs/three.csv") {
 		t.Error("the union must skip a member no rule can match")
 	}
 	// A member rule's dispatch gate admits every ARCHIVE: the selector
@@ -348,11 +349,76 @@ func TestBuildMemberAdmissionTwoRules(t *testing.T) {
 		memberRule("raw-members", []string{"raw/"}, true),
 	}))
 	entry = planEntry(t, plan, "IsFreeOfKeywords", ScopeArchiveMember)
-	if entry.Batch.Admit != nil {
+	if entry.Batch.admit != nil {
 		t.Error("an ignoreCase member rule must disable the union pre-filter")
 	}
-	if !entry.Batch.PerRule {
+	if !entry.Batch.perRule {
 		t.Error("without a union, the per-rule gates are the only member filter")
+	}
+}
+
+// TestRuleMemberScopeGatesMembers pins §3.2's one semantics at archive-member
+// scope: the selector addresses MEMBERS, so the dispatch gate admits every
+// archive and the member gate carries the pattern - matched per the rule's
+// subject, which defaults to "path" in this scope.
+func TestRuleMemberScopeGatesMembers(t *testing.T) {
+	plan := compileAnchored(t, anchoredConfig([]config.RuleSpec{{
+		Name: "csv-members", Check: "IsFreeOfKeywords", Scope: []string{"archive-member"}, Enabled: true,
+		Include: []string{`\.csv$`},
+		Params:  []map[string]interface{}{{"keywords": []string{"password"}, "info": "found"}},
+	}}))
+	entry := planEntry(t, plan, "IsFreeOfKeywords", ScopeArchiveMember)
+	if len(entry.Rules) != 1 {
+		t.Fatalf("expected 1 member rule, got %d", len(entry.Rules))
+	}
+	rule := entry.Rules[0]
+	if !rule.Unfiltered() {
+		t.Error("a member rule's dispatch gate must admit every archive")
+	}
+	if rule.Member == nil {
+		t.Fatal("the member gate must carry the rule's selector")
+	}
+	if !rule.Member.Match("one.csv") || rule.Member.Match("two.txt") {
+		t.Error("the member gate must match the pattern against members")
+	}
+	// One member rule: the iterator filters through that rule's own selector.
+	if entry.Batch.admit != rule.Member || entry.Batch.perRule {
+		t.Error("with one member rule the iterator must use its selector directly")
+	}
+}
+
+// TestCompileShippedConfigs is R9's gate: every shipped config through
+// LoadConfig + Compile. It must live HERE, not in pkg/config -
+// TestParseShippedConfigsLoad cannot reach Compile, and LoadConfig alone
+// rejects neither an unknown check name, nor a bad param type, nor an
+// unsupported scope.
+func TestCompileShippedConfigs(t *testing.T) {
+	for _, path := range []string{
+		"../../pc.toml",
+		"../../pc.toml.example",
+		"../../testdata/test_config.toml",
+	} {
+		t.Run(path, func(t *testing.T) {
+			if _, err := os.Stat(path); os.IsNotExist(err) {
+				t.Skipf("%s is not in the tree (pc.toml is a local, gitignored config)", path)
+			}
+			cfg, err := config.LoadConfig(path)
+			if err != nil {
+				t.Fatalf("load config: %v", err)
+			}
+			plan, err := Compile(cfg, NewRegistry())
+			if err != nil {
+				t.Fatalf("compile config: %v", err)
+			}
+			// Every shipped config carries ONE keyword rule (its groups ride as
+			// [[rule.params]] sets), so the archive path takes the
+			// single-member-rule admission: the iterator gets that rule's own
+			// selector and the per-rule gates stay off.
+			entry := planEntry(t, plan, "IsFreeOfKeywords", ScopeArchiveMember)
+			if len(entry.Rules) != 1 || entry.Batch.perRule {
+				t.Errorf("shipped configs must keep the single-member-rule fast path: %d rules, perRule %v", len(entry.Rules), entry.Batch.perRule)
+			}
+		})
 	}
 }
 

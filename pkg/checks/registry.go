@@ -111,21 +111,21 @@ type Batch struct {
 	limits         readers.ArchiveLimits
 	maxContentScan int64
 
-	// Admit is the member admission filter an archive-member acquisition runs in
+	// admit is the member admission filter an archive-member acquisition runs in
 	// front of the per-rule gates: the single member rule's own member selector -
 	// every shipped config's case - and the union of their literals otherwise.
 	// Compile builds it; nil admits every member.
-	Admit *selector.Selector
+	admit *selector.Selector
 
-	// PerRule says the per-rule member gates must still be consulted after
-	// Admit, because Admit is not one rule's own filter. Compile decides it
+	// perRule says the per-rule member gates must still be consulted after
+	// admit, because admit is not one rule's own filter. Compile decides it
 	// over the WHOLE plan; it must never be inferred from the rules that
-	// happen to match one archive, which says nothing about what Admit is.
-	PerRule bool
+	// happen to match one archive, which says nothing about what admit is.
+	perRule bool
 }
 
-// NewBatch resolves the scan bounds every rule of one plan entry shares.
-func NewBatch(general *config.GeneralConfig) *Batch {
+// newBatch resolves the scan bounds every rule of one plan entry shares.
+func newBatch(general *config.GeneralConfig) *Batch {
 	return &Batch{limits: archiveLimits(general), maxContentScan: general.MaxContentScanFileSize}
 }
 
@@ -159,7 +159,7 @@ type BoundRule struct {
 
 	// unfiltered caches "the dispatch selector admits everything", the shipped
 	// configs' case: the selection pass tests one bool per (file, rule) instead
-	// of walking an empty selector. Kept true by SetSelectors, the only writer
+	// of walking an empty selector. Kept true by setSelectors, the only writer
 	// of the dispatch selector.
 	unfiltered bool
 
@@ -181,13 +181,13 @@ type BoundRule struct {
 	applyRepo func(ctx context.Context, repository structs.Repository, batch *Batch, sel *selector.Selector) []structs.Message
 }
 
-// SetSelectors gives a rule the selectors CompileRuleSelectors compiled for
+// setSelectors gives a rule the selectors compileRuleSelectors compiled for
 // ONE scope: the gate decides whether the rule is dispatched for a file (or an
 // archive), the member selector whether it sees an individual archive member,
 // and BaseNames whether the gate's "name" subject means the base of a member
 // path. It is the only writer of the dispatch selector, because it also
 // refreshes the cached unfiltered answer.
-func (r *BoundRule) SetSelectors(s RuleSelectors) {
+func (r *BoundRule) setSelectors(s ruleSelectors) {
 	r.sel = s.Gate
 	r.Member = s.Member
 	r.baseNames = s.BaseNames

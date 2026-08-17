@@ -11,7 +11,7 @@ import (
 	"github.com/eawag-rdm/pc/pkg/config"
 )
 
-// ruleAnchors declares a [[rule]] for every check RuleSpecs refuses to leave
+// ruleAnchors declares a [[rule]] for every check ruleSpecs refuses to leave
 // undeclared (derived from AnchoredChecks, so fixtures cannot drift from the
 // code), so a fixture that configures only the check under test stays a
 // complete config.
@@ -23,7 +23,7 @@ func ruleAnchors() string {
 	return doc.String()
 }
 
-// loadRuleSpecs drives doc through the REAL loader - LoadConfig, then RuleSpecs
+// loadRuleSpecs drives doc through the REAL loader - LoadConfig, then ruleSpecs
 // against the real registry - rather than hand-built specs, so a future
 // non-data field on RuleSpec (a func, a pointer, a provenance field) cannot
 // silently retire the duplicate refusal without a test noticing.
@@ -37,10 +37,10 @@ func loadRuleSpecs(t *testing.T, doc string) ([]config.RuleSpec, error) {
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
-	return RuleSpecs(cfg, NewRegistry())
+	return ruleSpecs(cfg, NewRegistry())
 }
 
-// assembleRuleSpecs runs RuleSpecs over hand-built specs, anchored on the SAME
+// assembleRuleSpecs runs ruleSpecs over hand-built specs, anchored on the SAME
 // [[rule]] surface ruleAnchors declares: one anchor per anchored check the
 // caller does not configure itself, so only the rules under test decide the
 // verdict and no case has to reason about the legacy surface as well.
@@ -60,7 +60,7 @@ func assembleRuleSpecs(rules ...config.RuleSpec) ([]config.RuleSpec, error) {
 		}
 	}
 	cfg.Rules = append(cfg.Rules, rules...)
-	return RuleSpecs(&cfg, NewRegistry())
+	return ruleSpecs(&cfg, NewRegistry())
 }
 
 // specsForCheck returns the assembled specs of one check.
@@ -398,7 +398,7 @@ func TestRuleSpecsReportsFaultsBesideASecondReadmeRule(t *testing.T) {
 		t.Errorf("error must name %q: %v", want, err)
 	}
 	// Assembly is what carries the pair on to the parameter binding and the
-	// selector compilation, which report the faults RuleSpecs cannot see.
+	// selector compilation, which report the faults ruleSpecs cannot see.
 	if got := specsForCheck(specs, "HasReadme"); len(got) != 2 {
 		t.Errorf("both readme rules must be assembled, got %d", len(got))
 	}

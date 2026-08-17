@@ -32,7 +32,7 @@ var defaultReadmeNames = []string{
 // bindReadmeNames type-checks the readme filename list of a rule's parameter
 // sets (readme_names), once, at load. HasReadme and ReadMeContainsTOC bind the
 // SAME list: "what counts as the readme" must have exactly one definition, so
-// checks.RuleSpecs feeds both from one declaration (shareReadmeNames).
+// ruleSpecs feeds both from one declaration (shareReadmeNames).
 func bindReadmeNames(spec config.RuleSpec) ([]string, error) {
 	sets, err := ruleSets(spec, "readme_names")
 	if err != nil {
