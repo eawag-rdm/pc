@@ -287,8 +287,8 @@ func bindKeywords(spec config.RuleSpec, _ *config.GeneralConfig) (*BoundRule, er
 	return &BoundRule{
 		Rule:  spec.Name,
 		Rules: []string{spec.Name},
-		apply: func(ctx context.Context, file structs.File, body, lowered [][]byte, report reporting) []structs.Message {
-			return scanKeywords(ctx, file, bound, body, lowered, report)
+		apply: func(ctx context.Context, _ structs.File, body, lowered [][]byte, report reporting) []structs.Message {
+			return scanKeywords(ctx, bound, body, lowered, report)
 		},
 	}, nil
 }
@@ -297,9 +297,12 @@ func bindKeywords(spec config.RuleSpec, _ *config.GeneralConfig) (*BoundRule, er
 // each finding the way the acquisition demands. ctx is observed per body entry
 // (OOXML blocks, PDF pages) - never inside the byte scan - and a fired ctx
 // returns the findings collected so far.
-func scanKeywords(ctx context.Context, file structs.File, sets []keywordSet, body, lowered [][]byte, report reporting) []structs.Message {
+//
+// The findings carry NO Source: boxing a File into one costs an allocation, so
+// the caller stamps it through sourceAll and the acquisition pays for one box
+// however many rules report on it.
+func scanKeywords(ctx context.Context, sets []keywordSet, body, lowered [][]byte, report reporting) []structs.Message {
 	var messages []structs.Message
-	var src structs.Source // file boxed once on the first finding, shared by all
 	for _, set := range sets {
 		for idx, entry := range body {
 			if ctx.Err() != nil {
@@ -312,27 +315,41 @@ func scanKeywords(ctx context.Context, file structs.File, sets []keywordSet, bod
 			if len(matches) == 0 {
 				continue
 			}
-			if src == nil {
-				src = file
-			}
 			if report == reportEach {
 				for _, match := range matches {
-					messages = append(messages, structs.Message{Content: set.info + " '" + match + "'", Source: src})
+					messages = append(messages, structs.Message{Content: set.info + " '" + match + "'"})
 				}
 				continue
 			}
 			found := joinMatches(matches)
 			switch report {
 			case reportIndexed:
-				messages = append(messages, structs.Message{Content: set.info + " '" + found + "' in sheet/paragraph/table " + fmt.Sprintf("%d", idx), Source: src})
+				messages = append(messages, structs.Message{Content: set.info + " '" + found + "' in sheet/paragraph/table " + fmt.Sprintf("%d", idx)})
 			case reportPaged:
-				messages = append(messages, structs.Message{Content: fmt.Sprintf("%s '%s' (page %d)", set.info, found, idx+1), Source: src})
+				messages = append(messages, structs.Message{Content: fmt.Sprintf("%s '%s' (page %d)", set.info, found, idx+1)})
 			default:
-				messages = append(messages, structs.Message{Content: set.info + " '" + found + "'", Source: src})
+				messages = append(messages, structs.Message{Content: set.info + " '" + found + "'"})
 			}
 		}
 	}
 	return messages
+}
+
+// sourceAll stamps the file one acquisition scanned onto its findings, boxing
+// it at most once per acquisition however many rules reported: src carries the
+// box across the calls of one acquisition, and is boxed on the first finding
+// rather than eagerly, so a clean file allocates nothing.
+func sourceAll(src *structs.Source, file structs.File, found []structs.Message) []structs.Message {
+	if len(found) == 0 {
+		return found
+	}
+	if *src == nil {
+		*src = file
+	}
+	for i := range found {
+		found[i].Source = *src
+	}
+	return found
 }
 
 // joinMatches deduplicates the findings of one entry and formats them the way a
@@ -421,9 +438,9 @@ func keywordsInArchive(ctx context.Context, file structs.File, batch *Batch, rul
 
 		// The member's File is built only when a rule actually reports: it costs
 		// more than scanning a small member, and the scan itself does not need
-		// it (the member gate matches the member path directly). Every message a
-		// keyword rule produces is sourced at the file it was handed, so
-		// stamping Source afterwards is the same message.
+		// it (the member gate matches the member path directly). The scan leaves
+		// Source unset, so this stamp is what attributes the finding to the
+		// member it was found in.
 		var archivedFile structs.File
 		var src structs.Source // boxed once per member, shared by all findings
 		built := false
@@ -516,8 +533,10 @@ func keywordsInFile(ctx context.Context, file structs.File, batch *Batch, rules 
 		}
 		body := [][]byte{content}
 		lowered := lowerAll(body)
+		var src structs.Source // the file boxed once, shared by every finding
 		for _, rule := range rules {
-			messages = append(messages, tag(rule.Rules, rule.apply(ctx, file, body, lowered, reportJoined))...)
+			found := sourceAll(&src, file, rule.apply(ctx, file, body, lowered, reportJoined))
+			messages = append(messages, tag(rule.Rules, found)...)
 		}
 	} else {
 		// Handle binary files
@@ -538,6 +557,7 @@ func keywordsInFile(ctx context.Context, file structs.File, batch *Batch, rules 
 // chunks, so a keyword on every line is still reported once.
 func streamKeywords(ctx context.Context, file structs.File, rules []*BoundRule) []structs.Message {
 	var messages []structs.Message
+	var src structs.Source // the file boxed once, shared by every finding
 	seen := make(map[string]struct{})
 	// One wrapper pair for the whole file, not one per chunk: apply borrows both
 	// and never retains them.
@@ -545,7 +565,8 @@ func streamKeywords(ctx context.Context, file structs.File, rules []*BoundRule) 
 	err := streamChunks(ctx, file.Path, func(chunk, lowered []byte) {
 		body[0], loweredBody[0] = chunk, lowered
 		for _, rule := range rules {
-			for _, message := range tag(rule.Rules, rule.apply(ctx, file, body, loweredBody, reportEach)) {
+			found := sourceAll(&src, file, rule.apply(ctx, file, body, loweredBody, reportEach))
+			for _, message := range tag(rule.Rules, found) {
 				// The key is the LOWERED message: findings carry the original
 				// case of the chunk they were found in, so "Admin" in one chunk
 				// and "ADMIN" in another are one finding, reported once.
@@ -620,8 +641,10 @@ func scanOOXMLFile(ctx context.Context, file structs.File, limits readers.Archiv
 	}
 
 	lowered := lowerAll(content)
+	var src structs.Source // the file boxed once, shared by every finding
 	for _, rule := range rules {
-		messages = append(messages, tag(rule.Rules, rule.apply(ctx, file, content, lowered, reportIndexed))...)
+		found := sourceAll(&src, file, rule.apply(ctx, file, content, lowered, reportIndexed))
+		messages = append(messages, tag(rule.Rules, found)...)
 	}
 	return messages, true
 }
@@ -741,8 +764,10 @@ func scanPDFFile(ctx context.Context, file structs.File, archiveLimits readers.A
 	}
 
 	lowered := lowerAll(pages)
+	var src structs.Source // the file boxed once, shared by every finding
 	for _, rule := range rules {
-		messages = append(messages, tag(rule.Rules, rule.apply(ctx, file, pages, lowered, reportPaged))...)
+		found := sourceAll(&src, file, rule.apply(ctx, file, pages, lowered, reportPaged))
+		messages = append(messages, tag(rule.Rules, found)...)
 	}
 	return messages, true
 }

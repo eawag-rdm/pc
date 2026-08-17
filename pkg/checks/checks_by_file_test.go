@@ -24,15 +24,17 @@ func check(e error) {
 }
 
 // isFreeOfKeywordsCoreList scans one body with one keyword list, the shape the
-// keyword tests assert against. It lives here, not beside the production code,
-// because nothing but these tests calls it.
+// keyword tests assert against - sourced at the file the way an acquisition
+// sources it, since the scan itself leaves Source unset. It lives here, not
+// beside the production code, because nothing but these tests calls it.
 func isFreeOfKeywordsCoreList(file structs.File, keywordList []string, info string, body [][]byte, isBinary bool) []structs.Message {
 	report := reportJoined
 	if isBinary {
 		report = reportIndexed
 	}
 	sets := []keywordSet{{matcher: optimization.GetMatcher(keywordList), info: info}}
-	return scanKeywords(context.Background(), file, sets, body, lowerAll(body), report)
+	var src structs.Source
+	return sourceAll(&src, file, scanKeywords(context.Background(), sets, body, lowerAll(body), report))
 }
 
 func tempFile(content []byte) string {
@@ -1087,6 +1089,102 @@ func TestIsFreeOfKeywords_BinaryFileEmitsSkipMessage(t *testing.T) {
 	}
 	if skipCount != 1 {
 		t.Errorf("expected exactly 1 binary skip message, got %d (messages: %+v)", skipCount, messages)
+	}
+}
+
+// TestKeywordFindingsCarryTheScannedFile pins the attribution of a keyword
+// finding over every acquisition that stamps one: the scan reports without a
+// Source - so one box serves every parameter set of every rule - and the
+// acquisition stamps the file it read, through sourceAll for the whole-file,
+// streamed, OOXML and PDF paths and through its own lazily built member file
+// for an archive member. Drop the stamp from one acquisition and its case
+// reports a finding no renderer can attribute.
+func TestKeywordFindingsCarryTheScannedFile(t *testing.T) {
+	textPath := filepath.Join(t.TempDir(), "notes.txt")
+	if err := os.WriteFile(textPath, []byte("the password lives here, hunter2 too, and secretkey as well\n"), 0o600); err != nil {
+		t.Fatalf("write text fixture: %v", err)
+	}
+	// Several scans over ONE acquisition: two parameter sets of one rule and a
+	// second rule beside it. Every finding must carry the box the first one
+	// made, so a stamp that only reaches the first scan's findings fails here.
+	shared := keywordConfig([]string{"password"})
+	shared.Rules[0].Name = "credentials"
+	shared.Rules[0].Params = append(shared.Rules[0].Params, map[string]interface{}{
+		"keywords": []string{"hunter2"},
+		"info":     "A second parameter set found:",
+	})
+	shared.Rules = append(shared.Rules, config.RuleSpec{
+		Name: "internals", Check: "IsFreeOfKeywords", Enabled: true,
+		Params: []map[string]interface{}{
+			{"keywords": []string{"secretkey"}, "info": "A second rule found:"},
+		},
+	})
+
+	tests := []struct {
+		name     string
+		file     structs.File
+		scope    Scope
+		cfg      config.Config
+		findings int // how many findings the fixture yields, so a silent miss fails
+	}{
+		{
+			name:     "whole text file, two rules and three parameter sets",
+			file:     structs.File{Path: textPath, Name: "notes.txt"},
+			scope:    ScopeFile,
+			cfg:      shared,
+			findings: 3,
+		},
+		{
+			name:     "streamed text file",
+			file:     streamTestFile(t, streamChunkSize+512*1024, map[int]string{1000: "password"}),
+			scope:    ScopeFile,
+			cfg:      keywordConfig([]string{"password"}),
+			findings: 1,
+		},
+		{
+			name:     "OOXML container",
+			file:     structs.File{Path: "../../testdata/test.xlsx", Name: "test.xlsx"},
+			scope:    ScopeFile,
+			cfg:      keywordConfig([]string{"column2"}),
+			findings: 1,
+		},
+		{
+			name:     "PDF",
+			file:     writePDFFixture(t, buildTestPDF("the password lives here")),
+			scope:    ScopeFile,
+			cfg:      keywordConfig([]string{"password"}),
+			findings: 1,
+		},
+		{
+			// The member file the walk builds, not the archive: its Path is
+			// still the archive's, which is what the assertion below reads.
+			name:     "archive member",
+			file:     structs.File{Path: "../../testdata/archives/one_of_each.zip", Name: "one_of_each.zip", DisplayName: "one_of_each.zip", IsArchive: true},
+			scope:    ScopeArchiveMember,
+			cfg:      keywordConfig([]string{"password"}),
+			findings: 5,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			findings := 0
+			for _, m := range runRule(t, "IsFreeOfKeywords", tt.cfg, tt.scope, tt.file) {
+				if m.Skipped {
+					continue
+				}
+				findings++
+				src, ok := m.Source.(structs.File)
+				if !ok {
+					t.Fatalf("finding %q carries no file source: %+v", m.Content, m.Source)
+				}
+				if src.Path != tt.file.Path {
+					t.Errorf("finding %q is sourced at %q, want the scanned file %q", m.Content, src.Path, tt.file.Path)
+				}
+			}
+			if findings != tt.findings {
+				t.Fatalf("%d findings over %q, want %d: the source assertions above did not run over what this case scans", findings, tt.file.Path, tt.findings)
+			}
+		})
 	}
 }
 

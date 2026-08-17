@@ -127,16 +127,15 @@ func TestScanKeywordsStopsBetweenBodyEntries(t *testing.T) {
 		[]byte("page four mentions a password"),
 	}
 	sets := []keywordSet{{matcher: optimization.GetMatcher([]string{"password"}), info: "Possible credentials in file"}}
-	file := structs.File{Name: "pages.pdf", Path: "pages.pdf", DisplayName: "pages.pdf"}
 
-	full := scanKeywords(context.Background(), file, sets, body, lowerAll(body), reportPaged)
+	full := scanKeywords(context.Background(), sets, body, lowerAll(body), reportPaged)
 	if len(full) != len(body) {
 		t.Fatalf("expected one finding per body entry, got %d for %d entries", len(full), len(body))
 	}
 
 	// limit 2: the first two Err() calls report alive, so entries 0 and 1 scan
 	// and the third call cuts the loop.
-	cut := scanKeywords(&errAfter{Context: context.Background(), limit: 2}, file, sets, body, lowerAll(body), reportPaged)
+	cut := scanKeywords(&errAfter{Context: context.Background(), limit: 2}, sets, body, lowerAll(body), reportPaged)
 	if len(cut) != 2 {
 		t.Errorf("cancelled scan returned %d findings, want the 2 collected before the cut: %v", len(cut), cut)
 	}
