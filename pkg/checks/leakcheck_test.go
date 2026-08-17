@@ -46,15 +46,34 @@ func leakTestConfig(binary string, generalOverride *config.GeneralConfig) config
 	}
 	return config.Config{
 		General: general,
-		Tests: map[string]*config.TestConfig{
-			"IsFreeOfSecrets": {
-				Attrs: map[string]interface{}{
-					"enabled": true,
-					"binary":  binary,
-				},
+		Rules: []config.RuleSpec{{
+			Name: "IsFreeOfSecrets", Check: "IsFreeOfSecrets", Enabled: true,
+			Params: []map[string]interface{}{
+				{"binary": binary},
 			},
-		},
+		}},
 	}
+}
+
+// leakRule returns the leak scan's rule in cfg, the spec the fixtures amend.
+// Looked up by check, and refused where the fixture declares two, so an
+// amendment can never land on a rule it was not written for.
+func leakRule(t *testing.T, cfg *config.Config) *config.RuleSpec {
+	t.Helper()
+	var found *config.RuleSpec
+	for i := range cfg.Rules {
+		if cfg.Rules[i].Check != "IsFreeOfSecrets" {
+			continue
+		}
+		if found != nil {
+			t.Fatal("the fixture declares several IsFreeOfSecrets rules; which one to amend is ambiguous")
+		}
+		found = &cfg.Rules[i]
+	}
+	if found == nil {
+		t.Fatal("the fixture declares no IsFreeOfSecrets rule")
+	}
+	return found
 }
 
 func TestIsFreeOfSecretsPlainFileFindings(t *testing.T) {
@@ -324,59 +343,122 @@ func TestLeakSelectorAdmission(t *testing.T) {
 // contract is pinned by utils.TestCompileValidatesDisabledRules.
 func TestLeakSelectorRejectedAtLoad(t *testing.T) {
 	tests := []struct {
-		name      string
-		whitelist []string
-		blacklist []string
+		name    string
+		include []string
+		exclude []string
 	}{
-		{"uncompilable whitelist pattern", []string{"["}, nil},
-		{"uncompilable blacklist pattern", nil, []string{"(unclosed"}},
-		{"empty whitelist entry - change e", []string{""}, nil},
-		{"empty blacklist entry - change e", nil, []string{""}},
-		{"both lists set - change b", []string{`\.txt$`}, []string{`\.log$`}},
+		{"uncompilable include pattern", []string{"["}, nil},
+		{"uncompilable exclude pattern", nil, []string{"(unclosed"}},
+		{"empty include entry", []string{""}, nil},
+		{"empty exclude entry", nil, []string{""}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Through the same assembly + selector compilation the boot gate
 			// runs, with the scan DISABLED - the shipped state - so the refusal
 			// is the one an operator would hit.
-			cfg := &config.Config{Tests: testsWithAnchors(map[string]*config.TestConfig{
-				"IsFreeOfSecrets": {
-					Whitelist: tt.whitelist,
-					Blacklist: tt.blacklist,
-					Attrs:     map[string]interface{}{"enabled": false},
-				},
-			}, nil)}
-			specs, err := RuleSpecs(cfg, NewRegistry())
-			if err != nil {
-				t.Fatalf("assemble rule specs: %v", err)
-			}
-			for _, spec := range specs {
-				if spec.Check != "IsFreeOfSecrets" {
-					continue
-				}
-				if spec.Enabled {
-					t.Fatal("the fixture ships the scan disabled")
-				}
-				_, serr := CompileRuleSelectors(spec, []Scope{ScopeRepository})
-				if serr == nil {
-					t.Fatal("expected the selector compile to refuse the lists")
-				}
-				if !strings.Contains(serr.Error(), "IsFreeOfSecrets") {
-					t.Errorf("the error must name the rule: %v", serr)
-				}
-				return
-			}
-			t.Fatal("no IsFreeOfSecrets spec assembled")
+			cfg := &config.Config{Rules: rulesWithAnchors(nil, []config.RuleSpec{{
+				Name: "IsFreeOfSecrets", Check: "IsFreeOfSecrets", Enabled: false,
+				Include: tt.include, Exclude: tt.exclude,
+			}})}
+			assertLeakListsRefused(t, cfg)
 		})
 	}
+}
+
+// TestLeakLegacyBothListsRejectedAtLoad keeps the one list fault that has no
+// successor: a [test.X] section fills the whitelist OR the blacklist, never
+// both (selector.ErrBothLists), while a [[rule]] takes include AND exclude
+// together. The refusal goes with the section, not with the scan.
+//
+// legacy surface; deleted with it
+func TestLeakLegacyBothListsRejectedAtLoad(t *testing.T) {
+	tests := map[string]*config.TestConfig{
+		"IsFreeOfSecrets": {
+			Whitelist: []string{`\.txt$`},
+			Blacklist: []string{`\.log$`},
+			Attrs:     map[string]interface{}{"enabled": false},
+		},
+	}
+	assertLeakListsRefused(t, &config.Config{Rules: rulesWithAnchors(tests, nil), Tests: tests})
+}
+
+// TestLeakLegacyRepositoryGateReadsPath pins the reading the legacy translation
+// gives a section's lists at REPOSITORY scope: the subject is the file's path,
+// so a blacklist like `^sub/` keeps reaching nested files, as it did before the
+// lists were compiled per rule. The [[rule]] surface states this subject itself
+// and is pinned by TestLeakFilterGatesFilesAndMembers.
+//
+// legacy surface; deleted with it
+func TestLeakLegacyRepositoryGateReadsPath(t *testing.T) {
+	tests := map[string]*config.TestConfig{
+		"IsFreeOfSecrets": {Blacklist: []string{`^sub/`}, Attrs: map[string]interface{}{"enabled": true}},
+	}
+	cfg := &config.Config{Rules: rulesWithAnchors(tests, nil), Tests: tests}
+	specs, err := RuleSpecs(cfg, NewRegistry())
+	if err != nil {
+		t.Fatalf("assemble rule specs: %v", err)
+	}
+	rule := &BoundRule{}
+	gated := false
+	for _, spec := range specs {
+		if spec.Check != "IsFreeOfSecrets" {
+			continue
+		}
+		selectors, serr := CompileRuleSelectors(spec, []Scope{ScopeRepository})
+		if serr != nil {
+			t.Fatalf("compile selectors: %v", serr)
+		}
+		rule.SetSelectors(selectors[0])
+		gated = true
+	}
+	if !gated {
+		t.Fatal("no IsFreeOfSecrets spec assembled")
+	}
+
+	nested := structs.File{Name: "creds.txt", RelPath: "sub/creds.txt"}
+	if rule.Match(nested) {
+		t.Errorf("%q must be filtered by the path pattern, so the gate reads the path, not the name", nested.RelPath)
+	}
+	topLevel := structs.File{Name: "creds.txt", RelPath: "creds.txt"}
+	if !rule.Match(topLevel) {
+		t.Errorf("%q is outside the pattern and must stay admitted", topLevel.RelPath)
+	}
+}
+
+// assertLeakListsRefused compiles the leak rule cfg declares and demands that
+// its lists are refused, with the scan DISABLED - the shipped state, which
+// Compile validates like any other rule.
+func assertLeakListsRefused(t *testing.T, cfg *config.Config) {
+	t.Helper()
+	specs, err := RuleSpecs(cfg, NewRegistry())
+	if err != nil {
+		t.Fatalf("assemble rule specs: %v", err)
+	}
+	for _, spec := range specs {
+		if spec.Check != "IsFreeOfSecrets" {
+			continue
+		}
+		if spec.Enabled {
+			t.Fatal("the fixture ships the scan disabled")
+		}
+		_, serr := CompileRuleSelectors(spec, []Scope{ScopeRepository})
+		if serr == nil {
+			t.Fatal("expected the selector compile to refuse the lists")
+		}
+		if !strings.Contains(serr.Error(), "IsFreeOfSecrets") {
+			t.Errorf("the error must name the rule: %v", serr)
+		}
+		return
+	}
+	t.Fatal("no IsFreeOfSecrets spec assembled")
 }
 
 // TestLeakFilterGatesFilesAndMembers is the wiring test: ONE compiled selector
 // filters top-level files and archive members within a single scan, so a
 // pattern like `secret.*\.txt$` drops both. The uppercase member pins the
-// case-SENSITIVE member matching of change (d), and the nested file pins the
-// RelPath subject of change (f) - `^sub/` reaches a nested file exactly as it
-// would reach a nested member.
+// case-SENSITIVE member matching, and the nested file pins the RelPath subject
+// - `^sub/` reaches a nested file exactly as it would reach a nested member.
 func TestLeakFilterGatesFilesAndMembers(t *testing.T) {
 	dir := t.TempDir()
 	dropped := filepath.Join(dir, "secret-notes.txt")
@@ -412,7 +494,7 @@ func TestLeakFilterGatesFilesAndMembers(t *testing.T) {
 
 	bin, argsFile := fakeScanner(t, "null")
 	cfg := leakTestConfig(bin, nil)
-	cfg.Tests["IsFreeOfSecrets"].Blacklist = []string{`secret.*\.txt$`, `^sub/`}
+	leakRule(t, &cfg).Exclude = []string{`secret.*\.txt$`, `^sub/`}
 
 	// RelPath is what the file gate matches; the collectors set it (here by
 	// hand, since the repository is built without one).
@@ -519,7 +601,11 @@ func TestSecretScanChildInheritsMaxCores(t *testing.T) {
 		MaxContentScanFileSize: 1024 * 1024 * 1024,
 		MaxCores:               2,
 	})
-	cfg.Tests["IsFreeOfSecrets"].Attrs["maxProcs"] = int64(8)
+	rule := leakRule(t, &cfg)
+	if len(rule.Params) != 1 {
+		t.Fatalf("the leak rule carries %d parameter sets, want the fixture's one", len(rule.Params))
+	}
+	rule.Params[0]["maxProcs"] = int64(8)
 
 	file := structs.File{Path: content, Name: "data.txt", Size: 10}
 	runRepoRule(t, "IsFreeOfSecrets", cfg, structs.Repository{Files: []structs.File{file}})
@@ -530,6 +616,36 @@ func TestSecretScanChildInheritsMaxCores(t *testing.T) {
 	}
 	if !strings.Contains(string(args), "GOMAXPROCS=2\n") {
 		t.Errorf("child scanner ran without the configured 2-core cap (rule asked for 8): %s", args)
+	}
+}
+
+// TestSecretScanReadsLegacySectionAttrs pins the bind's legacy arm: a [test.X]
+// section carries the scan's knobs in its ATTRS table, not in parameter sets,
+// so the section's own binary is the one the child scanner is started from.
+//
+// legacy surface; deleted with it
+func TestSecretScanReadsLegacySectionAttrs(t *testing.T) {
+	content := tempFile([]byte("nothing to find\n"))
+	defer os.Remove(content)
+
+	bin, argsFile := fakeScanner(t, "null")
+	tests := map[string]*config.TestConfig{
+		"IsFreeOfSecrets": {Attrs: map[string]interface{}{"enabled": true, "binary": bin}},
+	}
+	cfg := config.Config{
+		General: &config.GeneralConfig{
+			MaxArchiveFileSize:     10 * 1024 * 1024,
+			MaxTotalArchiveMemory:  100 * 1024 * 1024,
+			MaxContentScanFileSize: 1024 * 1024 * 1024,
+		},
+		Tests: tests,
+	}
+
+	file := structs.File{Path: content, Name: "data.txt", Size: 10}
+	runRepoRule(t, "IsFreeOfSecrets", cfg, structs.Repository{Files: []structs.File{file}})
+
+	if _, err := os.ReadFile(argsFile); err != nil {
+		t.Errorf("the section's attrs binary never ran, so the bind read the knobs elsewhere: %v", err)
 	}
 }
 

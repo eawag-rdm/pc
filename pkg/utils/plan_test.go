@@ -19,17 +19,22 @@ import (
 )
 
 // planConfig fills in the [general] section every config needs to compile, so a
-// test that only cares about its [test.X] sections can leave it out.
-func planConfig(tests map[string]*config.TestConfig) config.Config {
+// test that only cares about its rules can leave it out.
+func planConfig(rules []config.RuleSpec) config.Config {
 	return config.Config{
 		General: &config.GeneralConfig{MaxContentScanFileSize: config.DefaultMaxContentScanFileSize},
-		Tests:   tests,
+		Rules:   rules,
 	}
 }
 
-// withRequiredAnchors copies cfg's legacy sections and fills the anchored
-// checks (which Compile refuses to leave undeclared) with empty sections, so a
-// fixture that configures only the check under test stays a complete config.
+// withRequiredAnchors copies cfg's rules and fills the anchored checks (which
+// Compile refuses to leave undeclared) with bare rules, so a fixture that
+// configures only the check under test stays a complete config. A check counts
+// as declared on EITHER surface: the fixtures that still carry a [test.X]
+// section - TestCompileRejectsBothLists, TestCompileMemberAdmission and the
+// legacy half of every pair in fixture_migration_test.go - would otherwise be
+// anchored a second time, and a check configured on both surfaces refuses the
+// load.
 func withRequiredAnchors(cfg config.Config) config.Config {
 	declared := func(name string) bool {
 		if cfg.Tests[name] != nil {
@@ -43,16 +48,14 @@ func withRequiredAnchors(cfg config.Config) config.Config {
 		return false
 	}
 	anchored := checks.AnchoredChecks()
-	tests := make(map[string]*config.TestConfig, len(cfg.Tests)+len(anchored))
-	for name, section := range cfg.Tests {
-		tests[name] = section
-	}
+	rules := make([]config.RuleSpec, 0, len(cfg.Rules)+len(anchored))
+	rules = append(rules, cfg.Rules...)
 	for _, name := range anchored {
 		if !declared(name) {
-			tests[name] = &config.TestConfig{}
+			rules = append(rules, config.RuleSpec{Name: name, Check: name, Enabled: true})
 		}
 	}
-	cfg.Tests = tests
+	cfg.Rules = rules
 	return cfg
 }
 
@@ -99,48 +102,77 @@ func planRule(t *testing.T, plan *Plan, name string, scope checks.Scope) *checks
 }
 
 func TestCompileRejectsUnknownCheck(t *testing.T) {
-	cfg := planConfig(map[string]*config.TestConfig{
-		"HasOnlyASCII":       {},
-		"HasOnlyAsciiTypo":   {},
-		"IsFreeOfKeywordsXX": {},
+	cfg := planConfig([]config.RuleSpec{
+		{Name: "HasOnlyASCII", Check: "HasOnlyASCII", Enabled: true},
+		{Name: "IsFreeOfKeywordsXX", Check: "IsFreeOfKeywordsXX", Enabled: true},
 	})
+	// legacy surface; deleted with it - a section naming no check is refused by
+	// its own branch of the assembly, which nothing else reaches
+	cfg.Tests = map[string]*config.TestConfig{"HasOnlyAsciiTypo": {}}
 	_, err := Compile(&cfg, checks.NewRegistry())
 	if err == nil {
-		t.Fatal("a section naming no known check must fail the compile")
+		t.Fatal("a declaration naming no known check must fail the compile")
 	}
 	for _, want := range []string{"HasOnlyAsciiTypo", "IsFreeOfKeywordsXX"} {
 		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error must name the orphaned section %q: %v", want, err)
+			t.Errorf("error must name the orphan %q: %v", want, err)
 		}
 	}
 }
 
+// TestCompileRejectsBadParamType asserts the FAULT each config carries, not
+// merely that the compile failed: the anchors are filled in, so a config whose
+// parameter is corrected compiles clean and the case cannot pass on an
+// unrelated error.
 func TestCompileRejectsBadParamType(t *testing.T) {
-	cases := map[string]config.Config{
-		"keywords is not a list": planConfig(map[string]*config.TestConfig{
-			"IsFreeOfKeywords": {KeywordArguments: []map[string]interface{}{
-				{"keywords": "password", "info": "found"},
-			}},
-		}),
-		"info is not a string": planConfig(map[string]*config.TestConfig{
-			"IsFreeOfKeywords": {KeywordArguments: []map[string]interface{}{
-				{"keywords": []string{"password"}, "info": []string{"found"}},
-			}},
-		}),
-		"disallowed_names missing": planConfig(map[string]*config.TestConfig{
-			"IsValidName": {KeywordArguments: []map[string]interface{}{{"names": []string{".git"}}}},
-		}),
-		"readme_names is not a list": planConfig(map[string]*config.TestConfig{
-			"HasReadme": {KeywordArguments: []map[string]interface{}{{"readme_names": "readme.md"}}},
-		}),
-		"a check that takes no parameters": planConfig(map[string]*config.TestConfig{
-			"HasOnlyASCII": {KeywordArguments: []map[string]interface{}{{"keywords": []string{"x"}}}},
-		}),
+	cases := map[string]struct {
+		config config.Config
+		want   string
+	}{
+		"keywords is not a list": {
+			config: planConfig([]config.RuleSpec{
+				{Name: "IsFreeOfKeywords", Check: "IsFreeOfKeywords", Enabled: true, Params: []map[string]interface{}{
+					{"keywords": "password", "info": "found"},
+				}},
+			}),
+			want: `"keywords" must be a list of strings`,
+		},
+		"info is not a string": {
+			config: planConfig([]config.RuleSpec{
+				{Name: "IsFreeOfKeywords", Check: "IsFreeOfKeywords", Enabled: true, Params: []map[string]interface{}{
+					{"keywords": []string{"password"}, "info": []string{"found"}},
+				}},
+			}),
+			want: `"info" must be a string`,
+		},
+		"disallowed_names missing": {
+			config: planConfig([]config.RuleSpec{
+				{Name: "IsValidName", Check: "IsValidName", Enabled: true, Params: []map[string]interface{}{{"names": []string{".git"}}}},
+			}),
+			want: `unknown key "names"`,
+		},
+		"readme_names is not a list": {
+			config: planConfig([]config.RuleSpec{
+				{Name: "HasReadme", Check: "HasReadme", Enabled: true, Params: []map[string]interface{}{{"readme_names": "readme.md"}}},
+			}),
+			want: `"readme_names" must be a list of strings`,
+		},
+		"a check that takes no parameters": {
+			config: planConfig([]config.RuleSpec{
+				{Name: "HasOnlyASCII", Check: "HasOnlyASCII", Enabled: true, Params: []map[string]interface{}{{"keywords": []string{"x"}}}},
+			}),
+			want: `check "HasOnlyASCII" takes no parameters`,
+		},
 	}
-	for name, cfg := range cases {
+	for name, test := range cases {
 		t.Run(name, func(t *testing.T) {
-			if _, err := Compile(&cfg, checks.NewRegistry()); err == nil {
+			cfg := withRequiredAnchors(test.config)
+			_, err := Compile(&cfg, checks.NewRegistry())
+			if err == nil {
 				t.Fatal("a wrong-typed parameter must fail the compile")
+			}
+			if !strings.Contains(err.Error(), test.want) {
+				t.Errorf("the compile must fail on %s: %v", test.want, err)
 			}
 		})
 	}
@@ -169,27 +201,46 @@ func TestCompileRejectsUnsupportedScope(t *testing.T) {
 }
 
 // TestCompileAggregatesLoadErrors pins that a config author is told every fault
-// at once - all bad patterns, and every section that names no check - rather
-// than one per run.
+// at once - all bad patterns, and every rule that names no check - rather than
+// one per run.
 func TestCompileAggregatesLoadErrors(t *testing.T) {
-	cfg := planConfig(map[string]*config.TestConfig{
-		"HasOnlyASCII":    {Whitelist: []string{"("}},
-		"HasNoWhiteSpace": {Blacklist: []string{"[a-"}},
-		"IsValidName":     {Blacklist: []string{"keep.txt", ""}},
-		"IsFreeOfKeywords": {
-			Whitelist: []string{"keep.txt"},
-			Blacklist: []string{"drop.txt"},
-		},
-		"NoSuchCheck": {},
+	cfg := planConfig([]config.RuleSpec{
+		{Name: "HasOnlyASCII", Check: "HasOnlyASCII", Enabled: true, Include: []string{"("}},
+		{Name: "HasNoWhiteSpace", Check: "HasNoWhiteSpace", Enabled: true, Exclude: []string{"[a-"}},
+		{Name: "IsValidName", Check: "IsValidName", Enabled: true, Exclude: []string{"keep.txt", ""}},
+		{Name: "NoSuchCheck", Check: "NoSuchCheck", Enabled: true},
 	})
 	_, err := Compile(&cfg, checks.NewRegistry())
 	if err == nil {
 		t.Fatal("expected a load error")
 	}
-	for _, want := range []string{"HasOnlyASCII", "HasNoWhiteSpace", "IsValidName", "IsFreeOfKeywords", "NoSuchCheck"} {
+	for _, want := range []string{"HasOnlyASCII", "HasNoWhiteSpace", "IsValidName", "NoSuchCheck"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("aggregated error must name %q: %v", want, err)
 		}
+	}
+}
+
+// TestCompileRejectsBothLists keeps the one list fault that has no successor: a
+// [test.X] section fills the whitelist OR the blacklist, never both
+// (selector.ErrBothLists), while a [[rule]] takes include AND exclude together.
+//
+// legacy surface; deleted with it
+func TestCompileRejectsBothLists(t *testing.T) {
+	cfg := planConfig(nil)
+	cfg.Tests = map[string]*config.TestConfig{
+		"IsFreeOfKeywords": {
+			Whitelist: []string{"keep.txt"},
+			Blacklist: []string{"drop.txt"},
+		},
+	}
+	cfg = withRequiredAnchors(cfg)
+	_, err := Compile(&cfg, checks.NewRegistry())
+	if err == nil {
+		t.Fatal("a section setting both lists must fail the compile")
+	}
+	if !strings.Contains(err.Error(), "both lists are set") {
+		t.Errorf("the error must name the fault, not some other one: %v", err)
 	}
 }
 
@@ -232,9 +283,9 @@ func TestCompileSynthesizesDefaultRules(t *testing.T) {
 	if err := os.WriteFile(readme, []byte("only lists itself\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cfg := planConfig(map[string]*config.TestConfig{
-		// No [test.ReadMeContainsTOC], no [test.HasNoWhiteSpace].
-		"HasReadme": {KeywordArguments: []map[string]interface{}{
+	cfg := planConfig([]config.RuleSpec{
+		// No rule for ReadMeContainsTOC, none for HasNoWhiteSpace.
+		{Name: "HasReadme", Check: "HasReadme", Enabled: true, Params: []map[string]interface{}{
 			{"readme_names": []string{"myreadme.md"}},
 		}},
 	})
@@ -275,12 +326,12 @@ func TestCompileSynthesizesDefaultRules(t *testing.T) {
 }
 
 // TestCompileSkipsDisabledSecretScan pins the phase gate's new home: the leak
-// scan's attrs.enabled is the rule's enabled flag, so a disabled scan is simply
-// not in the plan.
+// scan runs off its rule's enabled flag, so a disabled scan is simply not in
+// the plan.
 func TestCompileSkipsDisabledSecretScan(t *testing.T) {
 	for _, enabled := range []bool{false, true} {
-		cfg := planConfig(map[string]*config.TestConfig{
-			"IsFreeOfSecrets": {Attrs: map[string]interface{}{"enabled": enabled}},
+		cfg := planConfig([]config.RuleSpec{
+			{Name: "IsFreeOfSecrets", Check: "IsFreeOfSecrets", Enabled: enabled},
 		})
 		plan := compilePlan(t, cfg)
 		found := false
@@ -297,9 +348,11 @@ func TestCompileSkipsDisabledSecretScan(t *testing.T) {
 // pre-filter is the single rule's own selector, and nothing is built when there
 // is only one - which is every shipped config.
 func TestCompileMemberAdmission(t *testing.T) {
-	cfg := planConfig(map[string]*config.TestConfig{
+	// legacy surface; deleted with it - the two readings below are its own
+	cfg := planConfig(nil)
+	cfg.Tests = map[string]*config.TestConfig{
 		"IsFreeOfKeywords": {Blacklist: []string{".log"}},
-	})
+	}
 	plan := compilePlan(t, cfg)
 	entry := planEntry(t, plan, "IsFreeOfKeywords", checks.ScopeArchiveMember)
 	rule := planRule(t, plan, "IsFreeOfKeywords", checks.ScopeArchiveMember)
@@ -336,7 +389,7 @@ func TestCompileMemberAdmission(t *testing.T) {
 // file skipped as oversized, which must be a load error rather than a silent
 // no-scan.
 func TestCompileRejectsMissingGeneral(t *testing.T) {
-	cfg := config.Config{Tests: map[string]*config.TestConfig{"HasOnlyASCII": {}}}
+	cfg := config.Config{Rules: []config.RuleSpec{{Name: "HasOnlyASCII", Check: "HasOnlyASCII", Enabled: true}}}
 	if _, err := Compile(&cfg, checks.NewRegistry()); err == nil {
 		t.Fatal("a config without [general] must fail the compile")
 	}
@@ -363,7 +416,7 @@ func TestCompileRejectsNilConfig(t *testing.T) {
 // MATCHABLE through the aggregate: callers that want the faulty patterns rather
 // than the message text match *selector.CompileError with errors.As.
 func TestCompileErrorExposesSelectorFault(t *testing.T) {
-	cfg := planConfig(map[string]*config.TestConfig{"HasOnlyASCII": {Whitelist: []string{"("}}})
+	cfg := planConfig([]config.RuleSpec{{Name: "HasOnlyASCII", Check: "HasOnlyASCII", Enabled: true, Include: []string{"("}}})
 	_, err := Compile(&cfg, checks.NewRegistry())
 	if err == nil {
 		t.Fatal("an uncompilable pattern must fail the compile")
@@ -527,14 +580,15 @@ func TestMemberRulesUnionScansPerRule(t *testing.T) {
 // the day the dormant rule is re-enabled - and only then leaves it out of the
 // plan (TestCompileSkipsDisabledSecretScan).
 func TestCompileValidatesDisabledRules(t *testing.T) {
-	cfg := planConfig(map[string]*config.TestConfig{
-		"IsFreeOfSecrets": {Whitelist: []string{"("}, Attrs: map[string]interface{}{"enabled": false}},
+	cfg := planConfig([]config.RuleSpec{
+		{Name: "IsFreeOfSecrets", Check: "IsFreeOfSecrets", Enabled: false, Include: []string{"("}},
 	})
 	if _, err := Compile(&cfg, checks.NewRegistry()); err == nil {
 		t.Fatal("a disabled rule's uncompilable list must refuse the load")
 	}
-	cfg = planConfig(map[string]*config.TestConfig{
-		"IsFreeOfSecrets": {Attrs: map[string]interface{}{"enabled": false, "nonsense": true}},
+	cfg = planConfig([]config.RuleSpec{
+		{Name: "IsFreeOfSecrets", Check: "IsFreeOfSecrets", Enabled: false,
+			Params: []map[string]interface{}{{"nonsense": true}}},
 	})
 	if _, err := Compile(&cfg, checks.NewRegistry()); err == nil {
 		t.Fatal("a disabled rule's unknown parameter must refuse the load")
@@ -542,9 +596,9 @@ func TestCompileValidatesDisabledRules(t *testing.T) {
 }
 
 // TestRepositoryRuleNarrowsFileSet pins the contract the previously-inert
-// [test.HasReadme] lists now have (plan §3.1): a repository rule's selector
-// narrows the file set the check sees, for HasReadme AND for ReadMeContainsTOC,
-// which shares that section.
+// HasReadme lists now have (plan §3.1): a repository rule's selector narrows
+// the file set the check sees, for HasReadme AND for ReadMeContainsTOC, which
+// shares that rule.
 func TestRepositoryRuleNarrowsFileSet(t *testing.T) {
 	dir := t.TempDir()
 	readme := filepath.Join(dir, "readme.md")
@@ -557,8 +611,9 @@ func TestRepositoryRuleNarrowsFileSet(t *testing.T) {
 	}
 
 	// Unnarrowed: the readme is seen, and the excluded file is missing from it.
-	wide := compilePlan(t, planConfig(map[string]*config.TestConfig{
-		"HasReadme": {KeywordArguments: []map[string]interface{}{{"readme_names": []string{"readme.md"}}}},
+	wide := compilePlan(t, planConfig([]config.RuleSpec{
+		{Name: "HasReadme", Check: "HasReadme", Enabled: true,
+			Params: []map[string]interface{}{{"readme_names": []string{"readme.md"}}}},
 	}))
 	report := func(plan *Plan) map[string]string {
 		out := map[string]string{}
@@ -573,10 +628,11 @@ func TestRepositoryRuleNarrowsFileSet(t *testing.T) {
 
 	// Narrowed to raw/: the readme is no longer in the set, so HasReadme reports
 	// it missing and the TOC check has nothing to check.
-	narrow := compilePlan(t, planConfig(map[string]*config.TestConfig{
-		"HasReadme": {
-			Whitelist:        []string{"^raw/"},
-			KeywordArguments: []map[string]interface{}{{"readme_names": []string{"readme.md"}}},
+	narrow := compilePlan(t, planConfig([]config.RuleSpec{
+		{
+			Name: "HasReadme", Check: "HasReadme", Enabled: true,
+			Include: []string{"^raw/"},
+			Params:  []map[string]interface{}{{"readme_names": []string{"readme.md"}}},
 		},
 	}))
 	got := report(narrow)
@@ -592,14 +648,15 @@ func TestRepositoryRuleNarrowsFileSet(t *testing.T) {
 // now that the lists are live, an uncompilable one refuses the boot instead of
 // sitting inert.
 func TestRepositoryRuleRejectsBadPattern(t *testing.T) {
-	cfg := planConfig(map[string]*config.TestConfig{
-		"HasReadme": {
-			Whitelist:        []string{"^raw/("},
-			KeywordArguments: []map[string]interface{}{{"readme_names": []string{"readme.md"}}},
+	cfg := planConfig([]config.RuleSpec{
+		{
+			Name: "HasReadme", Check: "HasReadme", Enabled: true,
+			Include: []string{"^raw/("},
+			Params:  []map[string]interface{}{{"readme_names": []string{"readme.md"}}},
 		},
 	})
 	if _, err := Compile(&cfg, checks.NewRegistry()); err == nil {
-		t.Fatal("an uncompilable [test.HasReadme] pattern must refuse the boot")
+		t.Fatal("an uncompilable HasReadme pattern must refuse the boot")
 	}
 }
 

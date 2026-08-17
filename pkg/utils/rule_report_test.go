@@ -717,7 +717,7 @@ func TestRuleReportOffStaysInert(t *testing.T) {
 // benchmark exists for is intact, and a third pattern per rule would put a regex
 // on the files the first two reject rather than measuring the recorder.
 // IsFreeOfKeywords is anchored, so declaring it here is also what keeps
-// withRequiredAnchors from adding a section of its own alongside these rules.
+// withRequiredAnchors from adding a rule of its own alongside these.
 func benchCollisionPlan(b *testing.B, ruleCount int, dead bool) *Plan {
 	b.Helper()
 	cfg := planConfig(nil)

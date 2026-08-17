@@ -29,6 +29,7 @@ func TestSecretsTimeoutWithinRequestBudget(t *testing.T) {
 		ok   bool
 	}{
 		{
+			// legacy surface; deleted with it
 			"legacy attrs timeout over budget",
 			"[server]\nrequestTimeoutSeconds = 60\n" +
 				"[test.IsFreeOfSecrets]\nattrs = {enabled = false, timeoutSeconds = 120}\n",
@@ -42,6 +43,7 @@ func TestSecretsTimeoutWithinRequestBudget(t *testing.T) {
 			false,
 		},
 		{
+			// legacy surface; deleted with it
 			"legacy attrs timeout within budget",
 			"[server]\nrequestTimeoutSeconds = 300\n" +
 				"[test.IsFreeOfSecrets]\nattrs = {enabled = false, timeoutSeconds = 120}\n",
@@ -55,6 +57,7 @@ func TestSecretsTimeoutWithinRequestBudget(t *testing.T) {
 			true,
 		},
 		{
+			// legacy surface; deleted with it
 			"default timeout within default budget",
 			"[test.IsFreeOfSecrets]\nattrs = {enabled = false}\n",
 			true,

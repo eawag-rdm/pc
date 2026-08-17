@@ -23,15 +23,15 @@ var benchPipelineDiagnostics []structs.Diagnostic
 // benchPipelineConfig is the end-to-end workload: the parameterised checks are
 // declared here, the registry's remaining ones enter as synthesized default
 // rules (6 file checks in the compiled plan). No path filters, so every file
-// meets every check. Anchored sections are filled in, as a complete config
+// meets every check. Anchored rules are filled in, as a complete config
 // carries them.
 func benchPipelineConfig() config.Config {
-	return withRequiredAnchors(planConfig(map[string]*config.TestConfig{
-		"HasOnlyASCII": {},
-		"IsFreeOfKeywords": {KeywordArguments: []map[string]interface{}{
+	return withRequiredAnchors(planConfig([]config.RuleSpec{
+		{Name: "HasOnlyASCII", Check: "HasOnlyASCII", Enabled: true},
+		{Name: "IsFreeOfKeywords", Check: "IsFreeOfKeywords", Enabled: true, Params: []map[string]interface{}{
 			{"keywords": []string{"password"}, "info": "Possible credentials in file"},
 		}},
-		"IsValidName": {KeywordArguments: []map[string]interface{}{
+		{Name: "IsValidName", Check: "IsValidName", Enabled: true, Params: []map[string]interface{}{
 			{"disallowed_names": []string{".Rhistory", "__pycache__"}},
 		}},
 	}))

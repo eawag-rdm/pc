@@ -24,13 +24,12 @@ func keywordConfig(keywords []string) config.Config {
 			MaxTotalArchiveMemory:  100 * 1024 * 1024,
 			MaxArchiveMemberCount:  1000,
 		},
-		Tests: map[string]*config.TestConfig{
-			"IsFreeOfKeywords": {
-				KeywordArguments: []map[string]interface{}{
-					{"keywords": keywords, "info": "Sensitive data found:"},
-				},
+		Rules: []config.RuleSpec{{
+			Name: "IsFreeOfKeywords", Check: "IsFreeOfKeywords", Enabled: true,
+			Params: []map[string]interface{}{
+				{"keywords": keywords, "info": "Sensitive data found:"},
 			},
-		},
+		}},
 	}
 }
 

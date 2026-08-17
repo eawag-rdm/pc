@@ -703,7 +703,7 @@ func TestIsArchiveFreeOfKeywordsWithRealArchives(t *testing.T) {
 	}
 }
 
-// newKeywordConfig returns a minimal config with an IsFreeOfKeywords test
+// newKeywordConfig returns a minimal config with an IsFreeOfKeywords rule
 // configured so content scanning is actually attempted (when not size-skipped).
 func newKeywordConfig(maxContentScan, maxArchiveFile, maxTotalArchiveMem int64) config.Config {
 	return config.Config{
@@ -712,16 +712,15 @@ func newKeywordConfig(maxContentScan, maxArchiveFile, maxTotalArchiveMem int64) 
 			MaxArchiveFileSize:     maxArchiveFile,
 			MaxTotalArchiveMemory:  maxTotalArchiveMem,
 		},
-		Tests: map[string]*config.TestConfig{
-			"IsFreeOfKeywords": {
-				KeywordArguments: []map[string]interface{}{
-					{
-						"keywords": []string{"password"},
-						"info":     "Possible credentials in file",
-					},
+		Rules: []config.RuleSpec{{
+			Name: "IsFreeOfKeywords", Check: "IsFreeOfKeywords", Enabled: true,
+			Params: []map[string]interface{}{
+				{
+					"keywords": []string{"password"},
+					"info":     "Possible credentials in file",
 				},
 			},
-		},
+		}},
 	}
 }
 
@@ -1029,11 +1028,12 @@ func TestIsFreeOfKeywords_StreamedLargeFile(t *testing.T) {
 			file := streamTestFile(t, fileSize, tt.plants)
 			cfg := config.Config{
 				General: &config.GeneralConfig{MaxContentScanFileSize: 1024 * 1024 * 1024},
-				Tests: map[string]*config.TestConfig{
-					"IsFreeOfKeywords": {KeywordArguments: []map[string]interface{}{
+				Rules: []config.RuleSpec{{
+					Name: "IsFreeOfKeywords", Check: "IsFreeOfKeywords", Enabled: true,
+					Params: []map[string]interface{}{
 						{"keywords": tt.keywords, "info": "Keywords found:"},
-					}},
-				},
+					},
+				}},
 			}
 
 			messages := runRule(t, "IsFreeOfKeywords", cfg, ScopeFile, file)

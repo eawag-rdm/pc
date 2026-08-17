@@ -108,21 +108,22 @@ func TestRuleAdmitsFile(t *testing.T) {
 		expectedSkip bool
 	}{
 		{
-			name: "No whitelist or blacklist",
+			name: "No include or exclude",
 			config: config.Config{
-				Tests: map[string]*config.TestConfig{
-					"HasOnlyASCII": {},
+				Rules: []config.RuleSpec{
+					{Name: "HasOnlyASCII", Check: "HasOnlyASCII", Enabled: true},
 				},
 			},
 			file:         structs.File{Name: "test.txt"},
 			expectedSkip: false,
 		},
 		{
-			name: "File in whitelist",
+			name: "File in include",
 			config: config.Config{
-				Tests: map[string]*config.TestConfig{
-					"HasOnlyASCII": {
-						Whitelist: []string{"test.txt"},
+				Rules: []config.RuleSpec{
+					{
+						Name: "HasOnlyASCII", Check: "HasOnlyASCII", Enabled: true,
+						Include: []string{"test.txt"},
 					},
 				},
 			},
@@ -130,11 +131,12 @@ func TestRuleAdmitsFile(t *testing.T) {
 			expectedSkip: false,
 		},
 		{
-			name: "File in blacklist",
+			name: "File in exclude",
 			config: config.Config{
-				Tests: map[string]*config.TestConfig{
-					"HasOnlyASCII": {
-						Blacklist: []string{"txt"},
+				Rules: []config.RuleSpec{
+					{
+						Name: "HasOnlyASCII", Check: "HasOnlyASCII", Enabled: true,
+						Exclude: []string{"txt"},
 					},
 				},
 			},
@@ -142,11 +144,12 @@ func TestRuleAdmitsFile(t *testing.T) {
 			expectedSkip: true,
 		},
 		{
-			name: "File not in whitelist",
+			name: "File not in include",
 			config: config.Config{
-				Tests: map[string]*config.TestConfig{
-					"HasOnlyASCII": {
-						Whitelist: []string{"other.txt"},
+				Rules: []config.RuleSpec{
+					{
+						Name: "HasOnlyASCII", Check: "HasOnlyASCII", Enabled: true,
+						Include: []string{"other.txt"},
 					},
 				},
 			},
@@ -154,11 +157,12 @@ func TestRuleAdmitsFile(t *testing.T) {
 			expectedSkip: true,
 		},
 		{
-			name: "File not in blacklist",
+			name: "File not in exclude",
 			config: config.Config{
-				Tests: map[string]*config.TestConfig{
-					"HasOnlyASCII": {
-						Blacklist: []string{"other.txt"},
+				Rules: []config.RuleSpec{
+					{
+						Name: "HasOnlyASCII", Check: "HasOnlyASCII", Enabled: true,
+						Exclude: []string{"other.txt"},
 					},
 				},
 			},
@@ -166,11 +170,12 @@ func TestRuleAdmitsFile(t *testing.T) {
 			expectedSkip: false,
 		},
 		{
-			name: "File matches whitelist regex",
+			name: "File matches include regex",
 			config: config.Config{
-				Tests: map[string]*config.TestConfig{
-					"HasOnlyASCII": {
-						Whitelist: []string{`.+\.txt`},
+				Rules: []config.RuleSpec{
+					{
+						Name: "HasOnlyASCII", Check: "HasOnlyASCII", Enabled: true,
+						Include: []string{`.+\.txt`},
 					},
 				},
 			},
@@ -178,11 +183,12 @@ func TestRuleAdmitsFile(t *testing.T) {
 			expectedSkip: false,
 		},
 		{
-			name: "File matches blacklist regex",
+			name: "File matches exclude regex",
 			config: config.Config{
-				Tests: map[string]*config.TestConfig{
-					"HasOnlyASCII": {
-						Blacklist: []string{`.+\.txt`},
+				Rules: []config.RuleSpec{
+					{
+						Name: "HasOnlyASCII", Check: "HasOnlyASCII", Enabled: true,
+						Exclude: []string{`.+\.txt`},
 					},
 				},
 			},
@@ -190,11 +196,12 @@ func TestRuleAdmitsFile(t *testing.T) {
 			expectedSkip: true,
 		},
 		{
-			name: "File with space matches blacklist regex",
+			name: "File with space matches exclude regex",
 			config: config.Config{
-				Tests: map[string]*config.TestConfig{
-					"HasOnlyASCII": {
-						Blacklist: []string{`.+\.txt`},
+				Rules: []config.RuleSpec{
+					{
+						Name: "HasOnlyASCII", Check: "HasOnlyASCII", Enabled: true,
+						Exclude: []string{`.+\.txt`},
 					},
 				},
 			},
@@ -204,25 +211,33 @@ func TestRuleAdmitsFile(t *testing.T) {
 		{
 			name: "Lists belong to a different check",
 			config: config.Config{
-				Tests: map[string]*config.TestConfig{
-					"IsValidName": {Whitelist: []string{"other.txt"}},
+				Rules: []config.RuleSpec{
+					{
+						Name: "IsValidName", Check: "IsValidName", Enabled: true,
+						Include: []string{"other.txt"},
+					},
 				},
 			},
 			file:         structs.File{Name: "test.txt"},
 			expectedSkip: false,
 		},
 		{
-			name: "Repository-scoped section is not a file filter",
+			name: "Repository-scoped rule is not a file filter",
 			config: config.Config{
-				Tests: map[string]*config.TestConfig{
-					"IsFreeOfSecrets": {Whitelist: []string{"other.txt"}},
+				Rules: []config.RuleSpec{
+					{
+						// The section carried no attrs.enabled, so the scan it
+						// translated to was off: Enabled mirrors that.
+						Name: "IsFreeOfSecrets", Check: "IsFreeOfSecrets", Enabled: false,
+						Include: []string{"other.txt"},
+					},
 				},
 			},
 			file:         structs.File{Name: "test.txt"},
 			expectedSkip: false,
 		},
 		{
-			name:         "No sections at all",
+			name:         "No rules at all",
 			config:       config.Config{},
 			file:         structs.File{Name: "test.txt"},
 			expectedSkip: false,
@@ -322,8 +337,8 @@ func TestMatchPatterns(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			cfg := config.Config{Tests: map[string]*config.TestConfig{
-				"HasOnlyASCII": {Whitelist: test.list},
+			cfg := config.Config{Rules: []config.RuleSpec{
+				{Name: "HasOnlyASCII", Check: "HasOnlyASCII", Enabled: true, Include: test.list},
 			}}
 			result := admits(t, cfg, "HasOnlyASCII", structs.File{Name: test.str})
 			if result != test.expectedMatch {
@@ -368,9 +383,9 @@ func mockCheckFail(file structs.File) []structs.Message {
 func TestApplyChecksFilteredByFile(t *testing.T) {
 	// A real file-scope check, on a name it would otherwise flag: an empty
 	// result proves the filter, not a silent check.
-	whitespaceEntries := func(t *testing.T, lists config.TestConfig) []checkRules {
+	whitespaceEntries := func(t *testing.T, rule config.RuleSpec) []checkRules {
 		t.Helper()
-		cfg := config.Config{Tests: map[string]*config.TestConfig{"HasNoWhiteSpace": &lists}}
+		cfg := config.Config{Rules: []config.RuleSpec{rule}}
 		plan := compilePlan(t, cfg)
 		for _, entry := range plan.scope(checks.ScopeFile) {
 			if entry.def.Name == "HasNoWhiteSpace" {
@@ -414,14 +429,20 @@ func TestApplyChecksFilteredByFile(t *testing.T) {
 			},
 		},
 		{
-			name:     "Check skipped due to whitelist",
-			entries:  whitespaceEntries(t, config.TestConfig{Whitelist: []string{"other.txt"}}),
+			name: "Check skipped due to include",
+			entries: whitespaceEntries(t, config.RuleSpec{
+				Name: "HasNoWhiteSpace", Check: "HasNoWhiteSpace", Enabled: true,
+				Include: []string{"other.txt"},
+			}),
 			files:    []structs.File{{Name: "test file.txt"}},
 			expected: []structs.Message{},
 		},
 		{
-			name:     "Check skipped due to blacklist",
-			entries:  whitespaceEntries(t, config.TestConfig{Blacklist: []string{"test file.txt"}}),
+			name: "Check skipped due to exclude",
+			entries: whitespaceEntries(t, config.RuleSpec{
+				Name: "HasNoWhiteSpace", Check: "HasNoWhiteSpace", Enabled: true,
+				Exclude: []string{"test file.txt"},
+			}),
 			files:    []structs.File{{Name: "test file.txt"}},
 			expected: []structs.Message{},
 		},

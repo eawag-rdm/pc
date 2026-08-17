@@ -11,29 +11,31 @@ import (
 	"github.com/eawag-rdm/pc/pkg/structs"
 )
 
-// testsWithAnchors copies cfg's legacy sections and fills the anchored checks
-// (which RuleSpecs refuses to leave undeclared) with empty sections, so a
-// fixture that configures only the check under test stays a complete config.
-func testsWithAnchors(tests map[string]*config.TestConfig, rules []config.RuleSpec) map[string]*config.TestConfig {
-	declared := func(name string) bool {
-		if tests[name] != nil {
+// rulesWithAnchors copies the given rules and declares a [[rule]] for every
+// anchored check (which RuleSpecs refuses to leave undeclared) they configure no
+// rule for, so a fixture that configures only the check under test stays a
+// complete config. An anchor is named after its check, the name the [test.X]
+// section it replaces produced. A check is declared on EITHER surface here: the
+// fixtures that keep a [test.X] section for a fault only that surface has would
+// otherwise be anchored a second time, which refuses the load.
+func rulesWithAnchors(tests map[string]*config.TestConfig, rules []config.RuleSpec) []config.RuleSpec {
+	declared := func(check string) bool {
+		if tests[check] != nil {
 			return true
 		}
 		for _, rule := range rules {
-			if rule.Check == name {
+			if rule.Check == check {
 				return true
 			}
 		}
 		return false
 	}
 	anchored := AnchoredChecks()
-	filled := make(map[string]*config.TestConfig, len(tests)+len(anchored))
-	for name, section := range tests {
-		filled[name] = section
-	}
-	for _, name := range anchored {
-		if !declared(name) {
-			filled[name] = &config.TestConfig{}
+	filled := make([]config.RuleSpec, 0, len(rules)+len(anchored))
+	filled = append(filled, rules...)
+	for _, check := range anchored {
+		if !declared(check) {
+			filled = append(filled, config.RuleSpec{Name: check, Check: check, Enabled: true})
 		}
 	}
 	return filled
@@ -52,7 +54,7 @@ func bindTestRule(t testing.TB, name string, cfg config.Config, scope Scope) (Ch
 	if !known {
 		t.Fatalf("check %q is not registered", name)
 	}
-	cfg.Tests = testsWithAnchors(cfg.Tests, cfg.Rules)
+	cfg.Rules = rulesWithAnchors(cfg.Tests, cfg.Rules)
 	specs, err := RuleSpecs(&cfg, registry)
 	if err != nil {
 		t.Fatalf("assemble rule specs: %v", err)
@@ -183,9 +185,18 @@ func TestRegistryDeclaredOrder(t *testing.T) {
 	}
 }
 
+// TestMatchMemberGateNilAdmitsEverything pins the branch the archive loop takes
+// for every rule that has no member selector: the gate is consulted once per
+// member and must admit each one, or an unfiltered rule would see nothing.
+func TestMatchMemberGateNilAdmitsEverything(t *testing.T) {
+	if !(&BoundRule{}).matchMember("deep/run.LOG") {
+		t.Error("a rule without a member selector must admit every member")
+	}
+}
+
 // TestMatchMemberGate pins the member gate the archive loop consults once per
-// member: nil admits everything, and a compiled legacy member selector keeps
-// the case-insensitive LITERAL reading over the full member path.
+// member: a compiled legacy member selector keeps the case-insensitive LITERAL
+// reading over the full member path.
 func TestMatchMemberGate(t *testing.T) {
 	member, admitNone, err := selector.CompileLegacyLists("IsFreeOfKeywords", []string{".log"}, nil)
 	if err != nil || admitNone || member == nil {
@@ -200,7 +211,6 @@ func TestMatchMemberGate(t *testing.T) {
 		path string
 		want bool
 	}{
-		{"nil member gate admits everything", &BoundRule{}, "deep/run.LOG", true},
 		{"case-insensitive literal over the member path", gated, "deep/run.LOG", true},
 		{"non-matching path refused", gated, "deep/notes.txt", false},
 	}

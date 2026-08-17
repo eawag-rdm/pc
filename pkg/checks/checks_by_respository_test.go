@@ -10,17 +10,18 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// readmeTestConfig builds the REQUIRED [test.HasReadme] section the readme
-// checks read their filename list from.
+// readmeTestConfig builds the REQUIRED HasReadme rule the readme checks read
+// their filename list from.
 func readmeTestConfig(names ...string) config.Config {
 	if len(names) == 0 {
 		names = []string{"readme.md", "readme.txt"}
 	}
-	return config.Config{Tests: map[string]*config.TestConfig{
-		"HasReadme": {KeywordArguments: []map[string]interface{}{
+	return config.Config{Rules: []config.RuleSpec{{
+		Name: "HasReadme", Check: "HasReadme", Enabled: true,
+		Params: []map[string]interface{}{
 			{"readme_names": names},
-		}},
-	}}
+		},
+	}}}
 }
 
 func TestIsReadme(t *testing.T) {

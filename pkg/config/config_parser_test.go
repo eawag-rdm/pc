@@ -251,10 +251,7 @@ func TestParseSummaryIntroText(t *testing.T) {
 	})
 
 	t.Run("NoGeneralSection", func(t *testing.T) {
-		tomlContent := `
-		[test.test1]
-		blacklist = []
-		`
+		tomlContent := ""
 		configFile := createTempConfigFile(t, tomlContent)
 		defer os.Remove(configFile)
 
@@ -295,10 +292,7 @@ func TestParseSummaryTruncationSettings(t *testing.T) {
 	})
 
 	t.Run("NoGeneralSection", func(t *testing.T) {
-		tomlContent := `
-		[test.test1]
-		blacklist = []
-		`
+		tomlContent := ""
 		configFile := createTempConfigFile(t, tomlContent)
 		defer os.Remove(configFile)
 
@@ -311,10 +305,7 @@ func TestParseSummaryTruncationSettings(t *testing.T) {
 
 func TestParseServerConfig(t *testing.T) {
 	t.Run("DefaultsWhenAbsent", func(t *testing.T) {
-		tomlContent := `
-		[test.test1]
-		blacklist = []
-		`
+		tomlContent := ""
 		configFile := createTempConfigFile(t, tomlContent)
 		defer os.Remove(configFile)
 
@@ -394,10 +385,7 @@ func TestParseServerConfig(t *testing.T) {
 	})
 
 	t.Run("SMTPDefaultsWhenAbsent", func(t *testing.T) {
-		tomlContent := `
-		[test.test1]
-		blacklist = []
-		`
+		tomlContent := ""
 		configFile := createTempConfigFile(t, tomlContent)
 		defer os.Remove(configFile)
 

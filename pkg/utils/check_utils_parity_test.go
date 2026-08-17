@@ -226,24 +226,30 @@ func TestApplyAllChecks_ProgressVariantParity(t *testing.T) {
 // and the bar sticks below 100% for the whole run.
 func TestApplyAllChecksWithProgress_TotalCountsDispatchedItems(t *testing.T) {
 	const excluded = "naïve_data.csv"
-	blacklist := []string{"^" + regexp.QuoteMeta(excluded) + "$"}
-	cfg := withRequiredAnchors(planConfig(map[string]*config.TestConfig{
-		"HasOnlyASCII":            {Blacklist: blacklist},
-		"HasNoWhiteSpace":         {Blacklist: blacklist},
-		"IsValidName":             {Blacklist: blacklist},
-		"HasFileNameSpecialChars": {Blacklist: blacklist},
-		"IsFileNameTooLong":       {Blacklist: blacklist},
-		"IsFreeOfKeywords": {Blacklist: blacklist, KeywordArguments: []map[string]interface{}{
-			{"keywords": []string{"password"}, "info": "Possible credentials in file"},
-		}},
+	exclude := []string{"^" + regexp.QuoteMeta(excluded) + "$"}
+	cfg := withRequiredAnchors(planConfig([]config.RuleSpec{
+		{Name: "HasOnlyASCII", Check: "HasOnlyASCII", Enabled: true, Exclude: exclude},
+		{Name: "HasNoWhiteSpace", Check: "HasNoWhiteSpace", Enabled: true, Exclude: exclude},
+		{Name: "IsValidName", Check: "IsValidName", Enabled: true, Exclude: exclude},
+		{Name: "HasFileNameSpecialChars", Check: "HasFileNameSpecialChars", Enabled: true, Exclude: exclude},
+		{Name: "IsFileNameTooLong", Check: "IsFileNameTooLong", Enabled: true, Exclude: exclude},
+		{Name: "IsFreeOfKeywords", Check: "IsFreeOfKeywords", Enabled: true, Exclude: exclude,
+			Params: []map[string]interface{}{
+				{"keywords": []string{"password"}, "info": "Possible credentials in file"},
+			}},
 	}))
 	plan := compilePlan(t, cfg)
 
-	// Anti-vacuity: a file-scope check the config does not exclude (a new one
-	// entering as an unfiltered default rule) would dispatch the file again.
+	// Anti-vacuity: EVERY file-scope rule must refuse the file - a check entering
+	// as an unfiltered default rule, or one more rule beside a filtering one,
+	// would dispatch it again. Asked of the compiled gates, not of the config:
+	// one check may carry several rules, and only the gates say what each admits.
+	naive := structs.File{Name: excluded, RelPath: excluded}
 	for _, entry := range plan.scope(checks.ScopeFile) {
-		if section := cfg.Tests[entry.def.Name]; section == nil || len(section.Blacklist) == 0 {
-			t.Fatalf("file check %q excludes nothing - %q would still be dispatched", entry.def.Name, excluded)
+		for _, rule := range entry.rules {
+			if rule.Match(naive) {
+				t.Fatalf("rule %q of check %q admits %q - it would still be dispatched", rule.Rule, entry.def.Name, excluded)
+			}
 		}
 	}
 

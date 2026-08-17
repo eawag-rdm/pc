@@ -54,32 +54,32 @@ func createTestConfigFile(t *testing.T, tempDir string) string {
 	configContent := `[operation.main]
 collector = "LocalCollector"
 
-[test.IsFreeOfKeywords]
-blacklist = []
-whitelist = []
-keywordArguments = [
-    { keywords = ["password", "secret"], info = "Test security check" }
-]
+[[rule]]
+name  = "IsFreeOfKeywords"
+check = "IsFreeOfKeywords"
+  [rule.params]
+  keywords = ["password", "secret"]
+  info     = "Test security check"
 
-[test.IsValidName]
-blacklist = []
-whitelist = []
-keywordArguments = [
-    { disallowed_names = [".DS_Store"] }
-]
+[[rule]]
+name  = "IsValidName"
+check = "IsValidName"
+  [rule.params]
+  disallowed_names = [".DS_Store"]
 
-[test.HasReadme]
-keywordArguments = [
-    { readme_names = ["readme.md", "readme.txt"] }
-]
+[[rule]]
+name  = "HasReadme"
+check = "HasReadme"
+  [rule.params]
+  readme_names = ["readme.md", "readme.txt"]
 
-[test.HasOnlyASCII]
-blacklist = []
-whitelist = []
+[[rule]]
+name  = "HasOnlyASCII"
+check = "HasOnlyASCII"
 
-[test.HasNoWhiteSpace]
-blacklist = []
-whitelist = []
+[[rule]]
+name  = "HasNoWhiteSpace"
+check = "HasNoWhiteSpace"
 
 [collector.LocalCollector]
 attrs = {includeFolders = true}
@@ -286,7 +286,7 @@ func TestInvalidConfig(t *testing.T) {
 	}
 }
 
-// TestInvalidFilterPattern asserts the second boot gate: a whitelist/blacklist
+// TestInvalidFilterPattern asserts the second boot gate: an include/exclude
 // pattern that does not compile is refused before anything is scanned, with the
 // same config_error envelope a malformed config produces. Before the selector
 // rework a bad whitelist silently skipped every file instead.
@@ -297,23 +297,29 @@ func TestInvalidFilterPattern(t *testing.T) {
 	configContent := `[operation.main]
 collector = "LocalCollector"
 
-[test.IsFreeOfKeywords]
-keywordArguments = [
-    { keywords = ["password"], info = "Test security check" }
-]
+[[rule]]
+name  = "IsFreeOfKeywords"
+check = "IsFreeOfKeywords"
+  [rule.params]
+  keywords = ["password"]
+  info     = "Test security check"
 
-[test.IsValidName]
-keywordArguments = [
-    { disallowed_names = [".DS_Store"] }
-]
+[[rule]]
+name  = "IsValidName"
+check = "IsValidName"
+  [rule.params]
+  disallowed_names = [".DS_Store"]
 
-[test.HasReadme]
-keywordArguments = [
-    { readme_names = ["readme.md"] }
-]
+[[rule]]
+name  = "HasReadme"
+check = "HasReadme"
+  [rule.params]
+  readme_names = ["readme.md"]
 
-[test.HasOnlyASCII]
-whitelist = ["("]
+[[rule]]
+name    = "HasOnlyASCII"
+check   = "HasOnlyASCII"
+include = ["("]
 
 [collector.LocalCollector]
 attrs = {includeFolders = true}
@@ -337,7 +343,7 @@ attrs = {includeFolders = true}
 		t.Errorf("Error type should be 'config_error', got %v", errorMap["type"])
 	}
 	if msg, _ := errorMap["message"].(string); !strings.Contains(msg, "HasOnlyASCII") {
-		t.Errorf("Error message should name the offending [test.X] section, got %q", msg)
+		t.Errorf("Error message should name the offending rule, got %q", msg)
 	}
 }
 
@@ -431,32 +437,32 @@ func TestConfigWithCkanCollector(t *testing.T) {
 	ckanConfigContent := `[operation.main]
 collector = "CkanCollector"
 
-[test.IsFreeOfKeywords]
-blacklist = []
-whitelist = []
-keywordArguments = [
-    { keywords = ["password"], info = "Test check" }
-]
+[[rule]]
+name  = "IsFreeOfKeywords"
+check = "IsFreeOfKeywords"
+  [rule.params]
+  keywords = ["password"]
+  info     = "Test check"
 
-[test.IsValidName]
-blacklist = []
-whitelist = []
-keywordArguments = [
-    { disallowed_names = [".DS_Store"] }
-]
+[[rule]]
+name  = "IsValidName"
+check = "IsValidName"
+  [rule.params]
+  disallowed_names = [".DS_Store"]
 
-[test.HasReadme]
-keywordArguments = [
-    { readme_names = ["readme.md", "readme.txt"] }
-]
+[[rule]]
+name  = "HasReadme"
+check = "HasReadme"
+  [rule.params]
+  readme_names = ["readme.md", "readme.txt"]
 
-[test.HasOnlyASCII]
-blacklist = []
-whitelist = []
+[[rule]]
+name  = "HasOnlyASCII"
+check = "HasOnlyASCII"
 
-[test.HasNoWhiteSpace]
-blacklist = []
-whitelist = []
+[[rule]]
+name  = "HasNoWhiteSpace"
+check = "HasNoWhiteSpace"
 
 [collector.CkanCollector]
 attrs = {url = "https://example.com", token = "", verify = true}
@@ -620,32 +626,32 @@ func TestUnknownCollector(t *testing.T) {
 	unknownConfigContent := `[operation.main]
 collector = "UnknownCollector"
 
-[test.IsFreeOfKeywords]
-blacklist = []
-whitelist = []
-keywordArguments = [
-    { keywords = ["password"], info = "Test check" }
-]
+[[rule]]
+name  = "IsFreeOfKeywords"
+check = "IsFreeOfKeywords"
+  [rule.params]
+  keywords = ["password"]
+  info     = "Test check"
 
-[test.IsValidName]
-blacklist = []
-whitelist = []
-keywordArguments = [
-    { disallowed_names = [".DS_Store"] }
-]
+[[rule]]
+name  = "IsValidName"
+check = "IsValidName"
+  [rule.params]
+  disallowed_names = [".DS_Store"]
 
-[test.HasReadme]
-keywordArguments = [
-    { readme_names = ["readme.md", "readme.txt"] }
-]
+[[rule]]
+name  = "HasReadme"
+check = "HasReadme"
+  [rule.params]
+  readme_names = ["readme.md", "readme.txt"]
 
-[test.HasOnlyASCII]
-blacklist = []
-whitelist = []
+[[rule]]
+name  = "HasOnlyASCII"
+check = "HasOnlyASCII"
 
-[test.HasNoWhiteSpace]
-blacklist = []
-whitelist = []
+[[rule]]
+name  = "HasNoWhiteSpace"
+check = "HasNoWhiteSpace"
 `
 	configPath := filepath.Join(tempDir, "unknown_config.toml")
 	if err := os.WriteFile(configPath, []byte(unknownConfigContent), 0644); err != nil {
@@ -684,25 +690,27 @@ whitelist = []
 func TestMissingOperationMain(t *testing.T) {
 	tempDir := t.TempDir()
 
-	// Config without an [operation.main] section, but with the [test.*] sections
-	// the checks-config boot validation requires (so the failure under test is
-	// the missing operation, not the missing test sections).
-	noOpConfigContent := `[test.IsFreeOfKeywords]
-keywordArguments = [
-    { keywords = ["password"], info = "Sensitive keyword found:" }
-]
+	// Config without an [operation.main] section, but with the rules the
+	// checks-config boot validation requires (so the failure under test is the
+	// missing operation, not the missing rules).
+	noOpConfigContent := `[[rule]]
+name  = "IsFreeOfKeywords"
+check = "IsFreeOfKeywords"
+  [rule.params]
+  keywords = ["password"]
+  info     = "Sensitive keyword found:"
 
-[test.IsValidName]
-blacklist = []
-whitelist = []
-keywordArguments = [
-    { disallowed_names = [".DS_Store"] }
-]
+[[rule]]
+name  = "IsValidName"
+check = "IsValidName"
+  [rule.params]
+  disallowed_names = [".DS_Store"]
 
-[test.HasReadme]
-keywordArguments = [
-    { readme_names = ["readme.md", "readme.txt"] }
-]
+[[rule]]
+name  = "HasReadme"
+check = "HasReadme"
+  [rule.params]
+  readme_names = ["readme.md", "readme.txt"]
 `
 	configPath := filepath.Join(tempDir, "no_operation.toml")
 	if err := os.WriteFile(configPath, []byte(noOpConfigContent), 0644); err != nil {

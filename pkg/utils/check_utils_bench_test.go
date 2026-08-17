@@ -11,22 +11,22 @@ import (
 
 // benchFilterConfig is the filter workload: two of the six file checks carry
 // patterns (one exclude, one include), the rest carry none - the shape of a real
-// [test.*] block.
+// config block.
 func benchFilterConfig() config.Config {
-	return planConfig(map[string]*config.TestConfig{
-		"HasOnlyASCII":     {Blacklist: []string{`\.png$`, `\.jpg$`}},
-		"IsFreeOfKeywords": {Whitelist: []string{`\.txt$`, `\.csv$`}},
-		"IsValidName":      {},
+	return planConfig([]config.RuleSpec{
+		{Name: "HasOnlyASCII", Check: "HasOnlyASCII", Enabled: true, Exclude: []string{`\.png$`, `\.jpg$`}},
+		{Name: "IsFreeOfKeywords", Check: "IsFreeOfKeywords", Enabled: true, Include: []string{`\.txt$`, `\.csv$`}},
+		{Name: "IsValidName", Check: "IsValidName", Enabled: true},
 	})
 }
 
-// benchUnfilteredConfig is the shipped-config shape: sections present, all lists
+// benchUnfilteredConfig is the shipped-config shape: rules present, all lists
 // empty, so nothing is filtered at all.
 func benchUnfilteredConfig() config.Config {
-	return planConfig(map[string]*config.TestConfig{
-		"HasOnlyASCII":     {},
-		"IsFreeOfKeywords": {},
-		"IsValidName":      {},
+	return planConfig([]config.RuleSpec{
+		{Name: "HasOnlyASCII", Check: "HasOnlyASCII", Enabled: true},
+		{Name: "IsFreeOfKeywords", Check: "IsFreeOfKeywords", Enabled: true},
+		{Name: "IsValidName", Check: "IsValidName", Enabled: true},
 	})
 }
 

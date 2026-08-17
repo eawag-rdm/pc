@@ -35,13 +35,9 @@ func testPlan(pcConfig *config.Config) *utils.Plan {
 	if cfg.General == nil {
 		cfg.General = &config.GeneralConfig{MaxContentScanFileSize: config.DefaultMaxContentScanFileSize}
 	}
-	// Compile refuses a config silent about the anchored checks; declare the
-	// missing ones with empty legacy sections, without touching a caller's own
-	// sections or rules.
+	// Compile refuses a config silent about the anchored checks; declare a rule
+	// for the missing ones, without touching a caller's own rules.
 	declared := func(name string) bool {
-		if cfg.Tests[name] != nil {
-			return true
-		}
 		for _, rule := range cfg.Rules {
 			if rule.Check == name {
 				return true
@@ -49,16 +45,13 @@ func testPlan(pcConfig *config.Config) *utils.Plan {
 		}
 		return false
 	}
-	tests := map[string]*config.TestConfig{}
-	for name, section := range cfg.Tests {
-		tests[name] = section
-	}
+	rules := append([]config.RuleSpec(nil), cfg.Rules...)
 	for _, name := range checks.AnchoredChecks() {
 		if !declared(name) {
-			tests[name] = &config.TestConfig{}
+			rules = append(rules, config.RuleSpec{Name: name, Check: name, Enabled: true})
 		}
 	}
-	cfg.Tests = tests
+	cfg.Rules = rules
 	plan, err := utils.Compile(&cfg, checks.NewRegistry())
 	if err != nil {
 		panic("server test plan: " + err.Error())
@@ -337,11 +330,12 @@ func ckanPCConfig(ckanURL string) *config.Config {
 			MaxContentScanFileSize: 20 * 1024 * 1024,
 		},
 		Server: &config.ServerConfig{ContactMessage: DefaultContactMessage, LogClientIP: true},
-		Tests: map[string]*config.TestConfig{
-			"HasReadme": {KeywordArguments: []map[string]interface{}{
+		Rules: []config.RuleSpec{{
+			Name: "HasReadme", Check: "HasReadme", Enabled: true,
+			Params: []map[string]interface{}{
 				{"readme_names": []string{"readme.md", "readme.txt"}},
-			}},
-		},
+			},
+		}},
 		Collectors: map[string]*config.CollectorConfig{
 			"CkanCollector": {
 				Attrs: map[string]interface{}{

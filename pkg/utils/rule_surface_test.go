@@ -535,6 +535,8 @@ include = ["^data"]
 // [test.ReadMeContainsTOC] carrying keywordArguments keeps loading - its own
 // params were always ignored in favour of the HasReadme list - while the
 // [[rule]] surface's hard refusal stays (TestRuleReadmeDefinitionCluster).
+//
+// legacy surface; deleted with it
 func TestLegacyTOCSectionParamsIgnored(t *testing.T) {
 	dir := t.TempDir()
 	readme := filepath.Join(dir, "myreadme.md")
@@ -570,6 +572,8 @@ keywordArguments = [{readme_names = ["other.rst"]}]
 // a declared [[rule]] TOC reading a legacy [test.HasReadme] section's list
 // keeps that surface's lenient key reading - a stray legacy key must not
 // boot-fail with an error misattributed to the TOC rule.
+//
+// legacy surface; deleted with it
 func TestRuleTOCInheritsLegacyLeniency(t *testing.T) {
 	plan, err := loadAndCompile(t, anchors("HasReadme")+`
 [test.HasReadme]

@@ -15,16 +15,22 @@ import (
 	"time"
 )
 
-// testChecksTOML is a small, well-typed check configuration on the legacy
-// [test.*] surface (still valid sugar); boot validation is utils.Compile,
-// which binds every rule's parameters at server.New.
+// testChecksTOML is a small, well-typed check configuration on the [[rule]]
+// surface; boot validation is utils.Compile, which binds every rule's
+// parameters at server.New.
 const testChecksTOML = "" +
-	"[test.IsFreeOfKeywords]\n" +
-	"keywordArguments = [{keywords = [\"password\"], info = \"Sensitive keyword found:\"}]\n" +
-	"[test.IsValidName]\n" +
-	"keywordArguments = [{disallowed_names = [\".DS_Store\"]}]\n" +
-	"[test.HasReadme]\n" +
-	"keywordArguments = [{readme_names = [\"readme.md\", \"readme.txt\"]}]\n"
+	"[[rule]]\n" +
+	"name  = \"IsFreeOfKeywords\"\n" +
+	"check = \"IsFreeOfKeywords\"\n" +
+	"params = [{keywords = [\"password\"], info = \"Sensitive keyword found:\"}]\n" +
+	"[[rule]]\n" +
+	"name  = \"IsValidName\"\n" +
+	"check = \"IsValidName\"\n" +
+	"params = [{disallowed_names = [\".DS_Store\"]}]\n" +
+	"[[rule]]\n" +
+	"name  = \"HasReadme\"\n" +
+	"check = \"HasReadme\"\n" +
+	"params = [{readme_names = [\"readme.md\", \"readme.txt\"]}]\n"
 
 // newTestServerConfig writes a minimal valid PC config to a temp file and
 // returns a server.Config pointing at it, with the listen address overridden to
@@ -61,16 +67,18 @@ func waitListening(t *testing.T, addr string) {
 	}
 }
 
-// TestNew_RejectsInvalidFilterPattern asserts the boot gate for the per-check
-// file filters: a whitelist/blacklist pattern that does not compile refuses the
-// startup (the operator's config is wrong), instead of failing - and alerting
-// on - every /analyze request while /ready reports the server usable.
+// TestNew_RejectsInvalidFilterPattern asserts the boot gate for the rules' file
+// filters: an include/exclude pattern that does not compile refuses the startup
+// (the operator's config is wrong), instead of failing - and alerting on -
+// every /analyze request while /ready reports the server usable.
 func TestNew_RejectsInvalidFilterPattern(t *testing.T) {
 	dir := t.TempDir()
 	path := dir + "/pc.toml"
 	contents := testChecksTOML +
-		"[test.HasOnlyASCII]\n" +
-		"whitelist = [\"(\"]\n" +
+		"[[rule]]\n" +
+		"name    = \"HasOnlyASCII\"\n" +
+		"check   = \"HasOnlyASCII\"\n" +
+		"include = [\"(\"]\n" +
 		"[collector.CkanCollector]\n" +
 		"attrs = {url = \"http://127.0.0.1:1\", token = \"\", verify = false, ckan_storage_path = \"" + dir + "\"}\n"
 	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
@@ -85,7 +93,7 @@ func TestNew_RejectsInvalidFilterPattern(t *testing.T) {
 		t.Error("New must not return a server when the config is invalid")
 	}
 	if !strings.Contains(err.Error(), "HasOnlyASCII") {
-		t.Errorf("error must name the offending [test.X] section: %v", err)
+		t.Errorf("error must name the offending rule: %v", err)
 	}
 }
 
