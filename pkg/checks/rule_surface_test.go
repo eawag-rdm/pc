@@ -443,18 +443,30 @@ func TestRuleSpecsSharesNoNamesFromAmbiguousReadmeRules(t *testing.T) {
 // TestRuleSpecsRefusesSiblingIncludeOfAnExclude pins the file-set contract: the
 // files a check runs on are the CHECK's business, so a rule excluding what a
 // sibling rule includes answers that one question twice and fails the load.
+// Either declaration order says the same two things, so both are refused, and
+// the message names the excluding rule first whichever came first in the file.
 func TestRuleSpecsRefusesSiblingIncludeOfAnExclude(t *testing.T) {
-	_, err := assembleRuleSpecs(
-		config.RuleSpec{Name: "skip-csv", Check: "HasOnlyASCII", Enabled: true, Exclude: []string{`\.csv$`}},
-		config.RuleSpec{Name: "only-csv", Check: "HasOnlyASCII", Enabled: true, Include: []string{`\.csv$`}},
-	)
-	if err == nil {
-		t.Fatal("one rule's exclude of a pattern a sibling includes must be refused")
+	skips := config.RuleSpec{Name: "skip-csv", Check: "HasOnlyASCII", Enabled: true, Exclude: []string{`\.csv$`}}
+	targets := config.RuleSpec{Name: "only-csv", Check: "HasOnlyASCII", Enabled: true, Include: []string{`\.csv$`}}
+	cases := []struct {
+		name  string
+		rules []config.RuleSpec
+	}{
+		{"the excluding rule is declared first", []config.RuleSpec{skips, targets}},
+		{"the including rule is declared first", []config.RuleSpec{targets, skips}},
 	}
-	// The message must name both rules and the pattern they disagree about; what
-	// it goes on to advise is not this test's business.
-	if want := `check "HasOnlyASCII": rule "skip-csv" excludes "\\.csv$" while rule "only-csv" includes it`; !strings.Contains(err.Error(), want) {
-		t.Errorf("error must name %q: %v", want, err)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := assembleRuleSpecs(tc.rules...)
+			if err == nil {
+				t.Fatal("one rule's exclude of a pattern a sibling includes must be refused")
+			}
+			// The message must name both rules and the pattern they disagree
+			// about; what it goes on to advise is not this test's business.
+			if want := `check "HasOnlyASCII": rule "skip-csv" excludes "\\.csv$" while rule "only-csv" includes it`; !strings.Contains(err.Error(), want) {
+				t.Errorf("error must name %q: %v", want, err)
+			}
+		})
 	}
 }
 
@@ -473,6 +485,41 @@ func TestRuleSpecsAllowsCrossScopeIncludeExclude(t *testing.T) {
 	}
 	if got := specsForCheck(specs, "IsFreeOfKeywords"); len(got) != 2 {
 		t.Fatalf("both rules must be kept, got %d", len(got))
+	}
+}
+
+// TestRuleSpecsAllowsCrossSubjectIncludeExclude is the same counterweight one
+// step down: rules of one scope whose patterns are matched against DIFFERENT
+// strings - the collection-relative path and the base name - gate different
+// file sets, so an exclude of one is no answer to the other's include and the
+// config loads.
+func TestRuleSpecsAllowsCrossSubjectIncludeExclude(t *testing.T) {
+	specs, err := assembleRuleSpecs(
+		config.RuleSpec{Name: "skip-raw-paths", Check: "HasOnlyASCII", Enabled: true, Subject: "path", Exclude: []string{"^raw/"}},
+		config.RuleSpec{Name: "only-raw-names", Check: "HasOnlyASCII", Enabled: true, Subject: "name", Include: []string{"^raw/"}},
+	)
+	if err != nil {
+		t.Fatalf("a path pattern and a name pattern address different strings: %v", err)
+	}
+	if got := specsForCheck(specs, "HasOnlyASCII"); len(got) != 2 {
+		t.Fatalf("both rules must be kept, got %d", len(got))
+	}
+}
+
+// TestRuleSpecsRefusesSiblingIncludeAtTheDefaultedSubject is that allowance's
+// limit: the subject is read as the rest of the load reads it, so at these
+// scopes an omitted subject and a spelled-out subject = "name" are ONE subject,
+// and the pair contradicts itself exactly as two spelled-out ones would.
+func TestRuleSpecsRefusesSiblingIncludeAtTheDefaultedSubject(t *testing.T) {
+	_, err := assembleRuleSpecs(
+		config.RuleSpec{Name: "skip-csv", Check: "HasOnlyASCII", Enabled: true, Exclude: []string{`\.csv$`}},
+		config.RuleSpec{Name: "only-csv", Check: "HasOnlyASCII", Enabled: true, Subject: "name", Include: []string{`\.csv$`}},
+	)
+	if err == nil {
+		t.Fatal("spelling out the subject both rules already read must not save a contradiction")
+	}
+	if want := `rule "skip-csv" excludes "\\.csv$" while rule "only-csv" includes it`; !strings.Contains(err.Error(), want) {
+		t.Errorf("error must name %q: %v", want, err)
 	}
 }
 
@@ -506,22 +553,40 @@ func TestRuleSpecsComparesPatternsVerbatim(t *testing.T) {
 	}
 }
 
+// TestRuleSpecsRefusesAParkedContradiction pins that the off switch is no
+// exemption here either: a rule parked with enabled = false still declares
+// which files the check skips, and the load validates disabled rules
+// deliberately, so the contradiction is refused now rather than on the day
+// someone re-enables it.
+func TestRuleSpecsRefusesAParkedContradiction(t *testing.T) {
+	_, err := assembleRuleSpecs(
+		config.RuleSpec{Name: "parked-skip", Check: "HasOnlyASCII", Exclude: []string{`\.csv$`}},
+		config.RuleSpec{Name: "live-only", Check: "HasOnlyASCII", Enabled: true, Include: []string{`\.csv$`}},
+	)
+	if err == nil {
+		t.Fatal("a contradiction a disabled rule takes part in must be refused too")
+	}
+	if want := `rule "parked-skip" excludes "\\.csv$" while rule "live-only" includes it`; !strings.Contains(err.Error(), want) {
+		t.Errorf("error must name %q: %v", want, err)
+	}
+}
+
 // TestRuleSpecsReportsEveryContradictionAtOnce pins the aggregation the rest of
-// this file promises: a config that contradicts itself in two places is told
+// this file promises: a check that contradicts itself in two places is told
 // about both, rather than one refusal per load.
 func TestRuleSpecsReportsEveryContradictionAtOnce(t *testing.T) {
 	_, err := assembleRuleSpecs(
 		config.RuleSpec{Name: "skip-csv", Check: "HasOnlyASCII", Enabled: true, Exclude: []string{`\.csv$`}},
 		config.RuleSpec{Name: "only-csv", Check: "HasOnlyASCII", Enabled: true, Include: []string{`\.csv$`}},
-		config.RuleSpec{Name: "skip-raw", Check: "HasNoWhiteSpace", Enabled: true, Exclude: []string{"^raw/"}},
-		config.RuleSpec{Name: "only-raw", Check: "HasNoWhiteSpace", Enabled: true, Include: []string{"^raw/"}},
+		config.RuleSpec{Name: "skip-raw", Check: "HasOnlyASCII", Enabled: true, Exclude: []string{"^raw/"}},
+		config.RuleSpec{Name: "only-raw", Check: "HasOnlyASCII", Enabled: true, Include: []string{"^raw/"}},
 	)
 	if err == nil {
 		t.Fatal("two contradicting pairs must be refused")
 	}
 	for _, want := range []string{
 		`check "HasOnlyASCII": rule "skip-csv" excludes "\\.csv$" while rule "only-csv" includes it`,
-		`check "HasNoWhiteSpace": rule "skip-raw" excludes "^raw/" while rule "only-raw" includes it`,
+		`check "HasOnlyASCII": rule "skip-raw" excludes "^raw/" while rule "only-raw" includes it`,
 	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error must name %q: %v", want, err)

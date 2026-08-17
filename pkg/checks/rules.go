@@ -266,60 +266,101 @@ func declaredSubject(spec config.RuleSpec) string {
 // does this check run on" twice over: rule A excludes the very pattern rule B
 // includes. That question has ONE owner, the check - a [[rule]] block carries a
 // parameter set, it does not buy its rule a file set of its own - so a config
-// giving two answers is a load error rather than a precedence to settle.
+// giving two answers is a load error rather than a precedence to settle. What
+// it reaches is the half of that written down: a sibling declaring no include
+// at all admits everything the other excludes and loads silently, so this
+// refuses a config that contradicts itself IN WRITING, not every pair of rules
+// that ends up disagreeing about a file.
 //
 // Nothing is claimed here about what gets scanned: each rule keeps its own
 // selector and B really does scan what A skips, which is why the message says
 // only that the config says two things.
 //
-// Two rules are compared only where their scopes MEET: an exclude at the file
-// scope and an include at the archive-member scope address different phases of
-// the scan and contradict nothing. The patterns are compared VERBATIM, because
-// nothing between the decode and the selector compile trims, folds or anchors
-// them - two patterns that merely overlap as regexes are the run-scoped
-// rule-overlap notice's subject, not this gate's.
+// Two rules are compared only where they gate the SAME STRINGS: a scope both
+// serve, read there through the same subject. An exclude at the file scope and
+// an include at the archive-member scope address different phases of the scan;
+// a path pattern beside a name pattern addresses a different string of the same
+// file. Both readings are the ones ruleIdentityOf takes, per scope class. The
+// patterns themselves are compared VERBATIM: ignoreCase only widens what a
+// pattern matches - it prepends "(?i)" - so one string in both lists still
+// means the files one rule skips are files the other targets, folded or not.
+// Two patterns that merely overlap as regexes are the run-scoped rule-overlap
+// notice's subject, not this gate's.
 //
 // The pair (i, i) is contradictorySelector's: within ONE rule exclude wins, so
 // its message can say the stronger thing that is true there.
 //
-// Like duplicateRuleErrors it runs on the DECLARED specs, before
-// shareReadmeNames rewrites a synthesized TOC rule's filter from the readme
-// rule's - a comparison after that would refuse selectors the operator never
-// wrote - and it judges disabled rules too, so a parked contradiction is
-// reported now rather than on the day someone re-enables the rule.
+// Like duplicateRuleErrors it judges the specs as DECLARED - only the arm that
+// found [[rule]] sections calls it, so a synthesized rule never reaches it -
+// and disabled rules with them, the policy Compile states for the whole
+// surface: a parked contradiction is reported now rather than on the day
+// someone re-enables the rule. The operator pays for that by keeping a
+// predecessor beside the rule that replaced it: parked with enabled = false or
+// not, if it excludes what the replacement includes, the config stops loading.
 func contradictorySiblingErrors(rules []config.RuleSpec, def CheckDef) []error {
-	scopes := make([][]Scope, len(rules))
+	gates := make([]ruleGate, len(rules))
 	for i, rule := range rules {
 		// A scope list that does not resolve leaves "do these two meet" with no
-		// answer, and an unresolved rule meets nothing: its nil scopes intersect
-		// nothing below. Compile reports the scope fault itself.
-		resolved, err := ruleScopes(rule, def)
+		// answer, and an unresolved rule meets nothing: its zero gate serves no
+		// scope. Compile reports the same ruleScopes error, so no bad config
+		// gets through, but a genuine contradiction behind that scope typo goes
+		// unreported until the typo is fixed and the load rerun - two cycles
+		// where the rest of this file promises one.
+		scopes, err := ruleScopes(rule, def)
 		if err != nil {
 			continue
 		}
-		scopes[i] = resolved
+		gates[i] = ruleGate{scopes: scopes, name: declaredSubject(rule), path: resolvedSubject(rule, scopes)}
 	}
 	var errs []error
 	for i := range rules {
 		for j := range rules {
-			if i == j || !scopesMeet(scopes[i], scopes[j]) {
+			if i == j || !gates[i].meets(gates[j]) {
 				continue
 			}
-			for _, excluded := range rules[i].Exclude {
-				if slices.Contains(rules[j].Include, excluded) {
-					errs = append(errs, fmt.Errorf("check %q: rule %q excludes %q while rule %q includes it; one check cannot both skip and target the same pattern, so remove one", def.Name, rules[i].Name, excluded, rules[j].Name))
+			for k, excluded := range rules[i].Exclude {
+				if !slices.Contains(rules[j].Include, excluded) {
+					continue
 				}
+				// One pattern written twice in one exclude list states the same
+				// contradiction twice; it is reported against its first copy.
+				if slices.Contains(rules[i].Exclude[:k], excluded) {
+					continue
+				}
+				errs = append(errs, fmt.Errorf("check %q: rule %q excludes %q while rule %q includes it; one check cannot both skip and target the same pattern, so remove one", def.Name, rules[i].Name, excluded, rules[j].Name))
 			}
 		}
 	}
 	return errs
 }
 
-// scopesMeet reports whether two rules serve a scope in common.
-func scopesMeet(a, b []Scope) bool {
-	for _, scope := range a {
-		if slices.Contains(b, scope) {
-			return true
+// ruleGate is what one rule of a compared pair gates on: the scopes it serves
+// and its subject reading per scope CLASS - the two readings ruleIdentityOf
+// takes, because the question is the same one, which string a pattern is
+// matched against. The zero value serves no scope and therefore meets nothing.
+type ruleGate struct {
+	scopes []Scope
+	name   string // read at every scope but the archive-member and repository ones
+	path   string // read at the archive-member and repository scopes
+}
+
+// meets reports whether two rules gate the same strings anywhere: a scope both
+// serve, over the subject each of them reads there. The scopes are walked over
+// the same switch compileRuleSelectors compiles by.
+func (g ruleGate) meets(other ruleGate) bool {
+	for _, scope := range g.scopes {
+		if !slices.Contains(other.scopes, scope) {
+			continue
+		}
+		switch scope {
+		case ScopeArchiveMember, ScopeRepository:
+			if g.path == other.path {
+				return true
+			}
+		default:
+			if g.name == other.name {
+				return true
+			}
 		}
 	}
 	return false
