@@ -294,6 +294,92 @@ func benchmarkPDFRulesFanout(b *testing.B, ruleCount int) {
 func BenchmarkPDFRulesFanout1(b *testing.B) { benchmarkPDFRulesFanout(b, 1) }
 func BenchmarkPDFRulesFanout3(b *testing.B) { benchmarkPDFRulesFanout(b, 3) }
 
+// The name-rule fanout: one rule of a PARAMETER-LESS check versus three, over
+// one file set. Where the keyword fanout above shares an acquisition, there is
+// nothing to share here - the check reads the file name - so what three rules
+// cost over one is three scans of that name and three copies of every finding.
+//
+// benchNameCheck is the check the pair is stated over. Its finding path
+// allocates - the offending runes are accumulated into the message - so a
+// repeated finding costs what it costs; the selection pass
+// (BenchmarkFilterChecksForFiles) and the end-to-end pipeline
+// (BenchmarkApplyAllChecks) declare the same check, so the three sets of
+// numbers are about one check.
+const benchNameCheck = "HasOnlyASCII"
+
+// benchNameRuleSpecs are rules of ONE parameter-less check that the loader
+// accepts as DIFFERENT rules while all of them match the same files. A check
+// reading no parameters leaves nothing but the selector fields in a rule's
+// identity (see ruleIdentity), so what separates these three is the two fields
+// that do no work without a pattern to apply them to: the case folding, and the
+// subject a pattern would be read from. None of them declares an include or an
+// exclude, so every one of these gates admits every file.
+var benchNameRuleSpecs = []config.RuleSpec{
+	{Name: "ascii file names", Check: benchNameCheck, Enabled: true},
+	{Name: "ascii file names, folded", Check: benchNameCheck, Enabled: true, IgnoreCase: true},
+	{Name: "ascii file names, by path", Check: benchNameCheck, Enabled: true, Subject: "path"},
+}
+
+// benchNameFiles is a data publication's order of magnitude, and enough names
+// that one pass outweighs the timer. One in five of them carries a non-ASCII
+// character, so benchNameFindings - the findings ONE rule produces over the set
+// - keeps the finding path part of what is measured.
+const (
+	benchNameFiles    = 200
+	benchNameFindings = benchNameFiles / 5
+)
+
+// benchNameFileSet builds names, not files: a name check reads structs.File and
+// never the disk.
+func benchNameFileSet() []structs.File {
+	exts := [...]string{"csv", "txt", "xlsx", "md"}
+	sites := [...]string{"lake_zurich", "greifensee", "sempachersee", "hallwilersee"}
+	files := make([]structs.File, benchNameFiles)
+	for i := range files {
+		name := fmt.Sprintf("%s_profile_%04d.%s", sites[i%len(sites)], i, exts[i%len(exts)])
+		if i%5 == 0 {
+			name = fmt.Sprintf("messwerte_grösse_%s_%04d.%s", sites[i%len(sites)], i, exts[i%len(exts)])
+		}
+		files[i] = structs.File{Name: name, Path: "/data/" + name, RelPath: name}
+	}
+	return files
+}
+
+// benchNameRules binds the first n rule specs through the REAL Compile, so the
+// fanout runs what a config saying that would dispatch - and n rules of one
+// check reach the plan only because the loader finds them distinct.
+func benchNameRules(b *testing.B, n int) (CheckDef, *Batch, []*BoundRule) {
+	b.Helper()
+	def, rules, batch := bindTestRule(b, benchNameCheck, config.Config{Rules: benchNameRuleSpecs[:n]}, ScopeFile)
+	if len(rules) != n {
+		b.Fatalf("expected %d bound rules at the file scope, got %d", n, len(rules))
+	}
+	return def, batch, rules
+}
+
+func benchmarkNameRules(b *testing.B, ruleCount int) {
+	files := benchNameFileSet()
+	def, batch, rules := benchNameRules(b, ruleCount)
+
+	// Every rule reports on every non-ASCII name, so one such name yields one
+	// finding per rule - the repetition a merged scan is stated against.
+	want := ruleCount * benchNameFindings
+	b.ReportAllocs()
+	for b.Loop() {
+		found := 0
+		for _, file := range files {
+			found += len(def.RunFile(context.Background(), file, ScopeFile, batch, rules))
+		}
+		if found != want {
+			b.Fatalf("expected %d findings, got %d - the benchmark measures the wrong thing", want, found)
+		}
+		benchMsgSink += found
+	}
+}
+
+func BenchmarkNameRules1(b *testing.B) { benchmarkNameRules(b, 1) }
+func BenchmarkNameRules3(b *testing.B) { benchmarkNameRules(b, 3) }
+
 // TestArchiveBudgetIndependentOfRuleCount is the acceptance criterion the
 // benchmarks cannot state: an archive is opened and walked ONCE per (file,
 // check), so its member and memory budgets are charged once however many rules
