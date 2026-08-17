@@ -108,11 +108,32 @@ func RuleSpecs(cfg *config.Config, reg Registry) ([]config.RuleSpec, error) {
 // on the day someone re-enables it.
 func duplicateRuleErrors(rules []config.RuleSpec, def CheckDef) []error {
 	identities := make([]ruleIdentity, len(rules))
+	resolved := make([]bool, len(rules))
 	for i, rule := range rules {
-		identities[i] = ruleIdentityOf(rule, def)
+		scopes, err := ruleScopes(rule, def)
+		if err != nil {
+			// A scope list that does not resolve leaves every scope-dependent
+			// reading of the rule undecided, so there is no identity to compare -
+			// and comparing one anyway made two rules collide over a scope name
+			// neither of them serves.
+			//
+			// This is the one fault the load does NOT report in full: Compile
+			// reports the same ruleScopes error, so no bad config gets through,
+			// but a genuine twin sharing that scope typo goes unreported until
+			// the typo is fixed and the load rerun - two cycles where the rest of
+			// this file promises one.
+			continue
+		}
+		identities[i], resolved[i] = ruleIdentityOf(rule, scopes), true
 	}
 	var errs []error
 	for j := 1; j < len(identities); j++ {
+		if !resolved[j] {
+			continue
+		}
+		// An unresolved i needs no guard of its own: its identity is the zero
+		// value, which no resolved identity equals - Check is the check's name
+		// and Scope a non-nil slice.
 		for i := 0; i < j; i++ {
 			if reflect.DeepEqual(identities[i], identities[j]) {
 				errs = append(errs, fmt.Errorf("rule %q: resolves to the same rule as %q; remove one", rules[j].Name, rules[i].Name))
@@ -151,9 +172,10 @@ type ruleIdentity struct {
 	PathSubject string
 }
 
-// ruleIdentityOf reads one declared spec into its identity key, so a comparison
-// sees what a rule DOES rather than how it was spelled. Three no-op config
-// edits that would evade a raw compare are resolved:
+// ruleIdentityOf reads one declared spec, under the scopes ruleScopes resolved
+// it to, into its identity key, so a comparison sees what a rule DOES rather
+// than how it was spelled. Three no-op config edits that would evade a raw
+// compare are resolved:
 //
 //  1. Empty against nil: an omitted key decodes to nil, a declared empty list
 //     (include = [], params = []) to a non-nil empty value, so the two are one
@@ -161,13 +183,12 @@ type ruleIdentity struct {
 //     [rule.params] TABLE is not one of these shapes - it decodes to ONE empty
 //     parameter set, which every check but the secret scan refuses at bind -
 //     and is therefore kept as declared.
-//  2. Scope: an omitted (or empty) scope resolves through DefaultScopes, the
-//     resolution Compile plans by, so scope = [] and a spelled-out list
-//     of every supported scope are one set. The names are sorted either way -
-//     declaration order is no part of the meaning.
+//  2. Scope: the key carries the RESOLVED scopes, the ones Compile plans by, so
+//     an omitted scope and a spelled-out list of every supported scope are one
+//     set. The names are sorted - declaration order is no part of the meaning.
 //  3. Subject: one reading per scope class, over the same scope switch
 //     CompileRuleSelectors compiles by - see ruleIdentity.
-func ruleIdentityOf(spec config.RuleSpec, def CheckDef) ruleIdentity {
+func ruleIdentityOf(spec config.RuleSpec, scopes []Scope) ruleIdentity {
 	id := ruleIdentity{
 		Check:      spec.Check,
 		Enabled:    spec.Enabled,
@@ -182,22 +203,9 @@ func ruleIdentityOf(spec config.RuleSpec, def CheckDef) ruleIdentity {
 	if len(spec.Params) > 0 {
 		id.Params = spec.Params
 	}
-	scopes := DefaultScopes(def)
-	names := make([]string, 0, NumScopes)
-	if len(spec.Scope) == 0 {
-		for _, scope := range scopes {
-			names = append(names, scope.String())
-		}
-	} else {
-		names = append(names, spec.Scope...) // never sort the caller's slice
-		scopes = make([]Scope, 0, len(spec.Scope))
-		for _, name := range spec.Scope {
-			// A name no scope answers to is Compile's error to report; here it
-			// is simply a scope no subject can be read from.
-			if scope, err := ParseScope(name); err == nil {
-				scopes = append(scopes, scope)
-			}
-		}
+	names := make([]string, 0, len(scopes))
+	for _, scope := range scopes {
+		names = append(names, scope.String())
 	}
 	sort.Strings(names)
 	id.Scope = names
@@ -217,9 +225,8 @@ func ruleIdentityOf(spec config.RuleSpec, def CheckDef) ruleIdentity {
 
 // DefaultScopes returns the scopes a rule serves when it declares none: the
 // check's own, in dispatch order. It is the ONE statement of that default -
-// Compile resolves a rule's scopes through it and the duplicate refusal
-// normalizes through it - so the plan and the refusal cannot come to disagree
-// about what an undeclared scope means.
+// ruleScopes resolves through it - so the plan and the duplicate refusal cannot
+// come to disagree about what an undeclared scope means.
 func DefaultScopes(def CheckDef) []Scope {
 	var scopes []Scope
 	for scope := Scope(0); scope < NumScopes; scope++ {

@@ -136,6 +136,46 @@ func TestCompileRejectsUnsupportedScope(t *testing.T) {
 	}
 }
 
+// TestScopeResolutionAgreesAcrossIdentityAndPlan pins the single reading of a
+// declared scope list: the duplicate refusal and the plan resolve it through
+// the same ruleScopes, so a name no scope answers to is reported once, as the
+// unknown scope it is, and never as a duplicate rule beside it. An identity
+// pass that skipped the bad name found the two rules identical and told the
+// operator to remove one that does its own work.
+func TestScopeResolutionAgreesAcrossIdentityAndPlan(t *testing.T) {
+	// One pair of rules, spelled two ways. They differ in a scope-DEPENDENT
+	// field - the subject, which at file scope reads the name when undeclared
+	// and the path when spelled out - so under a scope name that resolves to
+	// nothing neither reading is decided.
+	pair := func(scope string) config.Config {
+		return anchoredConfig([]config.RuleSpec{
+			{Name: "keywords-by-name", Check: "IsFreeOfKeywords", Scope: []string{scope}, Enabled: true, Include: []string{"data/"}},
+			{Name: "keywords-by-path", Check: "IsFreeOfKeywords", Scope: []string{scope}, Enabled: true, Include: []string{"data/"}, Subject: "path"},
+		})
+	}
+
+	cfg := pair("fil")
+	_, err := Compile(&cfg, NewRegistry())
+	if err == nil {
+		t.Fatal("a scope name no scope answers to must fail the compile")
+	}
+	if want := `unknown scope "fil"`; !strings.Contains(err.Error(), want) {
+		t.Errorf("the load must report %s: %v", want, err)
+	}
+	if strings.Contains(err.Error(), "resolves to the same rule as") {
+		t.Errorf("two rules the misspelled scope left unresolved must not be reported as duplicates: %v", err)
+	}
+
+	// The premise of the arm above: spelled correctly, the scope decides the
+	// subject reading and the pair is two DIFFERENT rules. Were they one rule
+	// under every reading, the silence above would be a genuine twin's report
+	// swallowed rather than a fault reported once.
+	cfg = pair("file")
+	if _, err := Compile(&cfg, NewRegistry()); err != nil {
+		t.Errorf("the same pair under a scope that resolves gates two different subjects, so both must load: %v", err)
+	}
+}
+
 // TestCompileAggregatesLoadErrors pins that a config author is told every fault
 // at once - all bad patterns, and every rule that names no check - rather than
 // one per run.

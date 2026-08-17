@@ -160,10 +160,12 @@ func Compile(cfg *config.Config, reg Registry) (*Plan, error) {
 }
 
 // ruleScopes resolves the scopes a rule serves: the ones it names, or - through
-// DefaultScopes, so the plan and the load's duplicate refusal read an
-// undeclared scope the same way - the check's own when it names none. A scope
-// the check does not support is a load error, and so is a scope named twice -
-// the rule would be added to that scope's plan twice, doubling its findings.
+// DefaultScopes - the check's own when it names none. It is the ONE reading of
+// a declared scope list: Compile plans by it and the duplicate refusal takes a
+// rule's identity under it, so a name no scope answers to cannot be a load
+// error on one path and a silent omission on the other. A scope the check does
+// not support is a load error, and so is a scope named twice - the rule would
+// be added to that scope's plan twice, doubling its findings.
 func ruleScopes(spec config.RuleSpec, def CheckDef) ([]Scope, error) {
 	if len(spec.Scope) == 0 {
 		return DefaultScopes(def), nil
