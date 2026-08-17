@@ -269,7 +269,7 @@ func bindKeywords(spec config.RuleSpec, _ *config.GeneralConfig) (*BoundRule, er
 	if err != nil {
 		return nil, err
 	}
-	bound := make([]keywordSet, 0, len(sets))
+	units := make([]unit, 0, len(sets))
 	for i, set := range sets {
 		keywords, err := stringList(set, "keywords", i)
 		if err != nil {
@@ -282,54 +282,55 @@ func bindKeywords(spec config.RuleSpec, _ *config.GeneralConfig) (*BoundRule, er
 		if len(keywords) == 0 {
 			continue // an empty list matched nothing before and matches nothing now
 		}
-		bound = append(bound, keywordSet{matcher: optimization.GetMatcher(keywords), info: info})
+		bound := keywordSet{matcher: optimization.GetMatcher(keywords), info: info}
+		units = append(units, unit{
+			scan: func(ctx context.Context, _ structs.File, body, lowered [][]byte, report reporting) []structs.Message {
+				return scanKeywords(ctx, bound, body, lowered, report)
+			},
+		})
 	}
 	return &BoundRule{
 		Rule:  spec.Name,
 		Rules: []string{spec.Name},
-		apply: func(ctx context.Context, _ structs.File, body, lowered [][]byte, report reporting) []structs.Message {
-			return scanKeywords(ctx, bound, body, lowered, report)
-		},
+		units: units,
 	}, nil
 }
 
-// scanKeywords matches every bound set against every body entry and reports
-// each finding the way the acquisition demands. ctx is observed per body entry
+// scanKeywords matches one bound set against every body entry and reports each
+// finding the way the acquisition demands. ctx is observed per body entry
 // (OOXML blocks, PDF pages) - never inside the byte scan - and a fired ctx
 // returns the findings collected so far.
 //
 // The findings carry NO Source: boxing a File into one costs an allocation, so
 // the caller stamps it through sourceAll and the acquisition pays for one box
-// however many rules report on it.
-func scanKeywords(ctx context.Context, sets []keywordSet, body, lowered [][]byte, report reporting) []structs.Message {
+// however many units report on it.
+func scanKeywords(ctx context.Context, set keywordSet, body, lowered [][]byte, report reporting) []structs.Message {
 	var messages []structs.Message
-	for _, set := range sets {
-		for idx, entry := range body {
-			if ctx.Err() != nil {
-				return messages
+	for idx, entry := range body {
+		if ctx.Err() != nil {
+			return messages
+		}
+		if len(entry) == 0 {
+			continue
+		}
+		matches := set.matcher.FindMatchesWithOriginalCaseLowered(entry, lowered[idx])
+		if len(matches) == 0 {
+			continue
+		}
+		if report == reportEach {
+			for _, match := range matches {
+				messages = append(messages, structs.Message{Content: set.info + " '" + match + "'"})
 			}
-			if len(entry) == 0 {
-				continue
-			}
-			matches := set.matcher.FindMatchesWithOriginalCaseLowered(entry, lowered[idx])
-			if len(matches) == 0 {
-				continue
-			}
-			if report == reportEach {
-				for _, match := range matches {
-					messages = append(messages, structs.Message{Content: set.info + " '" + match + "'"})
-				}
-				continue
-			}
-			found := joinMatches(matches)
-			switch report {
-			case reportIndexed:
-				messages = append(messages, structs.Message{Content: set.info + " '" + found + "' in sheet/paragraph/table " + fmt.Sprintf("%d", idx)})
-			case reportPaged:
-				messages = append(messages, structs.Message{Content: fmt.Sprintf("%s '%s' (page %d)", set.info, found, idx+1)})
-			default:
-				messages = append(messages, structs.Message{Content: set.info + " '" + found + "'"})
-			}
+			continue
+		}
+		found := joinMatches(matches)
+		switch report {
+		case reportIndexed:
+			messages = append(messages, structs.Message{Content: set.info + " '" + found + "' in sheet/paragraph/table " + fmt.Sprintf("%d", idx)})
+		case reportPaged:
+			messages = append(messages, structs.Message{Content: fmt.Sprintf("%s '%s' (page %d)", set.info, found, idx+1)})
+		default:
+			messages = append(messages, structs.Message{Content: set.info + " '" + found + "'"})
 		}
 	}
 	return messages
@@ -418,7 +419,7 @@ func keywordsInArchive(ctx context.Context, file structs.File, batch *Batch, rul
 	// the iterator was given (batch.admit), which Compile decided over the whole
 	// plan - never of how many rules this archive happened to match.
 	perRule := batch.perRule
-	// One body per archive, not per member: apply reads it and never retains it.
+	// One body per archive, not per member: a scan reads it and never retains it.
 	body, lowered := make([][]byte, 1), make([][]byte, 1)
 	var memberLower []byte
 
@@ -436,11 +437,11 @@ func keywordsInArchive(ctx context.Context, file structs.File, batch *Batch, rul
 		memberLower = lowerInto(memberLower, fileContent)
 		body[0], lowered[0] = fileContent, memberLower
 
-		// The member's File is built only when a rule actually reports: it costs
-		// more than scanning a small member, and the scan itself does not need
-		// it (the member gate matches the member path directly). The scan leaves
-		// Source unset, so this stamp is what attributes the finding to the
-		// member it was found in.
+		// The member's File is built only when a unit actually reports: it costs
+		// more than scanning a small member, and no unit here reads the file it
+		// is handed (the member gate matched the member path directly), so the
+		// scans are given the zero File. The scan leaves Source unset, so this
+		// stamp is what attributes the finding to the member it was found in.
 		var archivedFile structs.File
 		var src structs.Source // boxed once per member, shared by all findings
 		built := false
@@ -449,27 +450,29 @@ func keywordsInArchive(ctx context.Context, file structs.File, batch *Batch, rul
 			if perRule && !rule.matchMember(fileName) {
 				continue
 			}
-			found := rule.apply(ctx, archivedFile, body, lowered, reportJoined)
-			if len(found) == 0 {
-				continue
+			for _, u := range rule.units {
+				found := u.scan(ctx, structs.File{}, body, lowered, reportJoined)
+				if len(found) == 0 {
+					continue
+				}
+				if !built {
+					archivedFile = structs.ToFileWithDisplay(
+						file.Path,          // path stays as archive path
+						fileName,           // name is the path within archive
+						fileName,           // display name
+						int64(fileSize),    // size
+						"",                 // suffix (auto-detected)
+						archiveDisplayName, // archive name reference
+					)
+					archivedFile.RelPath = fileName // the member path, verbatim
+					src = archivedFile
+					built = true
+				}
+				for i := range found {
+					found[i].Source = src
+				}
+				messages = append(messages, tag(rule.Rules, found)...)
 			}
-			if !built {
-				archivedFile = structs.ToFileWithDisplay(
-					file.Path,          // path stays as archive path
-					fileName,           // name is the path within archive
-					fileName,           // display name
-					int64(fileSize),    // size
-					"",                 // suffix (auto-detected)
-					archiveDisplayName, // archive name reference
-				)
-				archivedFile.RelPath = fileName // the member path, verbatim
-				src = archivedFile
-				built = true
-			}
-			for i := range found {
-				found[i].Source = src
-			}
-			messages = append(messages, tag(rule.Rules, found)...)
 		}
 	}
 
@@ -535,8 +538,10 @@ func keywordsInFile(ctx context.Context, file structs.File, batch *Batch, rules 
 		lowered := lowerAll(body)
 		var src structs.Source // the file boxed once, shared by every finding
 		for _, rule := range rules {
-			found := sourceAll(&src, file, rule.apply(ctx, file, body, lowered, reportJoined))
-			messages = append(messages, tag(rule.Rules, found)...)
+			for _, u := range rule.units {
+				found := sourceAll(&src, file, u.scan(ctx, file, body, lowered, reportJoined))
+				messages = append(messages, tag(rule.Rules, found)...)
+			}
 		}
 	} else {
 		// Handle binary files
@@ -546,7 +551,9 @@ func keywordsInFile(ctx context.Context, file structs.File, batch *Batch, rules 
 		}
 		lowered := lowerAll(body)
 		for _, rule := range rules {
-			messages = append(messages, tag(rule.Rules, rule.apply(ctx, file, body, lowered, reportIndexed))...)
+			for _, u := range rule.units {
+				messages = append(messages, tag(rule.Rules, u.scan(ctx, file, body, lowered, reportIndexed))...)
+			}
 		}
 	}
 	return messages
@@ -559,23 +566,25 @@ func streamKeywords(ctx context.Context, file structs.File, rules []*BoundRule) 
 	var messages []structs.Message
 	var src structs.Source // the file boxed once, shared by every finding
 	seen := make(map[string]struct{})
-	// One wrapper pair for the whole file, not one per chunk: apply borrows both
-	// and never retains them.
+	// One wrapper pair for the whole file, not one per chunk: a scan borrows
+	// both and never retains them.
 	body, loweredBody := make([][]byte, 1), make([][]byte, 1)
 	err := streamChunks(ctx, file.Path, func(chunk, lowered []byte) {
 		body[0], loweredBody[0] = chunk, lowered
 		for _, rule := range rules {
-			found := sourceAll(&src, file, rule.apply(ctx, file, body, loweredBody, reportEach))
-			for _, message := range tag(rule.Rules, found) {
-				// The key is the LOWERED message: findings carry the original
-				// case of the chunk they were found in, so "Admin" in one chunk
-				// and "ADMIN" in another are one finding, reported once.
-				key := rule.Rule + "\x1f" + strings.ToLower(message.Content)
-				if _, duplicate := seen[key]; duplicate {
-					continue
+			for _, u := range rule.units {
+				found := sourceAll(&src, file, u.scan(ctx, file, body, loweredBody, reportEach))
+				for _, message := range tag(rule.Rules, found) {
+					// The key is the LOWERED message: findings carry the original
+					// case of the chunk they were found in, so "Admin" in one chunk
+					// and "ADMIN" in another are one finding, reported once.
+					key := rule.Rule + "\x1f" + strings.ToLower(message.Content)
+					if _, duplicate := seen[key]; duplicate {
+						continue
+					}
+					seen[key] = struct{}{}
+					messages = append(messages, message)
 				}
-				seen[key] = struct{}{}
-				messages = append(messages, message)
 			}
 		}
 	})
@@ -643,8 +652,10 @@ func scanOOXMLFile(ctx context.Context, file structs.File, limits readers.Archiv
 	lowered := lowerAll(content)
 	var src structs.Source // the file boxed once, shared by every finding
 	for _, rule := range rules {
-		found := sourceAll(&src, file, rule.apply(ctx, file, content, lowered, reportIndexed))
-		messages = append(messages, tag(rule.Rules, found)...)
+		for _, u := range rule.units {
+			found := sourceAll(&src, file, u.scan(ctx, file, content, lowered, reportIndexed))
+			messages = append(messages, tag(rule.Rules, found)...)
+		}
 	}
 	return messages, true
 }
@@ -766,8 +777,10 @@ func scanPDFFile(ctx context.Context, file structs.File, archiveLimits readers.A
 	lowered := lowerAll(pages)
 	var src structs.Source // the file boxed once, shared by every finding
 	for _, rule := range rules {
-		found := sourceAll(&src, file, rule.apply(ctx, file, pages, lowered, reportPaged))
-		messages = append(messages, tag(rule.Rules, found)...)
+		for _, u := range rule.units {
+			found := sourceAll(&src, file, u.scan(ctx, file, pages, lowered, reportPaged))
+			messages = append(messages, tag(rule.Rules, found)...)
+		}
 	}
 	return messages, true
 }
@@ -788,31 +801,29 @@ func tryReadBinary(file structs.File) ([][]byte, *structs.Message) {
 	return [][]byte{}, nil
 }
 
-// bindValidName binds one name rule: the disallowed-name lists of all its
-// parameter sets, type-checked here and never asserted again.
+// bindValidName binds one name rule: one unit per parameter set, over the
+// disallowed-name list type-checked here and never asserted again.
 func bindValidName(spec config.RuleSpec, _ *config.GeneralConfig) (*BoundRule, error) {
 	sets, err := ruleSets(spec, "disallowed_names")
 	if err != nil {
 		return nil, err
 	}
-	names := make([][]string, 0, len(sets))
+	units := make([]unit, 0, len(sets))
 	for i, set := range sets {
 		disallowed, err := stringList(set, "disallowed_names", i)
 		if err != nil {
 			return nil, err
 		}
-		names = append(names, disallowed)
+		units = append(units, unit{
+			scan: func(_ context.Context, file structs.File, _, _ [][]byte, _ reporting) []structs.Message {
+				return isValidNameCore(file, disallowed)
+			},
+		})
 	}
 	return &BoundRule{
 		Rule:  spec.Name,
 		Rules: []string{spec.Name},
-		apply: func(_ context.Context, file structs.File, _, _ [][]byte, _ reporting) []structs.Message {
-			var messages []structs.Message
-			for _, disallowed := range names {
-				messages = append(messages, isValidNameCore(file, disallowed)...)
-			}
-			return messages
-		},
+		units: units,
 	}, nil
 }
 

@@ -367,3 +367,31 @@ func TestBindKeywordsMultipleParamSets(t *testing.T) {
 		t.Errorf("each set must report with its own info: %v", msgs)
 	}
 }
+
+// TestBindValidNameMultipleParamSets is the same pin for the check that reads
+// no content: ONE rule carries N disallowed-name lists, and the file is matched
+// against every one of them. Only the first list forbids the folder and only
+// the second the suffix, so a run that stops after one list reports one finding
+// instead of two.
+func TestBindValidNameMultipleParamSets(t *testing.T) {
+	general := &config.GeneralConfig{}
+	def, _ := NewRegistry().Lookup("IsValidName")
+	rule, err := def.Bind(config.RuleSpec{
+		Name: "multi", Check: "IsValidName", Enabled: true,
+		Params: []map[string]interface{}{
+			{"disallowed_names": []string{"__pycache__"}},
+			{"disallowed_names": []string{".Rhistory"}},
+		},
+	}, general)
+	if err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+	file := structs.File{Name: "__pycache__/notes.Rhistory", Path: "__pycache__/notes.Rhistory"}
+	msgs := def.RunFile(context.Background(), file, ScopeFile, newBatch(general), []*BoundRule{rule})
+	if len(msgs) != 2 {
+		t.Fatalf("expected one finding per parameter set, got %v", msgs)
+	}
+	if !strings.Contains(msgs[0].Content, "invalid name") || !strings.Contains(msgs[1].Content, "invalid suffix") {
+		t.Errorf("each set must report its own verdict: %v", msgs)
+	}
+}

@@ -32,9 +32,9 @@ func isFreeOfKeywordsCoreList(file structs.File, keywordList []string, info stri
 	if isBinary {
 		report = reportIndexed
 	}
-	sets := []keywordSet{{matcher: optimization.GetMatcher(keywordList), info: info}}
+	set := keywordSet{matcher: optimization.GetMatcher(keywordList), info: info}
 	var src structs.Source
-	return sourceAll(&src, file, scanKeywords(context.Background(), sets, body, lowerAll(body), report))
+	return sourceAll(&src, file, scanKeywords(context.Background(), set, body, lowerAll(body), report))
 }
 
 func tempFile(content []byte) string {

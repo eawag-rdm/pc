@@ -102,15 +102,22 @@ func TestKeywordScanStopsOnCancellation(t *testing.T) {
 	// The strict subset above proves the SCAN stops finding; it does not prove
 	// the WALK stops, because a scan that returns nothing per member looks the
 	// same from the findings. So cut at the first member and count the
-	// cancellation points the run consults. Measured on this fixture: 3 with the
-	// member-loop break, 6 with it removed (the walk hands over every remaining
-	// member and the scan consults ctx once for each). The budget sits between,
-	// so deleting that break fails this test.
-	const walkStopBudget = 4
+	// cancellation points the run consults. With the member-loop break that is
+	// one walk check, one per unit of the member in progress, and the walk check
+	// that breaks out - u+2. Without it the walk hands over all 5 members this
+	// fixture scans and every unit consults ctx for each - 5u. The budget is
+	// DERIVED from the unit count, because a literal stops guarding as soon as a
+	// parameter set is added: 3u+1 sits between the two for every unit count,
+	// and measures 10 against 5 and 15 at the 3 units this config binds.
+	units := 0
+	for _, rule := range rules {
+		units += len(rule.units)
+	}
+	walkStopBudget := 3*units + 1
 	cut := &errAfter{Context: context.Background(), limit: 1}
 	findings(cut)
 	if cut.calls > walkStopBudget {
-		t.Errorf("the archive walk consulted ctx %d times after being cancelled at its first member (budget %d): it kept walking instead of breaking out", cut.calls, walkStopBudget)
+		t.Errorf("the archive walk consulted ctx %d times after being cancelled at its first member (budget %d for %d units): it kept walking instead of breaking out", cut.calls, walkStopBudget, units)
 	}
 }
 
@@ -126,16 +133,16 @@ func TestScanKeywordsStopsBetweenBodyEntries(t *testing.T) {
 		[]byte("page three mentions a password"),
 		[]byte("page four mentions a password"),
 	}
-	sets := []keywordSet{{matcher: optimization.GetMatcher([]string{"password"}), info: "Possible credentials in file"}}
+	set := keywordSet{matcher: optimization.GetMatcher([]string{"password"}), info: "Possible credentials in file"}
 
-	full := scanKeywords(context.Background(), sets, body, lowerAll(body), reportPaged)
+	full := scanKeywords(context.Background(), set, body, lowerAll(body), reportPaged)
 	if len(full) != len(body) {
 		t.Fatalf("expected one finding per body entry, got %d for %d entries", len(full), len(body))
 	}
 
 	// limit 2: the first two Err() calls report alive, so entries 0 and 1 scan
 	// and the third call cuts the loop.
-	cut := scanKeywords(&errAfter{Context: context.Background(), limit: 2}, sets, body, lowerAll(body), reportPaged)
+	cut := scanKeywords(&errAfter{Context: context.Background(), limit: 2}, set, body, lowerAll(body), reportPaged)
 	if len(cut) != 2 {
 		t.Errorf("cancelled scan returned %d findings, want the 2 collected before the cut: %v", len(cut), cut)
 	}

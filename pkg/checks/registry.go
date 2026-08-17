@@ -142,11 +142,38 @@ const (
 	reportEach
 )
 
-// BoundRule is one rule of one check, produced once at load. Its runner is a
-// closure over this rule's concrete typed parameters - its keywords, its
+// unit is one bound parameter set of one rule: the scan of that set alone,
+// closed over what the set binds - its matcher and info string, its
+// disallowed-name list. A rule's sets are its units, so the set loop is the
+// caller's loop over them rather than a loop inside one closure. Only
+// IsFreeOfKeywords and IsValidName take repeated parameter sets; every other
+// file-scope bind emits exactly one unit, a check that reads no parameters
+// included.
+type unit struct {
+	// scan scans one acquisition: its entries, their shared lowercase copies -
+	// lowered once per acquisition, never once per rule - and how a finding is
+	// reported. Both slices are nil for checks that read no content. ctx is
+	// observed per body entry at most; the name checks ignore it.
+	//
+	// file is the file the acquisition read - the name checks report on it, the
+	// keyword scan ignores it. The archive-member acquisition hands over the
+	// ZERO File: only the keyword check acquires members, and the member's own
+	// File is built after a unit reports, to stamp the finding with.
+	//
+	// CONTRACT: body and lowered are BORROWED for the duration of the call. An
+	// implementation may read them but must never retain them (the archive
+	// acquisition reuses one pair of slices for every member, and the streamed
+	// one hands out the chunk buffer itself).
+	scan func(ctx context.Context, file structs.File, body, lowered [][]byte, report reporting) []structs.Message
+}
+
+// BoundRule is one rule of one check, produced once at load. Its runners are
+// closures over this rule's concrete typed parameters - its keywords, its
 // matcher, its info string, its disallowed-name set - never a sibling field
-// over an interface value. Exactly one of Apply / ApplyRepo is set, matching
-// the CheckDef.
+// over an interface value. A file rule carries units and a repository rule
+// applyRepo, matching the CheckDef, never both - and a keyword rule that binds
+// no unit at all (no parameter set, or every set's keyword list empty) carries
+// neither and reports nothing, exactly as its empty matcher list did.
 type BoundRule struct {
 	Rule string // rule name: diagnostics, and the streaming dedup key
 
@@ -174,16 +201,11 @@ type BoundRule struct {
 	// file's Name is the full member path).
 	baseNames bool
 
-	// apply scans one acquisition: its entries, their shared lowercase copies -
-	// lowered once per acquisition, never once per rule - and how a finding is
-	// reported. Both slices are nil for checks that read no content. ctx is
-	// observed per body entry at most; the name checks ignore it.
-	//
-	// CONTRACT: body and lowered are BORROWED for the duration of the call. An
-	// implementation may read them but must never retain them (the archive
-	// acquisition reuses one pair of slices for every member, and the streamed
-	// one hands out the chunk buffer itself).
-	apply     func(ctx context.Context, file structs.File, body, lowered [][]byte, report reporting) []structs.Message
+	// units are this rule's parameter sets, one scan each, in declared order:
+	// every one of them runs over every acquisition the rule is handed. They are
+	// built at bind and IMMUTABLE afterwards - several workers scan the same
+	// rule at once, so whatever a scan mutates stays local to the call.
+	units     []unit
 	applyRepo func(ctx context.Context, repository structs.Repository, batch *Batch, sel *selector.Selector) []structs.Message
 }
 
@@ -345,7 +367,9 @@ func NewRegistry() Registry {
 func runNameRules(ctx context.Context, file structs.File, _ Scope, _ *Batch, rules []*BoundRule) []structs.Message {
 	var messages []structs.Message
 	for _, rule := range rules {
-		messages = append(messages, tag(rule.Rules, rule.apply(ctx, file, nil, nil, reportJoined))...)
+		for _, u := range rule.units {
+			messages = append(messages, tag(rule.Rules, u.scan(ctx, file, nil, nil, reportJoined))...)
+		}
 	}
 	return messages
 }
@@ -371,9 +395,11 @@ func bindNoParams(check func(structs.File) []structs.Message) func(config.RuleSp
 		return &BoundRule{
 			Rule:  spec.Name,
 			Rules: []string{spec.Name},
-			apply: func(_ context.Context, file structs.File, _, _ [][]byte, _ reporting) []structs.Message {
-				return check(file)
-			},
+			units: []unit{{
+				scan: func(_ context.Context, file structs.File, _, _ [][]byte, _ reporting) []structs.Message {
+					return check(file)
+				},
+			}},
 		}, nil
 	}
 }
