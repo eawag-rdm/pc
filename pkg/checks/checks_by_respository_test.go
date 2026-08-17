@@ -2,6 +2,7 @@ package checks
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/eawag-rdm/pc/pkg/config"
@@ -140,5 +141,38 @@ func TestReadMeContainsTOC(t *testing.T) {
 			result := runRepoRule(t, "ReadMeContainsTOC", readmeTestConfig(), tt.repository)
 			assert.Len(t, result, len(tt.expected))
 		})
+	}
+}
+
+// TestReadMeContainsTOCUnreadableReadme pins the unreadable-readme path: a
+// directory at the readme's path fails os.ReadFile for every user, root
+// included, where a mode-0 file would not.
+func TestReadMeContainsTOCUnreadableReadme(t *testing.T) {
+	readmePath := filepath.Join(t.TempDir(), "readme.md")
+	if err := os.Mkdir(readmePath, 0o755); err != nil {
+		t.Fatalf("Failed to create directory at readme path: %v", err)
+	}
+
+	repository := structs.Repository{Files: []structs.File{
+		{Name: "readme.md", Path: readmePath},
+		{Name: "file1.txt"},
+	}}
+
+	result := runRepoRule(t, "ReadMeContainsTOC", readmeTestConfig(), repository)
+
+	if len(result) != 1 {
+		t.Fatalf("expected exactly 1 skip message, got %d: %+v", len(result), result)
+	}
+	if !result[0].Skipped {
+		t.Errorf("expected Skipped=true, got %+v", result[0])
+	}
+	if result[0].Reason != "Skipped table-of-contents check: the ReadMe could not be read." {
+		t.Errorf("unexpected skip reason: %q", result[0].Reason)
+	}
+	if src, ok := result[0].Source.(structs.File); !ok || src.Path != readmePath {
+		t.Errorf("expected File source with path %q, got %+v; a Repository source would leave the skip anonymous downstream", readmePath, result[0].Source)
+	}
+	if result[0].Content != result[0].Reason {
+		t.Errorf("expected Content to repeat the reason %q, got %q", result[0].Reason, result[0].Content)
 	}
 }
