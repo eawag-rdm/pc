@@ -117,14 +117,14 @@ give each instance its own directory.
 
 **Secret scanner (betterleaks).** *Dormant since 2026-08-04: the scan ships
 disabled (`enabled = false`) because it is too slow for our latency target;
-the binary stays bundled and the check reactivates by flipping the attr.* The
-image bundles the
+the binary stays bundled and the check reactivates by flipping the rule's own
+`enabled` key.* The image bundles the
 [betterleaks](https://github.com/betterleaks/betterleaks) binary for the
-`[test.IsFreeOfSecrets]` check - version and SHA-256 are pinned via the
+`IsFreeOfSecrets` `[[rule]]` - version and SHA-256 are pinned via the
 `BETTERLEAKS_VERSION` / `BETTERLEAKS_SHA256` build args in the `Dockerfile`
-(checksum-verified at build). The scanner runs offline, capped at
-`attrs.maxProcs` cores and `attrs.timeoutSeconds` per analysis. `maxProcs` is
-itself capped by the **configured** `[general] maxCores` (default 4): the
+(checksum-verified at build). The scanner runs offline, capped at its
+`[rule.params]` `maxProcs` cores and `timeoutSeconds` per analysis. `maxProcs`
+is itself capped by the **configured** `[general] maxCores` (default 4): the
 scanner is a child process and inherits none of the server's CPU budget, so the
 smaller of those two values wins - not the budget the server settled on, which
 may be lower. Note that the scan runs alongside the server's own pools, so a

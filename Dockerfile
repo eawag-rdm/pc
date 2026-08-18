@@ -52,7 +52,7 @@ RUN apk add --no-cache ca-certificates && \
     chown pc:pc /var/lib/pc
 
 COPY --from=build /out/pc-server /usr/local/bin/pc-server
-# Secret scanner used by the IsFreeOfSecrets check ([test.IsFreeOfSecrets] in pc.toml).
+# Secret scanner used by the IsFreeOfSecrets check (its [[rule]] in pc.toml).
 COPY --from=betterleaks /usr/local/bin/betterleaks /usr/local/bin/betterleaks
 
 # Runs unprivileged as the pc user built above. The listen address comes from

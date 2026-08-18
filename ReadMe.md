@@ -52,13 +52,12 @@ go build -o pc-server ./cmd/pc-server
 Both binaries share one `pc.toml` (template: `pc.toml.example`):
 
 - `[general]` - scan/memory limits (both)
-- `[test.<CheckName>]` - per-check settings; `blacklist`/`whitelist` take
-  **regex** file-path patterns, `keywords`/`disallowed_names` are **literal**
-  strings (both). `[test.IsFreeOfKeywords]`, `[test.IsValidName]` and
-  `[test.HasReadme]` are required. `[test.IsFreeOfSecrets]` is optional and
-  enables the betterleaks secret scan (`attrs = {enabled, binary,
-  timeoutSeconds, maxProcs}`); the CLI needs the scanner binary on PATH, the
-  Docker image ships it.
+- `[[rule]]` - one named instance of a check: `name`, `check`, and
+  `include`/`exclude` **regex** patterns selecting the files it runs on (both).
+  A rule for `IsFreeOfKeywords`, `IsValidName` and `HasReadme` is required; one
+  for `IsFreeOfSecrets` is optional and turns on the betterleaks secret scan
+  (the CLI needs the scanner on PATH or a path given in `binary`; the Docker
+  image ships it).
 - `[collector.*]` - collector settings; the CKAN URL, server-side token and
   FileStore path live in `[collector.CkanCollector]` (both)
 - `[operation.main]` - which collector the CLI uses (CLI only)

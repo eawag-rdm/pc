@@ -28,26 +28,33 @@ If no `-config` flag is given, `./pc.toml` is used.
 |---|---|---|
 | `[general]` | both | memory/scan limits, summary text |
 | `[[rule]]` | both | check rules - the check-configuration surface (see below) |
-| `[test.<CheckName>]` | both | legacy per-check configuration, superseded by `[[rule]]` |
 | `[collector.LocalCollector]` | CLI | local file system collector; `attrs`: `maxFolderDepth` (0 = top level only, N = descend N levels; boundary-depth folders are listed but not entered), `maxFileCount` (walk stops after N collected entries, 0 = no cap), `includeFolders` (legacy, true = unlimited recursion; an explicit `maxFolderDepth` wins) |
 | `[collector.CkanCollector]` | both | CKAN URL, server-side token, TLS verify, storage path |
 | `[operation.main]` | CLI | which collector the CLI uses |
 | `[server]`, `[server.smtp]` | server | listen address, rate limits, timeouts, CORS, admin alerts |
 
-**Startup validation:** the `[[rule]]` surface is checked exhaustively; the rest
-of the file is not. Both binaries compile the whole rule set before anything is
-scanned, so inside a rule an unknown key, a wrong-typed value, an unknown
-parameter key, an uncompilable pattern, an unknown check or an unknown scope
-refuses the start - and so do an unknown top-level table, a `[test.X]` section
-naming no known check, and any wrong-typed `[server]` value.
+**Startup validation:** the `[[rule]]` surface is checked exhaustively, the rest
+of the file only in places. Both binaries compile the whole rule set before
+anything is scanned, so inside a rule an unknown key, a wrong-typed value, an
+unknown parameter key, an uncompilable pattern, an unknown check or an unknown
+scope refuses the start - and so do an unknown top-level table, any wrong-typed
+`[server]` value, an `attrs` value of an unsupported type (`maxFileCount = 1.5`
+fails), a negative `maxArchiveMemberCount`, `maxPDFPages`, `maxPDFFileSize` or
+`maxCores`, and a secret-scan `timeoutSeconds` longer than the server's
+`requestTimeoutSeconds` - that last one for whoever loads the file, the CLI
+included. The retired `[test.<CheckName>]` surface is an unknown top-level
+table today, so a config still carrying one stops with the error
+`unknown top-level config key(s): test`.
 
 Everywhere else a key nobody reads is **silently ignored**: unknown keys in
-`[general]`, `[server]`, `[server.smtp]`, `[collector.X].attrs` and `[test.X]`
-do nothing, and the older `[general]` byte sizes keep their default when
-wrong-typed (`maxArchiveFileSize = "10MB"`; `maxArchiveMemberCount`,
-`maxPDFPages`, `maxPDFFileSize` and `maxCores` do fail). The worst of it is a
-legacy `[test.X] whitelist = [1, 2]`: both elements are dropped, the filter ends
-up empty, and the check runs **unfiltered**.
+`[general]`, `[server]`, `[server.smtp]` and `[collector.X].attrs` do nothing,
+as do keys sitting directly under `[collector.X]` rather than in its `attrs`
+table and anything in `[operation.X]` but `collector`. The older `[general]`
+byte sizes keep their default when wrong-typed (`maxArchiveFileSize = "10MB"`;
+`maxArchiveMemberCount`, `maxPDFPages`, `maxPDFFileSize` and `maxCores` do
+fail). The worst of it is a misspelled `[server]` key: `listenaddress` (lower
+case `a`) never reaches the server, which then listens on the default
+`127.0.0.1:8080` and is unreachable from outside its container.
 
 Faults are aggregated per stage: one failed load names every rule that stage
 faulted on. It does not cross stages - a decode fault (an unknown or wrong-typed
@@ -105,10 +112,9 @@ include = ["^notebooks/"]
   exclude pattern matches is out, whatever `include` says. An absent or empty
   `include` admits everything. The same pattern in both lists is a load error -
   exclude wins, so the rule could never match it.
-- `enabled = false` - the rule stays out of the run and its check is not
-  dispatched for it. It is validated at load all the same, so a config the
-  checks could not honour fails now rather than on the day someone re-enables
-  the rule.
+- `enabled = false` - the rule does not run (a check with another enabled rule
+  still does). It is validated at load all the same, so a config the checks
+  could not honour fails now rather than on the day someone re-enables the rule.
 - `[[rule.params]]` - the check's own parameters, type-checked at load by the
   check itself; an unknown parameter key fails the load. Repeating the table
   declares several parameter sets on one rule - each keyword group above reports
@@ -127,10 +133,10 @@ What `subject` selects, per scope:
 A declared `subject` holds for every scope the rule serves; only the default
 varies by scope. The two path defaults are the strings those phases address in
 practice: they are why `include = ["data/"]` on an archive-member rule matches
-member paths as written instead of silently matching nothing, and why a migrated
-repository pattern like `^raw/` keeps matching. An archive-member rule selects
-**members, not archives** - every archive is opened, and the patterns decide
-which members inside it are read.
+member paths as written instead of silently matching nothing, and why a
+repository pattern like `^raw/` is read against the relative path. An
+archive-member rule selects **members, not archives** - every archive is opened,
+and the patterns decide which members inside it are read.
 
 Parameters are never patterns: `keywords`, `disallowed_names` and `readme_names`
 are literal strings (keywords are matched case-insensitively). `"pass.*"` looks
@@ -138,16 +144,16 @@ for the literal text `pass.*`.
 
 ### Checks that must be declared
 
-`IsFreeOfKeywords`, `IsValidName` and `HasReadme` must be declared - by a
-`[[rule]]` or by a legacy `[test.X]` section - or the load fails. It is the
-declaration that is required, not the parameters: a rule with no
-`[[rule.params]]` loads, and `HasReadme` then falls back to its built-in readme
-filename list (`pc.toml.example` ships exactly that rule). A keyword or name
-rule without parameters has nothing to look for and reports nothing.
+`IsFreeOfKeywords`, `IsValidName` and `HasReadme` must be declared by a
+`[[rule]]` or the load fails. It is the declaration that is required, not the
+parameters: a rule with no `[[rule.params]]` loads, and `HasReadme` then falls
+back to its built-in readme filename list (`pc.toml.example` ships exactly that
+rule). A keyword or name rule without parameters has nothing to look for and
+reports nothing.
 
 Every other check runs whether or not a config mentions it: pc synthesizes a
 default rule named `default:<CheckName>` with an empty selector and the check's
-built-in defaults, so deleting a section never silently deletes a check. The
+built-in defaults, so deleting a rule never silently deletes a check. The
 exception is `IsFreeOfSecrets`, whose synthesized rule is disabled - the secret
 scan is opt-in (see below).
 
@@ -155,60 +161,14 @@ scan is opt-in (see below).
 readme, and a second definition is refused. `ReadMeContainsTOC` takes no
 parameters of its own - it reads that rule's `readme_names`.
 
-### Legacy `[test.<CheckName>]` sections
+### Converting a pre-`[[rule]]` config
 
-The `[test.X]` surface still works and will be removed in a future release. Each
-section accepts `blacklist`, `whitelist`, `keywordArguments` and an `attrs`
-table, and only one of `blacklist`/`whitelist` may be non-empty (a `[[rule]]`
-may set both, since `exclude` wins). Only `IsFreeOfSecrets` reads `attrs`: it is
-where the legacy surface carries the scan's knobs and its `enabled` flag.
-**One surface per check:** configuring the same check with a `[[rule]]` *and* a
-`[test.X]` section is a load error.
-
-The translation is mechanical - `whitelist` → `include`, `blacklist` →
-`exclude`, one `keywordArguments` entry → one `[[rule.params]]` table:
-
-```toml
-[test.IsFreeOfKeywords]
-blacklist = [".*\\.log$", "temp.*"]
-keywordArguments = [
-    { keywords = ["password", "api_key", "secret"], info = "Sensitive data found:" }
-]
-```
-
-```toml
-[[rule]]
-name    = "sensitive-content"
-check   = "IsFreeOfKeywords"
-exclude = [".*\\.log$", "temp.*"]
-  [[rule.params]]
-  keywords = ["password", "api_key", "secret"]
-  info     = "Sensitive data found:"
-```
-
-**The patterns may behave differently afterwards.** A legacy list carries two
-historical readings at once, while a `[[rule]]`'s patterns have exactly one -
-regexes against the rule's declared subject:
-
-- At `file` and `repository` scope both surfaces read the list as regexes over
-  the same subject, so those translate unchanged.
-- At `archive-file-list` scope a legacy list is matched against the **whole
-  member path**; a `[[rule]]` with the default `subject = "name"` is matched
-  against the member's **base name**. A pattern that named a directory (`^docs/`)
-  needs `subject = "path"` after the translation.
-- At `archive-member` scope a legacy list is read **twice**: as regexes over the
-  archive's own name, which decides whether the archive is opened at all, and as
-  **case-insensitive literal substrings** over the member path, which decides
-  which members are read. A `[[rule]]` has only the second reading - its
-  dispatch gate admits every archive - and reads the patterns as case-sensitive
-  regexes, so metacharacters have to be escaped (as a regex, `data.csv` also
-  matches `dataXcsv`) and `ignoreCase = true` restores the case folding. A
-  pattern that named an **archive** therefore stops gating anything: over a
-  `bundle.zip` of three files, `blacklist = ["bundle.zip"]` scanned none of them
-  while `exclude = ["bundle.zip"]` scans all three, and `whitelist =
-  ["notes.txt"]` never opened the archive while the translated `include` (plus
-  `ignoreCase`) scans the one member it names. This is the one translation that
-  silently **widens** the scan - nothing errors.
+`whitelist` → `include`, `blacklist` → `exclude`, and one `keywordArguments`
+entry → one `[[rule.params]]` table. **Redo archive-member rules by hand:** the
+old list gated the archive by its own name *and* matched members as
+case-insensitive literal substrings, while a `[[rule]]` gates members only and
+reads its patterns as case-sensitive regexes - so a mechanical translation
+silently **widens** the scan, and nothing errors.
 
 ### Two identical rules are refused
 
@@ -440,9 +400,8 @@ the same findings, indexed by four different questions:
 and one line per affected subject, the message text staying in the two sections
 above. A rule that found nothing does not appear, and neither does a finding that
 no configured rule owns: a skip acknowledgement, a CKAN metadata finding, or a
-finding of a synthesized `default:` rule. On a `[test.X]` config every rule is
-named after its check, so the section restates `details_check_focused`; it earns
-its place when a check carries several rules.
+finding of a synthesized `default:` rule. The section earns its place when a
+check carries several rules.
 
 ### Using the CLI against CKAN
 
