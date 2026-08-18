@@ -152,9 +152,9 @@ const (
 
 // SMTPConfig holds the [server.smtp] sub-section: a plain SMTP relay (no auth)
 // used to email admins when the server returns a server-fault response
-// (internal_error, recovered panic, or resource_unreadable). Every such fault
-// is reported - there is no cap. Alerts are DISABLED unless Host is set and To
-// is non-empty.
+// (internal_error, recovered panic, or resource_unreadable). Every such fault is
+// reported, except that resource_unreadable alerts at most once per package per
+// hour. Alerts are DISABLED unless Host is set and To is non-empty.
 type SMTPConfig struct {
 	Host string   // SMTP relay host; empty disables admin alerts
 	Port int      // SMTP relay port (default 25)
@@ -164,7 +164,7 @@ type SMTPConfig struct {
 
 // ServerConfig holds the configuration for the HTTP server (the [server] section).
 type ServerConfig struct {
-	ListenAddress             string      // Address the server listens on (host:port). The server takes no flags; this is the sole source.
+	ListenAddress             string      // Address the server listens on (host:port). No setting is overridable by a flag (-config names the file, -help prints usage), so this is the sole source.
 	TrustProxyHeaders         bool        // Whether to trust proxy-set client IP headers
 	TrustedProxies            []string    // CIDRs allowed to set X-Real-IP
 	AllowedOrigins            []string    // CORS allow-list of origin URLs
