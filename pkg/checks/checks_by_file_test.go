@@ -204,13 +204,33 @@ func TestIsFileNameTooLong(t *testing.T) {
 				{Content: "File name is too long.", Source: structs.File{Name: strings.Repeat("👍", 17)}},
 			},
 		},
+		// An archive member's name is its whole path: only the last component
+		// is the file's name, so a deep member with a short name is silent -
+		// whichever separator the member's path is stored with.
+		{
+			name:     "Archive member path over the limit, base name under it",
+			file:     structs.File{Name: strings.Repeat("nested/", 12) + "notes.txt"},
+			expected: nil,
+		},
+		{
+			name:     "Backslash-separated member path over the limit, base name under it",
+			file:     structs.File{Name: strings.Repeat("nested\\", 12) + "notes.txt"},
+			expected: nil,
+		},
+		{
+			name: "Archive member base name over the limit",
+			file: structs.File{Name: "bundle/raw/" + strings.Repeat("d", 65)},
+			expected: []structs.Message{
+				{Content: "File name is too long.", Source: structs.File{Name: "bundle/raw/" + strings.Repeat("d", 65)}},
+			},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := isFileNameTooLong(tt.file)
 			if len(result) != len(tt.expected) {
-				t.Errorf("expected %v, got %v", tt.expected, result)
+				t.Fatalf("expected %v, got %v", tt.expected, result)
 			}
 			for i := range result {
 				if result[i].Content != tt.expected[i].Content {

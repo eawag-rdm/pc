@@ -52,8 +52,15 @@ func hasFileNameSpecialChars(file structs.File) []structs.Message {
 	return []structs.Message{}
 }
 
+// isFileNameTooLong measures the last path component of file.Name, cut at the
+// last separator of either kind: at archive-file-list scope the name is the
+// whole member path, and a member buried deep in an archive does not have a
+// long name. A local file's name is that component already; a CKAN resource
+// name is whatever the depositor typed and is measured the same way. The
+// character checks deliberately read every component instead - an invalid
+// character is invalid wherever in the path it sits.
 func isFileNameTooLong(file structs.File) []structs.Message {
-	if len(file.Name) > 64 {
+	if len(file.Name[strings.LastIndexAny(file.Name, "/\\")+1:]) > 64 {
 		return []structs.Message{{Content: "File name is too long.", Source: file}}
 	}
 	return []structs.Message{}
