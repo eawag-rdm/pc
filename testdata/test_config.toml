@@ -6,15 +6,16 @@
 # unanchored, case-sensitive unless ignoreCase = true, against subject "name"
 # or "path"; exclude wins) and its own [rule.params] (repeated [[rule.params]]
 # = several parameter sets on one rule). keywords / disallowed_names /
-# readme_names are literal strings, never regexes. A check without any rule
-# runs with its defaults (IsFreeOfKeywords, IsValidName and HasReadme must be
-# declared); HasNoWhiteSpace, HasFileNameSpecialChars, IsFileNameTooLong and
+# readme_names are literal strings, never regexes. A check with no rule of its
+# own runs with its defaults, except IsFreeOfSecrets, whose synthesized rule is
+# disabled; IsFreeOfKeywords, IsValidName and HasReadme must be declared.
+# HasNoWhiteSpace, HasFileNameSpecialChars, IsFileNameTooLong and
 # ReadMeContainsTOC are left rule-less here on purpose - they pin default-rule
 # synthesis.
 #####################################################################################
 
 [general]
-# Max unpack-candidate members per archive for content checks
+# Max members per archive: content scan counts unpack candidates, name walk counts all entries
 maxArchiveMemberCount = 1000
 # Page ceiling per PDF (longer PDFs are skipped whole)
 maxPDFPages = 10
@@ -26,7 +27,7 @@ summaryMinGroupSizeForTruncation = 3
 
 [server]
 # pc-server HTTP API settings. Most values mirror the built-in defaults;
-# allowedOrigins is illustrative (the built-in default is empty/nil).
+# allowedOrigins and trustedProxies are illustrative (both default to nil).
 listenAddress           = "127.0.0.1:8080"
 trustProxyHeaders       = true
 trustedProxies          = ["127.0.0.1/32"]

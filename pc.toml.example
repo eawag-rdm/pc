@@ -25,20 +25,21 @@
 #   include    regex patterns; only matching files are checked
 #   exclude    regex patterns; matching files are skipped (exclude wins)
 #   ignoreCase true = case-insensitive patterns (default false)
-#   enabled    false = rule off, check not dispatched (default true)
+#   enabled    false = the rule does not run (default true)
 #
 # Patterns are RE2 regexes, matched unanchored and case-sensitively unless
 # ignoreCase is set. keywords/disallowed_names/readme_names are literal
 # strings, never regexes. A repeated [[rule.params]] block declares several
-# parameter sets on one rule. Most checks without a rule run with defaults;
-# IsFreeOfKeywords, IsValidName and HasReadme must be declared. Two rules of
-# one check that differ only in their name are refused.
+# parameter sets on one rule. Most checks without a rule run with defaults (not
+# IsFreeOfSecrets: its synthesized rule is disabled); IsFreeOfKeywords,
+# IsValidName and HasReadme must be declared. Two rules of one check that
+# differ only in their name are refused.
 #####################################################################################
 
 [general]
 # Maximum size for individual files in archives (bytes) - 10MB
 maxArchiveFileSize = 10485760
-# Maximum total memory for archive processing (bytes) - 500MB
+# Maximum total memory for archive processing (bytes) - 512MB
 maxTotalArchiveMemory = 536870912
 # Max members per archive: content scan counts unpack candidates, name walk counts all entries (0 = default 1000, not unlimited)
 maxArchiveMemberCount = 1000
@@ -58,9 +59,10 @@ summaryMaxIssuesBeforeTruncation = 5
 summaryMinGroupSizeForTruncation = 3
 
 [server]
-# Settings for the pc-server HTTP API. The server takes NO command-line flags;
-# every setting (including the listen address) lives here. The CKAN URL is NOT
-# configured here - it is read from [collector.CkanCollector.attrs] url.
+# Settings for the pc-server HTTP API. No setting is overridable by a flag
+# (-config names this file, -help prints usage); everything, the listen address
+# included, lives here. The CKAN URL is NOT configured here - it is read from
+# [collector.CkanCollector.attrs] url.
 # Address the server listens on (host:port)
 listenAddress      = "127.0.0.1:8080"
 # Whether to trust proxy-set client IP headers (X-Real-IP)
@@ -104,8 +106,9 @@ resultCacheMaxAgeHours = 0
 # [server.smtp] - optional admin-alert relay (a sub-section of [server], so it
 # MUST come after the [server] keys above). When enabled, the server emails this
 # list on a SERVER-FAULT response: internal_error, a recovered panic, or
-# resource_unreadable. Plain relay, NO authentication. Every fault is reported
-# (there is no rate cap). Leave host empty (or omit this whole block) to DISABLE
+# resource_unreadable. Plain relay, NO authentication. Every fault alerts, except
+# resource_unreadable: at most one per package per hour, the swallowed count
+# riding the next alert. Leave host empty (or omit this whole block) to DISABLE
 # alerts. The mail carries no secrets - only the request_id, code, method, path
 # and package_id; the full cause/stack stays in the logs, keyed by request_id.
 [server.smtp]
