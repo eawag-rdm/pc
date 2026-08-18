@@ -479,6 +479,52 @@ func TestMergeBitMatchesReportIndex(t *testing.T) {
 	}
 }
 
+// TestPairScansDiffer pins the predicate the overlap notice is gated on: it
+// answers from the merged units, so what decides a pair is the parameter sets
+// its two rules bound and nothing else. The fixture binds "password" twice,
+// "token" once and "shared" three times, and its last rule binds an empty
+// keyword list - which the config surface accepts and which binds no unit at
+// all.
+func TestPairScansDiffer(t *testing.T) {
+	set := func(keywords ...string) map[string]interface{} {
+		return map[string]interface{}{"keywords": keywords, "info": "found"}
+	}
+	entry := planEntry(t, compileAnchored(t, anchoredConfig([]config.RuleSpec{
+		{Name: "csv-secrets", Check: "IsFreeOfKeywords", Enabled: true, Include: []string{`\.csv$`},
+			Params: []map[string]interface{}{set("password"), set("shared")}},
+		{Name: "alpha-secrets", Check: "IsFreeOfKeywords", Enabled: true, Include: []string{`^alpha`},
+			Params: []map[string]interface{}{set("password"), set("shared")}},
+		{Name: "alpha-tokens", Check: "IsFreeOfKeywords", Enabled: true, Include: []string{`^alpha`},
+			Params: []map[string]interface{}{set("token"), set("shared")}},
+		{Name: "no-keywords", Check: "IsFreeOfKeywords", Enabled: true, Include: []string{`^beta`},
+			Params: []map[string]interface{}{set()}},
+	})), "IsFreeOfKeywords", ScopeFile)
+
+	for _, tc := range []struct {
+		name  string
+		entry PlanEntry
+		a, b  int
+		want  bool
+	}{
+		// The node also holds "token", which only the third rule bound, and
+		// "shared", which all three did: neither is a scan one of these two
+		// drives without the other.
+		{"the same sets are one scan", entry, 0, 1, false},
+		{"different sets are two, whatever they share", entry, 0, 2, true},
+		{"a rule that bound no unit drives no scan", entry, 0, 3, false},
+		// A hand-built entry answers rather than panicking, and it answers the
+		// way the unmerged repository scope does.
+		{"no merge node", PlanEntry{Batch: &Batch{}}, 0, 1, true},
+		{"no batch", PlanEntry{}, 0, 1, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.entry.PairScansDiffer(tc.a, tc.b); got != tc.want {
+				t.Errorf("rules %d and %d: PairScansDiffer is %v, want %v", tc.a, tc.b, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestCompileRefusesMoreThan64RulesOfOneCheck pins the merge mask's edge: an
 // entry's contributor bits are a uint64, so a 65th rule of one check in one
 // scope is a LOAD ERROR rather than a second, untested pass on the

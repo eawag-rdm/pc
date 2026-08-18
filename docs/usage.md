@@ -185,9 +185,10 @@ written out.
 It is a **syntactic** comparison, deliberately: nothing static can decide whether
 two different patterns select the same files. So a pair made distinct by a field
 that does no work - an `ignoreCase` with no patterns to fold, a `subject` no
-pattern reads - or by an extra pattern that matches nothing does load, and then
-reports everything twice. That case is the overlap warning's, below: it judges
-what the rules actually matched rather than how they were written.
+pattern reads - or by an extra pattern that matches nothing does load. It still
+carries the same parameters, so it is one scan reporting one finding that names
+both rules: the cost is the redundant name, not a doubled finding, and the
+overlap warning below does not fire on it either.
 
 ### Rule diagnostics
 
@@ -200,12 +201,13 @@ configuration.
   its scope. Usually a typo in a pattern, or a rule left behind by a config
   edit. A phase that never ran reports nothing: a package with no archives says
   nothing about archive rules.
-- **Overlap** - two rules of one check both applied to the same file. The file is
-  read once, but both rules report on it, so findings double. This is frequently
-  deliberate - the two keyword rules above overlap on every notebook by design -
-  so the warning informs rather than accuses. Ignore it when the two rules carry
-  different parameters and you want both verdicts; act on it when they carry the
-  same ones, because then one of them is redundant.
+- **Overlap** - two rules of one check applied to the same file and scan for
+  different things, so that file can be reported twice. Rules carrying the same
+  parameters are one scan and one finding naming both, so they never earn the
+  notice. What is left is frequently deliberate - the two keyword rules above
+  overlap on every notebook by design - so the warning informs rather than
+  accuses. Ignore it when you want both verdicts on that file; act on it when one
+  of the two rules was meant for other files.
 
 Both are reported at `file` and `archive-file-list` scope only. At
 `archive-member` scope the dispatch gate admits every archive and the patterns

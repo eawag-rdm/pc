@@ -86,16 +86,17 @@ func ruleSpecs(cfg *config.Config, reg Registry) ([]config.RuleSpec, error) {
 }
 
 // duplicateRuleErrors refuses a check's rules that differ ONLY in their name:
-// the config says one thing twice and every finding the pair produces is
-// reported twice. The comparison is SYNTACTIC, over identity keys, so what it
-// catches is one rule written twice UP TO SPELLING - ruleIdentityOf resolves
-// the no-op spellings (an empty list against an omitted one, scope order, the
-// subject default) and nothing further. A pair made distinct by a field that
-// does no work here (ignoreCase with no pattern to fold, a subject with no
-// pattern to read it from) or by a pattern that matches nothing passes it and
-// still reports every finding twice; that is the run-scoped rule-overlap
-// notice's subject (pkg/utils/rule_report.go), which judges what the rules
-// actually matched.
+// the config says one thing twice, and the pair binds ONE scan whose every
+// finding then carries both names. The comparison is SYNTACTIC, over identity
+// keys, so what it catches is one rule written twice UP TO SPELLING -
+// ruleIdentityOf resolves the no-op spellings (an empty list against an omitted
+// one, scope order, the subject default) and nothing further. A pair made
+// distinct by a field that does no work here (ignoreCase with no pattern to
+// fold, a subject with no pattern to read it from) or by a pattern that matches
+// nothing passes it and is merged like any other repeat, so what it costs is
+// the redundant name and not a second scan. Nothing reports it at run time
+// either: the rule-overlap notice fires only on rules that scan for DIFFERENT
+// things (pkg/utils/rule_report.go).
 //
 // It runs on the DECLARED specs, before shareReadmeNames rewrites params,
 // provenance and (for a synthesized TOC) selectors - a comparison after that

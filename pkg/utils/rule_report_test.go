@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -27,6 +28,22 @@ func asciiRule(name string, scope []string, include ...string) config.RuleSpec {
 		Scope:   scope,
 		Enabled: true,
 		Include: include,
+	}
+}
+
+// keywordRule is one [[rule]] for the parameterised keyword check at file
+// scope, as the config surface produces it. What two rules of the check dedup
+// on is the whole bound set - checks.keywordSet interns the matcher AND the
+// info string - so info is fixed here, which leaves the keyword list as the one
+// thing a case varies to make two rules one scan or two.
+func keywordRule(name string, keywords []string, include ...string) config.RuleSpec {
+	return config.RuleSpec{
+		Name:    name,
+		Check:   "IsFreeOfKeywords",
+		Scope:   []string{"file"},
+		Enabled: true,
+		Include: include,
+		Params:  []map[string]interface{}{{"keywords": keywords, "info": "found"}},
 	}
 }
 
@@ -195,9 +212,10 @@ func TestRuleReportDeadRuleWarnsOnce(t *testing.T) {
 }
 
 // TestRuleReportOverlapOnFilteredPath pins the overlap notice on the selection
-// pass that actually matches: two rules of one check admitting the same file are
-// reported ONCE for the whole run - per (scope, check, rule pair) - however many
-// files the two share.
+// pass that actually matches: the pass records the pair, and the notice stays
+// silent because these two rules of the parameterless name check bound the same
+// (empty) parameter set - they are ONE scan, and the file both admit carries one
+// finding naming both.
 func TestRuleReportOverlapOnFilteredPath(t *testing.T) {
 	files := ruleReportFiles(t, "alpha.csv", "alpha_two.csv", "beta.csv", "gamma.txt")
 	cfg := planConfig(nil)
@@ -206,25 +224,114 @@ func TestRuleReportOverlapOnFilteredPath(t *testing.T) {
 		asciiRule("alpha-rule", []string{"file"}, `^alpha`),
 	}
 	plan := compilePlan(t, cfg)
+	entries := plan.Scope(checks.ScopeFile)
 
 	// Anti-vacuity: two files carry BOTH rules, so a per-file notice would show
 	// up as two.
-	if allUnfiltered(plan.Scope(checks.ScopeFile)) {
+	if allUnfiltered(entries) {
 		t.Fatal("the fixture must take the filtered selection path")
+	}
+	// The other half: the pair really is recorded here, so the silence below is
+	// the gate's rather than a selection pass that never saw the two meet.
+	marks := newRuleMarks(entries)
+	filterChecksForFiles(entries, checks.ScopeFile, files, marks)
+	if !pairSeenIn(t, marks, entries, "HasOnlyASCII", 0, 1) {
+		t.Fatal("the filtered pass must record two rules that admitted the same file")
 	}
 
 	_, diags := ApplyAllChecks(context.Background(), cfg, plan, files)
 
-	assertRuleDiags(t, diags, structs.DiagWarning, 1, "csv-rule", "alpha-rule")
+	assertRuleDiags(t, diags, structs.DiagWarning, 0, "csv-rule", "alpha-rule")
 	assertNoDeadRule(t, diags, "csv-rule")
 	assertNoDeadRule(t, diags, "alpha-rule")
+}
+
+// TestRuleReportOverlapFollowsTheUnits pins both halves of the gate on ONE
+// entry, where the parameters are the only thing that differs: the first two
+// rules bind the same keyword list, so they share the scan it compiles into and
+// a file both admit carries one finding naming both - nothing to warn about. The
+// third scans for something else, so a file it shares with either really is
+// reported twice, and both of those pairs are due a notice. Each firing pair
+// shares TWO files, and each is reported once: the notice is per (scope, check,
+// rule pair) for the whole run.
+func TestRuleReportOverlapFollowsTheUnits(t *testing.T) {
+	files := ruleReportFiles(t, "alpha.csv", "alpha_two.csv", "beta.csv", "gamma.txt")
+	// ruleReportFiles writes nothing a keyword rule matches, so alpha.csv - the
+	// file both same-keyword rules admit - is given the keyword they share.
+	if err := os.WriteFile(files[0].Path, []byte("password\n"), 0o600); err != nil {
+		t.Fatalf("write the shared keyword: %v", err)
+	}
+	cfg := planConfig(nil)
+	cfg.Rules = []config.RuleSpec{
+		keywordRule("csv-secrets", []string{"password"}, `\.csv$`),
+		keywordRule("alpha-secrets", []string{"password"}, `^alpha`),
+		keywordRule("alpha-tokens", []string{"token"}, `^alpha`),
+	}
+	plan := compilePlan(t, cfg)
+	entries := plan.Scope(checks.ScopeFile)
+
+	// Anti-vacuity: the two same-keyword rules did meet on a file, so their
+	// silence is the gate's.
+	marks := newRuleMarks(entries)
+	filterChecksForFiles(entries, checks.ScopeFile, files, marks)
+	if !pairSeenIn(t, marks, entries, "IsFreeOfKeywords", 0, 1) {
+		t.Fatal("the fixture must make the two rules of one keyword list meet on a file")
+	}
+
+	msgs, diags := ApplyAllChecks(context.Background(), cfg, plan, files)
+
+	assertRuleDiags(t, diags, structs.DiagWarning, 0, "csv-secrets", "alpha-secrets")
+	assertRuleDiags(t, diags, structs.DiagWarning, 1, "csv-secrets", "alpha-tokens")
+	assertRuleDiags(t, diags, structs.DiagWarning, 1, "alpha-secrets", "alpha-tokens")
+
+	// The silence's other half, on the findings rather than on the marks: the
+	// keyword both rules bound is read once and reported once, naming both.
+	var shared []structs.Message
+	for _, msg := range msgs {
+		if slices.Contains(msg.Rules, "csv-secrets") && slices.Contains(msg.Rules, "alpha-secrets") {
+			shared = append(shared, msg)
+		}
+	}
+	if len(shared) != 1 {
+		t.Fatalf("the shared keyword must be reported once naming both rules, got %d of %v", len(shared), msgs)
+	}
+}
+
+// TestRuleReportOverlapNeedsASharedFile pins the gate's other half: its two
+// conditions are AND-ed, and this pair satisfies only one of them. The two
+// keyword rules scan for different things, so a file both admitted really would
+// be reported twice - but their selectors are disjoint, so there is no such
+// file and nothing may claim there is.
+func TestRuleReportOverlapNeedsASharedFile(t *testing.T) {
+	files := ruleReportFiles(t, "alpha.csv", "beta.txt")
+	cfg := planConfig(nil)
+	cfg.Rules = []config.RuleSpec{
+		keywordRule("csv-secrets", []string{"password"}, `\.csv$`),
+		keywordRule("txt-tokens", []string{"token"}, `\.txt$`),
+	}
+	plan := compilePlan(t, cfg)
+
+	// Anti-vacuity: on the units this pair is exactly the one due a notice, so
+	// the silence below is the file the two never shared and nothing else.
+	if !planEntry(t, plan, "IsFreeOfKeywords", checks.ScopeFile).PairScansDiffer(0, 1) {
+		t.Fatal("the fixture must make the two rules scan for different things")
+	}
+
+	_, diags := ApplyAllChecks(context.Background(), cfg, plan, files)
+
+	assertRuleDiags(t, diags, structs.DiagWarning, 0, "csv-secrets", "txt-tokens")
+	// Each rule did admit a file of its own, so neither is silent for being dead.
+	assertNoDeadRule(t, diags, "csv-secrets")
+	assertNoDeadRule(t, diags, "txt-tokens")
 }
 
 // TestRuleReportUnfilteredFastPathMarksEveryRule pins the OTHER branch of
 // filterChecksForFiles: when no rule filters at all, selection is the identity
 // and the pass answers for the whole scope once rather than once per (file,
 // rule). Two unfiltered rules of one check leave no dead-rule warning behind AND
-// meet on every file there is, so the overlap notice is due exactly once.
+// are recorded as meeting on a file - once for the pass, not once per file it
+// skipped matching. No notice comes of it: both rules bind the parameterless
+// name check, so they are one scan.
 func TestRuleReportUnfilteredFastPathMarksEveryRule(t *testing.T) {
 	files := ruleReportFiles(t, "alpha.csv", "beta.csv", "gamma.txt")
 	cfg := planConfig(nil)
@@ -260,13 +367,18 @@ func TestRuleReportUnfilteredFastPathMarksEveryRule(t *testing.T) {
 			}
 		}
 	}
+	// The pair the pass never matched for is recorded all the same: every rule
+	// admits every file, so the two met on each of the three.
+	if !pairSeenIn(t, marks, entries, "HasOnlyASCII", 0, 1) {
+		t.Error("the fast path must record the pair for the pass it skipped matching")
+	}
 
 	_, diags := ApplyAllChecks(context.Background(), cfg, plan, files)
 	assertNoDeadRule(t, diags, "wide-one")
 	assertNoDeadRule(t, diags, "wide-two")
-	// Three files, one notice: the fast path records the pair for the pass, not
-	// for each file it skipped matching.
-	assertRuleDiags(t, diags, structs.DiagWarning, 1, "wide-one", "wide-two")
+	// One scan, so nothing to warn about: the two rules bind the same (empty)
+	// parameter set and a file they both admit carries one finding naming both.
+	assertRuleDiags(t, diags, structs.DiagWarning, 0, "wide-one", "wide-two")
 }
 
 // TestRuleReportEmptyPackageStaysSilent pins both halves of the fast path's
@@ -599,8 +711,13 @@ func TestRuleReportFoldAccumulatesAcrossArchives(t *testing.T) {
 	// The hits: alpha.txt admitted both live rules during the first walk.
 	assertNoDeadRule(t, diags, "list-alpha")
 	assertNoDeadRule(t, diags, "list-txt")
-	// The pair: recorded on alpha.txt, in the first walk's buffer only.
-	assertRuleDiags(t, diags, structs.DiagWarning, 1, "list-alpha", "list-txt")
+	// The pair: recorded on alpha.txt, in the first walk's buffer only, and read
+	// off the TOTALS - the two rules bind the parameterless name check and so are
+	// one scan, which keeps the notice they would otherwise earn silent.
+	if !pairSeenIn(t, sink.rules.scopes[checks.ScopeArchiveFileList], entries, "HasOnlyASCII", 0, 1) {
+		t.Error("the pair the first walk recorded must survive the fold of the second")
+	}
+	assertRuleDiags(t, diags, structs.DiagWarning, 0, "list-alpha", "list-txt")
 }
 
 // TestRuleReportLocalBuffersArePrivate pins the property the fold above RESTS on,

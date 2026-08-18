@@ -21,6 +21,39 @@ type PlanEntry struct {
 	Rules []*BoundRule
 }
 
+// PairScansDiffer reports whether rules a and b of this entry drive at least one
+// scan the other does not. Rules that bound the same parameter set share every
+// unit, so a file both admit yields ONE finding naming both - there is nothing
+// for an overlap notice to warn about. Rules whose parameters differ each keep a
+// unit the other does not, and a file both admit can be reported twice. A rule
+// that bound no unit at all - an empty keyword list binds none - drives no scan,
+// and what runs no scan can double nothing.
+//
+// a and b are positions in Rules, the same ones pkg/utils' rule report indexes
+// its marks by: rule i contributed the units whose mask carries 1<<i.
+func (e PlanEntry) PairScansDiffer(a, b int) bool {
+	if e.Batch == nil || e.Batch.merged == nil {
+		// In a Compile-built plan that is the unmerged scope - repository -
+		// which hands every rule its own pass, so any two of them scan
+		// separately. An entry assembled by hand (NewPlan) can carry neither,
+		// and a diagnostic is the wrong place to panic over a wiring bug.
+		return true
+	}
+	merged := e.Batch.merged
+	pair := uint64(1)<<a | uint64(1)<<b
+	// contributed collects the two bits that drive any scan at all, sole the
+	// ones that drive a scan the other does not.
+	var contributed, sole uint64
+	for i := range merged.units {
+		shared := merged.units[i].mask & pair
+		contributed |= shared
+		if shared != 0 && shared != pair {
+			sole |= shared
+		}
+	}
+	return contributed == pair && sole != 0
+}
+
 // Plan is the compiled rule set, per dispatch scope. It is built once at
 // startup by each frontend, hard-failing on error, and is immutable afterwards,
 // so every worker reads it without locking. It is carried explicitly - it never

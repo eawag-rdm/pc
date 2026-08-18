@@ -239,6 +239,12 @@ func (r *ruleReport) fold(scope checks.Scope, m *ruleMarks, exercised bool) {
 // would pass for the wrong reason ever after.
 const deadRuleReason = "matched no file this run"
 
+// differentScans is the verdict half of the overlap notice - what
+// PairScansDiffer decided about the pair - kept beside deadRuleReason so the
+// two verdicts this report can reach are worded in one place rather than inside
+// the format strings that carry them.
+const differentScans = "scan for different things"
+
 // diagnostics returns the run's rule diagnostics, built through the same
 // constructor diagSink.add uses. They are RETURNED rather than pushed into the
 // sink: the report hangs off the sink, and a child writing back into its parent
@@ -285,14 +291,15 @@ func (r *ruleReport) diagnostics() []structs.Diagnostic {
 			for a := 0; a < k-1; a++ {
 				base := pairBase(a, k)
 				for b := a + 1; b < k; b++ {
-					if seen[base+b] {
+					if seen[base+b] && entry.PairScansDiffer(a, b) {
 						// A legitimate configuration (two keyword rules with
 						// different keyword lists overlap by design), so the
-						// wording informs rather than accuses. It is the rule
-						// APPLICATION that doubles, not the acquisition:
-						// checks.CheckDef.RunFile reads the file once per (file,
-						// check) and hands that content to every matched rule, so
-						// what the overlap can duplicate is findings.
+						// wording informs rather than accuses. What doubles is
+						// the FINDINGS, and only for rules that scan for
+						// different things: the file is read once per (file,
+						// check), and rules that bound the same parameters share
+						// one scan and report one finding naming all of them -
+						// PairScansDiffer keeps those pairs out.
 						//
 						// A WARNING because it is a verdict on the
 						// configuration and the operator is the one who can act
@@ -301,7 +308,7 @@ func (r *ruleReport) diagnostics() []structs.Diagnostic {
 						// rest (pkg/output/json/formatter.go), and every other
 						// CLI renderer is built from that JSON.
 						items = append(items, newDiagnosticAt(structs.DiagWarning, "",
-							fmt.Sprintf("rules %q and %q of check %s (scope %s) both apply to the same file - it is read once, but both rules report on it", entry.Rules[a].Rule, entry.Rules[b].Rule, entry.Def.Name, scope), stamp))
+							fmt.Sprintf("rules %q and %q of check %s (scope %s) select overlapping files and %s, so a file both admit can be reported twice", entry.Rules[a].Rule, entry.Rules[b].Rule, entry.Def.Name, scope, differentScans), stamp))
 					}
 				}
 			}
