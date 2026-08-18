@@ -329,13 +329,29 @@ func TestHasFileNameSpecialChars(t *testing.T) {
 			file:     structs.File{Name: "café.txt"},
 			expected: nil,
 		},
+		// 7) An archive member's name is its whole path: the separator is not a
+		// special character, so a clean path is silent and an offending
+		// character is reported wherever in the path it sits - in a directory
+		// component too, which is the name of a folder the archive ships.
+		{
+			name:     "Archive member path is clean",
+			file:     structs.File{Name: "bundle/raw/2026/report.csv"},
+			expected: nil,
+		},
+		{
+			name: "Special char in a directory component",
+			file: structs.File{Name: "bundle/raw[1]/report.csv"},
+			expected: []structs.Message{
+				{Content: "File name contains invalid character: '['", Source: structs.File{Name: "bundle/raw[1]/report.csv"}},
+			},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := hasFileNameSpecialChars(tt.file)
 			if len(result) != len(tt.expected) {
-				t.Errorf("expected %v, got %v", tt.expected, result)
+				t.Fatalf("expected %v, got %v", tt.expected, result)
 			}
 			for i := range result {
 				if result[i].Content != tt.expected[i].Content {

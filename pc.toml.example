@@ -10,8 +10,8 @@
 #              HasNoWhiteSpace          file, archive-file-list
 #              IsFreeOfKeywords         file, archive-member
 #              IsValidName              file, archive-file-list
-#              HasFileNameSpecialChars  file
-#              IsFileNameTooLong        file
+#              HasFileNameSpecialChars  file, archive-file-list
+#              IsFileNameTooLong        file, archive-file-list
 #              IsFreeOfSecrets          repository
 #              HasReadme                repository
 #              ReadMeContainsTOC        repository
@@ -22,6 +22,8 @@
 #              archive-file-list: name = member basename (default), path = member path
 #              archive-member: selector addresses members, default subject path
 #              repository: path = the file's relative path (default)
+#              at archive-file-list IsFileNameTooLong measures the member's
+#              base name, the character checks read the whole member path
 #   include    regex patterns; only matching files are checked
 #   exclude    regex patterns; matching files are skipped (exclude wins)
 #   ignoreCase true = case-insensitive patterns (default false)

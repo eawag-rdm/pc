@@ -373,12 +373,15 @@ func countInvocations(plan *checks.Plan) map[string]int {
 }
 
 // TestExecutedCheckMultisetUnchanged is R7's guard: over every shipped config,
-// the engine must invoke exactly the (check, scope) pairs the five dispatch
-// tables invoked before the rework. The expectations are derived from those
-// tables - six file checks, three over the archive file list (once per member),
-// the keyword check over archive members, two repository checks, and the leak
-// scan disabled everywhere - and IsArchiveFreeOfKeywords appears where it now
-// belongs, as IsFreeOfKeywords in the archive-member scope.
+// the engine must invoke exactly the (check, scope) pairs the registry
+// declares - the pairs the five dispatch tables invoked before the rework plus
+// HasFileNameSpecialChars and IsFileNameTooLong over the archive file list,
+// where a member's name is checked for special characters and for length like
+// any other name. That is six file checks, the five name checks over the
+// archive file list (once per member), the keyword check over archive members,
+// two repository checks, and the leak scan disabled everywhere -
+// IsArchiveFreeOfKeywords appearing where it now belongs, as IsFreeOfKeywords
+// in the archive-member scope.
 //
 // The section-less checks are the point: ReadMeContainsTOC has no section in
 // pc.toml or pc.toml.example, and HasNoWhiteSpace, HasFileNameSpecialChars and
@@ -388,18 +391,20 @@ func countInvocations(plan *checks.Plan) map[string]int {
 func TestExecutedCheckMultisetUnchanged(t *testing.T) {
 	const files, members, archives = 4, 4, 2
 	unfiltered := map[string]int{
-		"HasOnlyASCII@file":                 files,
-		"HasNoWhiteSpace@file":              files,
-		"IsValidName@file":                  files,
-		"HasFileNameSpecialChars@file":      files,
-		"IsFileNameTooLong@file":            files,
-		"IsFreeOfKeywords@file":             files,
-		"HasOnlyASCII@archive-file-list":    members,
-		"HasNoWhiteSpace@archive-file-list": members,
-		"IsValidName@archive-file-list":     members,
-		"IsFreeOfKeywords@archive-member":   archives,
-		"HasReadme@repository":              1,
-		"ReadMeContainsTOC@repository":      1,
+		"HasOnlyASCII@file":                         files,
+		"HasNoWhiteSpace@file":                      files,
+		"IsValidName@file":                          files,
+		"HasFileNameSpecialChars@file":              files,
+		"IsFileNameTooLong@file":                    files,
+		"IsFreeOfKeywords@file":                     files,
+		"HasOnlyASCII@archive-file-list":            members,
+		"HasNoWhiteSpace@archive-file-list":         members,
+		"IsValidName@archive-file-list":             members,
+		"HasFileNameSpecialChars@archive-file-list": members,
+		"IsFileNameTooLong@archive-file-list":       members,
+		"IsFreeOfKeywords@archive-member":           archives,
+		"HasReadme@repository":                      1,
+		"ReadMeContainsTOC@repository":              1,
 	}
 	// testdata/test_config.toml carries the only non-empty lists: the keyword
 	// rule includes names holding "b" - matched case-sensitively as a regex, so
