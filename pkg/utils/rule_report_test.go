@@ -30,6 +30,21 @@ func asciiRule(name string, scope []string, include ...string) config.RuleSpec {
 	}
 }
 
+// pairSeenIn reports whether these marks record that rules a and b of one
+// check's entry met on a file. It is the anti-vacuity half of every silence
+// assertion below: in the diagnostics, an overlap the gate suppressed and a
+// pair that never met look exactly the same.
+func pairSeenIn(t *testing.T, marks *ruleMarks, entries []checks.PlanEntry, check string, a, b int) bool {
+	t.Helper()
+	for i, entry := range entries {
+		if entry.Def.Name == check {
+			return marks.pairSeen[i][pairBase(a, len(entry.Rules))+b]
+		}
+	}
+	t.Fatalf("%s has no entry in this scope", check)
+	return false
+}
+
 // ruleReportFiles writes one file per name into a fresh temp dir. The files are
 // real because the file phase acquires content: a missing file logs into the
 // process-global logger, which these tests must leave untouched.
@@ -271,10 +286,20 @@ func TestRuleReportEmptyPackageStaysSilent(t *testing.T) {
 		wideTwo,
 	}
 	plan := compilePlan(t, cfg)
+	entries := plan.Scope(checks.ScopeFile)
 	// The pair would be recorded wholesale if the guard let the empty pass mark:
 	// the entry has to be on the fast path for this case to reach it.
-	if !allUnfiltered(plan.Scope(checks.ScopeFile)) {
+	if !allUnfiltered(entries) {
 		t.Fatal("the fixture must take the unfiltered fast path")
+	}
+
+	// What the guard prevents, asserted where it happens: an empty pass that
+	// marked would record the pair wholesale, and the marks say so directly -
+	// the diagnostics below only report what became of it.
+	marks := newRuleMarks(entries)
+	filterChecksForFiles(entries, checks.ScopeFile, nil, marks)
+	if pairSeenIn(t, marks, entries, "HasOnlyASCII", 0, 1) {
+		t.Error("a pass over no file must not record a pair: the two rules met on nothing")
 	}
 
 	_, diags := ApplyAllChecks(context.Background(), cfg, plan, nil)
