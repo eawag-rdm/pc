@@ -111,7 +111,12 @@ include = ["^notebooks/"]
   case-sensitively unless `ignoreCase = true`. `exclude` wins: a subject any
   exclude pattern matches is out, whatever `include` says. An absent or empty
   `include` admits everything. The same pattern in both lists is a load error -
-  exclude wins, so the rule could never match it.
+  exclude wins, so the rule could never match it. So is one check's rule
+  excluding a pattern a sibling rule includes: which files a check runs on has
+  one owner, so a config answering it twice is refused rather than settled by
+  precedence. That pair is compared only where both rules gate the same string
+  (a scope both serve, read there through the same subject), the patterns
+  verbatim, and a rule parked with `enabled = false` counts.
 - `enabled = false` - the rule does not run (a check with another enabled rule
   still does). It is validated at load all the same, so a config the checks
   could not honour fails now rather than on the day someone re-enables the rule.
@@ -402,8 +407,13 @@ the same findings, indexed by four different questions:
 and one line per affected subject, the message text staying in the two sections
 above. A rule that found nothing does not appear, and neither does a finding that
 no configured rule owns: a skip acknowledgement, a CKAN metadata finding, or a
-finding of a synthesized `default:` rule. The section earns its place when a
-check carries several rules.
+finding of a synthesized `default:` rule. It counts **attributions, not
+findings**: a finding that names several rules is counted under every one of
+them, so for a check with declared rules its rule totals sum to at least that
+check's finding count - and a check running on its synthesized `default:` rule
+contributes no entry at all, because those findings carry no rule name.
+`details_check_focused` stays the authoritative count. The section earns its
+place when a check carries several rules.
 
 ### Using the CLI against CKAN
 
