@@ -239,13 +239,15 @@ func (p *Plan) buildMemberAdmission() {
 
 // mergedScopes are the dispatch scopes whose entries are merged: the ones that
 // acquire ONCE per (file, check) and hand that acquisition to every rule that
-// matched the file, which is exactly what a shared unit set can serve.
+// matched the file, which is exactly what a shared unit set can serve. The
+// archive-member scope is among them: its member gate decides per MEMBER, which
+// the walk folds into the contributor mask of the member in hand rather than
+// into the node.
 //
-// The archive-member scope is out because its member gate decides per MEMBER,
-// behind the dispatch gate the merge would fold. The repository scope is out
-// because each of its rules is handed a file set narrowed by its own selector -
-// the one thing a merged pass would have to share.
-var mergedScopes = [...]Scope{ScopeFile, ScopeArchiveFileList}
+// The repository scope is out because each of its rules is handed a file set
+// narrowed by its own selector - the one thing a merged pass would have to
+// share.
+var mergedScopes = [...]Scope{ScopeFile, ScopeArchiveFileList, ScopeArchiveMember}
 
 // buildMergeNodes records, on every entry of the merged scopes, the entry's
 // rules folded into one pass over deduplicated units.

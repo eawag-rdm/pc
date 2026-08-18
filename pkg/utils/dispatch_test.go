@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -159,12 +160,13 @@ func memberRule(name string, include []string, ignoreCase bool) config.RuleSpec 
 	}
 }
 
-// TestMemberRulesUnionScansPerRule is the union's behaviour test over a real
-// archive: two member rules, admission = the union of their literals, and each
-// rule still sees ONLY the members its own gate admits - a member both
-// keywords would hit is reported by the rule whose selector covers it, never
-// by the other.
-func TestMemberRulesUnionScansPerRule(t *testing.T) {
+// TestMemberRulesUnionScansEachMemberOnce is the union's behaviour test over a
+// real archive: two member rules, admission = the union of their literals, and
+// each rule still sees ONLY the members its own gate admits. A member one gate
+// admits is reported by that rule alone; a member both admit is scanned ONCE
+// and carries ONE finding naming both, the two having bound the same parameters
+// and therefore one unit.
+func TestMemberRulesUnionScansEachMemberOnce(t *testing.T) {
 	dir := t.TempDir()
 	zipPath := filepath.Join(dir, "bundle.zip")
 	buf, err := os.Create(zipPath)
@@ -173,9 +175,10 @@ func TestMemberRulesUnionScansPerRule(t *testing.T) {
 	}
 	zw := zip.NewWriter(buf)
 	members := map[string]string{
-		"data/one.csv":   "a password here",
-		"raw/two.csv":    "a password here too",
-		"docs/three.csv": "a password everywhere",
+		"data/one.csv":      "a password here",
+		"raw/two.csv":       "a password here too",
+		"docs/three.csv":    "a password everywhere",
+		"data/raw/four.csv": "a password both gates admit",
 	}
 	for name, content := range members {
 		w, werr := zw.Create(name)
@@ -203,7 +206,7 @@ func TestMemberRulesUnionScansPerRule(t *testing.T) {
 	archive := structs.ToFile(zipPath, "bundle.zip", -1, "")
 	messages := applyChecksFilteredByFileOnArchive(context.Background(), &diagSink{}, plan.Scope(checks.ScopeArchiveMember), []structs.File{archive})
 
-	found := map[string]string{} // member -> rule that reported it
+	found := map[string][][]string{} // member -> the rules each of its findings names
 	for _, m := range messages {
 		if m.Skipped {
 			continue
@@ -212,24 +215,25 @@ func TestMemberRulesUnionScansPerRule(t *testing.T) {
 		if !ok {
 			t.Fatalf("finding without a file source: %+v", m)
 		}
-		for _, rule := range m.Rules {
-			if previous, twice := found[src.Name]; twice && previous != rule {
-				t.Errorf("member %q reported by two rules: %q and %q", src.Name, previous, rule)
-			}
-			found[src.Name] = rule
+		found[src.Name] = append(found[src.Name], m.Rules)
+	}
+	want := map[string][]string{
+		"data/one.csv":      {"data-members"},
+		"raw/two.csv":       {"raw-members"},
+		"data/raw/four.csv": {"data-members", "raw-members"},
+	}
+	for member, rules := range want {
+		reported := found[member]
+		if len(reported) != 1 {
+			t.Errorf("member %q: %d findings, want the one its single scan produces: %v", member, len(reported), reported)
+			continue
+		}
+		if !slices.Equal(reported[0], rules) {
+			t.Errorf("member %q: reported by %v, want %v", member, reported[0], rules)
 		}
 	}
-	want := map[string]string{
-		"data/one.csv": "data-members",
-		"raw/two.csv":  "raw-members",
-	}
-	for member, rule := range want {
-		if found[member] != rule {
-			t.Errorf("member %q: reported by %q, want %q", member, found[member], rule)
-		}
-	}
-	if rule, scanned := found["docs/three.csv"]; scanned {
-		t.Errorf("docs/three.csv matches no rule and must not be scanned, got a finding from %q", rule)
+	if rules, scanned := found["docs/three.csv"]; scanned {
+		t.Errorf("docs/three.csv matches no rule and must not be scanned, got findings from %v", rules)
 	}
 }
 

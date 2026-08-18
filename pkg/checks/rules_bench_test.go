@@ -279,6 +279,74 @@ func benchmarkIsArchiveFreeOfKeywords(b *testing.B, ruleCount int) {
 func BenchmarkIsArchiveFreeOfKeywordsRules1(b *testing.B) { benchmarkIsArchiveFreeOfKeywords(b, 1) }
 func BenchmarkIsArchiveFreeOfKeywordsRules3(b *testing.B) { benchmarkIsArchiveFreeOfKeywords(b, 3) }
 
+// benchMergedMemberSelectors are member gates that all admit every member of
+// benchArchiveFile while the loader still accepts them as different rules.
+// None of them is a literal, so several of them get NO union pre-filter
+// (unionMemberAdmission) and the per-member gates decide - the member path the
+// merge has to serve.
+var benchMergedMemberSelectors = [...]string{
+	`campaign/.*\.txt$`,
+	`site_[0-9]{3}/`,
+	`report_[0-9]{4}\.txt$`,
+}
+
+// benchMergedMemberRules binds n member rules over ONE keyword parameter set:
+// binding the same parameters is what folds them into a single unit, so a
+// member several of them admit is scanned once and reported once, naming all
+// of them.
+func benchMergedMemberRules(b *testing.B, n int) (CheckDef, *Batch, []*BoundRule) {
+	b.Helper()
+	specs := make([]config.RuleSpec, 0, n)
+	for i := 0; i < n; i++ {
+		specs = append(specs, config.RuleSpec{
+			Name:    fmt.Sprintf("shared members %d", i),
+			Check:   "IsFreeOfKeywords",
+			Scope:   []string{"archive-member"},
+			Enabled: true,
+			Subject: "path",
+			Include: []string{benchMergedMemberSelectors[i]},
+			Params: []map[string]interface{}{
+				{"keywords": benchKeywordGroups[0], "info": benchKeywordInfos[0]},
+			},
+		})
+	}
+	def, rules, batch := bindTestRule(b, "IsFreeOfKeywords", config.Config{General: benchGeneral(), Rules: specs}, ScopeArchiveMember)
+	if len(rules) != n {
+		b.Fatalf("expected %d bound rules at the archive-member scope, got %d", n, len(rules))
+	}
+	if got := len(batch.merged.units); got != 1 {
+		b.Fatalf("rules that bound the same parameters must be one unit, got %d", got)
+	}
+	return def, batch, rules
+}
+
+func benchmarkArchiveMemberMerged(b *testing.B, ruleCount int) {
+	file := benchArchiveFile(b)
+	def, batch, rules := benchMergedMemberRules(b, ruleCount)
+
+	// One finding per member carrying the keyword, however many gates admitted
+	// it: the count does not scale with the rule count once the rules' units
+	// merged, which is what this pair measures around. The NAMES still scale -
+	// a finding names every rule that contributed it - so a merge that
+	// collapsed the scan and lost the attribution fails here.
+	wantFound, wantNamed := benchArchiveMembers/5, ruleCount*(benchArchiveMembers/5)
+	b.ReportAllocs()
+	for b.Loop() {
+		msgs := def.RunFile(context.Background(), file, ScopeArchiveMember, batch, rules)
+		named := 0
+		for _, m := range msgs {
+			named += len(m.Rules)
+		}
+		if len(msgs) != wantFound || named != wantNamed {
+			b.Fatalf("expected %d findings naming %d rules in total, got %d and %d - the benchmark measures the wrong thing", wantFound, wantNamed, len(msgs), named)
+		}
+		benchMsgSink += len(msgs)
+	}
+}
+
+func BenchmarkIsArchiveFreeOfKeywordsMergedRules1(b *testing.B) { benchmarkArchiveMemberMerged(b, 1) }
+func BenchmarkIsArchiveFreeOfKeywordsMergedRules3(b *testing.B) { benchmarkArchiveMemberMerged(b, 3) }
+
 func benchmarkPDFRulesFanout(b *testing.B, ruleCount int) {
 	file := benchPDFFile(b)
 	def, batch, rules := benchKeywordRules(b, ruleCount, ScopeFile)
@@ -431,7 +499,6 @@ func TestArchiveBudgetIndependentOfRuleCount(t *testing.T) {
 	general.MaxArchiveFileSize = 1024
 
 	def, _ := NewRegistry().Lookup("IsFreeOfKeywords")
-	batch := newBatch(general)
 	count := func(ruleCount int) (skips, findings int) {
 		rules := make([]*BoundRule, 0, ruleCount)
 		for i := 0; i < ruleCount; i++ {
@@ -447,6 +514,7 @@ func TestArchiveBudgetIndependentOfRuleCount(t *testing.T) {
 			}
 			rules = append(rules, rule)
 		}
+		batch := mergedBatch(t, general, rules...)
 		for _, m := range def.RunFile(context.Background(), archive, ScopeArchiveMember, batch, rules) {
 			if m.Skipped {
 				skips++

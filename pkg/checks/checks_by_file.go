@@ -424,6 +424,17 @@ func keywordsInArchive(ctx context.Context, file structs.File, batch *Batch, rul
 	// the iterator was given (batch.admit), which Compile decided over the whole
 	// plan - never of how many rules this archive happened to match.
 	perRule := batch.perRule
+	// The entry's rules folded into ONE pass over deduplicated units: a member
+	// two rules of one check both admit is scanned once and reported once,
+	// naming both. The gates are skipped only where the entry's single rule
+	// handed the iterator its own filter (memberAdmission), and that rule
+	// contributes to every member, so its mask is resolved here for the whole
+	// archive.
+	merged := batch.merged
+	var active uint64
+	if !perRule {
+		active = merged.active(rules)
+	}
 	// One body per archive, not per member: a scan reads it and never retains it.
 	body, lowered := make([][]byte, 1), make([][]byte, 1)
 	var memberLower []byte
@@ -437,6 +448,23 @@ func keywordsInArchive(ctx context.Context, file structs.File, batch *Batch, rul
 		}
 		archiveIterator.Next()
 		fileName, fileContent, fileSize := archiveIterator.UnpackedFile()
+
+		// The rules whose own gate admits THIS member: a unit runs when one of
+		// them contributed it, and its finding names exactly those of them that
+		// did. It decides ahead of the lowercasing below, so a member no gate
+		// admits costs nothing per byte.
+		if perRule {
+			active = 0
+			for _, rule := range rules {
+				if rule.matchMember(fileName) {
+					active |= rule.bit
+				}
+			}
+			if active == 0 {
+				continue
+			}
+		}
+
 		// Lower once per member, into a scratch reused across members; every
 		// rule and every keyword set scans the shared copy.
 		memberLower = lowerInto(memberLower, fileContent)
@@ -451,33 +479,33 @@ func keywordsInArchive(ctx context.Context, file structs.File, batch *Batch, rul
 		var src structs.Source // boxed once per member, shared by all findings
 		built := false
 
-		for _, rule := range rules {
-			if perRule && !rule.matchMember(fileName) {
+		for i := range merged.units {
+			u := &merged.units[i]
+			hit := u.mask & active
+			if hit == 0 {
 				continue
 			}
-			for _, u := range rule.units {
-				found := u.scan(ctx, structs.File{}, body, lowered, reportJoined)
-				if len(found) == 0 {
-					continue
-				}
-				if !built {
-					archivedFile = structs.ToFileWithDisplay(
-						file.Path,          // path stays as archive path
-						fileName,           // name is the path within archive
-						fileName,           // display name
-						int64(fileSize),    // size
-						"",                 // suffix (auto-detected)
-						archiveDisplayName, // archive name reference
-					)
-					archivedFile.RelPath = fileName // the member path, verbatim
-					src = archivedFile
-					built = true
-				}
-				for i := range found {
-					found[i].Source = src
-				}
-				messages = append(messages, tag(rule.Rules, found)...)
+			found := u.scan(ctx, structs.File{}, body, lowered, reportJoined)
+			if len(found) == 0 {
+				continue
 			}
+			if !built {
+				archivedFile = structs.ToFileWithDisplay(
+					file.Path,          // path stays as archive path
+					fileName,           // name is the path within archive
+					fileName,           // display name
+					int64(fileSize),    // size
+					"",                 // suffix (auto-detected)
+					archiveDisplayName, // archive name reference
+				)
+				archivedFile.RelPath = fileName // the member path, verbatim
+				src = archivedFile
+				built = true
+			}
+			for j := range found {
+				found[j].Source = src
+			}
+			messages = append(messages, tag(u.attribution(hit), found)...)
 		}
 	}
 

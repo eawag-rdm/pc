@@ -1240,6 +1240,141 @@ func TestStreamedSharedUnitNamesEveryMatchingRule(t *testing.T) {
 	}
 }
 
+// memberZip writes a zip of the given members, the fixture the archive-member
+// walk is stated over.
+func memberZip(t *testing.T, members map[string]string) structs.File {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for name, content := range members {
+		w, err := zw.Create(name)
+		if err != nil {
+			t.Fatalf("create member %q: %v", name, err)
+		}
+		if _, err := w.Write([]byte(content)); err != nil {
+			t.Fatalf("write member %q: %v", name, err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("close zip: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "bundle.zip")
+	if err := os.WriteFile(path, buf.Bytes(), 0o600); err != nil {
+		t.Fatalf("write archive fixture: %v", err)
+	}
+	return structs.ToFile(path, "bundle.zip", -1, "")
+}
+
+// memberKeywordConfig is the config the two archive-member cases below share:
+// the given member rules of the keyword check, plus the scan bounds the walk
+// reads from the batch.
+func memberKeywordConfig(rules ...config.RuleSpec) config.Config {
+	return config.Config{
+		General: &config.GeneralConfig{MaxContentScanFileSize: 1024 * 1024 * 1024},
+		Rules:   rules,
+	}
+}
+
+// TestArchiveMemberSharedUnitNamesEveryMatchingRule is the merge's own case on
+// the archive-member walk: two member rules with the same keywords and info
+// bind ONE unit, so a member both gates admit is scanned once and reports ONE
+// finding naming both, while a member only one gate admits reports one naming
+// only that rule.
+func TestArchiveMemberSharedUnitNamesEveryMatchingRule(t *testing.T) {
+	// Same parameters, different member selectors: that is what makes these
+	// two rules instead of one rule said twice, and it is what makes them one
+	// unit. A member under data/raw/ is what both gates admit.
+	cfg := memberKeywordConfig(
+		memberRule("data-members", []string{"data/"}, false),
+		memberRule("raw-members", []string{"raw/"}, false),
+	)
+	def, rules, batch := bindTestRule(t, "IsFreeOfKeywords", cfg, ScopeArchiveMember)
+	if batch.merged == nil {
+		t.Fatal("the archive-member scope is a merged scope: its entry must carry a merge node")
+	}
+	if got := len(batch.merged.units); got != 1 {
+		t.Fatalf("two rules that bound the same parameters must be one unit, got %d", got)
+	}
+
+	archive := memberZip(t, map[string]string{
+		"data/one.csv":      "a password here",
+		"raw/two.csv":       "a password here too",
+		"data/raw/four.csv": "a password both gates admit",
+	})
+	// A member rule's dispatch gate admits every archive, so the walk is handed
+	// the whole entry - the selection happens per MEMBER, inside.
+	found := map[string][]string{} // member -> the rules its finding names
+	for _, m := range def.RunFile(context.Background(), archive, ScopeArchiveMember, batch, rules) {
+		if m.Skipped {
+			continue
+		}
+		src, ok := m.Source.(structs.File)
+		if !ok {
+			t.Fatalf("finding without a file source: %+v", m)
+		}
+		if previous, twice := found[src.Name]; twice {
+			t.Fatalf("member %q was reported twice, by %v and by %v", src.Name, previous, m.Rules)
+		}
+		found[src.Name] = m.Rules
+	}
+	want := map[string][]string{
+		"data/one.csv":      {"data-members"},
+		"raw/two.csv":       {"raw-members"},
+		"data/raw/four.csv": {"data-members", "raw-members"},
+	}
+	if len(found) != len(want) {
+		t.Fatalf("%d members reported, want %d: %v", len(found), len(want), found)
+	}
+	for member, names := range want {
+		if !slices.Equal(found[member], names) {
+			t.Errorf("member %q: the finding names %q, want %q", member, found[member], names)
+		}
+	}
+}
+
+// TestArchiveMemberGateSkipsUnadmittedMember is the other half of the walk's
+// member selection: an ignoreCase member rule disables the union pre-filter
+// (TestBuildMemberAdmissionTwoRules), so the iterator yields EVERY member and
+// the per-rule gates are the only thing keeping a member no rule addresses out
+// of the scan.
+func TestArchiveMemberGateSkipsUnadmittedMember(t *testing.T) {
+	cfg := memberKeywordConfig(
+		memberRule("data-members", []string{"data/"}, false),
+		memberRule("raw-members", []string{"raw/"}, true),
+	)
+	def, rules, batch := bindTestRule(t, "IsFreeOfKeywords", cfg, ScopeArchiveMember)
+	if batch.admit != nil {
+		t.Fatal("an ignoreCase member rule must disable the union pre-filter, so the iterator yields every member")
+	}
+
+	archive := memberZip(t, map[string]string{
+		"data/one.csv":   "a password here",
+		"raw/two.csv":    "a password here too",
+		"docs/three.csv": "a password no rule addresses",
+	})
+	scanned := map[string]int{}
+	for _, m := range def.RunFile(context.Background(), archive, ScopeArchiveMember, batch, rules) {
+		if m.Skipped {
+			continue
+		}
+		src, ok := m.Source.(structs.File)
+		if !ok {
+			t.Fatalf("finding without a file source: %+v", m)
+		}
+		scanned[src.Name]++
+	}
+	// The admitted members carry the same keyword, so their findings are what
+	// says the member below was gated out rather than merely unscanned.
+	for _, member := range []string{"data/one.csv", "raw/two.csv"} {
+		if scanned[member] != 1 {
+			t.Errorf("member %q produced %d findings, want the one its gate's scan yields", member, scanned[member])
+		}
+	}
+	if n := scanned["docs/three.csv"]; n != 0 {
+		t.Errorf("no member gate admits docs/three.csv: it must not be scanned, got %d finding(s)", n)
+	}
+}
+
 func TestIsFreeOfKeywords_BinaryFileEmitsSkipMessage(t *testing.T) {
 	// Null bytes make isTextFile report a binary file; the filename has no
 	// supported-archive extension, so the binary-skip branch fires.

@@ -126,9 +126,9 @@ type Batch struct {
 
 	// merged is the entry's rules folded into ONE pass over deduplicated units,
 	// which every acquisition of a merged scope walks. Compile builds it
-	// (buildMergeNodes) for the scopes that run one acquisition per file; it
-	// stays nil at the archive-member and repository scopes, whose acquisitions
-	// never read it.
+	// (buildMergeNodes) for the scopes that run one acquisition per file, the
+	// archive-member walk over that acquisition included; it stays nil at the
+	// repository scope, whose acquisition never reads it.
 	merged *mergeNode
 }
 
@@ -215,8 +215,9 @@ func (u *unit) attribution(hit uint64) []string {
 // partialAttribution names the subset of a unit's contributors that matched
 // this file, which is what two rules of one check whose gates disagree about a
 // file produce. One contributor is its own interned slice; several are built
-// here - once per acquisition, the streamed walk included, and shared by every
-// message that acquisition tags.
+// here and shared by every message the caller tags with them - once per
+// acquisition on the file and streamed paths, once per member on the archive
+// walk, whose contributors are decided per member.
 //
 // It carries attribution's precondition: hit names a contributor, because
 // bits.TrailingZeros64(0) is 64 and single holds one entry per rule.
@@ -282,9 +283,9 @@ type BoundRule struct {
 
 	// bit is this rule's place in its entry's merge node: rule i of
 	// PlanEntry.Rules is 1<<i, the same i pkg/utils' rule report indexes its
-	// marks by. Compile assigns it to the rules of the merged scopes; every
-	// other rule - a repository or archive-member one, or one bound outside a
-	// plan - keeps 0.
+	// marks by. Compile assigns it to the rules of the merged scopes, the
+	// archive-member ones included; every other rule - a repository one, or one
+	// bound outside a plan - keeps 0.
 	bit uint64
 
 	sel selector.Selector // the DISPATCH gate, compiled per scope by Compile
