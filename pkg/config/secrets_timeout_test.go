@@ -43,6 +43,15 @@ func TestSecretsTimeoutWithinRequestBudget(t *testing.T) {
 			true,
 		},
 		{
+			// The budget is an upper bound the timeout may reach: a scan that
+			// runs exactly as long as the request may is still within it.
+			"rule params timeout equal to the budget",
+			"[server]\nrequestTimeoutSeconds = 120\n" +
+				"[[rule]]\nname = \"secret-scan\"\ncheck = \"IsFreeOfSecrets\"\nenabled = false\n" +
+				"  [rule.params]\n  timeoutSeconds = 120\n",
+			true,
+		},
+		{
 			// The gate runs only when a secrets rule exists: with none there is
 			// no timeout to hold against a tight budget.
 			"no secrets configuration ignores the budget",
@@ -67,6 +76,30 @@ func TestSecretsTimeoutWithinRequestBudget(t *testing.T) {
 				"  [[rule.params]]\n  timeoutSeconds = 120\n" +
 				"  [[rule.params]]\n  timeoutSeconds = 30\n",
 			false,
+		},
+		{
+			// A rule declaring no timeout runs the default, so the DEFAULT is
+			// what has to fit the budget.
+			"rule without a timeout runs the default over budget",
+			"[server]\nrequestTimeoutSeconds = 60\n" +
+				"[[rule]]\nname = \"secret-scan\"\ncheck = \"IsFreeOfSecrets\"\nenabled = false\n",
+			false,
+		},
+		{
+			"rule without a timeout runs the default within budget",
+			"[server]\nrequestTimeoutSeconds = 300\n" +
+				"[[rule]]\nname = \"secret-scan\"\ncheck = \"IsFreeOfSecrets\"\nenabled = false\n",
+			true,
+		},
+		{
+			// A zero timeout is a DECLARED one, not an omission: it is held
+			// against the budget as it stands, and the default arm stays out
+			// of it. The value itself is refused later, by the check's Bind.
+			"zero timeout is declared, not the default",
+			"[server]\nrequestTimeoutSeconds = 60\n" +
+				"[[rule]]\nname = \"secret-scan\"\ncheck = \"IsFreeOfSecrets\"\nenabled = false\n" +
+				"  [rule.params]\n  timeoutSeconds = 0\n",
+			true,
 		},
 	}
 	for _, tc := range cases {

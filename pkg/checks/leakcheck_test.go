@@ -672,3 +672,13 @@ func TestCheckSecretAttrsUnknownKeyLists(t *testing.T) {
 		t.Errorf("the rule allowed-key list must not name enabled: %v", ruleErr)
 	}
 }
+
+// TestCheckSecretAttrsRefusesZeroTimeout pins that zero is an invalid VALUE,
+// not an omission: a rule declaring it gets no default, so a scan with no time
+// to run at all is refused here, where the knobs are type-checked.
+func TestCheckSecretAttrsRefusesZeroTimeout(t *testing.T) {
+	err := checkSecretAttrs(map[string]interface{}{"timeoutSeconds": int64(0)})
+	if err == nil || !strings.Contains(err.Error(), "timeoutSeconds") {
+		t.Errorf("a zero timeout must be refused by name: %v", err)
+	}
+}
