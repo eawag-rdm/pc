@@ -29,7 +29,8 @@ func main() {
 
 	// Small CLI: collect files via the configured collector, apply the checks,
 	// and render the results (TUI by default; -json/-plain/-html otherwise).
-	// Errors are reported as JSON error envelopes on stdout.
+	// Errors are reported as JSON error envelopes on stdout; a fatal startup
+	// error (config, rules, collector selection or fetch) also exits 1.
 
 	// Define default values for the config and folder arguments
 	defaultConfig := config.FindConfigFile()
@@ -57,7 +58,9 @@ func main() {
 	// Configure logger for JSON mode by default
 	output.GlobalLogger.SetJSONMode(true)
 
-	// Enable CPU profiling if requested
+	// Enable CPU profiling if requested. The fatal startup paths below exit
+	// without running these defers, so profiling a run that dies on a bad config
+	// or an unreachable location leaves a truncated profile (error path only).
 	if *cpuprofile != "" {
 		f, err := os.Create(*cpuprofile)
 		if err != nil {
@@ -94,7 +97,7 @@ func main() {
 	generalConfig, err := config.LoadConfig(*cfg)
 	if err != nil {
 		outputError("config_error", fmt.Sprintf("Error loading config: %v", err))
-		return
+		os.Exit(1)
 	}
 
 	// Pin the CPU budget before anything is sized off it. Nothing is printed:
@@ -112,7 +115,7 @@ func main() {
 	plan, err := checks.Compile(generalConfig, checks.NewRegistry())
 	if err != nil {
 		outputError("config_error", fmt.Sprintf("Invalid config: %v", err))
-		return
+		os.Exit(1)
 	}
 
 	var (
@@ -126,7 +129,7 @@ func main() {
 	op, ok := generalConfig.Operation["main"]
 	if !ok || op == nil {
 		outputError("collector_error", "No [operation.main] collector configured in the config file.")
-		return
+		os.Exit(1)
 	}
 
 	// Decide which collector to use
@@ -134,31 +137,31 @@ func main() {
 		files, filesErr = collectors.LocalCollector(*folder_or_url, *generalConfig)
 		if filesErr != nil {
 			outputError("collector_error", filesErr.Error())
-			return
+			os.Exit(1)
 		}
 
 	} else if op.Collector == "CkanCollector" {
 		if *folder_or_url == "." {
 			outputError("collector_error", "Please provide a CKAN package name (use the location flag '-location')")
-			return
+			os.Exit(1)
 		}
 		// Single package_show call; files and metadata both derive from it. The
 		// CLI has no deadline of its own, so the call runs under Background.
 		result, err := collectors.CkanPackageShow(context.Background(), *folder_or_url, *generalConfig)
 		if err != nil {
 			outputError("collector_error", err.Error())
-			return
+			os.Exit(1)
 		}
 		files, filesErr = collectors.CkanFilesFromResult(result, *generalConfig)
 		if filesErr != nil {
 			outputError("collector_error", filesErr.Error())
-			return
+			os.Exit(1)
 		}
 		metadataResult = metadata.CkanMetadataFromJSON(result)
 
 	} else {
 		outputError("collector_error", "Unknown collector")
-		return
+		os.Exit(1)
 	}
 
 	// Zero files is NOT an error: the analysis proceeds and the result carries a

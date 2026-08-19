@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -258,9 +259,15 @@ func TestInvalidConfig(t *testing.T) {
 
 	// Run scanner with invalid config
 	cmd := exec.Command(testBinaryPath, "-config", invalidConfigPath, "-location", ".")
-	output, _ := cmd.CombinedOutput()
+	output, err := cmd.CombinedOutput()
 
-	// Check for error in JSON output (program doesn't exit with non-zero code)
+	// Command should exit 1
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+		t.Fatalf("Expected exit code 1 for an invalid config, got %v", err)
+	}
+
+	// Check for error in JSON output
 	var errorResult map[string]interface{}
 	err = json.Unmarshal(output, &errorResult)
 	if err != nil {
@@ -329,7 +336,13 @@ attrs = {includeFolders = true}
 	}
 
 	cmd := exec.Command(testBinaryPath, "-config", configPath, "-location", tempDir, "-no-tui", "-json")
-	output, _ := cmd.CombinedOutput()
+	output, err := cmd.CombinedOutput()
+
+	// Command should exit 1
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+		t.Fatalf("Expected exit code 1 for an uncompilable pattern, got %v", err)
+	}
 
 	var errorResult map[string]interface{}
 	if err := json.Unmarshal(output, &errorResult); err != nil {
@@ -356,11 +369,17 @@ func TestNonexistentLocation(t *testing.T) {
 	// Run scanner with nonexistent location
 	nonexistentPath := filepath.Join(tempDir, "nonexistent")
 	cmd := exec.Command(testBinaryPath, "-config", configPath, "-location", nonexistentPath)
-	output, _ := cmd.CombinedOutput()
+	output, err := cmd.CombinedOutput()
 
-	// Check for error in JSON output (program doesn't exit with non-zero code)
+	// Command should exit 1
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+		t.Fatalf("Expected exit code 1 for a nonexistent location, got %v", err)
+	}
+
+	// Check for error in JSON output
 	var errorResult map[string]interface{}
-	err := json.Unmarshal(output, &errorResult)
+	err = json.Unmarshal(output, &errorResult)
 	if err != nil {
 		t.Fatalf("Output is not valid JSON: %v\nOutput: %s", err, string(output))
 	}
@@ -474,9 +493,15 @@ attrs = {url = "https://example.com", token = "", verify = true}
 
 	// Run scanner with CKAN collector but default location (should fail)
 	cmd := exec.Command(testBinaryPath, "-config", configPath)
-	output, _ := cmd.CombinedOutput()
+	output, err := cmd.CombinedOutput()
 
-	// Check for error in JSON output (program doesn't exit with non-zero code)
+	// Command should exit 1
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+		t.Fatalf("Expected exit code 1 for a CKAN collector without -location, got %v", err)
+	}
+
+	// Check for error in JSON output
 	var errorResult map[string]interface{}
 	if err := json.Unmarshal(output, &errorResult); err != nil {
 		t.Fatalf("Output is not valid JSON: %v\nOutput: %s", err, string(output))
@@ -660,9 +685,15 @@ check = "HasNoWhiteSpace"
 
 	// Run scanner with unknown collector
 	cmd := exec.Command(testBinaryPath, "-config", configPath, "-location", ".")
-	output, _ := cmd.CombinedOutput()
+	output, err := cmd.CombinedOutput()
 
-	// Check for error in JSON output (program doesn't exit with non-zero code)
+	// Command should exit 1
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+		t.Fatalf("Expected exit code 1 for an unknown collector, got %v", err)
+	}
+
+	// Check for error in JSON output
 	var errorResult map[string]interface{}
 	if err := json.Unmarshal(output, &errorResult); err != nil {
 		t.Fatalf("Output is not valid JSON: %v\nOutput: %s", err, string(output))
@@ -719,7 +750,13 @@ check = "HasReadme"
 
 	// Run scanner: must emit a JSON error envelope, not panic.
 	cmd := exec.Command(testBinaryPath, "-config", configPath, "-location", ".")
-	output, _ := cmd.CombinedOutput()
+	output, err := cmd.CombinedOutput()
+
+	// Command should exit 1
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+		t.Fatalf("Expected exit code 1 for a config missing [operation.main], got %v", err)
+	}
 
 	var errorResult map[string]interface{}
 	if err := json.Unmarshal(output, &errorResult); err != nil {
