@@ -31,3 +31,20 @@ func TestReadPDFTimeoutDiscardsContent(t *testing.T) {
 	assert.Nil(t, pages, "timeout must discard partial content (determinism)")
 	assert.False(t, truncated)
 }
+
+// Lives here because the clamped member timeout expires mid-extraction, so
+// the watchdog Kill hits the wasm call it interrupts.
+func TestPDFMemberTimeoutClampedToRemainingBudget(t *testing.T) {
+	// With almost no budget left the member's own timeout must shrink to
+	// what remains, so maxArchivePDFTime is a ceiling and not a floor that
+	// the last member overshoots by a full DefaultPDFTimeout.
+	path := writeZipFixture(t, []zipMember{{"slow.pdf", writeMinimalPDF("some text")}})
+	u := InitArchiveIterator(context.Background(), path, "fixture.zip", testMemberLimits, nil)
+	u.pdfWallTime = maxArchivePDFTime - time.Nanosecond
+
+	start := time.Now()
+	drainMembers(u)
+	assert.Less(t, time.Since(start), DefaultPDFTimeout, "member must not get a fresh full timeout")
+	assert.LessOrEqual(t, u.pdfWallTime, maxArchivePDFTime+DefaultPDFTimeout,
+		"cumulative time stays bounded by the budget")
+}

@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 
@@ -171,21 +170,6 @@ func TestPDFMemberWallClockBudgetBreaker(t *testing.T) {
 	assert.True(t, ok)
 	assert.Equal(t, "fixture.zip", src.Name, "budget ack is archive-level")
 	assert.Empty(t, src.ArchiveName, "archive-level source carries no parent archive")
-}
-
-func TestPDFMemberTimeoutClampedToRemainingBudget(t *testing.T) {
-	// With almost no budget left the member's own timeout must shrink to
-	// what remains, so maxArchivePDFTime is a ceiling and not a floor that
-	// the last member overshoots by a full DefaultPDFTimeout.
-	path := writeZipFixture(t, []zipMember{{"slow.pdf", writeMinimalPDF("some text")}})
-	u := InitArchiveIterator(context.Background(), path, "fixture.zip", testMemberLimits, nil)
-	u.pdfWallTime = maxArchivePDFTime - time.Nanosecond
-
-	start := time.Now()
-	drainMembers(u)
-	assert.Less(t, time.Since(start), DefaultPDFTimeout, "member must not get a fresh full timeout")
-	assert.LessOrEqual(t, u.pdfWallTime, maxArchivePDFTime+DefaultPDFTimeout,
-		"cumulative time stays bounded by the budget")
 }
 
 func TestPDFMemberImageOnlyNotYielded(t *testing.T) {
