@@ -3,6 +3,7 @@ package readers
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -103,7 +104,7 @@ func benchMemberFilter(b *testing.B, include, exclude []string) *selector.Select
 // would move these numbers off their baseline.
 func BenchmarkMemberNameFilter1000(b *testing.B) {
 	names := benchMemberNames(1000)
-	u := InitArchiveIterator("bench.zip", "bench.zip", ArchiveLimits{}, benchMemberFilter(b, benchMemberLists, nil))
+	u := InitArchiveIterator(context.Background(), "bench.zip", "bench.zip", ArchiveLimits{}, benchMemberFilter(b, benchMemberLists, nil))
 	admitted := 0
 
 	b.ReportAllocs()
@@ -126,7 +127,7 @@ func BenchmarkMemberNameFilter1000(b *testing.B) {
 // pattern. No shipped config carries either shape.
 func BenchmarkMemberNameFilterExclude1000(b *testing.B) {
 	names := benchMemberNames(1000)
-	u := InitArchiveIterator("bench.zip", "bench.zip", ArchiveLimits{}, benchMemberFilter(b, nil, benchMemberLists))
+	u := InitArchiveIterator(context.Background(), "bench.zip", "bench.zip", ArchiveLimits{}, benchMemberFilter(b, nil, benchMemberLists))
 	admitted := 0
 
 	b.ReportAllocs()
@@ -157,7 +158,7 @@ func BenchmarkArchiveIterationFiltered(b *testing.B) {
 		if err != nil {
 			b.Fatalf("compile member filter: %v", err)
 		}
-		u := InitArchiveIterator(path, "walk1000.zip",
+		u := InitArchiveIterator(context.Background(), path, "walk1000.zip",
 			ArchiveLimits{MaxMemberSize: 1024, MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 10000}, &filter)
 		scanned := 0
 		for u.HasFilesToUnpack() && u.HasNext() {

@@ -5,6 +5,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -36,6 +37,10 @@ type UnpackedFileIterator struct {
 	ArchivePath   string
 	ArchiveName   string
 	MaxMemberSize int64
+
+	// ctx bounds a member's PDF extraction. Stored rather than threaded
+	// because one iterator serves one request, so it outlives nothing.
+	ctx context.Context
 
 	// memberFilter decides which members are content-scanned; nil filters
 	// nothing. It is compiled once by the caller and shared read-only across
@@ -131,7 +136,11 @@ func (c *countingReader) Read(p []byte) (int, error) {
 // pattern is normalized to it here, so the member loop never asks a filter that
 // cannot reject anything. Compile the filter once and share it - it is
 // stateless, and the per-member scratch lives on the iterator.
-func InitArchiveIterator(archivePath string, archiveName string, limits ArchiveLimits, memberFilter *selector.Selector) *UnpackedFileIterator {
+//
+// ctx must be non-nil: it bounds PDF member extraction and ends the iteration
+// at the first member it cancels, while the member walk at large is the
+// caller's to stop.
+func InitArchiveIterator(ctx context.Context, archivePath string, archiveName string, limits ArchiveLimits, memberFilter *selector.Selector) *UnpackedFileIterator {
 	if memberFilter != nil && memberFilter.Unfiltered() {
 		memberFilter = nil
 	}
@@ -140,6 +149,7 @@ func InitArchiveIterator(archivePath string, archiveName string, limits ArchiveL
 		ArchivePath:        archivePath,
 		ArchiveName:        archiveName,
 		MaxMemberSize:      limits.MaxMemberSize,
+		ctx:                ctx,
 		memberFilter:       memberFilter,
 		memberBaseName:     baseName,
 		CurrentFilename:    "",
@@ -585,6 +595,14 @@ func (u *UnpackedFileIterator) tryBufferPDFMember(name string, declared int64, r
 		return false
 	}
 
+	// A caller that has given up must not pay for the rest of this member, nor
+	// for the PDF members behind it: the walk ends here, silently - an ack
+	// would blame a readable document for the cancellation.
+	if u.ctx.Err() != nil {
+		u.iterationEnded = true
+		return false
+	}
+
 	data := readRest()
 	if data == nil {
 		return false
@@ -601,7 +619,7 @@ func (u *UnpackedFileIterator) tryBufferPDFMember(name string, declared int64, r
 	// Charge extraction only: pool queue time belongs to whoever held the
 	// instance, and charging it here would let a busy pool silently consume
 	// this archive's scan budget.
-	pageBlocks, truncated, extractTime, err := readPDF(data, limits)
+	pageBlocks, truncated, extractTime, err := readPDF(u.ctx, data, limits)
 	u.pdfWallTime += extractTime
 
 	switch {
@@ -624,6 +642,10 @@ func (u *UnpackedFileIterator) tryBufferPDFMember(name string, declared int64, r
 			u.pdfBudgetAckSent = true
 			u.recordArchiveSkip("Stopped PDF extraction for archive: PDF engine unavailable; PDF members not scanned.")
 		}
+		return false
+	case errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded):
+		// The scan was abandoned, not the member: silent, because an ack
+		// would blame a readable document for the caller giving up.
 		return false
 	case err != nil:
 		if !byName {

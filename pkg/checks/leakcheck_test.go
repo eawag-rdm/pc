@@ -271,7 +271,7 @@ func TestExtractArchivesMkdirFailureKeepsAcks(t *testing.T) {
 	var messages []structs.Message
 	sources := map[string]structs.File{}
 	// No lists in this config, so the scan's selector filters nothing.
-	paths := extractArchivesForLeakScan(archiveLimits(cfg.General), nil, []structs.File{archive}, tmpDir, sources, &messages)
+	paths := extractArchivesForLeakScan(context.Background(), archiveLimits(cfg.General), nil, []structs.File{archive}, tmpDir, sources, &messages)
 
 	if len(paths) != 0 {
 		t.Errorf("no members can be extracted when the temp dir cannot be created, got %v", paths)

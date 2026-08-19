@@ -72,7 +72,7 @@ var testPDFLimits = PDFLimits{MaxFileBytes: 5 * 1024 * 1024, MaxPages: 500, MaxT
 
 func TestReadPDFExtractsPerPageText(t *testing.T) {
 	data := writeMinimalPDF("alpha secret on page one", "beta token on page two")
-	pages, truncated, err := ReadPDF(data, testPDFLimits)
+	pages, truncated, err := ReadPDF(context.Background(), data, testPDFLimits)
 	assert.NoError(t, err)
 	assert.False(t, truncated)
 	assert.Len(t, pages, 2)
@@ -86,14 +86,14 @@ func TestReadPDFPageCapRejectsWholeDocument(t *testing.T) {
 	data := writeMinimalPDF("page one text", "page two text", "page three hidden", "page four hidden", "page five hidden")
 	limits := testPDFLimits
 	limits.MaxPages = 2
-	pages, truncated, err := ReadPDF(data, limits)
+	pages, truncated, err := ReadPDF(context.Background(), data, limits)
 	assert.ErrorIs(t, err, ErrPDFTooManyPages)
 	assert.Nil(t, pages, "no page may be extracted from an over-length document")
 	assert.False(t, truncated)
 
 	// Exactly at the ceiling is still scanned in full.
 	limits.MaxPages = 5
-	pages, truncated, err = ReadPDF(data, limits)
+	pages, truncated, err = ReadPDF(context.Background(), data, limits)
 	assert.NoError(t, err)
 	assert.False(t, truncated)
 	assert.Len(t, pages, 5)
@@ -103,11 +103,11 @@ func TestReadPDFFileSizeGate(t *testing.T) {
 	data := writeMinimalPDF("some text")
 	limits := testPDFLimits
 	limits.MaxFileBytes = int64(len(data)) - 1
-	_, _, err := ReadPDF(data, limits)
+	_, _, err := ReadPDF(context.Background(), data, limits)
 	assert.ErrorIs(t, err, ErrPDFTooLarge)
 
 	limits.MaxFileBytes = int64(len(data)) // exactly at the gate passes
-	pages, _, err := ReadPDF(data, limits)
+	pages, _, err := ReadPDF(context.Background(), data, limits)
 	assert.NoError(t, err)
 	assert.Len(t, pages, 1)
 }
@@ -116,7 +116,7 @@ func TestReadPDFTextCap(t *testing.T) {
 	data := writeMinimalPDF("word " + strings.Repeat("filler ", 50))
 	limits := testPDFLimits
 	limits.MaxTextBytes = 16
-	pages, truncated, err := ReadPDF(data, limits)
+	pages, truncated, err := ReadPDF(context.Background(), data, limits)
 	assert.NoError(t, err)
 	assert.True(t, truncated)
 	total := 0
@@ -132,7 +132,7 @@ func TestReadPDFDamagedMiddlePageKeepsIndexes(t *testing.T) {
 	// must keep a placeholder so later pages still cite the right "page N".
 	data := writeMinimalPDF("first page text", "second page text", "third page text")
 	data = bytes.Replace(data, []byte("/Kids [3 0 R 5 0 R 7 0 R]"), []byte("/Kids [3 0 R 99 0 R 7 0 R]"), 1)
-	pages, truncated, err := ReadPDF(data, testPDFLimits)
+	pages, truncated, err := ReadPDF(context.Background(), data, testPDFLimits)
 	assert.NoError(t, err)
 	assert.False(t, truncated)
 	assert.Len(t, pages, 3)
@@ -143,20 +143,20 @@ func TestReadPDFDamagedMiddlePageKeepsIndexes(t *testing.T) {
 func TestReadPDFMalformed(t *testing.T) {
 	// Magic present, body garbage: must error cleanly, never hang or crash.
 	junk := append([]byte("%PDF-1.4\n"), bytes.Repeat([]byte{0x42, 0x00, 0x13}, 4096)...)
-	_, _, err := ReadPDF(junk, testPDFLimits)
+	_, _, err := ReadPDF(context.Background(), junk, testPDFLimits)
 	assert.Error(t, err)
 
-	_, _, err = ReadPDF([]byte("not a pdf at all"), testPDFLimits)
+	_, _, err = ReadPDF(context.Background(), []byte("not a pdf at all"), testPDFLimits)
 	assert.Error(t, err)
 }
 
 func TestReadPDFFailClosedLimits(t *testing.T) {
 	data := writeMinimalPDF("text")
-	_, _, err := ReadPDF(data, PDFLimits{MaxFileBytes: 1 << 20, MaxPages: 0, MaxTextBytes: 1024})
+	_, _, err := ReadPDF(context.Background(), data, PDFLimits{MaxFileBytes: 1 << 20, MaxPages: 0, MaxTextBytes: 1024})
 	assert.Error(t, err)
-	_, _, err = ReadPDF(data, PDFLimits{MaxFileBytes: 1 << 20, MaxPages: 10, MaxTextBytes: 0})
+	_, _, err = ReadPDF(context.Background(), data, PDFLimits{MaxFileBytes: 1 << 20, MaxPages: 10, MaxTextBytes: 0})
 	assert.Error(t, err)
-	_, _, err = ReadPDF(data, PDFLimits{MaxFileBytes: 0, MaxPages: 10, MaxTextBytes: 1024})
+	_, _, err = ReadPDF(context.Background(), data, PDFLimits{MaxFileBytes: 0, MaxPages: 10, MaxTextBytes: 1024})
 	assert.Error(t, err, "a zero size limit must fail closed, never mean unlimited")
 }
 
@@ -164,7 +164,7 @@ func TestReadPDFTooLargeFailsFast(t *testing.T) {
 	// The zeroed pages are never touched: ReadPDF must reject on length
 	// alone, before any runtime init or extraction work.
 	data := make([]byte, MaxPDFInputBytes+1)
-	_, _, err := ReadPDF(data, testPDFLimits)
+	_, _, err := ReadPDF(context.Background(), data, testPDFLimits)
 	assert.ErrorIs(t, err, ErrPDFTooLarge)
 }
 
@@ -180,7 +180,7 @@ func benchmarkReadPDF(b *testing.B, pageCount int) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, _, err := ReadPDF(data, testPDFLimits); err != nil {
+		if _, _, err := ReadPDF(context.Background(), data, testPDFLimits); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -201,6 +201,26 @@ func (*fakePDFPool) GetInstanceWithContext(context.Context) (pdfium.Pdfium, erro
 	return nil, errors.New("fake pool has no instances")
 }
 func (*fakePDFPool) Close() error { return nil }
+
+// abandonedPDFPool models a wait the caller gave up on: the underlying pool
+// reports a context-aborted acquisition as its own "no idle object" error,
+// never as ctx.Err(), so the cause has to be recovered from the context.
+type abandonedPDFPool struct {
+	fakePDFPool
+	t      *testing.T
+	cancel context.CancelFunc
+}
+
+func (p *abandonedPDFPool) GetInstanceWithContext(ctx context.Context) (pdfium.Pdfium, error) {
+	p.cancel()
+	// The cancel above is visible here only if acquisition was handed the
+	// caller's own context rather than a detached one, which is what makes
+	// the wait genuinely abandoned instead of merely slow.
+	if ctx.Err() == nil {
+		p.t.Error("acquisition did not receive the caller's context")
+	}
+	return nil, errors.New("Timeout waiting for idle object")
+}
 
 // savePDFRuntime hijacks the package-level runtime the real-PDF tests share,
 // so its callers must never run parallel. Every field this test touches is
@@ -284,7 +304,7 @@ func TestPDFRuntimeRetriesFailedInitAfterCooldown(t *testing.T) {
 	assert.Equal(t, 1, calls, "init must not be retried inside the cooldown")
 
 	// Callers keep seeing the runtime sentinel, unchanged by the retry logic.
-	_, _, rerr := ReadPDF(writeMinimalPDF("some text"), testPDFLimits)
+	_, _, rerr := ReadPDF(context.Background(), writeMinimalPDF("some text"), testPDFLimits)
 	assert.ErrorIs(t, rerr, ErrPDFRuntime)
 	assert.Equal(t, 1, calls)
 
@@ -358,6 +378,85 @@ func TestPDFRuntimeNilPoolIsAFailure(t *testing.T) {
 	assert.Equal(t, 1, calls, "a nil pool must not be retried inside the cooldown")
 }
 
+func TestReadPDFCancelledBeforeAnyWork(t *testing.T) {
+	// A caller that has already given up must not pay for runtime init, nor
+	// hold a pool instance for a result nobody will read.
+	savePDFRuntime(t)
+	resetPDFRuntime()
+	calls := 0
+	initFn = func() (pdfium.Pool, error) {
+		calls++
+		return &fakePDFPool{}, nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	pages, truncated, err := ReadPDF(ctx, writeMinimalPDF("never extracted"), testPDFLimits)
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.Nil(t, pages)
+	assert.False(t, truncated)
+	assert.Equal(t, 0, calls, "a cancelled call must not reach the pool at all")
+}
+
+func TestReadPDFAbandonedPoolWaitReportsCancellation(t *testing.T) {
+	savePDFRuntime(t)
+	resetPDFRuntime()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	initFn = func() (pdfium.Pool, error) { return &abandonedPDFPool{t: t, cancel: cancel}, nil }
+
+	_, _, err := ReadPDF(ctx, writeMinimalPDF("some text"), testPDFLimits)
+	assert.ErrorIs(t, err, context.Canceled, "the pool's own wait error must not mask the cancellation")
+	assert.Contains(t, err.Error(), "Timeout waiting for idle object", "the pool's own failure must stay visible beside the cancellation")
+}
+
+// errAfter reports itself cancelled from the n-th Err() call on. readPDF
+// consults ctx at fixed points on ONE goroutine, so counting them cuts an
+// extraction at an exact place - where a wall-clock deadline would race the
+// machine. Done() stays the embedded context's and is never ready, so the
+// watchdog sleeps through the cut exactly as it does for a scan that ends
+// through its own checkpoints.
+type errAfter struct {
+	context.Context
+	calls int
+	limit int
+}
+
+func (c *errAfter) Err() error {
+	c.calls++
+	if c.calls > c.limit {
+		return context.Canceled
+	}
+	return nil
+}
+
+func TestReadPDFCancellationAbortsRunningScan(t *testing.T) {
+	// Call 1 is the pre-pool gate, call 2 the gate right after acquisition,
+	// then one per page: both cuts below leave the caller's context alive long
+	// enough for the scan to hold an instance and parse the document, and the
+	// second one past the first page's text as well. Neither may reach the
+	// caller - partial content on abort would make findings depend on how far
+	// the machine got.
+	data := writeMinimalPDF("first page text", "second page text", "third page text")
+	for _, test := range []struct {
+		name  string
+		limit int
+	}{
+		{"right after acquisition", 1},
+		{"between two pages", 3},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cut := &errAfter{Context: context.Background(), limit: test.limit}
+			pages, truncated, extractTime, err := readPDF(cut, data, testPDFLimits)
+			assert.ErrorIs(t, err, context.Canceled)
+			assert.Nil(t, pages, "an aborted scan must return no content (determinism)")
+			assert.False(t, truncated)
+			assert.Positive(t, extractTime, "the abort must land after acquisition, not on the pre-pool gate")
+			assert.Equal(t, test.limit+1, cut.calls, "the extraction must end at the FIRST checkpoint past the cut")
+		})
+	}
+}
+
 func TestReadPDFConcurrentBatch(t *testing.T) {
 	// Double-checked lazy init plus pool under concurrency: more goroutines
 	// than pool instances.
@@ -365,7 +464,7 @@ func TestReadPDFConcurrentBatch(t *testing.T) {
 	done := make(chan error, 12)
 	for i := 0; i < 12; i++ {
 		go func() {
-			pages, _, err := ReadPDF(data, testPDFLimits)
+			pages, _, err := ReadPDF(context.Background(), data, testPDFLimits)
 			if err == nil && (len(pages) != 1 || !strings.Contains(string(pages[0]), "concurrent")) {
 				err = fmt.Errorf("bad extraction: %q", pages)
 			}

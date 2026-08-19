@@ -416,7 +416,7 @@ func keywordsInArchive(ctx context.Context, file structs.File, batch *Batch, rul
 		return append(messages, oversizeSkip(file, "archive", fileInfo.Size(), batch.maxContentScan))
 	}
 
-	archiveIterator := readers.InitArchiveIterator(file.Path, file.Name, batch.limits, batch.admit)
+	archiveIterator := readers.InitArchiveIterator(ctx, file.Path, file.Name, batch.limits, batch.admit)
 	defer archiveIterator.Close()
 	if !archiveIterator.HasFilesToUnpack() {
 		// Even with no scannable members, the iterator may have skipped members
@@ -784,6 +784,12 @@ func scanPDFFile(ctx context.Context, file structs.File, batch *Batch, rules []*
 		return nil, false
 	}
 
+	// The document is a PDF, so this file is ours to report on - but a scan
+	// nobody is waiting for must not pay the whole-document read below.
+	if ctx.Err() != nil {
+		return nil, true
+	}
+
 	limits := pdfLimits(batch.limits)
 
 	// Stat failure is fail-closed: without a size the oversize gate cannot
@@ -810,7 +816,7 @@ func scanPDFFile(ctx context.Context, file structs.File, batch *Batch, rules []*
 		data = data[:len(head)+rest] // file shrank between stat and read
 	}
 
-	pages, truncated, err := readers.ReadPDF(data, limits)
+	pages, truncated, err := readers.ReadPDF(ctx, data, limits)
 
 	var messages []structs.Message
 	switch {
@@ -825,6 +831,10 @@ func scanPDFFile(ctx context.Context, file structs.File, batch *Batch, rules []*
 		return ack("Skipped content scan of file: PDF is password-protected."), true
 	case errors.Is(err, readers.ErrPDFTimeout):
 		return ack("Skipped content scan of file: PDF extraction timed out."), true
+	case errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded):
+		// The scan was abandoned, not the document: no ack, because the
+		// request it would appear in is already dead.
+		return nil, true
 	case err != nil:
 		output.GlobalLogger.FileWarning(file.GetDisplayName(), "Error reading PDF '%s': %v", file.Path, err)
 		return ack("Skipped content scan of file: PDF could not be parsed."), true

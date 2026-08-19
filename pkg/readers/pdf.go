@@ -51,6 +51,11 @@ const DefaultPDFTimeout = 30 * time.Second
 // median-cost or ~50 heavy legitimate PDFs per archive (benchmarked).
 const maxArchivePDFTime = 4 * DefaultPDFTimeout
 
+// pdfCancelKillGrace is how long a cancelled extraction may still leave
+// through its own checkpoints before the watchdog kills the instance: routine
+// cancellation is common, and its cost must not be the Kill race.
+const pdfCancelKillGrace = time.Second
+
 // PDFMagic / PDFMagicWindow: PDFium accepts the "%PDF" magic at any offset
 // up to 1024, so 1028 bytes is the exact window - verified against the
 // engine at both boundaries (offset 1024 parses, 1025 does not). Shared so
@@ -235,8 +240,14 @@ func pdfRuntimeInitialized() bool {
 // limits.MaxTextBytes truncate (partial content is still returned for
 // scanning); the timeout aborts with ErrPDFTimeout and no content. Unreadable
 // single pages are skipped, the rest of the document still scans.
-func ReadPDF(data []byte, limits PDFLimits) (pages [][]byte, truncated bool, err error) {
-	pages, truncated, _, err = readPDF(data, limits)
+//
+// ctx is the second bound: a caller that cancelled or ran out of deadline
+// aborts the scan at the next checkpoint, with no content and ctx.Err(). With
+// both bounds tripped the cancellation is what is reported - a scan nobody
+// waits for must not be filed as a document that timed out. ctx must be
+// non-nil.
+func ReadPDF(ctx context.Context, data []byte, limits PDFLimits) (pages [][]byte, truncated bool, err error) {
+	pages, truncated, _, err = readPDF(ctx, data, limits)
 	return pages, truncated, err
 }
 
@@ -245,7 +256,7 @@ func ReadPDF(data []byte, limits PDFLimits) (pages [][]byte, truncated bool, err
 // iterator) must charge only this: queue time belongs to whichever archive
 // held the instance, and charging it would let one package's PDFs consume
 // another's budget - on a shared server, another tenant's.
-func readPDF(data []byte, limits PDFLimits) (pages [][]byte, truncated bool, extractTime time.Duration, err error) {
+func readPDF(ctx context.Context, data []byte, limits PDFLimits) (pages [][]byte, truncated bool, extractTime time.Duration, err error) {
 	if limits.MaxPages <= 0 || limits.MaxTextBytes <= 0 || limits.MaxFileBytes <= 0 {
 		return nil, false, 0, fmt.Errorf("pdf limits must be positive")
 	}
@@ -254,6 +265,11 @@ func readPDF(data []byte, limits PDFLimits) (pages [][]byte, truncated bool, ext
 	// configured gate is normally far stricter.
 	if int64(len(data)) > min(limits.MaxFileBytes, MaxPDFInputBytes) {
 		return nil, false, 0, ErrPDFTooLarge
+	}
+	// Checked before the pool: a caller that has already given up must not pay
+	// for runtime init or occupy an instance.
+	if cerr := ctx.Err(); cerr != nil {
+		return nil, false, 0, cerr
 	}
 	pool, err := pdfPool()
 	if err != nil {
@@ -265,12 +281,19 @@ func readPDF(data []byte, limits PDFLimits) (pages [][]byte, truncated bool, ext
 		timeout = DefaultPDFTimeout
 	}
 
-	// Acquisition blocks without a deadline of its own: pool wait is
+	// Acquisition blocks on the caller's context alone: pool wait is
 	// backpressure, not extraction time - a queue must not surface as a
-	// spurious "timed out" ack. The clock therefore starts only after an
-	// instance is held.
-	instance, err := pool.GetInstanceWithContext(context.Background())
+	// spurious "timed out" ack - but a caller that has given up must stop
+	// queueing. The clock therefore starts only after an instance is held.
+	instance, err := pool.GetInstanceWithContext(ctx)
 	if err != nil {
+		// An abandoned wait surfaces as the pool's own "no idle object"
+		// error, never as ctx.Err(), so the cause is recovered here - with
+		// the pool's own error kept visible, since a pool that failed for its
+		// own reasons around a cancellation would otherwise be invisible.
+		if cerr := ctx.Err(); cerr != nil {
+			return nil, false, 0, fmt.Errorf("%w (pool: %v)", cerr, err)
+		}
 		return nil, false, 0, err
 	}
 
@@ -278,7 +301,16 @@ func readPDF(data []byte, limits PDFLimits) (pages [][]byte, truncated bool, ext
 	defer func() { extractTime = time.Since(start) }()
 	deadline := start.Add(timeout)
 
-	// Watchdog: Kill interrupts in-flight wasm (CloseOnContextDone above).
+	// Watchdog: Kill interrupts in-flight wasm (CloseOnContextDone above) once
+	// either bound trips - the wall-clock backstop or the caller's context -
+	// because one page can outrun both between two poll points. Which of the
+	// two is REPORTED is aborted()'s decision below, not this goroutine's.
+	// Both arms are the backstop for a page hung INSIDE wasm, not the normal
+	// route out: a document that behaves returns through the checkpoints
+	// below, and only a wedged one is ever killed. That matters because Kill
+	// is single-shot (it invalidates the pool slot) and by design races the
+	// entry check of the wasm call it interrupts, which is why the context
+	// arm waits a grace period first.
 	// Kill is deliberately lock-free in go-pdfium and races the instance's
 	// own cleanup calls, so the two sides are serialized here: whichever
 	// takes the mutex first wins, and the document/instance Close pair is
@@ -304,25 +336,54 @@ func readPDF(data []byte, limits PDFLimits) (pages [][]byte, truncated bool, ext
 	go func() {
 		select {
 		case <-watchdogDone:
-		case <-time.After(timeout):
-			watchdogMu.Lock()
-			if !finished {
-				killed = true
-				_ = instance.Kill()
+			return
+		case <-ctx.Done():
+			// The grace assumes a healthy page fits in it, so the checkpoints
+			// get to end the extraction themselves; a page slower than that is
+			// killed like a wedged one (recover-contained, and still reported
+			// as the cancellation by aborted()). The wall-clock arm below has
+			// already waited its full budget and gets no grace.
+			select {
+			case <-watchdogDone:
+				return
+			case <-time.After(pdfCancelKillGrace):
 			}
-			watchdogMu.Unlock()
+		case <-time.After(timeout):
 		}
+		watchdogMu.Lock()
+		if !finished {
+			killed = true
+			_ = instance.Kill()
+		}
+		watchdogMu.Unlock()
 	}()
 
-	expired := func() bool { return !time.Now().Before(deadline) }
+	// aborted reports why extraction must stop, nil while it may go on. The
+	// caller's context outranks the wall-clock backstop: a request that was
+	// cancelled must not be reported as a document that timed out.
+	aborted := func() error {
+		if cerr := ctx.Err(); cerr != nil {
+			return cerr
+		}
+		if !time.Now().Before(deadline) {
+			return ErrPDFTimeout
+		}
+		return nil
+	}
+
+	// The pre-flight gate is stale by the time an instance is held: a context
+	// that ended while we queued must not pay for a document parse.
+	if aerr := aborted(); aerr != nil {
+		return nil, false, 0, aerr
+	}
 
 	docRes, err := instance.OpenDocument(&requests.OpenDocument{File: &data})
 	if err != nil {
 		if errors.Is(err, pdfium_errors.ErrPassword) {
 			return nil, false, 0, ErrPDFPassword
 		}
-		if expired() {
-			return nil, false, 0, ErrPDFTimeout
+		if aerr := aborted(); aerr != nil {
+			return nil, false, 0, aerr
 		}
 		return nil, false, 0, err
 	}
@@ -330,8 +391,8 @@ func readPDF(data []byte, limits PDFLimits) (pages [][]byte, truncated bool, ext
 
 	countRes, err := instance.FPDF_GetPageCount(&requests.FPDF_GetPageCount{Document: doc.Document})
 	if err != nil {
-		if expired() {
-			return nil, false, 0, ErrPDFTimeout
+		if aerr := aborted(); aerr != nil {
+			return nil, false, 0, aerr
 		}
 		return nil, false, 0, err
 	}
@@ -345,15 +406,15 @@ func readPDF(data []byte, limits PDFLimits) (pages [][]byte, truncated bool, ext
 
 	var total int64
 	for i := 0; i < scanPages; i++ {
-		if expired() {
-			return nil, false, 0, ErrPDFTimeout
+		if aerr := aborted(); aerr != nil {
+			return nil, false, 0, aerr
 		}
 		tp, err := instance.FPDFText_LoadPage(&requests.FPDFText_LoadPage{
 			Page: requests.Page{ByIndex: &requests.PageByIndex{Document: doc.Document, Index: i}},
 		})
 		if err != nil {
-			if expired() {
-				return nil, false, 0, ErrPDFTimeout
+			if aerr := aborted(); aerr != nil {
+				return nil, false, 0, aerr
 			}
 			// Unreadable page: scan the rest, but keep its placeholder so
 			// later findings still cite the right "page N".

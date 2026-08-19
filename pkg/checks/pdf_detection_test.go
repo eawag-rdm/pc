@@ -5,6 +5,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -428,5 +429,60 @@ func TestMalformedPDFEmitsSkipAck(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("malformed PDF must produce a parse skip ack, got %v", msgs)
+	}
+}
+
+func TestCancelledScanOfPDFReportsNothing(t *testing.T) {
+	file := writePDFFixture(t, buildTestPDF("the password lives here"))
+	def, rules, batch := bindTestRule(t, "IsFreeOfKeywords", keywordConfig([]string{"password"}), ScopeFile)
+
+	found := false
+	for _, m := range def.RunFile(context.Background(), file, ScopeFile, batch, rules) {
+		if !m.Skipped && strings.Contains(m.Content, "password") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("control: a live scan must find the keyword in the PDF")
+	}
+
+	// The same file for a request that dies mid-scan: the first Err() call is
+	// the gate before the whole-document read, the second ReadPDF's own
+	// pre-pool gate, the third the one it makes holding an instance. A cut
+	// after the second leaves the document read, admitted and past every skip
+	// gate, so only the extraction can still report - and it must report
+	// nothing: no finding, and no acknowledgement either, since a perfectly
+	// readable document must not be blamed for the caller's cancellation.
+	ctx := &errAfter{Context: context.Background(), limit: 2}
+	for _, m := range def.RunFile(ctx, file, ScopeFile, batch, rules) {
+		t.Errorf("a cancelled scan must report nothing, got %+v", m)
+	}
+}
+
+func TestCancelledScanOfPDFStopsBeforeTheSizeAck(t *testing.T) {
+	// The gate before the whole-document read is silent, so it shows only where
+	// a LATER gate would have spoken: under a size limit below the fixture, a
+	// scan that gets past it acknowledges "maximum PDF size". Cut at the very
+	// first Err() call - that gate itself - and the run stays silent, because
+	// the request the ack would appear in is already dead.
+	data := buildTestPDF("the password lives here")
+	file := writePDFFixture(t, data)
+	cfg := keywordConfig([]string{"password"})
+	cfg.General.MaxPDFFileSize = int64(len(data)) - 1
+	def, rules, batch := bindTestRule(t, "IsFreeOfKeywords", cfg, ScopeFile)
+
+	found := false
+	for _, m := range def.RunFile(context.Background(), file, ScopeFile, batch, rules) {
+		if m.Skipped && strings.Contains(m.Content, "maximum PDF size") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("control: a live scan must acknowledge the over-size PDF")
+	}
+
+	ctx := &errAfter{Context: context.Background(), limit: 0}
+	for _, m := range def.RunFile(ctx, file, ScopeFile, batch, rules) {
+		t.Errorf("a cancelled scan must not reach the size gate, got %+v", m)
 	}
 }

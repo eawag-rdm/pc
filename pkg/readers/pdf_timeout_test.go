@@ -11,6 +11,7 @@
 package readers
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -25,7 +26,7 @@ func TestReadPDFTimeoutDiscardsContent(t *testing.T) {
 	data := writeMinimalPDF("timeout page one", "timeout page two")
 	limits := testPDFLimits
 	limits.Timeout = time.Nanosecond
-	pages, truncated, err := ReadPDF(data, limits)
+	pages, truncated, err := ReadPDF(context.Background(), data, limits)
 	assert.ErrorIs(t, err, ErrPDFTimeout)
 	assert.Nil(t, pages, "timeout must discard partial content (determinism)")
 	assert.False(t, truncated)

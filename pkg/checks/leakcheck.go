@@ -186,7 +186,7 @@ func isFreeOfSecrets(ctx context.Context, repo structs.Repository, attrs leakAtt
 			messages = append(messages, structs.Message{Content: reason, Source: structs.Repository{}, Skipped: true, Reason: reason})
 		} else {
 			defer os.RemoveAll(tmpDir)
-			memberPaths := extractArchivesForLeakScan(limits, memberFilter, archives, tmpDir, sources, &messages)
+			memberPaths := extractArchivesForLeakScan(ctx, limits, memberFilter, archives, tmpDir, sources, &messages)
 			scanPaths = append(scanPaths, memberPaths...)
 		}
 	}
@@ -242,10 +242,10 @@ func isExtractedTextMember(memberName string) bool {
 // the iterator. nil means "no filter, admit every member" - a convenience for
 // callers that have no lists to honour; production callers pass the selector
 // the top-level files were narrowed with.
-func extractArchivesForLeakScan(limits readers.ArchiveLimits, memberFilter *selector.Selector, archives []structs.File, tmpDir string, sources map[string]structs.File, messages *[]structs.Message) []string {
+func extractArchivesForLeakScan(ctx context.Context, limits readers.ArchiveLimits, memberFilter *selector.Selector, archives []structs.File, tmpDir string, sources map[string]structs.File, messages *[]structs.Message) []string {
 	var memberPaths []string
 	for ai, archive := range archives {
-		it := readers.InitArchiveIterator(archive.Path, archive.Name, limits, memberFilter)
+		it := readers.InitArchiveIterator(ctx, archive.Path, archive.Name, limits, memberFilter)
 		if !it.HasFilesToUnpack() {
 			*messages = append(*messages, it.SkipMessages()...)
 			continue
