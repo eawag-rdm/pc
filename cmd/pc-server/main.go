@@ -79,7 +79,18 @@ func main() {
 
 	go func() {
 		<-quit
-		log.Println("Server is shutting down...")
+		// A drain can outlast the operator's patience, so a second signal must
+		// end the process. It is handled rather than left to the OS default:
+		// the shipped container runs this binary as PID 1, where the default
+		// disposition of a signal is a no-op, and an installed handler is
+		// delivered all the same. The channel therefore stays subscribed, with
+		// no window in which a second signal lands unread.
+		go func() {
+			<-quit
+			log.Println("second signal received, forcing exit")
+			os.Exit(1)
+		}()
+		log.Println("Server is shutting down... (a second signal forces quit)")
 
 		ctx, cancel := context.WithTimeout(context.Background(), srv.DrainTimeout())
 		defer cancel()

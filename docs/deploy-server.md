@@ -309,7 +309,8 @@ orchestrator's stop grace period is longer than that drain timeout, e.g.
 `stop_grace_period: 340s`), so analyses are not killed mid-flight. Raise both
 together whenever you raise `requestTimeoutSeconds`. The drain is best-effort:
 an analysis that ignores its deadline is still cut off by the orchestrator's
-`SIGKILL` backstop.
+`SIGKILL` backstop. A second `SIGTERM` / `SIGINT` during the drain ends the
+process immediately, without waiting for the in-flight analyses.
 
 If the listen address cannot be bound at startup (port in use, bad address),
 the process **exits non-zero immediately** rather than hanging.
