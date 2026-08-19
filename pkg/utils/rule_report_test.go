@@ -642,8 +642,10 @@ func TestRuleReportRepositoryScopeStaysSilent(t *testing.T) {
 	// Anti-vacuity: readme-nowhere really admits no file, so the silence below is
 	// the scope's rather than the fixture's.
 	nowhere := planRule(t, plan, "HasReadme", checks.ScopeRepository)
+	var subjects checks.Subjects
 	for _, file := range files {
-		if nowhere.Match(file) {
+		subjects.Set(file)
+		if nowhere.Match(&subjects) {
 			t.Fatalf("readme-nowhere must admit no file, it admits %q", file.RelPath)
 		}
 	}

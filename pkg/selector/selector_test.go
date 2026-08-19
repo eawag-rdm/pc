@@ -335,6 +335,8 @@ func TestSelectorFastPathEngaged(t *testing.T) {
 	}{
 		{"temp", false, modeLiteral},
 		{`\.log`, false, modeLiteral},
+		{`\.log`, true, modeLiteralFold}, // an escaped literal folds like a bare one
+		{`\.log$`, true, modeRegex},      // the anchor takes it back to the engine
 		{"日本", false, modeLiteral},
 		{"TEMP", true, modeLiteralFold},
 		{"^foo$", false, modeRegex}, // LiteralPrefix reports "foo", complete

@@ -113,9 +113,11 @@ func TestCompileSynthesizesDefaultRules(t *testing.T) {
 
 	// The parameterless check is synthesized into both of its scopes and runs.
 	spaced := structs.File{Name: "has space.txt", RelPath: "has space.txt"}
+	var subjects checks.Subjects
+	subjects.Set(spaced)
 	for _, scope := range []checks.Scope{checks.ScopeFile, checks.ScopeArchiveFileList} {
 		rule := planRule(t, plan, "HasNoWhiteSpace", scope)
-		if !rule.Match(spaced) {
+		if !rule.Match(&subjects) {
 			t.Errorf("a synthesized rule must carry an empty selector that admits everything (%s)", scope)
 		}
 	}

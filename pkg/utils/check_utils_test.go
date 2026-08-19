@@ -96,7 +96,9 @@ func TestApplyAllChecks_NilPlanPanics(t *testing.T) {
 // goes through the startup compile.
 func admits(t *testing.T, cfg config.Config, check string, file structs.File) bool {
 	t.Helper()
-	return planRule(t, compilePlan(t, cfg), check, checks.ScopeFile).Match(file)
+	var subjects checks.Subjects
+	subjects.Set(file)
+	return planRule(t, compilePlan(t, cfg), check, checks.ScopeFile).Match(&subjects)
 }
 
 func TestRuleAdmitsFile(t *testing.T) {
@@ -520,5 +522,50 @@ func TestArchiveFileListChecks_WalkCapSkipsArchive(t *testing.T) {
 	msgs = applyChecksFilteredByFileOnArchiveFileList(context.Background(), &diagSink{}, uncapped, nameChecks, []structs.File{archive})
 	if len(msgs) != 3 {
 		t.Fatalf("expected one whitespace issue per member, got %d: %v", len(msgs), msgs)
+	}
+}
+
+// TestArchiveFileListSelectionReadsSubjects drives the REAL archive-file-list
+// walk over members that live in directories, where the synthetic member file
+// carries the FULL member path in both Name and RelPath: a "name" subject gate
+// is therefore matched against the BASE of that path and a "path" subject
+// against the whole of it. The selection pass is the only place that extraction
+// happens, and nothing else in this package observes it - a gate handed the
+// wrong one of the two selects no member here and the archive comes back clean.
+func TestArchiveFileListSelectionReadsSubjects(t *testing.T) {
+	archivePath := buildNamedZip(t, []string{"data/report file.csv", "docs/notes file.csv"})
+	archive := structs.File{Path: archivePath, Name: "members.zip", DisplayName: "members.zip", IsArchive: true}
+	const selected = "data/report file.csv"
+
+	cases := []struct {
+		name    string
+		subject string
+		include string
+	}{
+		{`a "name" subject reads the member's base name`, "name", `^report`},
+		{`a "path" subject reads the whole member path`, "path", `^data/`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := planConfig([]config.RuleSpec{{
+				Name: "spaces-in-reports", Check: "HasNoWhiteSpace", Enabled: true,
+				Scope: []string{"archive-file-list"}, Subject: tc.subject, Include: []string{tc.include},
+			}})
+			// Only the gated check runs, so every message below is its rule's.
+			var nameChecks []checks.PlanEntry
+			for _, entry := range compilePlan(t, cfg).Scope(checks.ScopeArchiveFileList) {
+				if entry.Def.Name == "HasNoWhiteSpace" {
+					nameChecks = append(nameChecks, entry)
+				}
+			}
+
+			msgs := applyChecksFilteredByFileOnArchiveFileList(context.Background(), &diagSink{}, cfg, nameChecks, []structs.File{archive})
+			if len(msgs) != 1 {
+				t.Fatalf("expected the one member the gate admits to be checked, got %d: %v", len(msgs), msgs)
+			}
+			if src, ok := msgs[0].Source.(structs.File); !ok || src.Name != selected {
+				t.Errorf("the finding is sourced at %+v, want member %q", msgs[0].Source, selected)
+			}
+		})
 	}
 }

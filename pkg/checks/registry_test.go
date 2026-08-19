@@ -334,19 +334,25 @@ func TestArchiveFileListBaseNames(t *testing.T) {
 		return rule
 	}
 
-	if !bind(t, "", []string{`^report`}, ScopeArchiveFileList).Match(member) {
+	// One Subjects per file, as the selection pass holds one per walk: every gate
+	// below reads the subject it declares out of it.
+	var memberSubjects, plainSubjects Subjects
+	memberSubjects.Set(member)
+	plainSubjects.Set(plain)
+
+	if !bind(t, "", []string{`^report`}, ScopeArchiveFileList).Match(&memberSubjects) {
 		t.Error("a basename pattern must match the member's BASE name at archive-file-list scope")
 	}
-	if !bind(t, "", []string{`^report`}, ScopeFile).Match(plain) {
+	if !bind(t, "", []string{`^report`}, ScopeFile).Match(&plainSubjects) {
 		t.Error("a basename pattern must match the file's name at file scope")
 	}
-	if bind(t, "", []string{`^data/`}, ScopeArchiveFileList).Match(member) {
+	if bind(t, "", []string{`^data/`}, ScopeArchiveFileList).Match(&memberSubjects) {
 		t.Error("a path-prefix pattern must not match a member's base name")
 	}
-	if bind(t, "", []string{`^data/`}, ScopeFile).Match(plain) {
+	if bind(t, "", []string{`^data/`}, ScopeFile).Match(&plainSubjects) {
 		t.Error("a path-prefix pattern must not match a file's name")
 	}
-	if !bind(t, "path", []string{`^data/`}, ScopeArchiveFileList).Match(member) {
+	if !bind(t, "path", []string{`^data/`}, ScopeArchiveFileList).Match(&memberSubjects) {
 		t.Error("a declared \"path\" subject must match the full member path")
 	}
 }
@@ -443,9 +449,11 @@ func TestMergedAttributionExcludesNonMatchingRules(t *testing.T) {
 		file := structs.File{Name: tc.name, RelPath: tc.name}
 		// The selection the dispatch runs per (file, rule) before it invokes
 		// the check.
+		var subjects Subjects
+		subjects.Set(file)
 		var matched []*BoundRule
 		for _, rule := range rules {
-			if rule.Match(file) {
+			if rule.Match(&subjects) {
 				matched = append(matched, rule)
 			}
 		}
@@ -474,7 +482,9 @@ func TestEntryWithNoMatchedRuleRunsNoUnit(t *testing.T) {
 	def, rules, batch := bindTestRule(t, "HasOnlyASCII", cfg, ScopeFile)
 
 	file := structs.File{Name: "grösse.log", RelPath: "grösse.log"}
-	if rules[0].Match(file) {
+	var subjects Subjects
+	subjects.Set(file)
+	if rules[0].Match(&subjects) {
 		t.Fatal("the fixture's rule must refuse the file, or the dispatch would hand it over")
 	}
 	if msgs := def.RunFile(context.Background(), file, ScopeFile, batch, nil); len(msgs) != 0 {

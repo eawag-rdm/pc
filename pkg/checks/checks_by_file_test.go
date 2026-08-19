@@ -572,9 +572,11 @@ func TestValidNameEmptyListIsNotTheEmptyString(t *testing.T) {
 				file := structs.File{Name: tc.name, RelPath: tc.name}
 				// The selection the dispatch runs per (file, rule) before it
 				// invokes the check: one rule admits each of these files.
+				var subjects Subjects
+				subjects.Set(file)
 				var matched []*BoundRule
 				for _, rule := range rules {
-					if rule.Match(file) {
+					if rule.Match(&subjects) {
 						matched = append(matched, rule)
 					}
 				}
@@ -1255,9 +1257,11 @@ func TestStreamedSharedUnitNamesEveryMatchingRule(t *testing.T) {
 		t.Run(tc.file.Name, func(t *testing.T) {
 			// The selection the dispatch runs per (file, rule) before it
 			// invokes the check.
+			var subjects Subjects
+			subjects.Set(tc.file)
 			var matched []*BoundRule
 			for _, rule := range rules {
-				if rule.Match(tc.file) {
+				if rule.Match(&subjects) {
 					matched = append(matched, rule)
 				}
 			}

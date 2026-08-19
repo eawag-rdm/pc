@@ -180,13 +180,17 @@ exclude = ["^raw/"]
 		t.Fatalf("compile: %v", err)
 	}
 	rule := planRule(t, plan, "HasOnlyASCII", checks.ScopeFile)
-	if rule.Match(structs.File{Name: "a.csv", RelPath: "raw/a.csv"}) {
+	var subjects checks.Subjects
+	subjects.Set(structs.File{Name: "a.csv", RelPath: "raw/a.csv"})
+	if rule.Match(&subjects) {
 		t.Error("exclude must win over include")
 	}
-	if !rule.Match(structs.File{Name: "b.csv", RelPath: "docs/b.csv"}) {
+	subjects.Set(structs.File{Name: "b.csv", RelPath: "docs/b.csv"})
+	if !rule.Match(&subjects) {
 		t.Error("an included, non-excluded path must be admitted")
 	}
-	if rule.Match(structs.File{Name: "c.txt", RelPath: "docs/c.txt"}) {
+	subjects.Set(structs.File{Name: "c.txt", RelPath: "docs/c.txt"})
+	if rule.Match(&subjects) {
 		t.Error("a path no include pattern matches must be refused")
 	}
 }
@@ -437,10 +441,13 @@ include = ["^data"]
 		t.Fatalf("compile: %v", err)
 	}
 	rule := planRule(t, plan, "HasReadme", checks.ScopeRepository)
-	if !rule.Match(structs.File{Name: "notes.txt", RelPath: "data/notes.txt"}) {
+	var subjects checks.Subjects
+	subjects.Set(structs.File{Name: "notes.txt", RelPath: "data/notes.txt"})
+	if !rule.Match(&subjects) {
 		t.Error("an undeclared subject must match the collection-relative path at repository scope")
 	}
-	if rule.Match(structs.File{Name: "data.csv", RelPath: "docs/data.csv"}) {
+	subjects.Set(structs.File{Name: "data.csv", RelPath: "docs/data.csv"})
+	if rule.Match(&subjects) {
 		t.Error("the path default must not fall back to matching the file name")
 	}
 
@@ -455,8 +462,10 @@ include = ["^data"]
 		t.Fatalf("compile: %v", err)
 	}
 	named := planRule(t, declared, "HasReadme", checks.ScopeRepository)
-	if !named.Match(structs.File{Name: "data.csv", RelPath: "docs/data.csv"}) ||
-		named.Match(structs.File{Name: "notes.txt", RelPath: "data/notes.txt"}) {
+	subjects.Set(structs.File{Name: "data.csv", RelPath: "docs/data.csv"})
+	byName := named.Match(&subjects)
+	subjects.Set(structs.File{Name: "notes.txt", RelPath: "data/notes.txt"})
+	if !byName || named.Match(&subjects) {
 		t.Error("a declared \"name\" subject must stay respected at repository scope")
 	}
 }

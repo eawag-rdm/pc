@@ -14,7 +14,9 @@ import (
 	"github.com/eawag-rdm/pc/pkg/structs"
 )
 
-// matchRules picks the rules of one check that admit this file. It returns a
+// matchRules picks the rules of one check that admit this file, read from the
+// subjects the caller Set for it - so an ignoreCase literal gate folds its
+// subject once per file however many rules and checks read it. It returns a
 // sub-slice of backing, which the caller preallocates once per file so the
 // selection pass allocates per file rather than per (file, check).
 //
@@ -27,11 +29,11 @@ import (
 // archive-member scope take - see newRuleReport. The other unreported scope,
 // repository, never reaches here at all: it dispatches per entry through
 // RunRepository, with no per-file selection.
-func matchRules(entry checks.PlanEntry, file structs.File, backing []*checks.BoundRule, marks *ruleMarks, entryIdx int) ([]*checks.BoundRule, []*checks.BoundRule) {
+func matchRules(entry checks.PlanEntry, subjects *checks.Subjects, backing []*checks.BoundRule, marks *ruleMarks, entryIdx int) ([]*checks.BoundRule, []*checks.BoundRule) {
 	start := len(backing)
 	if marks == nil {
 		for _, rule := range entry.Rules {
-			if rule.Match(file) {
+			if rule.Match(subjects) {
 				backing = append(backing, rule)
 			}
 		}
@@ -40,7 +42,7 @@ func matchRules(entry checks.PlanEntry, file structs.File, backing []*checks.Bou
 	hit := marks.hit[entryIdx]
 	marks.idx = marks.idx[:0]
 	for j, rule := range entry.Rules {
-		if rule.Match(file) {
+		if rule.Match(subjects) {
 			backing = append(backing, rule)
 			hit[j] = true
 			marks.idx = append(marks.idx, j)
@@ -59,6 +61,11 @@ type matchScratch struct {
 	backing []*checks.BoundRule
 	matched []checks.PlanEntry
 	marks   *ruleMarks // the walk's own rule-report buffer; nil when reporting is off
+
+	// subjects carries the file the walk is on, set once for every rule of every
+	// check: an ignoreCase literal gate reads its subject folded, and the fold
+	// happens at most once per file per subject.
+	subjects checks.Subjects
 }
 
 // newMatchScratch sizes the scratch to the worst case of one file: every rule
@@ -76,9 +83,10 @@ func newMatchScratch(entries []checks.PlanEntry, marks *ruleMarks) matchScratch 
 // next call - the caller must run the checks before matching the next file.
 func (s *matchScratch) match(entries []checks.PlanEntry, file structs.File) []checks.PlanEntry {
 	s.backing, s.matched = s.backing[:0], s.matched[:0]
+	s.subjects.Set(file)
 	for i, entry := range entries {
 		var rules []*checks.BoundRule
-		rules, s.backing = matchRules(entry, file, s.backing, s.marks, i)
+		rules, s.backing = matchRules(entry, &s.subjects, s.backing, s.marks, i)
 		if len(rules) > 0 {
 			hit := entry
 			hit.Rules = rules
@@ -148,11 +156,13 @@ func filterChecksForFiles(entries []checks.PlanEntry, scope checks.Scope, files 
 	total := ruleCount(entries)
 	ruleArena := make([]*checks.BoundRule, 0, len(files)*total)
 	checkArena := make([]checks.PlanEntry, 0, len(files)*len(entries))
+	var subjects checks.Subjects
 	for _, file := range files {
+		subjects.Set(file)
 		start := len(checkArena)
 		for i, entry := range entries {
 			var rules []*checks.BoundRule
-			rules, ruleArena = matchRules(entry, file, ruleArena, marks, i)
+			rules, ruleArena = matchRules(entry, &subjects, ruleArena, marks, i)
 			if len(rules) > 0 {
 				hit := entry
 				hit.Rules = rules

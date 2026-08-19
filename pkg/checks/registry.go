@@ -329,33 +329,56 @@ func (r *BoundRule) setSelectors(s ruleSelectors) {
 	r.unfiltered = s.Gate.Unfiltered()
 }
 
-// Match reports whether this rule's dispatch gate admits the file, against the
-// subject the selector declares. It is the selection pass's inner loop, run once
-// per (file, rule), so the "admits everything" case - every shipped config's -
-// is a cached bool and the body stays small enough to inline; the real matching
-// lives in matchSubject, which the empty case never calls.
 // Unfiltered reports whether the dispatch selector admits every file - the
 // shipped configs' case. The dispatcher's fast path reads it once per pass:
 // when every rule of a scope is unfiltered, selection is the identity and the
 // per-file work items can share the plan's own entries.
 func (r *BoundRule) Unfiltered() bool { return r.unfiltered }
 
-func (r *BoundRule) Match(file structs.File) bool {
+// Subjects carries one file's three candidate gate subjects for a whole
+// selection pass over it: whatever the rules of every check declare, each is
+// read from here. It is the ONE place a file is taken apart for a gate, and a
+// dispatch site holds one and re-Sets it per file - a Scratch belongs to one
+// goroutine, so no two passes may share a Subjects.
+type Subjects struct {
+	path, name, base selector.Scratch
+}
+
+// Set points the three scratches at the next file. Folding is the Scratch's own
+// lazy business, so a subject no gate reads costs nothing beyond this call -
+// base, read only by the archive-file-list scope's gates, costs the path.Base
+// scan everywhere else and no more.
+func (s *Subjects) Set(file structs.File) {
+	s.path.Set(file.RelPath)
+	s.name.Set(file.Name)
+	s.base.Set(path.Base(file.Name))
+}
+
+// Match reports whether this rule's dispatch gate admits the file the Subjects
+// carries. It is the selection pass's inner loop, run once per (file, rule), so
+// the "admits everything" case - every shipped config's - is a cached bool and
+// the body stays small enough to inline; the real matching lives in
+// matchSubject, which the empty case never calls.
+func (r *BoundRule) Match(s *Subjects) bool {
 	if r.unfiltered {
 		return true
 	}
-	return r.matchSubject(file)
+	return r.matchSubject(s)
 }
 
-func (r *BoundRule) matchSubject(file structs.File) bool {
+// matchSubject matches the gate against the one subject it declares: the
+// collection-relative path, the name, or the base of that name where the gate
+// reads base names. The caller Sets the Subjects once per file - so an
+// ignoreCase LITERAL gate scans a subject folded once for the whole rule loop
+// instead of running the regex engine per rule.
+func (r *BoundRule) matchSubject(s *Subjects) bool {
 	if r.sel.Subject() == selector.SubjectPath {
-		return r.sel.Match(file.RelPath)
+		return r.sel.MatchScratch(&s.path)
 	}
-	name := file.Name
 	if r.baseNames {
-		name = path.Base(name)
+		return r.sel.MatchScratch(&s.base)
 	}
-	return r.sel.Match(name)
+	return r.sel.MatchScratch(&s.name)
 }
 
 // matchMember reports whether this rule's member gate admits the member, read
@@ -382,8 +405,10 @@ func (r *BoundRule) narrow(repository structs.Repository) structs.Repository {
 		return repository
 	}
 	files := make([]structs.File, 0, len(repository.Files))
+	var subjects Subjects
 	for _, file := range repository.Files {
-		if r.Match(file) {
+		subjects.Set(file)
+		if r.Match(&subjects) {
 			files = append(files, file)
 		}
 	}
