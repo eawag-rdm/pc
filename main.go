@@ -29,8 +29,8 @@ func main() {
 
 	// Small CLI: collect files via the configured collector, apply the checks,
 	// and render the results (TUI by default; -json/-plain/-html otherwise).
-	// Errors are reported as JSON error envelopes on stdout; a fatal startup
-	// error (config, rules, collector selection or fetch) also exits 1.
+	// Errors are reported as JSON error envelopes on stdout; any error - startup
+	// or rendering - also exits 1, only a completed run exits 0.
 
 	// Define default values for the config and folder arguments
 	defaultConfig := config.FindConfigFile()
@@ -58,9 +58,10 @@ func main() {
 	// Configure logger for JSON mode by default
 	output.GlobalLogger.SetJSONMode(true)
 
-	// Enable CPU profiling if requested. The fatal startup paths below exit
-	// without running these defers, so profiling a run that dies on a bad config
-	// or an unreachable location leaves a truncated profile (error path only).
+	// Enable CPU profiling if requested. The error paths below exit without
+	// running these defers, so profiling a run that dies on a bad config, an
+	// unreachable location or an unwritable report leaves a truncated profile
+	// (error path only).
 	if *cpuprofile != "" {
 		f, err := os.Create(*cpuprofile)
 		if err != nil {
@@ -253,7 +254,7 @@ func main() {
 		// Run TUI (this blocks until user exits)
 		if err := app.Run(); err != nil {
 			outputError("tui_error", fmt.Sprintf("Error running TUI: %v", err))
-			return
+			os.Exit(1)
 		}
 
 		// After TUI exits, print HTML generation message if applicable
@@ -272,7 +273,7 @@ func main() {
 		jsonResult, err := formatter.FormatResults(*folder_or_url, collectorName, res.Messages, len(files), helpers.PDFTracker.SnapshotFiles(), res.Diagnostics)
 		if err != nil {
 			outputError("formatting_error", fmt.Sprintf("Error formatting output: %v", err))
-			return
+			os.Exit(1)
 		}
 
 		// Generate HTML if requested
@@ -280,7 +281,7 @@ func main() {
 			htmlFormatter := htmlformatter.NewHTMLFormatter()
 			if err := htmlFormatter.GenerateReport(jsonResult, *htmlOutput); err != nil {
 				outputError("html_error", fmt.Sprintf("Error generating HTML report: %v", err))
-				return
+				os.Exit(1)
 			}
 			fmt.Printf("HTML report generated: %s\n", *htmlOutput)
 		}

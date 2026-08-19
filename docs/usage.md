@@ -394,11 +394,11 @@ Which collector the CLI uses comes from the config:
 collector = "LocalCollector"   # or "CkanCollector"
 ```
 
-**Exit codes:** a fatal startup error exits **1** - a config that does not load,
-a rule set that does not compile, an unknown or missing collector, a location
-that cannot be collected. A run that completed exits **0**, findings or not, and
-so does a failure to render its result afterwards (TUI, formatting or HTML), for
-which the JSON error envelope on stdout is the only signal.
+**Exit codes:** any error exits **1** - a config that does not load, a rule set
+that does not compile, an unknown or missing collector, a location that cannot
+be collected, and equally a result that cannot be rendered afterwards (TUI,
+formatting or HTML); the JSON error envelope on stdout says which. Only a run
+that completed exits **0**, findings or not.
 
 ### Result sections
 

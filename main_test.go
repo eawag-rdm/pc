@@ -573,11 +573,17 @@ func TestInvalidHTMLPath(t *testing.T) {
 
 	// Run scanner with invalid HTML path (need --no-tui since --html alone launches TUI)
 	cmd := exec.Command(testBinaryPath, "-config", configPath, "-location", testDir, "-html", invalidHTMLPath, "-no-tui")
-	output, _ := cmd.CombinedOutput()
+	output, err := cmd.CombinedOutput()
 
-	// Check for error in JSON output (program doesn't exit with non-zero code)
+	// Command should exit 1
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+		t.Fatalf("Expected exit code 1 for an unwritable HTML path, got %v", err)
+	}
+
+	// Check for error in JSON output
 	var errorResult map[string]interface{}
-	err := json.Unmarshal(output, &errorResult)
+	err = json.Unmarshal(output, &errorResult)
 	if err != nil {
 		t.Fatalf("Output is not valid JSON: %v\nOutput: %s", err, string(output))
 	}
