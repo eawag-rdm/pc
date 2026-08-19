@@ -71,6 +71,14 @@ func ruleSpecs(cfg *config.Config, reg Registry) ([]config.RuleSpec, error) {
 			// load rerun.
 			errs = append(errs, duplicateRuleErrors(rules, def)...)
 			errs = append(errs, duplicateParamsSiblingErrors(rules, def)...)
+			// Within ONE rule the same question is whether a [[rule.params]]
+			// group is declared twice, which buys that rule the duplicate scan a
+			// sibling would have bought it.
+			for _, rule := range rules {
+				if first, again, ok := repeatsParams(rule); ok {
+					errs = append(errs, fmt.Errorf("check %q: rule %q declares [[rule.params]] group %d again as group %d; remove one", def.Name, rule.Name, first+1, again+1))
+				}
+			}
 			specs = append(specs, rules...)
 		case slices.Contains(anchoredChecks, def.Name):
 			errs = append(errs, fmt.Errorf("check %q is not configured: declare a [[rule]] for it", def.Name))
@@ -360,6 +368,22 @@ func bindsSameParams(a, b config.RuleSpec) bool {
 		}
 	}
 	return false
+}
+
+// repeatsParams reports the first [[rule.params]] group one rule declares
+// twice: the index of the group repeated and of the copy repeating it, which is
+// what the operator has to find in a rule holding several groups. A rule
+// repeating two of them is told about the first pair; the second is reported
+// once that one is gone.
+func repeatsParams(spec config.RuleSpec) (first, again int, ok bool) {
+	for i := 1; i < len(spec.Params); i++ {
+		for j := 0; j < i; j++ {
+			if reflect.DeepEqual(spec.Params[j], spec.Params[i]) {
+				return j, i, true
+			}
+		}
+	}
+	return 0, 0, false
 }
 
 // ruleGate is what one rule of a compared pair gates on: the scopes it serves

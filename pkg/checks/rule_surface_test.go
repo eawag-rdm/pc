@@ -665,6 +665,40 @@ func TestRuleSpecsRefusesParameterlessSiblingsAtTheDefaultedSubject(t *testing.T
 	}
 }
 
+// TestRuleSpecsRefusesARepeatedParamsGroup pins the same contract inside ONE
+// rule: a [[rule.params]] group declared twice buys that rule the second scan a
+// sibling would have bought it. Two DIFFERENT groups are the repeated form
+// doing its job, so they load.
+func TestRuleSpecsRefusesARepeatedParamsGroup(t *testing.T) {
+	_, err := assembleRuleSpecs(
+		config.RuleSpec{Name: "twice", Check: "IsFreeOfKeywords", Enabled: true,
+			Params: []map[string]any{
+				{"keywords": []string{"password"}, "info": "found"},
+				{"keywords": []string{"password"}, "info": "found"},
+			}},
+	)
+	if err == nil {
+		t.Fatal("one rule declaring the same parameter group twice must be refused")
+	}
+	if want := `rule "twice" declares [[rule.params]] group 1 again as group 2`; !strings.Contains(err.Error(), want) {
+		t.Errorf("error must name %q: %v", want, err)
+	}
+
+	specs, err := assembleRuleSpecs(
+		config.RuleSpec{Name: "both", Check: "IsFreeOfKeywords", Enabled: true,
+			Params: []map[string]any{
+				{"keywords": []string{"password"}, "info": "found"},
+				{"keywords": []string{"Q:"}, "info": "found"},
+			}},
+	)
+	if err != nil {
+		t.Fatalf("two different groups are what the repeated form is for: %v", err)
+	}
+	if got := specsForCheck(specs, "IsFreeOfKeywords"); len(got) != 1 {
+		t.Fatalf("the rule must be kept, got %d", len(got))
+	}
+}
+
 // TestRuleSpecsRefusesAParkedDuplicate pins that the off switch is no exemption
 // here either: a rule parked with enabled = false still binds its parameters,
 // and the load validates disabled rules deliberately, so the duplicate is
