@@ -1225,13 +1225,15 @@ func TestStreamedDedupIsPerUnit(t *testing.T) {
 // runs a unit one rule contributed.
 func TestStreamedSharedUnitNamesEveryMatchingRule(t *testing.T) {
 	// Same parameters, different selectors: that is what makes these two rules
-	// instead of one rule said twice, and it is what makes them one unit.
+	// one unit. The loader admits the pair on the case folding, which is a
+	// property of the rule and not of the set it binds; the fixture's names are
+	// lower case, so the folded gate admits exactly what an unfolded one would.
 	params := []map[string]interface{}{{"keywords": []string{"password"}, "info": "Keywords found:"}}
 	cfg := config.Config{
 		General: &config.GeneralConfig{MaxContentScanFileSize: 1024 * 1024 * 1024},
 		Rules: []config.RuleSpec{
 			{Name: "credentials-by-name", Check: "IsFreeOfKeywords", Enabled: true, Include: []string{`^series`}, Params: params},
-			{Name: "credentials-by-suffix", Check: "IsFreeOfKeywords", Enabled: true, Include: []string{`\.txt$`}, Params: params},
+			{Name: "credentials-by-suffix", Check: "IsFreeOfKeywords", Enabled: true, IgnoreCase: true, Include: []string{`\.txt$`}, Params: params},
 		},
 	}
 	def, rules, batch := bindTestRule(t, "IsFreeOfKeywords", cfg, ScopeFile)
@@ -1318,11 +1320,13 @@ func memberKeywordConfig(rules ...config.RuleSpec) config.Config {
 // only that rule.
 func TestArchiveMemberSharedUnitNamesEveryMatchingRule(t *testing.T) {
 	// Same parameters, different member selectors: that is what makes these
-	// two rules instead of one rule said twice, and it is what makes them one
-	// unit. A member under data/raw/ is what both gates admit.
+	// two rules one unit. The loader admits the pair on the case folding, which
+	// is a property of the rule and not of the set it binds; every member path
+	// below is lower case, so the folded gate admits exactly what an unfolded
+	// one would. A member under data/raw/ is what both gates admit.
 	cfg := memberKeywordConfig(
 		memberRule("data-members", []string{"data/"}, false),
-		memberRule("raw-members", []string{"raw/"}, false),
+		memberRule("raw-members", []string{"raw/"}, true),
 	)
 	def, rules, batch := bindTestRule(t, "IsFreeOfKeywords", cfg, ScopeArchiveMember)
 	if batch.merged == nil {

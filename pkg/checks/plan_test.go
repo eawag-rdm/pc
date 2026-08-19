@@ -312,10 +312,14 @@ func memberRule(name string, include []string, ignoreCase bool) config.RuleSpec 
 // the per-rule gates must still run, because the union is nobody's own filter.
 func TestBuildMemberAdmissionTwoRules(t *testing.T) {
 	// Case-SENSITIVE literals: a case-folding selector may never gate a union
-	// skip (selector.UnionLiterals), pinned by the ignoreCase case below.
+	// skip (selector.UnionLiterals), pinned by the ignoreCase case below. Two
+	// case-sensitive rules of one check are only a config at all where they bind
+	// DIFFERENT parameters, so the second scans for another keyword.
+	raw := memberRule("raw-members", []string{"raw/"}, false)
+	raw.Params = []map[string]interface{}{{"keywords": []string{"token"}, "info": "found"}}
 	plan := compileAnchored(t, anchoredConfig([]config.RuleSpec{
 		memberRule("data-members", []string{"data/"}, false),
-		memberRule("raw-members", []string{"raw/"}, false),
+		raw,
 	}))
 
 	entry := planEntry(t, plan, "IsFreeOfKeywords", ScopeArchiveMember)
@@ -451,10 +455,14 @@ func TestCompileValidatesDisabledRules(t *testing.T) {
 // by, rule i being bit 1<<i. Reorder, filter or renumber that list and the
 // dead-rule and overlap diagnostics name the wrong rules, silently.
 func TestMergeBitMatchesReportIndex(t *testing.T) {
+	// Three rules of a check that reads no parameters: they all bind its one
+	// scan, so what keeps the loader from refusing them as one rule said three
+	// times is the two fields that do no work here - the case folding and the
+	// subject a pattern is read from (see benchNameRuleSpecs).
 	declared := []config.RuleSpec{
 		{Name: "ascii-csv", Check: "HasOnlyASCII", Enabled: true, Include: []string{`\.csv$`}},
-		{Name: "ascii-names", Check: "HasOnlyASCII", Enabled: true},
-		{Name: "ascii-logs", Check: "HasOnlyASCII", Enabled: true, Include: []string{`\.log$`}},
+		{Name: "ascii-names", Check: "HasOnlyASCII", Enabled: true, IgnoreCase: true},
+		{Name: "ascii-logs", Check: "HasOnlyASCII", Enabled: true, Subject: "path", Include: []string{`\.log$`}},
 	}
 	entry := planEntry(t, compileAnchored(t, anchoredConfig(declared)), "HasOnlyASCII", ScopeFile)
 	if len(entry.Rules) != len(declared) {
@@ -489,12 +497,17 @@ func TestPairScansDiffer(t *testing.T) {
 	set := func(keywords ...string) map[string]interface{} {
 		return map[string]interface{}{"keywords": keywords, "info": "found"}
 	}
+	// The first three rules each share a parameter set with the other two, which
+	// the loader refuses where their gates meet: the subject each reads its
+	// patterns from - and, between the two that read the same one, the case
+	// folding - is what keeps the three apart without touching the sets they
+	// bind, the only thing this predicate answers from.
 	entry := planEntry(t, compileAnchored(t, anchoredConfig([]config.RuleSpec{
-		{Name: "csv-secrets", Check: "IsFreeOfKeywords", Enabled: true, Include: []string{`\.csv$`},
+		{Name: "csv-secrets", Check: "IsFreeOfKeywords", Enabled: true, Subject: "name", Include: []string{`\.csv$`},
 			Params: []map[string]interface{}{set("password"), set("shared")}},
-		{Name: "alpha-secrets", Check: "IsFreeOfKeywords", Enabled: true, Include: []string{`^alpha`},
+		{Name: "alpha-secrets", Check: "IsFreeOfKeywords", Enabled: true, Subject: "path", Include: []string{`^alpha`},
 			Params: []map[string]interface{}{set("password"), set("shared")}},
-		{Name: "alpha-tokens", Check: "IsFreeOfKeywords", Enabled: true, Include: []string{`^alpha`},
+		{Name: "alpha-tokens", Check: "IsFreeOfKeywords", Enabled: true, Subject: "name", IgnoreCase: true, Include: []string{`^alpha`},
 			Params: []map[string]interface{}{set("token"), set("shared")}},
 		{Name: "no-keywords", Check: "IsFreeOfKeywords", Enabled: true, Include: []string{`^beta`},
 			Params: []map[string]interface{}{set()}},
@@ -531,16 +544,18 @@ func TestPairScansDiffer(t *testing.T) {
 // acquisition's hot path. 64 still compiles, so what the load refuses is that
 // boundary and not some smaller limit nobody stated.
 func TestCompileRefusesMoreThan64RulesOfOneCheck(t *testing.T) {
-	// Rules of a parameter-less check that differ only in their name are
-	// refused as twins, so each gets a pattern of its own.
+	// Rules of one check that bind the same parameters where their gates meet
+	// are refused, so each rule scans for a keyword of its own - which a
+	// parameter-less check has no room for, its rules all binding its one scan.
 	specs := func(n int) []config.RuleSpec {
 		rules := make([]config.RuleSpec, 0, n)
 		for i := 0; i < n; i++ {
 			rules = append(rules, config.RuleSpec{
-				Name:    fmt.Sprintf("ascii-%02d", i),
-				Check:   "HasOnlyASCII",
+				Name:    fmt.Sprintf("keywords-%02d", i),
+				Check:   "IsFreeOfKeywords",
 				Enabled: true,
 				Include: []string{fmt.Sprintf(`_%02d\.csv$`, i)},
+				Params:  []map[string]interface{}{{"keywords": []string{fmt.Sprintf("kw_%02d", i)}, "info": "found"}},
 			})
 		}
 		return rules
@@ -555,7 +570,7 @@ func TestCompileRefusesMoreThan64RulesOfOneCheck(t *testing.T) {
 	if err == nil {
 		t.Fatal("a 65th rule of one check must refuse the load")
 	}
-	for _, want := range []string{`check "HasOnlyASCII"`, "65"} {
+	for _, want := range []string{`check "IsFreeOfKeywords"`, "65"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("the refusal must name %s: %v", want, err)
 		}

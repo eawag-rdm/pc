@@ -31,6 +31,28 @@ func asciiRule(name string, scope []string, include ...string) config.RuleSpec {
 	}
 }
 
+// foldedAsciiRule is asciiRule's case-folding twin, the difference the loader
+// needs between two rules of the parameterless check at one scope: a check
+// reading no parameters has one scan, so all its rules bind it, and a pair
+// binding one set where their gates meet is refused. Every fixture name in this
+// file is lower case, so a folded gate admits exactly what its twin admits and
+// the case a test states is untouched.
+func foldedAsciiRule(name string, scope []string, include ...string) config.RuleSpec {
+	rule := asciiRule(name, scope, include...)
+	rule.IgnoreCase = true
+	return rule
+}
+
+// pathAsciiRule is the same difference read off the other field that does no
+// work here, for the cases that need a THIRD rule of the check: the subject its
+// pattern is matched against. Every member name in this file is a bare name, so
+// the path this rule reads is the base name its siblings read.
+func pathAsciiRule(name string, scope []string, include ...string) config.RuleSpec {
+	rule := asciiRule(name, scope, include...)
+	rule.Subject = "path"
+	return rule
+}
+
 // keywordRule is one [[rule]] for the parameterised keyword check at file
 // scope, as the config surface produces it. What two rules of the check dedup
 // on is the whole bound set - checks.keywordSet interns the matcher AND the
@@ -199,7 +221,7 @@ func TestRuleReportDeadRuleWarnsOnce(t *testing.T) {
 	cfg := planConfig(nil)
 	cfg.Rules = []config.RuleSpec{
 		asciiRule("csv-only", []string{"file"}, `\.csv$`),
-		asciiRule("tar-only", []string{"file"}, `\.tar$`),
+		foldedAsciiRule("tar-only", []string{"file"}, `\.tar$`),
 	}
 	plan := compilePlan(t, cfg)
 
@@ -221,7 +243,7 @@ func TestRuleReportOverlapOnFilteredPath(t *testing.T) {
 	cfg := planConfig(nil)
 	cfg.Rules = []config.RuleSpec{
 		asciiRule("csv-rule", []string{"file"}, `\.csv$`),
-		asciiRule("alpha-rule", []string{"file"}, `^alpha`),
+		foldedAsciiRule("alpha-rule", []string{"file"}, `^alpha`),
 	}
 	plan := compilePlan(t, cfg)
 	entries := plan.Scope(checks.ScopeFile)
@@ -262,9 +284,16 @@ func TestRuleReportOverlapFollowsTheUnits(t *testing.T) {
 		t.Fatalf("write the shared keyword: %v", err)
 	}
 	cfg := planConfig(nil)
+	// The two rules of one keyword set are only a config at all because they
+	// fold case differently - the loader refuses a pair binding one set where
+	// their gates meet. The set is what they bind either way, so they still
+	// share its scan, and every file below is lower case, so both gates admit
+	// what they admit today.
+	alphaSecrets := keywordRule("alpha-secrets", []string{"password"}, `^alpha`)
+	alphaSecrets.IgnoreCase = true
 	cfg.Rules = []config.RuleSpec{
 		keywordRule("csv-secrets", []string{"password"}, `\.csv$`),
-		keywordRule("alpha-secrets", []string{"password"}, `^alpha`),
+		alphaSecrets,
 		keywordRule("alpha-tokens", []string{"token"}, `^alpha`),
 	}
 	plan := compilePlan(t, cfg)
@@ -336,16 +365,14 @@ func TestRuleReportUnfilteredFastPathMarksEveryRule(t *testing.T) {
 	files := ruleReportFiles(t, "alpha.csv", "beta.csv", "gamma.txt")
 	cfg := planConfig(nil)
 	// The two rules must differ in something the loader can see - two rules of
-	// one check identical but for their name are a load error - and they may not
-	// differ by include/exclude, which would take them off the fast path this
-	// test exists for. ignoreCase is that difference, and it stays inside the one
-	// scope this case is about: with no pattern to fold it admits exactly what
-	// wide-one admits.
-	wideTwo := asciiRule("wide-two", []string{"file"})
-	wideTwo.IgnoreCase = true
+	// the parameterless check at one gate are a load error unless they differ in
+	// ignoreCase or subject - and they may not differ by include/exclude, which
+	// would take them off the fast path this test exists for. foldedAsciiRule is
+	// that difference, and it stays inside the one scope this case is about:
+	// with no pattern to fold it admits exactly what wide-one admits.
 	cfg.Rules = []config.RuleSpec{
 		asciiRule("wide-one", []string{"file"}),
-		wideTwo,
+		foldedAsciiRule("wide-two", []string{"file"}),
 	}
 	plan := compilePlan(t, cfg)
 	entries := plan.Scope(checks.ScopeFile)
@@ -389,13 +416,12 @@ func TestRuleReportUnfilteredFastPathMarksEveryRule(t *testing.T) {
 func TestRuleReportEmptyPackageStaysSilent(t *testing.T) {
 	cfg := planConfig(nil)
 	// Same difference as above, and for the same reason: the loader rejects two
-	// rules of one check that differ only in their name, and an include pattern
-	// would take the pair off the fast path this case has to reach.
-	wideTwo := asciiRule("wide-two", []string{"file"})
-	wideTwo.IgnoreCase = true
+	// rules of the parameterless check at one gate unless they differ in
+	// ignoreCase or subject, and an include pattern would take the pair off the
+	// fast path this case has to reach.
 	cfg.Rules = []config.RuleSpec{
 		asciiRule("wide-one", []string{"file"}),
-		wideTwo,
+		foldedAsciiRule("wide-two", []string{"file"}),
 	}
 	plan := compilePlan(t, cfg)
 	entries := plan.Scope(checks.ScopeFile)
@@ -430,7 +456,7 @@ func TestRuleReportProgressEntryPointEmits(t *testing.T) {
 	cfg := planConfig(nil)
 	cfg.Rules = []config.RuleSpec{
 		asciiRule("csv-only", []string{"file"}, `\.csv$`),
-		asciiRule("tar-only", []string{"file"}, `\.tar$`),
+		foldedAsciiRule("tar-only", []string{"file"}, `\.tar$`),
 	}
 	plan := compilePlan(t, cfg)
 
@@ -451,7 +477,7 @@ func TestRuleReportCancelledRunEmitsNothing(t *testing.T) {
 	cfg := planConfig(nil)
 	cfg.Rules = []config.RuleSpec{
 		asciiRule("csv-only", []string{"file"}, `\.csv$`),
-		asciiRule("tar-only", []string{"file"}, `\.tar$`),
+		foldedAsciiRule("tar-only", []string{"file"}, `\.tar$`),
 	}
 	plan := compilePlan(t, cfg)
 
@@ -537,7 +563,10 @@ func TestRuleReportArchiveMemberScopeStaysSilent(t *testing.T) {
 	cfg := planConfig(nil)
 	cfg.Rules = []config.RuleSpec{
 		memberRule("member-nowhere", []string{"^no-such-dir/"}, false),
-		memberRule("member-elsewhere", []string{"^also-not/"}, false),
+		// The pair binds one keyword set, so the case folding is what keeps the
+		// loader from reading the second rule as the first said twice. Neither
+		// pattern has a letter to fold, and neither matches a member either way.
+		memberRule("member-elsewhere", []string{"^also-not/"}, true),
 	}
 	plan := compilePlan(t, cfg)
 
@@ -654,10 +683,14 @@ func TestRuleReportArchiveFileListFold(t *testing.T) {
 	}
 	archives := ruleReportArchives(t)
 	cfg := planConfig(nil)
+	// Three rules of the parameterless check bind its one scan, so each pair
+	// needs a difference the loader can see: the case folding, and - for the
+	// third - the subject its pattern is read from. Neither changes which
+	// members these gates admit (see foldedAsciiRule and pathAsciiRule).
 	cfg.Rules = []config.RuleSpec{
 		asciiRule("list-alpha", []string{"archive-file-list"}, "alpha"),
-		asciiRule("list-beta", []string{"archive-file-list"}, "beta"),
-		asciiRule("list-dead", []string{"archive-file-list"}, "zzz-no-such-member"),
+		foldedAsciiRule("list-beta", []string{"archive-file-list"}, "beta"),
+		pathAsciiRule("list-dead", []string{"archive-file-list"}, "zzz-no-such-member"),
 	}
 	plan := compilePlan(t, cfg)
 
@@ -693,8 +726,8 @@ func TestRuleReportFoldAccumulatesAcrossArchives(t *testing.T) {
 	cfg := planConfig(nil)
 	cfg.Rules = []config.RuleSpec{
 		asciiRule("list-alpha", []string{"archive-file-list"}, "alpha"),
-		asciiRule("list-txt", []string{"archive-file-list"}, `\.txt$`),
-		asciiRule("list-dead", []string{"archive-file-list"}, "zzz-no-such-member"),
+		foldedAsciiRule("list-txt", []string{"archive-file-list"}, `\.txt$`),
+		pathAsciiRule("list-dead", []string{"archive-file-list"}, "zzz-no-such-member"),
 	}
 	plan := compilePlan(t, cfg)
 	entries := plan.Scope(checks.ScopeArchiveFileList)
@@ -732,7 +765,7 @@ func TestRuleReportLocalBuffersArePrivate(t *testing.T) {
 	cfg := planConfig(nil)
 	cfg.Rules = []config.RuleSpec{
 		asciiRule("list-one", []string{"archive-file-list"}, "file1"),
-		asciiRule("list-two", []string{"archive-file-list"}, `\.txt$`),
+		foldedAsciiRule("list-two", []string{"archive-file-list"}, `\.txt$`),
 	}
 	plan := compilePlan(t, cfg)
 	entries := plan.Scope(checks.ScopeArchiveFileList)
@@ -793,7 +826,7 @@ func TestRuleReportOffStaysInert(t *testing.T) {
 	cfg := planConfig(nil)
 	cfg.Rules = []config.RuleSpec{
 		asciiRule("csv-rule", []string{"file"}, `\.csv$`),
-		asciiRule("alpha-rule", []string{"file"}, `^alpha`),
+		foldedAsciiRule("alpha-rule", []string{"file"}, `^alpha`),
 	}
 	entries := compilePlan(t, cfg).Scope(checks.ScopeFile)
 
@@ -853,11 +886,12 @@ func TestRuleReportOffStaysInert(t *testing.T) {
 // for.
 //
 // The rules are the KEYWORD check's because the loader refuses two rules of one
-// check that differ only in their name, and only a parameterised check can carry
-// a difference the SELECTION PASS never reads: the per-rule info string. Their
-// include lists stay byte-identical, so the identical-selector worst case this
-// benchmark exists for is intact, and a third pattern per rule would put a regex
-// on the files the first two reject rather than measuring the recorder.
+// check binding the same parameters where their gates meet, and only a
+// parameterised check can carry a difference the SELECTION PASS never reads: the
+// per-rule info string. Their include lists stay byte-identical, so the
+// identical-selector worst case this benchmark exists for is intact, and a third
+// pattern per rule would put a regex on the files the first two reject rather
+// than measuring the recorder.
 // IsFreeOfKeywords is anchored, so declaring it here is also what keeps
 // withRequiredAnchors from adding a rule of its own alongside these.
 func benchCollisionPlan(b *testing.B, ruleCount int, dead bool) *checks.Plan {

@@ -279,15 +279,28 @@ func benchmarkIsArchiveFreeOfKeywords(b *testing.B, ruleCount int) {
 func BenchmarkIsArchiveFreeOfKeywordsRules1(b *testing.B) { benchmarkIsArchiveFreeOfKeywords(b, 1) }
 func BenchmarkIsArchiveFreeOfKeywordsRules3(b *testing.B) { benchmarkIsArchiveFreeOfKeywords(b, 3) }
 
-// benchMergedMemberSelectors are member gates that all admit every member of
+// benchMergedMemberGates are member gates that all admit every member of
 // benchArchiveFile while the loader still accepts them as different rules.
-// None of them is a literal, so several of them get NO union pre-filter
-// (unionMemberAdmission) and the per-member gates decide - the member path the
-// merge has to serve.
-var benchMergedMemberSelectors = [...]string{
-	`campaign/.*\.txt$`,
-	`site_[0-9]{3}/`,
-	`report_[0-9]{4}\.txt$`,
+// None of their patterns is a literal, so several of them get NO union
+// pre-filter (unionMemberAdmission) and the per-member gates decide - the
+// member path the merge has to serve.
+//
+// The rules bind ONE parameter set, which the loader refuses where their gates
+// meet, so the gates carry the difference: the case folding, and the subject a
+// pattern is read from. Every member is campaign/site_NNN/report_NNNN.txt, so
+// the base name the third gate reads matches its pattern as the full path
+// matches the first two - all three still admit every member. A folded pattern
+// and a base-name subject are not what the gates used to cost, so numbers taken
+// before they carried the difference are no baseline for these: take a fresh
+// one.
+var benchMergedMemberGates = [...]struct {
+	include    string
+	subject    string
+	ignoreCase bool
+}{
+	{include: `campaign/.*\.txt$`, subject: "path"},
+	{include: `site_[0-9]{3}/`, subject: "path", ignoreCase: true},
+	{include: `report_[0-9]{4}\.txt$`, subject: "name"},
 }
 
 // benchMergedMemberRules binds n member rules over ONE keyword parameter set:
@@ -298,13 +311,15 @@ func benchMergedMemberRules(b *testing.B, n int) (CheckDef, *Batch, []*BoundRule
 	b.Helper()
 	specs := make([]config.RuleSpec, 0, n)
 	for i := 0; i < n; i++ {
+		gate := benchMergedMemberGates[i]
 		specs = append(specs, config.RuleSpec{
-			Name:    fmt.Sprintf("shared members %d", i),
-			Check:   "IsFreeOfKeywords",
-			Scope:   []string{"archive-member"},
-			Enabled: true,
-			Subject: "path",
-			Include: []string{benchMergedMemberSelectors[i]},
+			Name:       fmt.Sprintf("shared members %d", i),
+			Check:      "IsFreeOfKeywords",
+			Scope:      []string{"archive-member"},
+			Enabled:    true,
+			Subject:    gate.subject,
+			IgnoreCase: gate.ignoreCase,
+			Include:    []string{gate.include},
 			Params: []map[string]interface{}{
 				{"keywords": benchKeywordGroups[0], "info": benchKeywordInfos[0]},
 			},

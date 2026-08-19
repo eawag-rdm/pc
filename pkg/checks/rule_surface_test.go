@@ -161,24 +161,8 @@ func TestRuleSpecsIgnoresScopeDeclarationOrder(t *testing.T) {
 	}
 }
 
-// TestRuleSpecsAllowsSameParamsDifferentSelectors pins the other side: the same
-// parameters over different files are two rules, not one said twice.
-func TestRuleSpecsAllowsSameParamsDifferentSelectors(t *testing.T) {
-	params := []map[string]interface{}{{"keywords": []string{"password"}, "info": "found"}}
-	specs, err := assembleRuleSpecs(
-		config.RuleSpec{Name: "csv", Check: "IsFreeOfKeywords", Enabled: true, Scope: []string{"file"}, Include: []string{`\.csv$`}, Params: params},
-		config.RuleSpec{Name: "txt", Check: "IsFreeOfKeywords", Enabled: true, Scope: []string{"file"}, Include: []string{`\.txt$`}, Params: params},
-	)
-	if err != nil {
-		t.Fatalf("different selectors are different rules: %v", err)
-	}
-	if got := specsForCheck(specs, "IsFreeOfKeywords"); len(got) != 2 {
-		t.Fatalf("both rules must be kept, got %d", len(got))
-	}
-}
-
-// TestRuleSpecsAllowsSameSelectorsDifferentParams is its twin: the same files
-// scanned for different things are two rules as well.
+// TestRuleSpecsAllowsSameSelectorsDifferentParams pins the other side: the same
+// files scanned for different things are two rules, not one said twice.
 func TestRuleSpecsAllowsSameSelectorsDifferentParams(t *testing.T) {
 	specs, err := assembleRuleSpecs(
 		config.RuleSpec{Name: "credentials", Check: "IsFreeOfKeywords", Enabled: true, Scope: []string{"file"}, Include: []string{`\.csv$`},
@@ -211,45 +195,6 @@ func TestRuleSpecsRefusesTwinsAtThePathDefault(t *testing.T) {
 	}
 }
 
-// TestRuleSpecsAllowsSubjectAgainstThePathDefault is its counterweight: where
-// the scope set makes the default "path", a spelled-out subject = "name" is a
-// DIFFERENT rule - it gates archive members by their base name rather than by
-// their path - so the pair must load.
-func TestRuleSpecsAllowsSubjectAgainstThePathDefault(t *testing.T) {
-	specs, err := assembleRuleSpecs(
-		config.RuleSpec{Name: "by-path", Check: "IsFreeOfKeywords", Enabled: true, Include: []string{"data/"}},
-		config.RuleSpec{Name: "by-name", Check: "IsFreeOfKeywords", Enabled: true, Subject: "name", Include: []string{"data/"}},
-	)
-	if err != nil {
-		t.Fatalf("a name subject is not the path default: %v", err)
-	}
-	if got := specsForCheck(specs, "IsFreeOfKeywords"); len(got) != 2 {
-		t.Fatalf("both rules must be kept, got %d", len(got))
-	}
-}
-
-// TestRuleSpecsAllowsSubjectPathAcrossScopeClasses pins the reading a rule
-// serving BOTH scope classes has: IsFreeOfKeywords runs over files and over
-// archive members, where an undeclared subject means the file's NAME and the
-// member's PATH respectively. Spelling out subject = "path" therefore keeps the
-// member gate and changes the file gate to the collection-relative path - two
-// different rules, however identical the rest is, and a config saying both is
-// valid. The path-only scope set of TestRuleSpecsRefusesTwinsAtThePathDefault is
-// the same pair's other verdict: there nothing but the path is read, so the
-// spelling is a spelling.
-func TestRuleSpecsAllowsSubjectPathAcrossScopeClasses(t *testing.T) {
-	specs, err := assembleRuleSpecs(
-		config.RuleSpec{Name: "default-subject", Check: "IsFreeOfKeywords", Enabled: true, Include: []string{"data/"}},
-		config.RuleSpec{Name: "path-subject", Check: "IsFreeOfKeywords", Enabled: true, Subject: "path", Include: []string{"data/"}},
-	)
-	if err != nil {
-		t.Fatalf("the two rules gate files differently, so both must load: %v", err)
-	}
-	if got := specsForCheck(specs, "IsFreeOfKeywords"); len(got) != 2 {
-		t.Fatalf("both rules must be kept, got %d", len(got))
-	}
-}
-
 // TestRuleSpecsRefusesDisabledTwins pins that the off switch is no exemption: a
 // disabled twin does no work today, but the load validates disabled rules
 // deliberately, so the duplication is caught now rather than on the day someone
@@ -264,24 +209,6 @@ func TestRuleSpecsRefusesDisabledTwins(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), `rule "off-b": resolves to the same rule as "off-a"`) {
 		t.Errorf("unexpected error: %v", err)
-	}
-}
-
-// TestRuleSpecsAllowsADisabledRuleBesideItsEnabledTwin is that refusal's
-// counterweight, and the ordinary config it must not break: the off switch is a
-// DIFFERENCE, so a rule parked with enabled = false beside the one that
-// replaced it loads. Only one of the two is ever dispatched, so nothing is
-// reported twice.
-func TestRuleSpecsAllowsADisabledRuleBesideItsEnabledTwin(t *testing.T) {
-	specs, err := assembleRuleSpecs(
-		config.RuleSpec{Name: "parked", Check: "HasOnlyASCII", Include: []string{`\.csv$`}},
-		config.RuleSpec{Name: "live", Check: "HasOnlyASCII", Enabled: true, Include: []string{`\.csv$`}},
-	)
-	if err != nil {
-		t.Fatalf("a disabled rule beside its enabled twin does no work twice: %v", err)
-	}
-	if got := specsForCheck(specs, "HasOnlyASCII"); len(got) != 2 {
-		t.Fatalf("both rules must be kept, got %d", len(got))
 	}
 }
 
@@ -440,42 +367,210 @@ func TestRuleSpecsSharesNoNamesFromAmbiguousReadmeRules(t *testing.T) {
 	}
 }
 
-// TestRuleSpecsRefusesSiblingIncludeOfAnExclude pins the file-set contract: the
-// files a check runs on are the CHECK's business, so a rule excluding what a
-// sibling rule includes answers that one question twice and fails the load.
-// Either declaration order says the same two things, so both are refused, and
-// the message names the excluding rule first whichever came first in the file.
-func TestRuleSpecsRefusesSiblingIncludeOfAnExclude(t *testing.T) {
-	skips := config.RuleSpec{Name: "skip-csv", Check: "HasOnlyASCII", Enabled: true, Exclude: []string{`\.csv$`}}
-	targets := config.RuleSpec{Name: "only-csv", Check: "HasOnlyASCII", Enabled: true, Include: []string{`\.csv$`}}
+// TestRuleSpecsRefusesSiblingsBindingOneParameterSet pins the parameter-set
+// contract: a [[rule]] block buys a parameter set, not a scan of its own, so
+// two rules of one check binding the same parameters where they gate the same
+// strings are one scan under two names and fail the load. What their selectors
+// say is no part of that verdict - the cases below say it in the shapes the
+// config surface has, down to a rule excluding the very pattern its sibling
+// includes.
+func TestRuleSpecsRefusesSiblingsBindingOneParameterSet(t *testing.T) {
+	keywords := []map[string]any{{"keywords": []string{"password"}, "info": "found"}}
 	cases := []struct {
 		name  string
 		rules []config.RuleSpec
+		want  string
 	}{
-		{"the excluding rule is declared first", []config.RuleSpec{skips, targets}},
-		{"the including rule is declared first", []config.RuleSpec{targets, skips}},
+		{
+			"one rule excludes what the other includes",
+			[]config.RuleSpec{
+				{Name: "skip-csv", Check: "IsFreeOfKeywords", Enabled: true, Exclude: []string{`\.csv$`}, Params: keywords},
+				{Name: "only-csv", Check: "IsFreeOfKeywords", Enabled: true, Include: []string{`\.csv$`}, Params: keywords},
+			},
+			`rules "skip-csv" and "only-csv"`,
+		},
+		{
+			"a rule filtering nothing beside one that excludes",
+			[]config.RuleSpec{
+				{Name: "every-file", Check: "IsFreeOfKeywords", Enabled: true, Params: keywords},
+				{Name: "skip-csv", Check: "IsFreeOfKeywords", Enabled: true, Exclude: []string{`\.csv$`}, Params: keywords},
+			},
+			`rules "every-file" and "skip-csv"`,
+		},
+		{
+			"two includes of different patterns",
+			[]config.RuleSpec{
+				{Name: "csv", Check: "IsFreeOfKeywords", Enabled: true, Include: []string{`\.csv$`}, Params: keywords},
+				{Name: "txt", Check: "IsFreeOfKeywords", Enabled: true, Include: []string{`\.txt$`}, Params: keywords},
+			},
+			`rules "csv" and "txt"`,
+		},
+		{
+			// The repeated [[rule.params]] form declares several sets, and
+			// sharing ONE of them is the scan both rules drive.
+			"one shared group among several",
+			[]config.RuleSpec{
+				{Name: "credentials", Check: "IsFreeOfKeywords", Enabled: true, Include: []string{`\.csv$`},
+					Params: []map[string]any{{"keywords": []string{"password"}, "info": "found"}, {"keywords": []string{"Q:"}, "info": "internal"}}},
+				{Name: "internals", Check: "IsFreeOfKeywords", Enabled: true, Include: []string{`\.txt$`},
+					Params: []map[string]any{{"keywords": []string{"Q:"}, "info": "internal"}, {"keywords": []string{"token"}, "info": "token"}}},
+			},
+			`rules "credentials" and "internals"`,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := assembleRuleSpecs(tc.rules...)
 			if err == nil {
-				t.Fatal("one rule's exclude of a pattern a sibling includes must be refused")
+				t.Fatal("two rules binding one parameter set where they gate the same strings must be refused")
 			}
-			// The message must name both rules and the pattern they disagree
-			// about; what it goes on to advise is not this test's business.
-			if want := `check "HasOnlyASCII": rule "skip-csv" excludes "\\.csv$" while rule "only-csv" includes it`; !strings.Contains(err.Error(), want) {
+			// The message must name both rules and what they share; what it goes
+			// on to advise is not this test's business.
+			want := tc.want + " bind the same parameters at the same scope"
+			if !strings.Contains(err.Error(), want) {
 				t.Errorf("error must name %q: %v", want, err)
 			}
 		})
 	}
 }
 
-// TestRuleSpecsAllowsCrossScopeIncludeExclude is that refusal's counterweight
-// and its false-positive guard: a pattern excluded at one scope and included at
-// another addresses two different phases of the scan - the files a collection
-// carries, and the members inside an archive - so the two rules disagree about
-// nothing and the config loads.
-func TestRuleSpecsAllowsCrossScopeIncludeExclude(t *testing.T) {
+// TestRuleSpecsRefusesDecodedSiblingsSharingAGroup drives that refusal through
+// the REAL decoder, because "the same parameters" is a deep compare of the maps
+// a [[rule.params]] table decodes to: a hand-built pair only asserts that two
+// values the test author wrote are equal, and would keep passing after a decode
+// change made two identical tables decode to maps that no longer compare equal.
+func TestRuleSpecsRefusesDecodedSiblingsSharingAGroup(t *testing.T) {
+	_, err := loadRuleSpecs(t, ruleAnchors()+`
+[[rule]]
+name    = "csv-credentials"
+check   = "IsFreeOfKeywords"
+include = ["\\.csv$"]
+  [[rule.params]]
+  keywords = ["password"]
+  info     = "credential keyword"
+
+[[rule]]
+name    = "txt-credentials"
+check   = "IsFreeOfKeywords"
+include = ["\\.txt$"]
+  [[rule.params]]
+  keywords = ["password"]
+  info     = "credential keyword"
+`)
+	if err == nil {
+		t.Fatal("two decoded rules declaring one parameter group must be refused")
+	}
+	if want := `rules "csv-credentials" and "txt-credentials" bind the same parameters at the same scope`; !strings.Contains(err.Error(), want) {
+		t.Errorf("error must name %q: %v", want, err)
+	}
+}
+
+// TestRuleSpecsAllowsSiblingsBindingDifferentParameters is that refusal's
+// counterweight and its false-positive guard: rules binding DIFFERENT
+// parameters - a group neither shares with the other, or a group beside no
+// group at all - are different scans, each carrying the file set it was written
+// for, so their selectors may say anything about each other, including one rule
+// excluding the very pattern the other includes.
+func TestRuleSpecsAllowsSiblingsBindingDifferentParameters(t *testing.T) {
+	cases := []struct {
+		name  string
+		rules []config.RuleSpec
+	}{
+		{
+			"one rule excludes the pattern the other includes",
+			[]config.RuleSpec{
+				{Name: "skip-csv", Check: "IsFreeOfKeywords", Enabled: true, Exclude: []string{`\.csv$`},
+					Params: []map[string]any{{"keywords": []string{"secret"}, "info": "found"}}},
+				{Name: "only-csv", Check: "IsFreeOfKeywords", Enabled: true, Include: []string{`\.csv$`},
+					Params: []map[string]any{{"keywords": []string{"Q:"}, "info": "found"}}},
+			},
+		},
+		{
+			// The groups are compared as WRITTEN, not as a scan reads them: a
+			// field the two spell differently is two parameter sets, whatever
+			// the compiled scans end up sharing.
+			"the same keywords under a different info",
+			[]config.RuleSpec{
+				{Name: "credentials", Check: "IsFreeOfKeywords", Enabled: true, Include: []string{`\.csv$`},
+					Params: []map[string]any{{"keywords": []string{"password"}, "info": "credential keyword"}}},
+				{Name: "internals", Check: "IsFreeOfKeywords", Enabled: true, Include: []string{`\.txt$`},
+					Params: []map[string]any{{"keywords": []string{"password"}, "info": "internal keyword"}}},
+			},
+		},
+		{
+			// "No group at all" is one side's answer, not a set the other can
+			// share: the pair below gates the very same files under the very
+			// same folding, and only the check taking NO parameters would make
+			// the two of them one scan.
+			"a rule declaring no group beside one that declares one",
+			[]config.RuleSpec{
+				{Name: "credentials", Check: "IsFreeOfKeywords", Enabled: true, Scope: []string{"file"}, Include: []string{`\.csv$`},
+					Params: []map[string]any{{"keywords": []string{"password"}, "info": "credential keyword"}}},
+				{Name: "no-parameters", Check: "IsFreeOfKeywords", Enabled: true, Scope: []string{"file"}, Include: []string{`\.csv$`}},
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			specs, err := assembleRuleSpecs(tc.rules...)
+			if err != nil {
+				t.Fatalf("rules binding different parameters are different scans: %v", err)
+			}
+			if got := specsForCheck(specs, "IsFreeOfKeywords"); len(got) != 2 {
+				t.Fatalf("both rules must be kept, got %d", len(got))
+			}
+		})
+	}
+}
+
+// TestRuleSpecsAllowsSiblingsFoldingCaseDifferently pins ignoreCase as part of
+// what the pair binds: it folds every pattern of a rule alike, so the two file
+// sets below cannot be had from one rule however their pattern lists are
+// merged, and the parameters they share - a keyword set, or the empty set of a
+// check taking none - are no answer about them.
+func TestRuleSpecsAllowsSiblingsFoldingCaseDifferently(t *testing.T) {
+	cases := []struct {
+		name  string
+		check string
+		rules []config.RuleSpec
+	}{
+		{
+			"the same keywords folded differently",
+			"IsFreeOfKeywords",
+			[]config.RuleSpec{
+				{Name: "folded", Check: "IsFreeOfKeywords", Enabled: true, IgnoreCase: true, Include: []string{`\.csv$`},
+					Params: []map[string]any{{"keywords": []string{"password"}, "info": "found"}}},
+				{Name: "exact", Check: "IsFreeOfKeywords", Enabled: true, Include: []string{`\.CSV$`},
+					Params: []map[string]any{{"keywords": []string{"password"}, "info": "found"}}},
+			},
+		},
+		{
+			"a check taking no parameters folded differently",
+			"HasOnlyASCII",
+			[]config.RuleSpec{
+				{Name: "folded", Check: "HasOnlyASCII", Enabled: true, IgnoreCase: true, Include: []string{`\.csv$`}},
+				{Name: "exact", Check: "HasOnlyASCII", Enabled: true, Include: []string{`\.CSV$`}},
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			specs, err := assembleRuleSpecs(tc.rules...)
+			if err != nil {
+				t.Fatalf("rules folding case differently gate different files: %v", err)
+			}
+			if got := specsForCheck(specs, tc.check); len(got) != 2 {
+				t.Fatalf("both rules must be kept, got %d", len(got))
+			}
+		})
+	}
+}
+
+// TestRuleSpecsAllowsSharedParamsAcrossScopes is the refusal's other limit: two
+// rules binding the same (empty) parameter set gate different phases of the
+// scan - the files a collection carries, and the members inside an archive - so
+// they never meet and the config loads, patterns and all.
+func TestRuleSpecsAllowsSharedParamsAcrossScopes(t *testing.T) {
 	specs, err := assembleRuleSpecs(
 		config.RuleSpec{Name: "files", Check: "IsFreeOfKeywords", Enabled: true, Scope: []string{"file"}, Exclude: []string{"^data/"}},
 		config.RuleSpec{Name: "members", Check: "IsFreeOfKeywords", Enabled: true, Scope: []string{"archive-member"}, Include: []string{"^data/"}},
@@ -488,12 +583,11 @@ func TestRuleSpecsAllowsCrossScopeIncludeExclude(t *testing.T) {
 	}
 }
 
-// TestRuleSpecsAllowsCrossSubjectIncludeExclude is the same counterweight one
-// step down: rules of one scope whose patterns are matched against DIFFERENT
-// strings - the collection-relative path and the base name - gate different
-// file sets, so an exclude of one is no answer to the other's include and the
-// config loads.
-func TestRuleSpecsAllowsCrossSubjectIncludeExclude(t *testing.T) {
+// TestRuleSpecsAllowsSharedParamsAcrossSubjects is the same limit one step
+// down: rules of one scope whose patterns are matched against DIFFERENT strings
+// - the collection-relative path and the base name - gate different file sets,
+// so the parameter set they share is no answer about them and the config loads.
+func TestRuleSpecsAllowsSharedParamsAcrossSubjects(t *testing.T) {
 	specs, err := assembleRuleSpecs(
 		config.RuleSpec{Name: "skip-raw-paths", Check: "HasOnlyASCII", Enabled: true, Subject: "path", Exclude: []string{"^raw/"}},
 		config.RuleSpec{Name: "only-raw-names", Check: "HasOnlyASCII", Enabled: true, Subject: "name", Include: []string{"^raw/"}},
@@ -506,91 +600,116 @@ func TestRuleSpecsAllowsCrossSubjectIncludeExclude(t *testing.T) {
 	}
 }
 
-// TestRuleSpecsRefusesSiblingIncludeAtTheDefaultedSubject is that allowance's
-// limit: the subject is read as the rest of the load reads it, so at these
-// scopes an omitted subject and a spelled-out subject = "name" are ONE subject,
-// and the pair contradicts itself exactly as two spelled-out ones would.
-func TestRuleSpecsRefusesSiblingIncludeAtTheDefaultedSubject(t *testing.T) {
-	_, err := assembleRuleSpecs(
-		config.RuleSpec{Name: "skip-csv", Check: "HasOnlyASCII", Enabled: true, Exclude: []string{`\.csv$`}},
-		config.RuleSpec{Name: "only-csv", Check: "HasOnlyASCII", Enabled: true, Subject: "name", Include: []string{`\.csv$`}},
-	)
-	if err == nil {
-		t.Fatal("spelling out the subject both rules already read must not save a contradiction")
-	}
-	if want := `rule "skip-csv" excludes "\\.csv$" while rule "only-csv" includes it`; !strings.Contains(err.Error(), want) {
-		t.Errorf("error must name %q: %v", want, err)
-	}
-}
-
-// TestRuleSpecsComparesPatternsVerbatim pins the refusal's reach: it recognizes
-// one rule's pattern in a sibling's list, not a pattern related to it. Nothing
-// trims or anchors these strings between the decode and the selector compile,
-// and whether two regexes overlap is undecidable in general, so a pattern that
-// merely contains another - in either direction - is a different pattern and
-// loads.
-func TestRuleSpecsComparesPatternsVerbatim(t *testing.T) {
+// TestRuleSpecsRefusesSiblingsMeetingAtOneScope pins how far "the same strings"
+// reaches: a check serving both scope classes reads its rules' subjects once
+// per class, and ONE class they read alike is enough. Each pair below differs
+// in the other class, and the parameter set both bind - the empty one - is
+// still bound twice where they meet.
+func TestRuleSpecsRefusesSiblingsMeetingAtOneScope(t *testing.T) {
 	cases := []struct {
-		name             string
-		exclude, include string
+		name  string
+		rules []config.RuleSpec
+		want  string
 	}{
-		{"the include contains the exclude", `\.csv$`, `^raw/.*\.csv$`},
-		{"the exclude contains the include", `^raw/.*\.csv$`, `\.csv$`},
+		{
+			// At the file scope an undeclared subject means the name, which is
+			// what the sibling spells out; at the archive-member scope the first
+			// rule reads the path instead.
+			"they meet where an undeclared subject means the name",
+			[]config.RuleSpec{
+				{Name: "by-path", Check: "IsFreeOfKeywords", Enabled: true, Include: []string{"data/"}},
+				{Name: "by-name", Check: "IsFreeOfKeywords", Enabled: true, Subject: "name", Include: []string{"data/"}},
+			},
+			`rules "by-path" and "by-name"`,
+		},
+		{
+			// The mirror image: the two read different strings at the file
+			// scope, and the member path both read is where they meet.
+			"they meet where an undeclared subject means the path",
+			[]config.RuleSpec{
+				{Name: "default-subject", Check: "IsFreeOfKeywords", Enabled: true, Include: []string{"data/"}},
+				{Name: "path-subject", Check: "IsFreeOfKeywords", Enabled: true, Subject: "path", Include: []string{"data/"}},
+			},
+			`rules "default-subject" and "path-subject"`,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			specs, err := assembleRuleSpecs(
-				config.RuleSpec{Name: "skips", Check: "HasOnlyASCII", Enabled: true, Exclude: []string{tc.exclude}},
-				config.RuleSpec{Name: "targets", Check: "HasOnlyASCII", Enabled: true, Include: []string{tc.include}},
-			)
-			if err != nil {
-				t.Fatalf("two different patterns are no contradiction: %v", err)
+			_, err := assembleRuleSpecs(tc.rules...)
+			if err == nil {
+				t.Fatal("one scope read alike is enough to make the pair one scan there")
 			}
-			if got := specsForCheck(specs, "HasOnlyASCII"); len(got) != 2 {
-				t.Fatalf("both rules must be kept, got %d", len(got))
+			want := tc.want + " both drive its only scan"
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("error must name %q: %v", want, err)
 			}
 		})
 	}
 }
 
-// TestRuleSpecsRefusesAParkedContradiction pins that the off switch is no
-// exemption here either: a rule parked with enabled = false still declares
-// which files the check skips, and the load validates disabled rules
-// deliberately, so the contradiction is refused now rather than on the day
-// someone re-enables it.
-func TestRuleSpecsRefusesAParkedContradiction(t *testing.T) {
+// TestRuleSpecsRefusesParameterlessSiblingsAtTheDefaultedSubject pins the
+// verdict on a check that takes NO parameters: it has one scan, so every rule
+// of it binds the same set and two of them are refused wherever their gates
+// meet - here through the subject the rest of the load defaults to, which makes
+// an omitted subject and a spelled-out subject = "name" ONE reading.
+func TestRuleSpecsRefusesParameterlessSiblingsAtTheDefaultedSubject(t *testing.T) {
 	_, err := assembleRuleSpecs(
-		config.RuleSpec{Name: "parked-skip", Check: "HasOnlyASCII", Exclude: []string{`\.csv$`}},
-		config.RuleSpec{Name: "live-only", Check: "HasOnlyASCII", Enabled: true, Include: []string{`\.csv$`}},
+		config.RuleSpec{Name: "skip-csv", Check: "HasOnlyASCII", Enabled: true, Exclude: []string{`\.csv$`}},
+		config.RuleSpec{Name: "only-csv", Check: "HasOnlyASCII", Enabled: true, Subject: "name", Include: []string{`\.csv$`}},
 	)
 	if err == nil {
-		t.Fatal("a contradiction a disabled rule takes part in must be refused too")
+		t.Fatal("two rules of a check taking no parameters bind its one scan twice")
 	}
-	if want := `rule "parked-skip" excludes "\\.csv$" while rule "live-only" includes it`; !strings.Contains(err.Error(), want) {
+	if want := `rules "skip-csv" and "only-csv" both drive its only scan (no parameters declared)`; !strings.Contains(err.Error(), want) {
 		t.Errorf("error must name %q: %v", want, err)
 	}
 }
 
-// TestRuleSpecsReportsEveryContradictionAtOnce pins the aggregation the rest of
-// this file promises: a check that contradicts itself in two places is told
-// about both, rather than one refusal per load.
-func TestRuleSpecsReportsEveryContradictionAtOnce(t *testing.T) {
+// TestRuleSpecsRefusesAParkedDuplicate pins that the off switch is no exemption
+// here either: a rule parked with enabled = false still binds its parameters,
+// and the load validates disabled rules deliberately, so the duplicate is
+// refused now rather than on the day someone re-enables it.
+func TestRuleSpecsRefusesAParkedDuplicate(t *testing.T) {
+	keywords := []map[string]any{{"keywords": []string{"password"}, "info": "found"}}
 	_, err := assembleRuleSpecs(
-		config.RuleSpec{Name: "skip-csv", Check: "HasOnlyASCII", Enabled: true, Exclude: []string{`\.csv$`}},
-		config.RuleSpec{Name: "only-csv", Check: "HasOnlyASCII", Enabled: true, Include: []string{`\.csv$`}},
-		config.RuleSpec{Name: "skip-raw", Check: "HasOnlyASCII", Enabled: true, Exclude: []string{"^raw/"}},
-		config.RuleSpec{Name: "only-raw", Check: "HasOnlyASCII", Enabled: true, Include: []string{"^raw/"}},
+		config.RuleSpec{Name: "parked-skip", Check: "IsFreeOfKeywords", Exclude: []string{`\.csv$`}, Params: keywords},
+		config.RuleSpec{Name: "live-only", Check: "IsFreeOfKeywords", Enabled: true, Include: []string{`\.csv$`}, Params: keywords},
 	)
 	if err == nil {
-		t.Fatal("two contradicting pairs must be refused")
+		t.Fatal("a duplicate a disabled rule takes part in must be refused too")
+	}
+	if want := `rules "parked-skip" and "live-only" bind the same parameters at the same scope`; !strings.Contains(err.Error(), want) {
+		t.Errorf("error must name %q: %v", want, err)
+	}
+}
+
+// TestRuleSpecsReportsEveryDuplicatePairAtOnce pins the aggregation the rest of
+// this file promises: a check binding two of its parameter sets twice is told
+// about both pairs, rather than one refusal per load. The four rules make six
+// pairs, of which only these two share a parameter set, so the count is the
+// over-reporting guard as well.
+func TestRuleSpecsReportsEveryDuplicatePairAtOnce(t *testing.T) {
+	credentials := []map[string]any{{"keywords": []string{"password"}, "info": "found"}}
+	internals := []map[string]any{{"keywords": []string{"Q:"}, "info": "found"}}
+	_, err := assembleRuleSpecs(
+		config.RuleSpec{Name: "csv-credentials", Check: "IsFreeOfKeywords", Enabled: true, Include: []string{`\.csv$`}, Params: credentials},
+		config.RuleSpec{Name: "txt-credentials", Check: "IsFreeOfKeywords", Enabled: true, Include: []string{`\.txt$`}, Params: credentials},
+		config.RuleSpec{Name: "csv-internals", Check: "IsFreeOfKeywords", Enabled: true, Include: []string{`\.csv$`}, Params: internals},
+		config.RuleSpec{Name: "txt-internals", Check: "IsFreeOfKeywords", Enabled: true, Include: []string{`\.txt$`}, Params: internals},
+	)
+	if err == nil {
+		t.Fatal("two duplicate pairs must be refused")
 	}
 	for _, want := range []string{
-		`check "HasOnlyASCII": rule "skip-csv" excludes "\\.csv$" while rule "only-csv" includes it`,
-		`check "HasOnlyASCII": rule "skip-raw" excludes "^raw/" while rule "only-raw" includes it`,
+		`check "IsFreeOfKeywords": rules "csv-credentials" and "txt-credentials" bind the same parameters at the same scope`,
+		`check "IsFreeOfKeywords": rules "csv-internals" and "txt-internals" bind the same parameters at the same scope`,
 	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error must name %q: %v", want, err)
 		}
+	}
+	if got := strings.Count(err.Error(), "bind the same parameters"); got != 2 {
+		t.Errorf("only the two pairs sharing a parameter set may be reported, got %d: %v", got, err)
 	}
 }
 

@@ -176,10 +176,11 @@ type unit struct {
 
 	// key is what makes two units of one (check, scope) entry the SAME unit:
 	// the parameters they bound, compared ONCE at graph build and never at scan
-	// time. Two rules of a check that reads no parameters bind the same key, so
-	// however many of them name the check, the check runs once per file. Every
-	// bind that emits a unit sets one, through unitKeyOf; a unit without one
-	// merges with nothing.
+	// time. Two rules of a check that reads no parameters bind the same key: the
+	// loader allows such a check one rule per gate, and the pairs it still admits
+	// - the ones splitting on ignoreCase or subject - merge here into the one
+	// scan the check has. Every bind that emits a unit sets one, through
+	// unitKeyOf; a unit without one merges with nothing.
 	key any
 
 	// mask, names and single belong to a merge node's units; a rule's own units

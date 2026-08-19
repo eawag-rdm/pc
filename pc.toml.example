@@ -34,8 +34,9 @@
 # strings, never regexes. A repeated [[rule.params]] block declares several
 # parameter sets on one rule. Most checks without a rule run with defaults (not
 # IsFreeOfSecrets: its synthesized rule is disabled); IsFreeOfKeywords,
-# IsValidName and HasReadme must be declared. Two rules of one check that
-# differ only in their name are refused.
+# IsValidName and HasReadme must be declared. One rule per parameter set: two
+# rules of one check binding the same parameters where they gate the same
+# strings, under the same ignoreCase, are refused.
 #####################################################################################
 
 [general]

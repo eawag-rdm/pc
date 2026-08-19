@@ -70,7 +70,7 @@ func ruleSpecs(cfg *config.Config, reg Registry) ([]config.RuleSpec, error) {
 			// here would hide their faults until the refusal is settled and the
 			// load rerun.
 			errs = append(errs, duplicateRuleErrors(rules, def)...)
-			errs = append(errs, contradictorySiblingErrors(rules, def)...)
+			errs = append(errs, duplicateParamsSiblingErrors(rules, def)...)
 			specs = append(specs, rules...)
 		case slices.Contains(anchoredChecks, def.Name):
 			errs = append(errs, fmt.Errorf("check %q is not configured: declare a [[rule]] for it", def.Name))
@@ -263,48 +263,54 @@ func declaredSubject(spec config.RuleSpec) string {
 	return subject.String()
 }
 
-// contradictorySiblingErrors refuses one check's rules that answer "which files
-// does this check run on" twice over: rule A excludes the very pattern rule B
-// includes. That question has ONE owner, the check - a [[rule]] block carries a
-// parameter set, it does not buy its rule a file set of its own - so a config
-// giving two answers is a load error rather than a precedence to settle. What
-// it reaches is the half of that written down: a sibling declaring no include
-// at all admits everything the other excludes and loads silently, so this
-// refuses a config that contradicts itself IN WRITING, not every pair of rules
-// that ends up disagreeing about a file.
+// duplicateParamsSiblingErrors refuses one check's rules that bind the SAME
+// parameters where they gate the same strings. A [[rule]] block buys a
+// parameter set, not a scan of its own: two rules of one check binding one
+// parameter set at one scope run that scan once, and the only thing the second
+// rule adds is its name on every finding of it. A name is no reason for a
+// second rule, so the load refuses the pair and leaves it to the operator to
+// state in ONE rule which files that scan covers.
 //
-// Nothing is claimed here about what gets scanned: each rule keeps its own
-// selector and B really does scan what A skips, which is why the message says
-// only that the config says two things.
+// The patterns are NO part of the verdict. A rule excluding the very pattern a
+// sibling includes is an ordinary config as long as the two bind different
+// parameters: they are two scans, and each one carries the file set it was
+// written for. What one rule's include and exclude do to EACH OTHER is
+// contradictorySelector's, where exclude wins.
+//
+// "The same parameters" is read off the groups as WRITTEN: any [[rule.params]]
+// group of one rule deeply equal to a group of the other - the repeated form
+// declares several, and sharing one of them is enough - and, for a check taking
+// no parameters, no groups on either side. Two groups differing in a field the
+// scan never reads are two parameter sets: what the operator wrote is what can
+// be compared by eye, and every check owns which of its fields matter. A rule's
+// ignoreCase belongs to that reading although it is no parameter: where at least
+// one of the two declares a pattern, it folds that pattern and the pair gates
+// two file sets no single rule can express. A pattern-less pair differing only
+// in ignoreCase gates identically and LOADS, deliberately: the two bind one
+// merged scan, and all it costs is the second rule's name on that scan's
+// findings.
 //
 // Two rules are compared only where they gate the SAME STRINGS: a scope both
-// serve, read there through the same subject. An exclude at the file scope and
-// an include at the archive-member scope address different phases of the scan;
-// a path pattern beside a name pattern addresses a different string of the same
-// file. Both readings are the ones ruleIdentityOf takes, per scope class. The
-// patterns themselves are compared VERBATIM: ignoreCase only widens what a
-// pattern matches - it prepends "(?i)" - so one string in both lists still
-// means the files one rule skips are files the other targets, folded or not.
-// Two patterns that merely overlap as regexes are the run-scoped rule-overlap
-// notice's subject, not this gate's.
-//
-// The pair (i, i) is contradictorySelector's: within ONE rule exclude wins, so
-// its message can say the stronger thing that is true there.
+// serve, read there through the same subject. Rules of different scopes address
+// different phases of the scan; a path pattern beside a name pattern addresses
+// a different string of the same file. Both readings are the ones
+// ruleIdentityOf takes, per scope class.
 //
 // Like duplicateRuleErrors it judges the specs as DECLARED - only the arm that
 // found [[rule]] sections calls it, so a synthesized rule never reaches it -
 // and disabled rules with them, the policy Compile states for the whole
-// surface: a parked contradiction is reported now rather than on the day
-// someone re-enables the rule. The operator pays for that by keeping a
-// predecessor beside the rule that replaced it: parked with enabled = false or
-// not, if it excludes what the replacement includes, the config stops loading.
-func contradictorySiblingErrors(rules []config.RuleSpec, def CheckDef) []error {
+// surface: a parked duplicate is reported now rather than on the day someone
+// re-enables the rule. The operator pays for that by keeping a predecessor
+// beside the rule that replaced it: parked with enabled = false or not, if it
+// binds the replacement's parameters at the same scope, the config stops
+// loading.
+func duplicateParamsSiblingErrors(rules []config.RuleSpec, def CheckDef) []error {
 	gates := make([]ruleGate, len(rules))
 	for i, rule := range rules {
 		// A scope list that does not resolve leaves "do these two meet" with no
 		// answer, and an unresolved rule meets nothing: its zero gate serves no
 		// scope. Compile reports the same ruleScopes error, so no bad config
-		// gets through, but a genuine contradiction behind that scope typo goes
+		// gets through, but a genuine duplicate behind that scope typo goes
 		// unreported until the typo is fixed and the load rerun - two cycles
 		// where the rest of this file promises one.
 		scopes, err := ruleScopes(rule, def)
@@ -314,25 +320,46 @@ func contradictorySiblingErrors(rules []config.RuleSpec, def CheckDef) []error {
 		gates[i] = ruleGate{scopes: scopes, name: declaredSubject(rule), path: resolvedSubject(rule, scopes)}
 	}
 	var errs []error
-	for i := range rules {
-		for j := range rules {
-			if i == j || !gates[i].meets(gates[j]) {
+	for i, rule := range rules {
+		for j := i + 1; j < len(rules); j++ {
+			if !gates[i].meets(gates[j]) || !bindsSameParams(rule, rules[j]) {
 				continue
 			}
-			for k, excluded := range rules[i].Exclude {
-				if !slices.Contains(rules[j].Include, excluded) {
-					continue
-				}
-				// One pattern written twice in one exclude list states the same
-				// contradiction twice; it is reported against its first copy.
-				if slices.Contains(rules[i].Exclude[:k], excluded) {
-					continue
-				}
-				errs = append(errs, fmt.Errorf("check %q: rule %q excludes %q while rule %q includes it; one check cannot both skip and target the same pattern, so remove one", def.Name, rules[i].Name, excluded, rules[j].Name))
+			// bindsSameParams pairs a rule declaring no group only with another
+			// one, so one side decides which of the two the message is about.
+			if len(rule.Params) == 0 {
+				errs = append(errs, fmt.Errorf("check %q: rules %q and %q both drive its only scan (no parameters declared); one rule per scope", def.Name, rule.Name, rules[j].Name))
+				continue
 			}
+			errs = append(errs, fmt.Errorf("check %q: rules %q and %q bind the same parameters at the same scope; one rule per parameter set", def.Name, rule.Name, rules[j].Name))
 		}
 	}
 	return errs
+}
+
+// bindsSameParams reports whether two rules bind one parameter set in common
+// under one case folding: a group both of them declare, or no group at all on
+// either side - a check taking no parameters has one scan, so all its rules
+// bind it. ignoreCase is part of the answer because it is the rule's, not a
+// pattern's: two rules folding differently cannot be written as one, as long as
+// there is a pattern between them to fold. A pattern-less pair differing only in
+// ignoreCase therefore passes here although it gates identically - the accepted
+// cost is the second rule's name on the findings of the one scan they merge to.
+func bindsSameParams(a, b config.RuleSpec) bool {
+	if a.IgnoreCase != b.IgnoreCase {
+		return false
+	}
+	if len(a.Params) == 0 || len(b.Params) == 0 {
+		return len(a.Params) == 0 && len(b.Params) == 0
+	}
+	for _, groupA := range a.Params {
+		for _, groupB := range b.Params {
+			if reflect.DeepEqual(groupA, groupB) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // ruleGate is what one rule of a compared pair gates on: the scopes it serves

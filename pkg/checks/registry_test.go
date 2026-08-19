@@ -410,10 +410,15 @@ func TestMergedFindingNamesEveryContributingRule(t *testing.T) {
 // and under one on the next - a finding must never claim a rule whose selector
 // refused the file.
 func TestMergedAttributionExcludesNonMatchingRules(t *testing.T) {
+	// Three rules of a check that reads no parameters all bind its one scan, so
+	// what keeps the loader from refusing them as one rule said three times is
+	// the two fields doing no work here: the case folding, and the subject a
+	// pattern is read from. Every fixture name below is its own RelPath and is
+	// lower case, so all three gates read what they read today.
 	cfg := config.Config{Rules: []config.RuleSpec{
 		{Name: "ascii-csv", Check: "HasOnlyASCII", Enabled: true, Include: []string{`\.csv$`}},
-		{Name: "ascii-messwerte", Check: "HasOnlyASCII", Enabled: true, Include: []string{`^messwerte`}},
-		{Name: "ascii-logs", Check: "HasOnlyASCII", Enabled: true, Include: []string{`\.log$`}},
+		{Name: "ascii-messwerte", Check: "HasOnlyASCII", Enabled: true, IgnoreCase: true, Include: []string{`^messwerte`}},
+		{Name: "ascii-logs", Check: "HasOnlyASCII", Enabled: true, Subject: "path", Include: []string{`\.log$`}},
 	}}
 	def, rules, batch := bindTestRule(t, "HasOnlyASCII", cfg, ScopeFile)
 

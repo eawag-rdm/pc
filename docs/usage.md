@@ -70,8 +70,9 @@ timeout vs. the server's request timeout).
 
 A `[[rule]]` is one named instance of a check with its own file selector and its
 own parameters. A check may carry several rules, and each reports under its own
-name. `pc.toml.example` carries the full key list and every check name; the
-surface itself is:
+name - one rule per parameter set, so a second rule of a check must bind
+parameters the first does not, or gate different strings. `pc.toml.example`
+carries the full key list and every check name; the surface itself is:
 
 ```toml
 [[rule]]
@@ -111,12 +112,10 @@ include = ["^notebooks/"]
   case-sensitively unless `ignoreCase = true`. `exclude` wins: a subject any
   exclude pattern matches is out, whatever `include` says. An absent or empty
   `include` admits everything. The same pattern in both lists is a load error -
-  exclude wins, so the rule could never match it. So is one check's rule
-  excluding a pattern a sibling rule includes: which files a check runs on has
-  one owner, so a config answering it twice is refused rather than settled by
-  precedence. That pair is compared only where both rules gate the same string
-  (a scope both serve, read there through the same subject), the patterns
-  verbatim, and a rule parked with `enabled = false` counts.
+  exclude wins, so the rule could never match it. Between two rules of one check
+  the patterns are no part of any verdict: what a config may not say twice is a
+  parameter set (see `[[rule.params]]`), and each rule carries the file set it
+  was written for.
 - `enabled = false` - the rule does not run (a check with another enabled rule
   still does). It is validated at load all the same, so a config the checks
   could not honour fails now rather than on the day someone re-enables the rule.
@@ -124,7 +123,13 @@ include = ["^notebooks/"]
   check itself; an unknown parameter key fails the load. Repeating the table
   declares several parameter sets on one rule - each keyword group above reports
   with its own `info`. The single-bracket `[rule.params]` is the one-set
-  spelling.
+  spelling. **One rule per parameter set**: two rules of one check that bind the
+  same parameters where they gate the same strings - a scope both serve, read
+  there through the same subject, under the same `ignoreCase` - are refused,
+  because the pair is one scan whose findings then carry both names. "The same
+  parameters" means a `[[rule.params]]` group both rules declare, or none on
+  either side for a check that takes none; a rule declaring one group twice is
+  refused for the same reason, and a rule parked with `enabled = false` counts.
 
 What `subject` selects, per scope:
 

@@ -197,9 +197,17 @@ func TestMemberRulesUnionScansEachMemberOnce(t *testing.T) {
 	}
 
 	cfg := planConfig(nil)
+	// One parameter set over two gates, which the loader refuses where the two
+	// read the same string - and both have to stay case-SENSITIVE, or their
+	// literals contribute nothing and there is no union to test. Reading one
+	// gate against the member PATH and the other against its BASE NAME is that
+	// difference: the union takes both rules' literals over the path either way,
+	// so it over-admits for the second one and its own gate decides.
+	byName := memberRule("name-members", []string{`two\.csv`, `four\.csv`}, false)
+	byName.Subject = "name"
 	cfg.Rules = []config.RuleSpec{
 		memberRule("data-members", []string{"data/"}, false),
-		memberRule("raw-members", []string{"raw/"}, false),
+		byName,
 	}
 	plan := compilePlan(t, cfg)
 
@@ -219,8 +227,8 @@ func TestMemberRulesUnionScansEachMemberOnce(t *testing.T) {
 	}
 	want := map[string][]string{
 		"data/one.csv":      {"data-members"},
-		"raw/two.csv":       {"raw-members"},
-		"data/raw/four.csv": {"data-members", "raw-members"},
+		"raw/two.csv":       {"name-members"},
+		"data/raw/four.csv": {"data-members", "name-members"},
 	}
 	for member, rules := range want {
 		reported := found[member]
