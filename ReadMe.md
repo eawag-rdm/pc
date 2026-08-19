@@ -7,7 +7,8 @@ Checks are run by file / repository (data package):
 
 **By file:**
 - HasOnlyASCII (for filenames)
-- HasNoWhiteSpace (for filenames)
+- HasNoWhiteSpace (for filenames inside archives only; CKAN replaces spaces in
+  resource names on download)
 - IsFreeOfKeywords (file contents); non-binary files, `.xlsx` and `.docx` are supported
 - IsFreeOfSecrets (file contents); credentials, tokens and private keys, found by
   the bundled [betterleaks](https://github.com/betterleaks/betterleaks) scanner

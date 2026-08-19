@@ -192,8 +192,8 @@ func TestNameChecksIgnoreCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	def, rules, batch := bindTestRule(t, "HasNoWhiteSpace", *cfg, ScopeFile)
-	if messages := def.RunFile(ctx, file, ScopeFile, batch, rules); len(messages) == 0 {
+	def, rules, batch := bindTestRule(t, "HasNoWhiteSpace", *cfg, ScopeArchiveFileList)
+	if messages := def.RunFile(ctx, file, ScopeArchiveFileList, batch, rules); len(messages) == 0 {
 		t.Error("a cancelled context silenced a name check; the contract says name checks ignore ctx")
 	}
 }

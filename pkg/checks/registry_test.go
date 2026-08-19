@@ -148,7 +148,7 @@ func runRepoRule(t testing.TB, name string, cfg config.Config, repository struct
 func TestRegistryScopesCoverDispatch(t *testing.T) {
 	want := map[string][]Scope{
 		"HasOnlyASCII":            {ScopeFile, ScopeArchiveFileList},
-		"HasNoWhiteSpace":         {ScopeFile, ScopeArchiveFileList},
+		"HasNoWhiteSpace":         {ScopeArchiveFileList},
 		"IsValidName":             {ScopeFile, ScopeArchiveFileList},
 		"HasFileNameSpecialChars": {ScopeFile, ScopeArchiveFileList},
 		"IsFileNameTooLong":       {ScopeFile, ScopeArchiveFileList},

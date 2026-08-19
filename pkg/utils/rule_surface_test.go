@@ -377,7 +377,7 @@ check = "HasOnlyASCII"
 	}
 	planRule(t, plan, "HasOnlyASCII", checks.ScopeFile)
 	// The shadowed check's default rule is still synthesized and dispatched.
-	planRule(t, plan, "HasNoWhiteSpace", checks.ScopeFile)
+	planRule(t, plan, "HasNoWhiteSpace", checks.ScopeArchiveFileList)
 }
 
 // TestRuleMemberSubjectDefaultsToPath pins the member scope's subject default:

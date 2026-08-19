@@ -511,7 +511,8 @@ func (r Registry) Len() int { return len(r.defs) }
 func NewRegistry() Registry {
 	defs := []CheckDef{
 		{Name: "HasOnlyASCII", Scopes: ScopesOf(ScopeFile, ScopeArchiveFileList), Bind: bindNoParams(hasOnlyASCII), RunFile: runNameRules},
-		{Name: "HasNoWhiteSpace", Scopes: ScopesOf(ScopeFile, ScopeArchiveFileList), Bind: bindNoParams(hasNoWhiteSpace), RunFile: runNameRules},
+		// Archive members only: CKAN replaces spaces in resource names on download.
+		{Name: "HasNoWhiteSpace", Scopes: ScopesOf(ScopeArchiveFileList), Bind: bindNoParams(hasNoWhiteSpace), RunFile: runNameRules},
 		{Name: "IsFreeOfKeywords", Scopes: ScopesOf(ScopeFile, ScopeArchiveMember), Bind: bindKeywords, RunFile: runKeywords},
 		{Name: "IsValidName", Scopes: ScopesOf(ScopeFile, ScopeArchiveFileList), Bind: bindValidName, RunFile: runNameRules},
 		{Name: "HasFileNameSpecialChars", Scopes: ScopesOf(ScopeFile, ScopeArchiveFileList), Bind: bindNoParams(hasFileNameSpecialChars), RunFile: runNameRules},

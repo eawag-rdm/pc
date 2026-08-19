@@ -7,7 +7,7 @@
 #   name       unique rule name (shown in diagnostics)
 #   check      check to run, with the scopes it serves (a rule may name a subset):
 #              HasOnlyASCII             file, archive-file-list
-#              HasNoWhiteSpace          file, archive-file-list
+#              HasNoWhiteSpace          archive-file-list
 #              IsFreeOfKeywords         file, archive-member
 #              IsValidName              file, archive-file-list
 #              HasFileNameSpecialChars  file, archive-file-list
@@ -133,7 +133,7 @@ name  = "ascii-names"
 check = "HasOnlyASCII"
 
 [[rule]]
-# White spaces in folder and file names
+# White spaces in archive member names
 name  = "no-whitespace"
 check = "HasNoWhiteSpace"
 

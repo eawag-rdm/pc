@@ -385,16 +385,16 @@ func mockCheckFail(file structs.File) []structs.Message {
 func TestApplyChecksFilteredByFile(t *testing.T) {
 	// A real file-scope check, on a name it would otherwise flag: an empty
 	// result proves the filter, not a silent check.
-	whitespaceEntries := func(t *testing.T, rule config.RuleSpec) []checks.PlanEntry {
+	asciiEntries := func(t *testing.T, rule config.RuleSpec) []checks.PlanEntry {
 		t.Helper()
 		cfg := config.Config{Rules: []config.RuleSpec{rule}}
 		plan := compilePlan(t, cfg)
 		for _, entry := range plan.Scope(checks.ScopeFile) {
-			if entry.Def.Name == "HasNoWhiteSpace" {
+			if entry.Def.Name == "HasOnlyASCII" {
 				return []checks.PlanEntry{entry}
 			}
 		}
-		t.Fatal("HasNoWhiteSpace has no file-scope rule")
+		t.Fatal("HasOnlyASCII has no file-scope rule")
 		return nil
 	}
 
@@ -432,20 +432,20 @@ func TestApplyChecksFilteredByFile(t *testing.T) {
 		},
 		{
 			name: "Check skipped due to include",
-			entries: whitespaceEntries(t, config.RuleSpec{
-				Name: "HasNoWhiteSpace", Check: "HasNoWhiteSpace", Enabled: true,
+			entries: asciiEntries(t, config.RuleSpec{
+				Name: "HasOnlyASCII", Check: "HasOnlyASCII", Enabled: true,
 				Include: []string{"other.txt"},
 			}),
-			files:    []structs.File{{Name: "test file.txt"}},
+			files:    []structs.File{{Name: "naïve.txt"}},
 			expected: []structs.Message{},
 		},
 		{
 			name: "Check skipped due to exclude",
-			entries: whitespaceEntries(t, config.RuleSpec{
-				Name: "HasNoWhiteSpace", Check: "HasNoWhiteSpace", Enabled: true,
-				Exclude: []string{"test file.txt"},
+			entries: asciiEntries(t, config.RuleSpec{
+				Name: "HasOnlyASCII", Check: "HasOnlyASCII", Enabled: true,
+				Exclude: []string{"naïve.txt"},
 			}),
-			files:    []structs.File{{Name: "test file.txt"}},
+			files:    []structs.File{{Name: "naïve.txt"}},
 			expected: []structs.Message{},
 		},
 	}

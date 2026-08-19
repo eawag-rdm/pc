@@ -104,7 +104,7 @@ func TestCompileSynthesizesDefaultRules(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := planConfig([]config.RuleSpec{
-		// No rule for ReadMeContainsTOC, none for HasNoWhiteSpace.
+		// No rule for ReadMeContainsTOC, none for HasOnlyASCII.
 		{Name: "HasReadme", Check: "HasReadme", Enabled: true, Params: []map[string]interface{}{
 			{"readme_names": []string{"myreadme.md"}},
 		}},
@@ -112,11 +112,11 @@ func TestCompileSynthesizesDefaultRules(t *testing.T) {
 	plan := compilePlan(t, cfg)
 
 	// The parameterless check is synthesized into both of its scopes and runs.
-	spaced := structs.File{Name: "has space.txt", RelPath: "has space.txt"}
+	naive := structs.File{Name: "naïve.csv", RelPath: "naïve.csv"}
 	var subjects checks.Subjects
-	subjects.Set(spaced)
+	subjects.Set(naive)
 	for _, scope := range []checks.Scope{checks.ScopeFile, checks.ScopeArchiveFileList} {
-		rule := planRule(t, plan, "HasNoWhiteSpace", scope)
+		rule := planRule(t, plan, "HasOnlyASCII", scope)
 		if !rule.Match(&subjects) {
 			t.Errorf("a synthesized rule must carry an empty selector that admits everything (%s)", scope)
 		}
@@ -387,7 +387,8 @@ func countInvocations(plan *checks.Plan) map[string]int {
 // declares - the pairs the five dispatch tables invoked before the rework plus
 // HasFileNameSpecialChars and IsFileNameTooLong over the archive file list,
 // where a member's name is checked for special characters and for length like
-// any other name. That is six file checks, the five name checks over the
+// any other name, minus HasNoWhiteSpace at file scope, which CKAN's own name
+// munging makes moot. That is five file checks, the five name checks over the
 // archive file list (once per member), the keyword check over archive members,
 // two repository checks, and the leak scan disabled everywhere -
 // IsArchiveFreeOfKeywords appearing where it now belongs, as IsFreeOfKeywords
@@ -402,7 +403,6 @@ func TestExecutedCheckMultisetUnchanged(t *testing.T) {
 	const files, members, archives = 4, 4, 2
 	unfiltered := map[string]int{
 		"HasOnlyASCII@file":                         files,
-		"HasNoWhiteSpace@file":                      files,
 		"IsValidName@file":                          files,
 		"HasFileNameSpecialChars@file":              files,
 		"IsFileNameTooLong@file":                    files,
