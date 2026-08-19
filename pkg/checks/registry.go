@@ -358,17 +358,19 @@ func (r *BoundRule) matchSubject(file structs.File) bool {
 	return r.sel.Match(name)
 }
 
-// matchMember reports whether this rule's member gate admits the member path.
-// It takes the path rather than a structs.File so the member loop can decide
-// without building one.
-func (r *BoundRule) matchMember(memberPath string) bool {
+// matchMember reports whether this rule's member gate admits the member, read
+// from the scratch its subject declares. The caller Sets both scratches once per
+// member - so an ignoreCase LITERAL gate scans a subject folded once for the
+// whole rule loop instead of running the regex engine per rule - and no
+// structs.File is built for the decision.
+func (r *BoundRule) matchMember(pathSc, nameSc *selector.Scratch) bool {
 	if r.Member == nil {
 		return true
 	}
 	if r.Member.Subject() == selector.SubjectName {
-		return r.Member.Match(path.Base(memberPath))
+		return r.Member.MatchScratch(nameSc)
 	}
-	return r.Member.Match(memberPath)
+	return r.Member.MatchScratch(pathSc)
 }
 
 // narrow hands a repository rule only the files its selector admits. An empty

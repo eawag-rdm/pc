@@ -279,6 +279,74 @@ func benchmarkIsArchiveFreeOfKeywords(b *testing.B, ruleCount int) {
 func BenchmarkIsArchiveFreeOfKeywordsRules1(b *testing.B) { benchmarkIsArchiveFreeOfKeywords(b, 1) }
 func BenchmarkIsArchiveFreeOfKeywordsRules3(b *testing.B) { benchmarkIsArchiveFreeOfKeywords(b, 3) }
 
+// benchFoldedMemberGates are member gates that all admit every member of
+// benchArchiveFile over the FOLDED literal path: ignoreCase plus a plain
+// literal is what a selector matches against the caller's folded subject
+// instead of the regex engine. Every member is
+// campaign/site_NNN/report_NNNN.txt, so the base name the third gate reads
+// carries its literal as the full path carries the first two; the two subjects
+// make the member loop serve both of its scratches.
+var benchFoldedMemberGates = [...]struct {
+	include string
+	subject string
+}{
+	{include: "campaign/", subject: "path"},
+	{include: "site_", subject: "path"},
+	{include: "report_", subject: "name"},
+}
+
+// BenchmarkIsArchiveFreeOfKeywordsRules3FoldedGates is Rules3 with those gates
+// in front of the same three parameter sets, so the two differ by what the
+// member gates cost. It is the only member-gate benchmark here whose patterns
+// take the folded path - the merged pair's are regexes, which no scratch can
+// speed up - and it exists to keep that path measurable: a gate that went back
+// through the regex engine once per rule and member moves this number.
+func BenchmarkIsArchiveFreeOfKeywordsRules3FoldedGates(b *testing.B) {
+	file := benchArchiveFile(b)
+	specs := make([]config.RuleSpec, 0, len(benchFoldedMemberGates))
+	for i, gate := range benchFoldedMemberGates {
+		sets := []map[string]interface{}{
+			{"keywords": benchKeywordGroups[i], "info": benchKeywordInfos[i]},
+		}
+		if i == 0 {
+			sets = append(sets, map[string]interface{}{
+				"keywords": benchKeywordSecondSet, "info": benchKeywordSecondInfo,
+			})
+		}
+		specs = append(specs, config.RuleSpec{
+			Name:       benchKeywordInfos[i],
+			Check:      "IsFreeOfKeywords",
+			Scope:      []string{"archive-member"},
+			Enabled:    true,
+			Subject:    gate.subject,
+			IgnoreCase: true,
+			Include:    []string{gate.include},
+			Params:     sets,
+		})
+	}
+	def, rules, batch := bindTestRule(b, "IsFreeOfKeywords", config.Config{General: benchGeneral(), Rules: specs}, ScopeArchiveMember)
+	// Both properties are what puts the gates in the loop at all: fewer rules or
+	// a pre-filter the iterator ran itself would measure the unfiltered path.
+	if len(rules) != len(specs) || !batch.perRule {
+		b.Fatalf("expected %d gated rules with the per-rule gates live, got %d and perRule=%v", len(specs), len(rules), batch.perRule)
+	}
+	for i, rule := range rules {
+		if rule.Member == nil {
+			b.Fatalf("rule %d lost its member gate - the benchmark measures the wrong thing", i)
+		}
+	}
+
+	want := (len(specs) + 1) * (benchArchiveMembers / 5)
+	b.ReportAllocs()
+	for b.Loop() {
+		msgs := def.RunFile(context.Background(), file, ScopeArchiveMember, batch, rules)
+		if len(msgs) != want {
+			b.Fatalf("expected %d findings, got %d - the gates must admit every member", want, len(msgs))
+		}
+		benchMsgSink += len(msgs)
+	}
+}
+
 // benchMergedMemberGates are member gates that all admit every member of
 // benchArchiveFile while the loader still accepts them as different rules.
 // None of their patterns is a literal, so several of them get NO union

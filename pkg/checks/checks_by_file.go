@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"unicode"
@@ -17,6 +18,7 @@ import (
 	"github.com/eawag-rdm/pc/pkg/optimization"
 	"github.com/eawag-rdm/pc/pkg/output"
 	"github.com/eawag-rdm/pc/pkg/readers"
+	"github.com/eawag-rdm/pc/pkg/selector"
 	"github.com/eawag-rdm/pc/pkg/structs"
 )
 
@@ -445,6 +447,7 @@ func keywordsInArchive(ctx context.Context, file structs.File, batch *Batch, rul
 	// One body per archive, not per member: a scan reads it and never retains it.
 	body, lowered := make([][]byte, 1), make([][]byte, 1)
 	var memberLower []byte
+	var pathScratch, nameScratch selector.Scratch // a Scratch belongs to one goroutine
 
 	for archiveIterator.HasNext() {
 		// Cancellation is observed per MEMBER: the member in progress finishes,
@@ -461,9 +464,11 @@ func keywordsInArchive(ctx context.Context, file structs.File, batch *Batch, rul
 		// did. It decides ahead of the lowercasing below, so a member no gate
 		// admits costs nothing per byte.
 		if perRule {
+			pathScratch.Set(fileName)
+			nameScratch.Set(path.Base(fileName))
 			active = 0
 			for _, rule := range rules {
-				if rule.matchMember(fileName) {
+				if rule.matchMember(&pathScratch, &nameScratch) {
 					active |= rule.bit
 				}
 			}

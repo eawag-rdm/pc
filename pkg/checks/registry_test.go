@@ -3,11 +3,13 @@ package checks
 import (
 	"context"
 	"os"
+	"path"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/eawag-rdm/pc/pkg/config"
+	"github.com/eawag-rdm/pc/pkg/selector"
 	"github.com/eawag-rdm/pc/pkg/structs"
 )
 
@@ -221,7 +223,10 @@ func TestRegistryDeclaredOrder(t *testing.T) {
 // for every rule that has no member selector: the gate is consulted once per
 // member and must admit each one, or an unfiltered rule would see nothing.
 func TestMatchMemberGateNilAdmitsEverything(t *testing.T) {
-	if !(&BoundRule{}).matchMember("deep/run.LOG") {
+	var pathScratch, nameScratch selector.Scratch
+	pathScratch.Set("deep/run.LOG")
+	nameScratch.Set("run.LOG")
+	if !(&BoundRule{}).matchMember(&pathScratch, &nameScratch) {
 		t.Error("a rule without a member selector must admit every member")
 	}
 }
@@ -262,8 +267,13 @@ func TestMatchMemberGate(t *testing.T) {
 		{`a "name" subject reads the base name`, byName, "logs/deep_scan.txt", true},
 		{`a "name" subject never reads a directory component`, byName, "deep/notes.txt", false},
 	}
+	// Both scratches carry every member, as the archive loop sets them: the row
+	// decides which of the two its rule reads.
+	var pathScratch, nameScratch selector.Scratch
 	for _, tc := range cases {
-		if got := tc.rule.matchMember(tc.path); got != tc.want {
+		pathScratch.Set(tc.path)
+		nameScratch.Set(path.Base(tc.path))
+		if got := tc.rule.matchMember(&pathScratch, &nameScratch); got != tc.want {
 			t.Errorf("%s: matchMember(%q) = %v, want %v", tc.name, tc.path, got, tc.want)
 		}
 	}
