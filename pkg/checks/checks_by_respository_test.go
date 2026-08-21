@@ -145,6 +145,64 @@ func TestReadMeContainsTOC(t *testing.T) {
 	}
 }
 
+// TestReadMeContainsTOCMissingList pins the message a repository of
+// undocumented files produces: the list is capped and the names beyond the cap
+// are reported as a count, so the message cannot grow without bound.
+func TestReadMeContainsTOCMissingList(t *testing.T) {
+	tests := []struct {
+		name  string
+		files []string
+		want  string
+	}{
+		{
+			"more missing files than the cap lists",
+			[]string{
+				"missing01.txt", "missing02.txt", "missing03.txt", "missing04.txt",
+				"missing05.txt", "missing06.txt", "missing07.txt", "missing08.txt",
+				"missing09.txt", "missing10.txt", "missing11.txt", "missing12.txt",
+				"missing13.txt",
+			},
+			"ReadMe file is missing a complete table of contents for this repository. Missing files are: " +
+				"'missing01.txt', 'missing02.txt', 'missing03.txt', 'missing04.txt', 'missing05.txt', " +
+				"'missing06.txt', 'missing07.txt', 'missing08.txt', 'missing09.txt', 'missing10.txt' +3 more",
+		},
+		{
+			"a remainder of zero prints nothing",
+			[]string{
+				"missing01.txt", "missing02.txt", "missing03.txt", "missing04.txt",
+				"missing05.txt", "missing06.txt", "missing07.txt", "missing08.txt",
+				"missing09.txt", "missing10.txt",
+			},
+			"ReadMe file is missing a complete table of contents for this repository. Missing files are: " +
+				"'missing01.txt', 'missing02.txt', 'missing03.txt', 'missing04.txt', 'missing05.txt', " +
+				"'missing06.txt', 'missing07.txt', 'missing08.txt', 'missing09.txt', 'missing10.txt'",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// The readme names no file, so every one of them is missing.
+			readmePath := filepath.Join(t.TempDir(), "readme.md")
+			if err := os.WriteFile(readmePath, []byte("# Table of Contents\n"), 0o644); err != nil {
+				t.Fatalf("Failed to write readme file: %v", err)
+			}
+			files := []structs.File{{Name: "readme.md", Path: readmePath}}
+			for _, name := range tt.files {
+				files = append(files, structs.File{Name: name})
+			}
+
+			result := runRepoRule(t, "ReadMeContainsTOC", readmeTestConfig(), structs.Repository{Files: files})
+
+			if len(result) != 1 {
+				t.Fatalf("expected exactly 1 message, got %d: %+v", len(result), result)
+			}
+			if result[0].Content != tt.want {
+				t.Errorf("got %q want %q", result[0].Content, tt.want)
+			}
+		})
+	}
+}
+
 // TestReadMeContainsTOCUnreadableReadme pins the unreadable-readme path: a
 // directory at the readme's path fails os.ReadFile for every user, root
 // included, where a mode-0 file would not.

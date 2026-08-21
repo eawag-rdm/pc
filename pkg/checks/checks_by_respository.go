@@ -18,6 +18,9 @@ import (
 This file contains tests that need a collection of files. Eg: Checking if a repository has a readme file.
 */
 
+// tocMaxMissingShown caps the file names listed in one TOC message.
+const tocMaxMissingShown = 10
+
 // defaultReadmeNames is the readme filename list a rule that configures none is
 // bound to. The check's defaults live in its own Bind - default-rule synthesis
 // relies on exactly that - and a readme check with NO names would be incoherent
@@ -139,7 +142,17 @@ func readMeContainsTOC(repository structs.Repository, names []string) []structs.
 		}
 	}
 	if len(missing_files) > 0 {
-		return []structs.Message{{Content: "ReadMe file is missing a complete table of contents for this repository. Missing files are: '" + strings.Join(missing_files, "', '") + "'", Source: repository}}
+		shown := missing_files
+		extra := 0
+		if len(missing_files) > tocMaxMissingShown {
+			shown = missing_files[:tocMaxMissingShown]
+			extra = len(missing_files) - tocMaxMissingShown
+		}
+		message := "ReadMe file is missing a complete table of contents for this repository. Missing files are: '" + strings.Join(shown, "', '") + "'"
+		if extra > 0 {
+			message += fmt.Sprintf(" +%d more", extra)
+		}
+		return []structs.Message{{Content: message, Source: repository}}
 	}
 	return nil
 }
