@@ -85,6 +85,7 @@ enabled = false
   binary = "betterleaks"
   timeoutSeconds = 120
   maxProcs = 4
+  maxFileSize = 0
 
 [[rule]]
 # The repository readme must be present; which filenames count is the check's

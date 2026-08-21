@@ -258,11 +258,20 @@ enabled = false
   [rule.params]
   # binary: scanner executable (name in PATH or absolute path);
   # timeoutSeconds: whole-scan cap (must not exceed [server] requestTimeoutSeconds);
-  # maxProcs: CPU cores the scanner may use, capped by the configured [general] maxCores (the lower wins)
+  # maxProcs: CPU cores the scanner may use, capped by the configured [general] maxCores (the lower wins);
+  # maxFileSize: max bytes a top-level file or archive container may have to be scanned by this rule (0 = no limit)
   binary         = "betterleaks"
   timeoutSeconds = 120
   maxProcs       = 4
+  maxFileSize    = 0
 ```
+
+`maxFileSize` is the rule's own size cap in bytes; `0` or an absent key means it
+caps nothing. It is measured on top-level files and on archive containers - an
+archive over the cap is dropped whole, before any member is extracted from it -
+and never on the members themselves, which follow `[general]`
+`maxArchiveFileSize` as always. Against `maxContentScanFileSize` it only ever
+tightens: the lower of the two applies, and the skip message names which one.
 
 The CLI needs the `betterleaks` binary on PATH (or `binary` set to an absolute
 path); the server's Docker image ships it. The scanner runs fully offline - no

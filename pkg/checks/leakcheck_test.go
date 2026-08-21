@@ -34,6 +34,40 @@ func fakeScanner(t *testing.T, report string) (binPath string, argsFile string) 
 	return binPath, argsFile
 }
 
+// zipMember is one entry of a test zip. makeZip writes the entries IN THE ORDER
+// given, which the iteration-order fixtures depend on.
+type zipMember struct {
+	name    string
+	content string
+}
+
+// makeZip writes a zip of the given members to dir/name and returns its path.
+func makeZip(t *testing.T, dir, name string, members []zipMember) string {
+	t.Helper()
+	zipPath := filepath.Join(dir, name)
+	zf, err := os.Create(zipPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zw := zip.NewWriter(zf)
+	for _, member := range members {
+		w, err := zw.Create(member.name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write([]byte(member.content)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := zf.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return zipPath
+}
+
 func leakTestConfig(binary string, generalOverride *config.GeneralConfig) config.Config {
 	general := &config.GeneralConfig{
 		MaxArchiveFileSize:     10 * 1024 * 1024,
@@ -113,72 +147,109 @@ func TestIsFreeOfSecretsPlainFileFindings(t *testing.T) {
 	}
 }
 
+// TestIsFreeOfSecretsSizeGate pins the two whole-file size caps and their
+// COMPOSITION: the [general] gate, the rule's own maxFileSize, and - where both
+// are set - the lower of the two, named in the acknowledgement so an operator
+// reads which one dropped the file.
 func TestIsFreeOfSecretsSizeGate(t *testing.T) {
 	small := tempFile([]byte("small"))
 	big := tempFile([]byte(strings.Repeat("x", 2048)))
 	defer os.Remove(small)
 	defer os.Remove(big)
 
-	bin, argsFile := fakeScanner(t, "null")
-	general := &config.GeneralConfig{
-		MaxArchiveFileSize:     10 * 1024 * 1024,
-		MaxTotalArchiveMemory:  100 * 1024 * 1024,
-		MaxContentScanFileSize: 1024, // big file exceeds this
+	tests := []struct {
+		name           string
+		maxContentScan int64
+		maxFileSize    int64 // 0 = the rule declares no cap of its own
+		wantLimit      string
+	}{
+		{"the global gate binds with no rule cap", 1024, 0, "exceeds maximum (1024 bytes)"},
+		{"the rule's cap binds below the global gate", 1024 * 1024, 1024, "exceeds the rule's maxFileSize (1024 bytes)"},
+		{"the global gate still binds under a laxer rule cap", 1024, 1024 * 1024, "exceeds maximum (1024 bytes)"},
 	}
-	cfg := leakTestConfig(bin, general)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bin, argsFile := fakeScanner(t, "null")
+			cfg := leakTestConfig(bin, &config.GeneralConfig{
+				MaxArchiveFileSize:     10 * 1024 * 1024,
+				MaxTotalArchiveMemory:  100 * 1024 * 1024,
+				MaxContentScanFileSize: tt.maxContentScan,
+			})
+			if tt.maxFileSize > 0 {
+				leakRule(t, &cfg).Params[0]["maxFileSize"] = tt.maxFileSize
+			}
+
+			files := []structs.File{
+				{Path: small, Name: "small.txt", Size: 5},
+				{Path: big, Name: "big.txt", Size: 2048},
+			}
+			msgs := runRepoRule(t, "IsFreeOfSecrets", cfg, structs.Repository{Files: files})
+
+			if len(msgs) != 1 || !msgs[0].Skipped {
+				t.Fatalf("expected exactly one aggregate skip message, got %v", msgs)
+			}
+			if !strings.Contains(msgs[0].Content, "1 file(s)") || !strings.Contains(msgs[0].Content, tt.wantLimit) {
+				t.Errorf("skip message should count 1 oversized file against %q: %s", tt.wantLimit, msgs[0].Content)
+			}
+			args, err := os.ReadFile(argsFile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(args), big) {
+				t.Errorf("oversized file must not reach the scanner: %s", args)
+			}
+			if !strings.Contains(string(args), small) {
+				t.Errorf("small file should reach the scanner: %s", args)
+			}
+		})
+	}
+}
+
+// TestIsFreeOfSecretsRuleSizeGateArchive pins WHERE the rule's cap is measured
+// on an archive: on the container, before extraction - so an archive over the
+// cap contributes no member to the scan, however small the member is.
+func TestIsFreeOfSecretsRuleSizeGateArchive(t *testing.T) {
+	dir := t.TempDir()
+	zipPath := makeZip(t, dir, "data.zip", []zipMember{{"inner/secret.txt", "token = abc\n"}})
+	plain := filepath.Join(dir, "notes.txt")
+	if err := os.WriteFile(plain, []byte("token = abc\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	bin, argsFile := fakeScanner(t, "null")
+	cfg := leakTestConfig(bin, nil)
+	zipSize := structs.GetFileSize(zipPath)
+	// One byte under the container's size: the member would pass every member
+	// limit, so only a gate on the container itself can keep it out.
+	leakRule(t, &cfg).Params[0]["maxFileSize"] = zipSize - 1
 
 	files := []structs.File{
-		{Path: small, Name: "small.txt", Size: 5},
-		{Path: big, Name: "big.txt", Size: 2048},
+		{Path: plain, Name: "notes.txt", Size: structs.GetFileSize(plain)},
+		{Path: zipPath, Name: "data.zip", Size: zipSize, IsArchive: true},
 	}
 	msgs := runRepoRule(t, "IsFreeOfSecrets", cfg, structs.Repository{Files: files})
 
-	if len(msgs) != 1 || !msgs[0].Skipped {
-		t.Fatalf("expected exactly one aggregate skip message, got %v", msgs)
-	}
-	if !strings.Contains(msgs[0].Content, "1 file(s)") {
-		t.Errorf("skip message should count 1 oversized file: %s", msgs[0].Content)
+	if len(msgs) != 1 || !msgs[0].Skipped || !strings.Contains(msgs[0].Content, "1 file(s)") {
+		t.Fatalf("expected exactly one aggregate skip message counting the archive, got %v", msgs)
 	}
 	args, err := os.ReadFile(argsFile)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(args), big) {
-		t.Errorf("oversized file must not reach the scanner: %s", args)
+	if strings.Contains(string(args), "secret.txt") {
+		t.Errorf("no member of an archive over the rule's cap may be extracted: %s", args)
 	}
-	if !strings.Contains(string(args), small) {
-		t.Errorf("small file should reach the scanner: %s", args)
+	if !strings.Contains(string(args), plain) {
+		t.Errorf("file within the rule's cap should reach the scanner: %s", args)
 	}
 }
 
 func TestIsFreeOfSecretsArchiveExtraction(t *testing.T) {
 	dir := t.TempDir()
-	zipPath := filepath.Join(dir, "data.zip")
-	zf, err := os.Create(zipPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	zw := zip.NewWriter(zf)
-	smallMember, err := zw.Create("inner/secret.txt")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := smallMember.Write([]byte("token = abc\n")); err != nil {
-		t.Fatal(err)
-	}
-	bigMember, err := zw.Create("inner/too-big.txt")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := bigMember.Write([]byte(strings.Repeat("y", 4096))); err != nil {
-		t.Fatal(err)
-	}
-	if err := zw.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := zf.Close(); err != nil {
-		t.Fatal(err)
-	}
+	zipPath := makeZip(t, dir, "data.zip", []zipMember{
+		{"inner/secret.txt", "token = abc\n"},
+		{"inner/too-big.txt", strings.Repeat("y", 4096)},
+	})
 
 	// The fake scanner echoes a finding for whatever path it got: capture args
 	// first, then rerun assertions on the mapping via a report crafted after
@@ -226,34 +297,12 @@ func TestIsFreeOfSecretsArchiveExtraction(t *testing.T) {
 
 func TestExtractArchivesMkdirFailureKeepsAcks(t *testing.T) {
 	dir := t.TempDir()
-	zipPath := filepath.Join(dir, "data.zip")
-	zf, err := os.Create(zipPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	zw := zip.NewWriter(zf)
 	// Oversized member FIRST so its skip ack is recorded while the iterator
 	// buffers the first scannable member (i.e. before the Mkdir failure).
-	big, err := zw.Create("big.txt")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := big.Write([]byte(strings.Repeat("y", 4096))); err != nil {
-		t.Fatal(err)
-	}
-	small, err := zw.Create("small.txt")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := small.Write([]byte("token = abc\n")); err != nil {
-		t.Fatal(err)
-	}
-	if err := zw.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := zf.Close(); err != nil {
-		t.Fatal(err)
-	}
+	zipPath := makeZip(t, dir, "data.zip", []zipMember{
+		{"big.txt", strings.Repeat("y", 4096)},
+		{"small.txt", "token = abc\n"},
+	})
 
 	tmpDir := t.TempDir()
 	// A FILE where the archive's extraction dir would go makes Mkdir fail.
@@ -500,13 +549,13 @@ func TestFormatLeakLinesCap(t *testing.T) {
 
 func TestLeakAttrsDefaults(t *testing.T) {
 	a := leakAttrsFrom(nil, &config.GeneralConfig{MaxCores: 64})
-	if a.binary != "betterleaks" || a.timeoutSeconds != 120 || a.maxProcs != 4 {
+	if a.binary != "betterleaks" || a.timeoutSeconds != 120 || a.maxProcs != 4 || a.maxFileSize != 0 {
 		t.Errorf("unexpected defaults: %+v", a)
 	}
 	a = leakAttrsFrom(map[string]interface{}{
-		"binary": "/opt/bl", "timeoutSeconds": int64(30), "maxProcs": int64(1),
+		"binary": "/opt/bl", "timeoutSeconds": int64(30), "maxProcs": int64(1), "maxFileSize": int64(4096),
 	}, &config.GeneralConfig{MaxCores: 64})
-	if a.binary != "/opt/bl" || a.timeoutSeconds != 30 || a.maxProcs != 1 {
+	if a.binary != "/opt/bl" || a.timeoutSeconds != 30 || a.maxProcs != 1 || a.maxFileSize != 4096 {
 		t.Errorf("unexpected parsed attrs: %+v", a)
 	}
 }
@@ -663,7 +712,7 @@ func TestCheckSecretAttrsUnknownKeyLists(t *testing.T) {
 	if ruleErr == nil {
 		t.Fatal("an unknown parameter key must be a load error")
 	}
-	for _, knob := range []string{"binary", "timeoutSeconds", "maxProcs"} {
+	for _, knob := range []string{"binary", "timeoutSeconds", "maxProcs", "maxFileSize"} {
 		if !strings.Contains(ruleErr.Error(), knob) {
 			t.Errorf("the allowed-key list must name %q: %v", knob, ruleErr)
 		}
@@ -680,5 +729,19 @@ func TestCheckSecretAttrsRefusesZeroTimeout(t *testing.T) {
 	err := checkSecretAttrs(map[string]interface{}{"timeoutSeconds": int64(0)})
 	if err == nil || !strings.Contains(err.Error(), "timeoutSeconds") {
 		t.Errorf("a zero timeout must be refused by name: %v", err)
+	}
+}
+
+// TestCheckSecretAttrsMaxFileSizeValues pins the size cap's two edges: zero is
+// the OMISSION - the rule caps nothing of its own, the [general] limits alone
+// stand - while a negative size is a value no gate can honour and so a load
+// error, like every other invalid knob.
+func TestCheckSecretAttrsMaxFileSizeValues(t *testing.T) {
+	if err := checkSecretAttrs(map[string]interface{}{"maxFileSize": int64(0)}); err != nil {
+		t.Errorf("a zero size cap means no cap of the rule's own and must load: %v", err)
+	}
+	err := checkSecretAttrs(map[string]interface{}{"maxFileSize": int64(-1)})
+	if err == nil || !strings.Contains(err.Error(), "maxFileSize") {
+		t.Errorf("a negative size cap must be refused by name: %v", err)
 	}
 }

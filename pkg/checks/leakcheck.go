@@ -32,6 +32,7 @@ type leakAttrs struct {
 	binary         string
 	timeoutSeconds int
 	maxProcs       int
+	maxFileSize    int64 // the rule's own size cap; 0 = none, the [general] limits alone
 }
 
 // leakAttrsFrom reads the knobs and clamps maxProcs to general's maxCores: the
@@ -57,6 +58,9 @@ func leakAttrsFrom(attrs map[string]interface{}, general *config.GeneralConfig) 
 	}
 	if v, ok := attrs["maxProcs"].(int64); ok && v > 0 {
 		a.maxProcs = int(v)
+	}
+	if v, ok := attrs["maxFileSize"].(int64); ok && v > 0 {
+		a.maxFileSize = v
 	}
 	a.maxProcs = min(a.maxProcs, general.EffectiveMaxCores())
 	return a
@@ -115,8 +119,13 @@ func checkSecretAttrs(attrs map[string]interface{}) error {
 		case "timeoutSeconds", "maxProcs":
 			n, isInt := v.(int64)
 			typeOK = isInt && n > 0
+		case "maxFileSize":
+			// Zero is the omission - no cap of this rule's own - so only a
+			// negative size is a value no gate could honour.
+			n, isInt := v.(int64)
+			typeOK = isInt && n >= 0
 		default:
-			return fmt.Errorf("unknown key %q (allowed: binary, timeoutSeconds, maxProcs)", key)
+			return fmt.Errorf("unknown key %q (allowed: binary, timeoutSeconds, maxProcs, maxFileSize)", key)
 		}
 		if !typeOK {
 			return fmt.Errorf("%q has the wrong type or an invalid value (%v)", key, v)
@@ -133,8 +142,9 @@ var leakTempName = regexp.MustCompile(`[^A-Za-z0-9._-]`)
 // invocation (the scanner's startup cost is paid once, not per file).
 //
 // Size gating follows pc.toml exactly, enforced by pc rather than scanner
-// flags: top-level files larger than general.maxContentScanFileSize are
-// skipped, and archive members are extracted through the same size-gated
+// flags: top-level files larger than general.maxContentScanFileSize - or than
+// the rule's own maxFileSize, where it sets one - are skipped, archives among
+// them, and the members of the rest are extracted through the same size-gated
 // iterator as the keyword checks (general.maxArchiveFileSize per member,
 // general.maxTotalArchiveMemory per archive) into a private temp directory.
 // The scanner itself never unpacks anything (--max-archive-depth 0).
@@ -145,6 +155,13 @@ func isFreeOfSecrets(ctx context.Context, repo structs.Repository, attrs leakAtt
 	// aggregate skip, archives go through extraction. The excluded paths are
 	// already gone - the rule's selector narrowed the file set before the
 	// check ran.
+	//
+	// The size limit is measured on the archive CONTAINER as on any other file,
+	// before anything is extracted from it.
+	sizeLimit, limitName := maxContentScan, "maximum"
+	if attrs.maxFileSize > 0 && attrs.maxFileSize < sizeLimit {
+		sizeLimit, limitName = attrs.maxFileSize, "the rule's maxFileSize"
+	}
 	var plain, archives []structs.File
 	oversized := 0
 	for _, f := range repo.Files {
@@ -152,7 +169,7 @@ func isFreeOfSecrets(ctx context.Context, repo structs.Repository, attrs leakAtt
 		if size <= 0 {
 			size = structs.GetFileSize(f.Path)
 		}
-		if size > maxContentScan {
+		if size > sizeLimit {
 			oversized++
 			continue
 		}
@@ -163,7 +180,7 @@ func isFreeOfSecrets(ctx context.Context, repo structs.Repository, attrs leakAtt
 		}
 	}
 	if oversized > 0 {
-		reason := fmt.Sprintf("Skipped leak scan of %d file(s): file size exceeds maximum (%d bytes).", oversized, maxContentScan)
+		reason := fmt.Sprintf("Skipped leak scan of %d file(s): file size exceeds %s (%d bytes).", oversized, limitName, sizeLimit)
 		messages = append(messages, structs.Message{Content: reason, Source: structs.Repository{}, Skipped: true, Reason: reason})
 	}
 

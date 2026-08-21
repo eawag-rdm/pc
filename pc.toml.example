@@ -163,6 +163,8 @@ enabled = false
   timeoutSeconds = 120
   # CPU cores the scanner may use; capped by [general] maxCores (the lower wins)
   maxProcs = 4
+  # max bytes a top-level file or archive container may have to be scanned by this rule (0 = no limit); archive members follow [general] maxArchiveFileSize
+  maxFileSize = 0
 
 [[rule]]
 # Invalid/special characters in file names

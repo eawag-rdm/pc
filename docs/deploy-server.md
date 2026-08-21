@@ -123,7 +123,8 @@ the binary stays bundled and the check reactivates by flipping the rule's own
 `IsFreeOfSecrets` `[[rule]]` - version and SHA-256 are pinned via the
 `BETTERLEAKS_VERSION` / `BETTERLEAKS_SHA256` build args in the `Dockerfile`
 (checksum-verified at build). The scanner runs offline, capped at its
-`[rule.params]` `maxProcs` cores and `timeoutSeconds` per analysis. `maxProcs`
+`[rule.params]` `maxProcs` cores and `timeoutSeconds` per analysis, and fed only
+files (and archive containers) within its `maxFileSize`. `maxProcs`
 is itself capped by the **configured** `[general] maxCores` (default 4): the
 scanner is a child process and inherits none of the server's CPU budget, so the
 smaller of those two values wins - not the budget the server settled on, which
