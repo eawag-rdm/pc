@@ -500,7 +500,7 @@ func TestFormatLeakLinesCap(t *testing.T) {
 
 func TestLeakAttrsDefaults(t *testing.T) {
 	a := leakAttrsFrom(nil, &config.GeneralConfig{MaxCores: 64})
-	if a.binary != "betterleaks" || a.timeoutSeconds != 120 || a.maxProcs != 3 {
+	if a.binary != "betterleaks" || a.timeoutSeconds != 120 || a.maxProcs != 4 {
 		t.Errorf("unexpected defaults: %+v", a)
 	}
 	a = leakAttrsFrom(map[string]interface{}{

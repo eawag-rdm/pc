@@ -21,7 +21,7 @@ import (
 // Defaults for the leak check's parameter set.
 const (
 	defaultLeakBinary   = "betterleaks"
-	defaultLeakMaxProcs = 3
+	defaultLeakMaxProcs = 4
 	// leakMaxLinesShown caps the line numbers listed per rule in one message.
 	leakMaxLinesShown = 5
 )

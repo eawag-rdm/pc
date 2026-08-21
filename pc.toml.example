@@ -162,7 +162,7 @@ enabled = false
   # whole-scan cap in seconds (must not exceed [server] requestTimeoutSeconds)
   timeoutSeconds = 120
   # CPU cores the scanner may use; capped by [general] maxCores (the lower wins)
-  maxProcs = 3
+  maxProcs = 4
 
 [[rule]]
 # Invalid/special characters in file names

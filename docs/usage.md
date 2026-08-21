@@ -261,7 +261,7 @@ enabled = false
   # maxProcs: CPU cores the scanner may use, capped by the configured [general] maxCores (the lower wins)
   binary         = "betterleaks"
   timeoutSeconds = 120
-  maxProcs       = 3
+  maxProcs       = 4
 ```
 
 The CLI needs the `betterleaks` binary on PATH (or `binary` set to an absolute
@@ -291,8 +291,8 @@ nothing automatically, so it follows the **configured** `maxCores` - the lower
 of its own `maxProcs` and `maxCores` - whatever budget pc settled on for itself.
 On a machine smaller than `maxCores`, or under a lower `GOMAXPROCS`, the scanner
 can therefore be granted more cores than pc runs with (`GOMAXPROCS=1 pc` runs pc
-at 1 while the scanner still gets 3; a 2-core host with `maxCores = 4` likewise
-gives it 3). It also runs alongside pc's own pools, so a host can briefly see up
+at 1 while the scanner still gets 4; a 2-core host with `maxCores = 4` likewise
+gives it 4). It also runs alongside pc's own pools, so a host can briefly see up
 to twice `maxCores` while a scan is in flight.
 
 It applies **whether or not you set it**: an absent key means the default of 4,
