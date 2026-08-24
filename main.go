@@ -22,10 +22,16 @@ import (
 	jsonformatter "github.com/eawag-rdm/pc/pkg/output/json"
 	plainformatter "github.com/eawag-rdm/pc/pkg/output/plain"
 	"github.com/eawag-rdm/pc/pkg/output/tui"
+	"github.com/eawag-rdm/pc/pkg/readers"
 	"github.com/eawag-rdm/pc/pkg/structs"
 )
 
 func main() {
+
+	// Before anything else, including flag parsing: the PDF pool extracts in
+	// worker processes that are this binary re-executed with an argv sentinel,
+	// and such a process runs the worker loop instead of a scan.
+	readers.HandlePDFWorkerSentinel()
 
 	// Small CLI: collect files via the configured collector, apply the checks,
 	// and render the results (TUI by default; -json/-plain/-html otherwise).

@@ -12,10 +12,16 @@ import (
 
 	"github.com/eawag-rdm/pc/internal/cpucap"
 	"github.com/eawag-rdm/pc/pkg/config"
+	"github.com/eawag-rdm/pc/pkg/readers"
 	"github.com/eawag-rdm/pc/pkg/server"
 )
 
 func main() {
+	// Before anything else, including flag parsing: the PDF pool extracts in
+	// worker processes that are this binary re-executed with an argv sentinel,
+	// and such a process runs the worker loop instead of a server.
+	readers.HandlePDFWorkerSentinel()
+
 	// The server is configured entirely from the TOML file - no tunable flags.
 	// The only argument is the optional config-file location (with a sensible
 	// search fallback); everything else, including the listen address, lives in
@@ -97,6 +103,13 @@ func main() {
 
 		if err := srv.Shutdown(ctx); err != nil {
 			log.Printf("Could not gracefully shutdown the server: %v", err)
+		} else {
+			// Only on a drain that finished: then no worker is mid-job. This
+			// merely ends idle workers a moment before the process exit that
+			// closes their pipes anyway - the EOF that reaps them on every
+			// path, with the Linux parent-death signal as the backstop for a
+			// parent killed outright.
+			readers.ClosePDFWorkers()
 		}
 		close(shutdownComplete)
 	}()

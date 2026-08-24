@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	pdfium "github.com/klippa-app/go-pdfium"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestMain asserts the lazy-init guarantee mechanically before ANY test in
@@ -20,6 +20,12 @@ import (
 // for the wasm runtime. Benchmarks run after tests, so committed
 // Benchmark* functions do not violate this.
 func TestMain(m *testing.M) {
+	// The pool starts workers by re-executing this binary, which here is the
+	// test binary: the child has to run a worker loop, not the suite again.
+	// handlePDFStubWorker takes the children a test asked to misbehave,
+	// HandlePDFWorkerSentinel every other one.
+	handlePDFStubWorker()
+	HandlePDFWorkerSentinel()
 	if pdfRuntimeInitialized() {
 		fmt.Fprintln(os.Stderr, "FAIL: PDF runtime initialized before any test ran - lazy-init guarantee broken (package-level init touched the pool)")
 		os.Exit(1)
@@ -168,15 +174,32 @@ func TestReadPDFTooLargeFailsFast(t *testing.T) {
 	assert.ErrorIs(t, err, ErrPDFTooLarge)
 }
 
-// The two shapes that matter: per-document pool churn dominates the
-// single page, extraction throughput dominates the 50 pages. Benchmarks
-// run after tests, so the TestMain lazy-init assert is unaffected.
-func benchmarkReadPDF(b *testing.B, pageCount int) {
-	texts := make([]string, pageCount)
-	for i := range texts {
-		texts[i] = strings.Repeat("benchmark page text with several words ", 20)
+func TestReadPDFTimeoutDiscardsContent(t *testing.T) {
+	// A 1 ns budget is spent before the worker reaches its first deadline
+	// check, so the outcome is deterministic however the extraction is
+	// scheduled - and it is the worker that ends it, inside the job, which is
+	// why this costs no process.
+	data := writeMinimalPDF("timeout page one", "timeout page two")
+	limits := testPDFLimits
+	limits.Timeout = time.Nanosecond
+	pages, truncated, err := ReadPDF(context.Background(), data, limits)
+	assert.ErrorIs(t, err, ErrPDFTimeout)
+	assert.Nil(t, pages, "timeout must discard partial content (determinism)")
+	assert.False(t, truncated)
+}
+
+// The three shapes that matter: per-job worker overhead dominates the single
+// page, extraction throughput dominates the 50 pages, and the near-gate
+// document is what the pipe costs on a file the size of the shipped admission
+// limit. The allocation columns count the PARENT only - the extraction itself
+// happens in another process. Benchmarks run after tests, so the TestMain
+// lazy-init assert is unaffected.
+func benchmarkReadPDF(b *testing.B, data []byte) {
+	// Warm the pool outside the measurement: the first call starts a worker
+	// process, which is not what any of these benchmarks is about.
+	if _, _, err := ReadPDF(context.Background(), data, testPDFLimits); err != nil {
+		b.Fatal(err)
 	}
-	data := writeMinimalPDF(texts...)
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -186,40 +209,58 @@ func benchmarkReadPDF(b *testing.B, pageCount int) {
 	}
 }
 
-func BenchmarkReadPDFSinglePage(b *testing.B) { benchmarkReadPDF(b, 1) }
-func BenchmarkReadPDF50Pages(b *testing.B)    { benchmarkReadPDF(b, 50) }
-
-// fakePDFPool stands in for the wasm pool: the retry test must not build a
-// real runtime (and must not hand the shared one to later tests).
-type fakePDFPool struct{}
-
-func (*fakePDFPool) GetInstance(time.Duration) (pdfium.Pdfium, error) { return nil, nil }
-
-// Errors rather than handing out a nil instance: if a test ever leaked this
-// fake past its cleanup, a real extraction fails loudly instead of nil-deref.
-func (*fakePDFPool) GetInstanceWithContext(context.Context) (pdfium.Pdfium, error) {
-	return nil, errors.New("fake pool has no instances")
-}
-func (*fakePDFPool) Close() error { return nil }
-
-// abandonedPDFPool models a wait the caller gave up on: the underlying pool
-// reports a context-aborted acquisition as its own "no idle object" error,
-// never as ctx.Err(), so the cause has to be recovered from the context.
-type abandonedPDFPool struct {
-	fakePDFPool
-	t      *testing.T
-	cancel context.CancelFunc
-}
-
-func (p *abandonedPDFPool) GetInstanceWithContext(ctx context.Context) (pdfium.Pdfium, error) {
-	p.cancel()
-	// The cancel above is visible here only if acquisition was handed the
-	// caller's own context rather than a detached one, which is what makes
-	// the wait genuinely abandoned instead of merely slow.
-	if ctx.Err() == nil {
-		p.t.Error("acquisition did not receive the caller's context")
+func benchmarkPDFPages(pageCount int) []byte {
+	texts := make([]string, pageCount)
+	for i := range texts {
+		texts[i] = strings.Repeat("benchmark page text with several words ", 20)
 	}
-	return nil, errors.New("Timeout waiting for idle object")
+	return writeMinimalPDF(texts...)
+}
+
+func BenchmarkReadPDFSinglePage(b *testing.B) { benchmarkReadPDF(b, benchmarkPDFPages(1)) }
+func BenchmarkReadPDF50Pages(b *testing.B)    { benchmarkReadPDF(b, benchmarkPDFPages(50)) }
+
+func BenchmarkReadPDFNearGate(b *testing.B) {
+	// ~1 MiB, the shipped maxPDFFileSize: the document the pipe has to carry
+	// in full on a file the configuration still admits.
+	const pageText = 24 * 1024
+	pages := make([]string, 0, 48)
+	for size := 0; size < 1<<20; size += pageText {
+		pages = append(pages, strings.Repeat("near gate filler words ", pageText/23))
+	}
+	data := writeMinimalPDF(pages...)
+	if len(data) < 1<<20 {
+		b.Fatalf("fixture is %d bytes, want at least 1 MiB", len(data))
+	}
+	benchmarkReadPDF(b, data)
+}
+
+// unusedPDFPool stands in for the worker pool where a test must not extract
+// anything: nothing is started until a job asks for a worker, so an unused pool
+// costs two channels. It carries no binary to start, so one leaked past its
+// cleanup fails the first job loudly instead of serving it silently.
+func unusedPDFPool(t *testing.T) *pdfWorkerPool {
+	t.Helper()
+	pool := newPDFWorkerPool("", 1, testPDFPoolTimings())
+	t.Cleanup(pool.Close)
+	return pool
+}
+
+// readOutcome is one ReadPDF return, so a test can wait on the call with a
+// bound instead of hanging the suite when a worker is never killed.
+type readOutcome struct {
+	pages     [][]byte
+	truncated bool
+	err       error
+}
+
+func readPDFAsync(ctx context.Context, data []byte, limits PDFLimits) <-chan readOutcome {
+	done := make(chan readOutcome, 1)
+	go func() {
+		pages, truncated, err := ReadPDF(ctx, data, limits)
+		done <- readOutcome{pages: pages, truncated: truncated, err: err}
+	}()
+	return done
 }
 
 // savePDFRuntime hijacks the package-level runtime the real-PDF tests share,
@@ -241,7 +282,6 @@ func savePDFRuntime(t *testing.T) {
 		pdfRuntime.pool, pdfRuntime.err = savedPool, savedErr
 		pdfRuntime.lastAttempt, pdfRuntime.cooldown = savedAttempt, savedCooldown
 		pdfRuntime.mu.Unlock()
-		// After pool: ready points at pdfRuntime.pool.
 		pdfRuntime.ready.Store(savedReady)
 		pdfRuntime.initialized.Store(savedInitialized)
 	})
@@ -286,7 +326,7 @@ func TestPDFRuntimeRetriesFailedInitAfterCooldown(t *testing.T) {
 
 	calls := 0
 	initErr := errors.New("wasm init failed")
-	initFn = func() (pdfium.Pool, error) {
+	initFn = func() (*pdfWorkerPool, error) {
 		calls++
 		return nil, initErr
 	}
@@ -327,8 +367,8 @@ func TestPDFRuntimeRetriesFailedInitAfterCooldown(t *testing.T) {
 
 	// A retry that succeeds serves the pool, clears the stale error and
 	// disarms the backoff.
-	want := &fakePDFPool{}
-	initFn = func() (pdfium.Pool, error) {
+	want := unusedPDFPool(t)
+	initFn = func() (*pdfWorkerPool, error) {
 		calls++
 		return want, nil
 	}
@@ -356,7 +396,7 @@ func TestPDFRuntimeNilPoolIsAFailure(t *testing.T) {
 	pdfInitCooldown = 10 * time.Second
 
 	calls := 0
-	initFn = func() (pdfium.Pool, error) {
+	initFn = func() (*pdfWorkerPool, error) {
 		calls++
 		return nil, nil
 	}
@@ -380,13 +420,14 @@ func TestPDFRuntimeNilPoolIsAFailure(t *testing.T) {
 
 func TestReadPDFCancelledBeforeAnyWork(t *testing.T) {
 	// A caller that has already given up must not pay for runtime init, nor
-	// hold a pool instance for a result nobody will read.
+	// hold a worker for a result nobody will read.
 	savePDFRuntime(t)
 	resetPDFRuntime()
 	calls := 0
-	initFn = func() (pdfium.Pool, error) {
+	pool := unusedPDFPool(t)
+	initFn = func() (*pdfWorkerPool, error) {
 		calls++
-		return &fakePDFPool{}, nil
+		return pool, nil
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -398,24 +439,36 @@ func TestReadPDFCancelledBeforeAnyWork(t *testing.T) {
 	assert.Equal(t, 0, calls, "a cancelled call must not reach the pool at all")
 }
 
-func TestReadPDFAbandonedPoolWaitReportsCancellation(t *testing.T) {
+func TestReadPDFAbandonedWorkerWaitReportsCancellation(t *testing.T) {
+	// The pool's only permit is taken and no worker exists, so the call can
+	// only queue. A caller that gives up while queueing must be told its own
+	// cause: a queue is not a document that failed.
 	savePDFRuntime(t)
 	resetPDFRuntime()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	initFn = func() (pdfium.Pool, error) { return &abandonedPDFPool{t: t, cancel: cancel}, nil }
+	pool := unusedPDFPool(t)
+	<-pool.spawn
+	initFn = func() (*pdfWorkerPool, error) { return pool, nil }
 
-	_, _, err := ReadPDF(ctx, writeMinimalPDF("some text"), testPDFLimits)
-	assert.ErrorIs(t, err, context.Canceled, "the pool's own wait error must not mask the cancellation")
-	assert.Contains(t, err.Error(), "Timeout waiting for idle object", "the pool's own failure must stay visible beside the cancellation")
+	// The pre-pool gate passes and so does the one the wait itself makes, so
+	// the cut lands where the wait gives up - the one place where a context
+	// that reports itself done without an error of its own would otherwise
+	// return no content and no error at all.
+	done := readPDFAsync(&errAfter{Context: cancelledContext(), limit: 2}, writeMinimalPDF("some text"), testPDFLimits)
+	select {
+	case got := <-done:
+		assert.ErrorIs(t, got.err, context.Canceled, "a queue must not be reported as an engine that failed")
+	case <-time.After(5 * time.Second):
+		t.Fatal("ReadPDF kept queueing for a caller that had given up")
+	}
 }
 
 // errAfter reports itself cancelled from the n-th Err() call on. readPDF
 // consults ctx at fixed points on ONE goroutine, so counting them cuts an
 // extraction at an exact place - where a wall-clock deadline would race the
-// machine. Done() stays the embedded context's and is never ready, so the
-// watchdog sleeps through the cut exactly as it does for a scan that ends
-// through its own checkpoints.
+// machine. Done() stays the embedded context's, which is the second half of
+// the instrument: over a live context only the counted Err() calls see the
+// cut, and over an already-cancelled one the cut lands wherever readPDF waits
+// on Done() - with the count deciding how much of the call happens first.
 type errAfter struct {
 	context.Context
 	calls int
@@ -430,36 +483,103 @@ func (c *errAfter) Err() error {
 	return nil
 }
 
+// cancelledContext is a context that is already done; the cut layered on top of
+// it decides how far a call gets before it is allowed to see that.
+func cancelledContext() context.Context {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	return ctx
+}
+
 func TestReadPDFCancellationAbortsRunningScan(t *testing.T) {
-	// Call 1 is the pre-pool gate, call 2 the gate right after acquisition,
-	// then one per page: both cuts below leave the caller's context alive long
-	// enough for the scan to hold an instance and parse the document, and the
-	// second one past the first page's text as well. Neither may reach the
-	// caller - partial content on abort would make findings depend on how far
-	// the machine got.
+	// Call 1 is the pre-pool gate, call 2 the gate taken with a worker held.
+	// The cut lands on that second gate: past the queue, before the job. No
+	// content may reach the caller - partial content on abort would make
+	// findings depend on how far the machine got.
+	pool := singleWorkerPool(t)
 	data := writeMinimalPDF("first page text", "second page text", "third page text")
-	for _, test := range []struct {
-		name  string
-		limit int
-	}{
-		{"right after acquisition", 1},
-		{"between two pages", 3},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			cut := &errAfter{Context: context.Background(), limit: test.limit}
-			pages, truncated, extractTime, err := readPDF(cut, data, testPDFLimits)
-			assert.ErrorIs(t, err, context.Canceled)
-			assert.Nil(t, pages, "an aborted scan must return no content (determinism)")
-			assert.False(t, truncated)
-			assert.Positive(t, extractTime, "the abort must land after acquisition, not on the pre-pool gate")
-			assert.Equal(t, test.limit+1, cut.calls, "the extraction must end at the FIRST checkpoint past the cut")
-		})
+	// A warm worker in the pool, so acquisition never consults the context and
+	// the cut lands where this test says it does.
+	_, _, err := ReadPDF(context.Background(), data, testPDFLimits)
+	require.NoError(t, err)
+	require.Len(t, pool.idle, 1)
+
+	cut := &errAfter{Context: context.Background(), limit: 1}
+	pages, truncated, extractTime, err := readPDF(cut, data, testPDFLimits)
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.Nil(t, pages, "an aborted scan must return no content (determinism)")
+	assert.False(t, truncated)
+	assert.Positive(t, extractTime, "the abort must land after acquisition, not on the pre-pool gate")
+	assert.Equal(t, 2, cut.calls, "the extraction must end at the FIRST checkpoint past the cut")
+}
+
+func TestReadPDFCancellationDuringExtractionDiscardsEverything(t *testing.T) {
+	// The cut lands past both gates, on the wait for an answer that can never
+	// arrive: the worker takes the job and stops itself, so nothing can race
+	// the caller's own abort. The caller must be told its own cause, get no
+	// content, and not be left waiting on a process that will never reply.
+	pool := stubWorkerPool(t, stubStopMidJob)
+	data := writeMinimalPDF("first page text", "second page text")
+	// The stub answers its first job, which warms the pool: acquisition below
+	// then takes that worker without ever consulting the context.
+	_, _, err := ReadPDF(context.Background(), data, testPDFLimits)
+	require.NoError(t, err)
+	require.Len(t, pool.idle, 1)
+
+	cut := &errAfter{Context: cancelledContext(), limit: 2}
+	type outcome struct {
+		pages       [][]byte
+		truncated   bool
+		extractTime time.Duration
+		err         error
 	}
+	done := make(chan outcome, 1)
+	go func() {
+		pages, truncated, extractTime, err := readPDF(cut, data, testPDFLimits)
+		done <- outcome{pages, truncated, extractTime, err}
+	}()
+
+	select {
+	case got := <-done:
+		assert.ErrorIs(t, got.err, context.Canceled)
+		assert.Nil(t, got.pages, "an aborted scan must return no content (determinism)")
+		assert.False(t, got.truncated)
+		assert.Positive(t, got.extractTime, "the abort must land after acquisition, not on the pre-pool gate")
+		assert.Equal(t, 3, cut.calls, "the extraction must end at the FIRST checkpoint past the cut")
+	case <-time.After(pdfWorkerGrace + 10*time.Second):
+		t.Fatal("readPDF never returned: the silent worker was not killed after the grace")
+	}
+}
+
+func TestReadPDFCancelledAnswerWithinGraceKeepsTheWorker(t *testing.T) {
+	// A cancelled request is routine, and an answer already on its way costs
+	// nothing to wait for: the content is still discarded, but the process that
+	// produced it must survive - killing a healthy worker per cancelled request
+	// is how a server ends up starting one per file.
+	//
+	// The grace is a pool timing, and a generous one here: what is asserted is
+	// which fate the worker meets, not how fast this machine can answer one job.
+	timings := testPDFPoolTimings()
+	timings.grace = 10 * time.Second
+	pool := installPDFPool(t, newPDFWorkerPool(testExecutable(t), 1, timings))
+	data := writeMinimalPDF("cancelled but answered")
+	_, _, err := ReadPDF(context.Background(), data, testPDFLimits)
+	require.NoError(t, err)
+	warm := <-pool.idle
+	pool.idle <- warm
+
+	pages, truncated, err := ReadPDF(&errAfter{Context: cancelledContext(), limit: 2}, data, testPDFLimits)
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.Nil(t, pages, "a cancelled scan reports no content, however far it got")
+	assert.False(t, truncated)
+
+	require.Len(t, pool.idle, 1, "the worker that answered inside the grace must go back to the pool")
+	assert.Same(t, warm, <-pool.idle, "and it must be the same process, not a replacement")
 }
 
 func TestReadPDFConcurrentBatch(t *testing.T) {
 	// Double-checked lazy init plus pool under concurrency: more goroutines
-	// than pool instances.
+	// than the pool has workers.
 	data := writeMinimalPDF("concurrent page")
 	done := make(chan error, 12)
 	for i := 0; i < 12; i++ {

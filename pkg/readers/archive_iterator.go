@@ -617,7 +617,7 @@ func (u *UnpackedFileIterator) tryBufferPDFMember(name string, declared int64, r
 		Timeout: min(DefaultPDFTimeout, remainingBudget),
 	}
 	// Charge extraction only: pool queue time belongs to whoever held the
-	// instance, and charging it here would let a busy pool silently consume
+	// worker, and charging it here would let a busy pool silently consume
 	// this archive's scan budget.
 	pageBlocks, truncated, extractTime, err := readPDF(u.ctx, data, limits)
 	u.pdfWallTime += extractTime

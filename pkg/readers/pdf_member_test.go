@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 
@@ -148,6 +149,28 @@ func TestPDFMemberCancelledScanStaysSilent(t *testing.T) {
 	u := InitArchiveIterator(ctx, path, "fixture.zip", testMemberLimits, nil)
 	assert.Empty(t, drainMembers(u), "a cancelled scan must yield nothing from the PDF member on")
 	assert.Empty(t, u.SkipMessages(), "an extractable PDF member skipped for cancellation adds no ack")
+}
+
+func TestPDFMemberTimeoutClampedToRemainingBudget(t *testing.T) {
+	// With almost no budget left the member's own timeout must shrink to
+	// what remains, so maxArchivePDFTime is a ceiling and not a floor that
+	// the last member overshoots by a full DefaultPDFTimeout. One nanosecond is
+	// spent before the worker reaches its first deadline check, so the clamp
+	// shows up as a timed-out member however fast the machine is - where a
+	// member handed the full DefaultPDFTimeout extracts this document.
+	path := writeZipFixture(t, []zipMember{{"slow.pdf", writeMinimalPDF("some text")}})
+	// A warm worker first: what the clamp does to the extraction is the
+	// subject, not what starting a process costs.
+	warm := InitArchiveIterator(context.Background(), path, "fixture.zip", testMemberLimits, nil)
+	assert.Contains(t, drainMembers(warm), "slow.pdf")
+
+	u := InitArchiveIterator(context.Background(), path, "fixture.zip", testMemberLimits, nil)
+	u.pdfWallTime = maxArchivePDFTime - time.Nanosecond
+	assert.NotContains(t, drainMembers(u), "slow.pdf", "a member clamped to a nanosecond cannot extract")
+
+	msgs := u.SkipMessages()
+	assert.Len(t, msgs, 1, "the clamped member is acknowledged, not silently dropped")
+	assert.Contains(t, msgs[0].Content, "PDF extraction timed out")
 }
 
 func TestPDFMemberWallClockBudgetBreaker(t *testing.T) {

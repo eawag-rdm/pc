@@ -13,8 +13,19 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/eawag-rdm/pc/pkg/readers"
 	"github.com/eawag-rdm/pc/pkg/structs"
 )
+
+// TestMain hands over to the PDF worker loop when this binary was re-executed
+// as one: extraction runs in a subprocess started from the running executable,
+// which under `go test` is this test binary, and it must not run the suite
+// again. Without the handover the pool refuses to start workers at all, so
+// every PDF here would report an unavailable engine.
+func TestMain(m *testing.M) {
+	readers.HandlePDFWorkerSentinel()
+	os.Exit(m.Run())
+}
 
 // buildTestPDF mirrors the readers-package fixture builder: a valid PDF with
 // one page per text, xref offsets recorded while writing.
@@ -448,7 +459,7 @@ func TestCancelledScanOfPDFReportsNothing(t *testing.T) {
 
 	// The same file for a request that dies mid-scan: the first Err() call is
 	// the gate before the whole-document read, the second ReadPDF's own
-	// pre-pool gate, the third the one it makes holding an instance. A cut
+	// pre-pool gate, the third the one it makes holding a worker. A cut
 	// after the second leaves the document read, admitted and past every skip
 	// gate, so only the extraction can still report - and it must report
 	// nothing: no finding, and no acknowledgement either, since a perfectly

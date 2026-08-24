@@ -12,8 +12,20 @@ import (
 	"github.com/eawag-rdm/pc/pkg/helpers"
 	"github.com/eawag-rdm/pc/pkg/metadata"
 	"github.com/eawag-rdm/pc/pkg/output"
+	"github.com/eawag-rdm/pc/pkg/readers"
 	"github.com/eawag-rdm/pc/pkg/structs"
 )
+
+// TestMain hands over to the PDF worker loop when this binary was re-executed
+// as one: the check pipeline extracts in a subprocess started from the running
+// executable, which under `go test` is this test binary. Precautionary - no
+// fixture here is a PDF today, but without the handover the pool refuses to
+// start workers at all, so the first PDF fixture added would be acked as an
+// unavailable engine while the suite stayed green: a silent scanning gap.
+func TestMain(m *testing.M) {
+	readers.HandlePDFWorkerSentinel()
+	os.Exit(m.Run())
+}
 
 // buildFiles writes a tiny PDF-free file set that makes the file pipeline emit
 // messages: a whitespace + keyword hit and a non-ASCII name. PDF-free on

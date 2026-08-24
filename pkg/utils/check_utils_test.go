@@ -11,10 +11,22 @@ import (
 	"testing"
 
 	"github.com/eawag-rdm/pc/pkg/checks"
+	"github.com/eawag-rdm/pc/pkg/readers"
 	"github.com/eawag-rdm/pc/pkg/structs"
 
 	"github.com/eawag-rdm/pc/pkg/config"
 )
+
+// TestMain hands over to the PDF worker loop when this binary was re-executed
+// as one: the check pipeline extracts in a subprocess started from the running
+// executable, which under `go test` is this test binary. Precautionary - no
+// fixture here is a PDF today, but without the handover the pool refuses to
+// start workers at all, so the first PDF fixture added would be acked as an
+// unavailable engine while the suite stayed green: a silent scanning gap.
+func TestMain(m *testing.M) {
+	readers.HandlePDFWorkerSentinel()
+	os.Exit(m.Run())
+}
 
 // TestApplyAllChecks_NoFilesNotice verifies both engine entrypoints append a
 // single skip-style "no files to analyse" notice when the file set is empty, so

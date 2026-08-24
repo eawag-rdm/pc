@@ -142,6 +142,23 @@ so that cache key survives wazero upgrades and can serve native code
 compiled by the OLD wazero - run `rm -rf ~/.cache/pc/wazero` after bumping
 wazero (release builds key correctly and are unaffected).
 
+**PDF worker processes.** Extraction runs outside the server process, in up to
+`min(4, maxCores)` subprocesses - the same binary re-executed with an argv
+sentinel, so `ps` inside the container shows them beside PID 1 (`pc-server
+__pc-pdf-worker`). Size the container for one PDF engine **per worker**, not one
+per server: each holds pdfium's ~18 MiB of wasm linear memory plus its own
+wazero runtime, and the resident figure tracks the largest document that worker
+has handled. They also run alongside the server's own pools, so a host can
+briefly see up to twice `maxCores` while extraction is in flight. A graceful
+shutdown ends them once the analyses drain, and any orderly exit of the server -
+including a drain that times out - closes their pipes, whose EOF is what reaps
+them. A `kill -9` or an OOM kill can leave a worker mid-document and not reading
+that pipe, which is what the parent-death signal the pool sets on every worker
+backstops; it is Linux-only, and the deploy image is Linux, so it applies here.
+The full model - lazy start, retirement, and what happens if the binary is
+replaced under a running server - is in
+[usage.md](usage.md#pdf-extraction-runs-in-worker-processes).
+
 **RAM-backed `/tmp` (tmpfs).** The committed compose mounts `/tmp` as tmpfs
 (2 GB): the secret scan extracts archive members there before scanning, so
 plaintext copies live only in RAM and vanish on container restart. Size it to

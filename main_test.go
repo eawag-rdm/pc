@@ -1,6 +1,9 @@
 package main
 
 import (
+	"bytes"
+	"context"
+	"encoding/gob"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -137,6 +140,57 @@ func TestMainBinary_Exists(t *testing.T) {
 	// On Unix systems, check if it's executable
 	if info.Mode()&0111 == 0 {
 		t.Error("Built binary is not executable")
+	}
+}
+
+func TestPDFWorkerSentinel(t *testing.T) {
+	// The PDF pool extracts by re-executing this very binary with an argv
+	// sentinel, so the shipped binary must take that argv over before it parses
+	// a flag or scans anything: it greets its parent on stdout and ends on the
+	// first EOF, which with no stdin is immediately.
+	//
+	// The bound is generous because the first run compiles the wasm module; it
+	// is there so a wedged worker fails here, with what it said on stderr,
+	// rather than as the suite's own timeout.
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, testBinaryPath, "__pc-pdf-worker")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	runErr := cmd.Run()
+
+	// A panicking worker dumps every goroutine, so only the tail is reported.
+	stderrTail := func() string {
+		s := strings.TrimSpace(stderr.String())
+		if len(s) > 2000 {
+			s = "..." + s[len(s)-2000:]
+		}
+		return s
+	}
+	if runErr != nil {
+		t.Fatalf("worker run failed: %v (stderr %q)", runErr, stderrTail())
+	}
+
+	// The greeting is the whole conversation: whatever else the binary does on
+	// stdout (a JSON report, a TUI) must not have happened.
+	var hello struct {
+		ProtocolVersion uint8
+		Err             string
+	}
+	dec := gob.NewDecoder(&stdout)
+	if err := dec.Decode(&hello); err != nil {
+		t.Fatalf("worker did not greet its parent: %v (stdout %q, stderr %q)", err, stdout.String(), stderrTail())
+	}
+	if hello.Err != "" {
+		t.Errorf("worker reported a broken runtime: %s (stderr %q)", hello.Err, stderrTail())
+	}
+	if hello.ProtocolVersion == 0 {
+		t.Errorf("worker greeted with no protocol version (stderr %q)", stderrTail())
+	}
+	if err := dec.Decode(&hello); err == nil {
+		t.Errorf("worker wrote more than its greeting with no job to answer (stderr %q)", stderrTail())
 	}
 }
 

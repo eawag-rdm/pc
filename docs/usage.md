@@ -363,6 +363,42 @@ Files over `maxContentScanFileSize` are reported as *skipped* rather than
 content-scanned. Archive members over the per-file or total-memory budget are
 skipped and acknowledged in the output.
 
+### PDF extraction runs in worker processes
+
+PDF text extraction does not happen inside `pc`/`pc-server`: the process starts
+**up to `min(4, maxCores)` worker subprocesses**, each running the sandboxed
+PDFium engine, and hands them one document at a time. They are the same binary
+re-executed with the undocumented argv sentinel `__pc-pdf-worker`, so `ps` shows
+entries like `pc-server __pc-pdf-worker` beside the main process. Running that
+by hand does nothing useful: it compiles the wasm module on first use, writes a
+binary greeting to your terminal and then waits for jobs on stdin (Ctrl-D to
+exit).
+
+Workers start lazily - a scan without PDFs starts none - and the first one to
+start is on its own until it reports ready, so a cold compile (seconds; a warm
+start is milliseconds) is paid once rather than four times in parallel. If it
+fails, every caller queued behind it is told at once instead of repeating the
+wait. A worker is retired 60-120 s after its last job (a 60 s threshold checked
+every 60 s), whenever it fails, and after an outsized document - over 4 MiB read
+or 16 MiB of extracted text, which the shipped `maxPDFFileSize` (1 MB) and
+per-file text budget keep out of reach, so this only fires where those gates
+have been raised. Each worker carries its own wasm runtime, so expect its
+resident memory to track the largest document it has handled. The workers run
+alongside pc's own pools, so a host can briefly see up to twice `maxCores` while
+extraction is in flight - the same envelope as the secret scanner.
+
+Workers do not outlive their parent: its exit closes their pipes and they end on
+the EOF, on every platform and every orderly path. On Linux the kernel is
+additionally asked to `SIGKILL` a worker whose parent is killed outright - a
+`kill -9` or an OOM kill - so one wedged mid-document is not left behind; other
+platforms have no such backstop.
+
+Replacing the binary under a **running** process is the one case that needs
+care: workers started after the replacement are the new binary, and if its wire
+protocol differs they are refused rather than spoken to. PDF scanning then
+reports "PDF engine unavailable" (a skip acknowledgement per file) until the
+process is restarted; nothing is mis-scanned.
+
 ---
 
 ## 2. The CLI (`pc`)

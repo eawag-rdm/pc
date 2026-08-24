@@ -18,8 +18,20 @@ import (
 
 	"github.com/eawag-rdm/pc/pkg/checks"
 	"github.com/eawag-rdm/pc/pkg/config"
+	"github.com/eawag-rdm/pc/pkg/readers"
 	"github.com/eawag-rdm/pc/pkg/structs"
 )
+
+// TestMain hands over to the PDF worker loop when this binary was re-executed
+// as one: the analysis these handlers drive extracts PDFs in a subprocess
+// started from the running executable, which under `go test` is this test
+// binary. Precautionary - no fixture here reaches extraction today, but without
+// the handover the pool refuses to start workers at all, so the first PDF added
+// would be acked as an unavailable engine while the suite stayed green.
+func TestMain(m *testing.M) {
+	readers.HandlePDFWorkerSentinel()
+	os.Exit(m.Run())
+}
 
 // testPlan compiles the rule plan NewHandler requires, the way server.New does
 // at boot. A handler test that never analyses still needs one: a nil plan would
