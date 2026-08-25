@@ -198,6 +198,80 @@ func TestReadArchiveFileListMemberCap(t *testing.T) {
 	}
 }
 
+// poisonedTar returns tar bytes holding memberCount members of payloadSize bytes
+// each, with every byte past member intactMembers overwritten by 0xff. No tar
+// header parses there, so a walk that reads that far ends in tar.ErrHeader
+// instead of running to EOF.
+func poisonedTar(t *testing.T, memberCount int, intactMembers int, payloadSize int) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	payload := bytes.Repeat([]byte("p"), payloadSize)
+	poisonAt := 0
+	for i := 0; i < memberCount; i++ {
+		assert.NoError(t, tw.WriteHeader(&tar.Header{
+			Name:     fmt.Sprintf("m%03d.txt", i),
+			Mode:     0o600,
+			Size:     int64(len(payload)),
+			Typeflag: tar.TypeReg,
+		}))
+		_, err := tw.Write(payload)
+		assert.NoError(t, err)
+		if i == intactMembers-1 {
+			// Flush pads the member out, so the offset is a block boundary.
+			assert.NoError(t, tw.Flush())
+			poisonAt = buf.Len()
+		}
+	}
+	assert.NoError(t, tw.Close())
+	raw := buf.Bytes()
+	for i := poisonAt; i < len(raw); i++ {
+		raw[i] = 0xff
+	}
+	return raw
+}
+
+// TestReadArchiveFileListStopsAtMemberCap: the member cap ENDS the walk, it does
+// not filter a full read. The tar fixtures hold 100 members but turn to garbage
+// one header past the cap, so nine tenths of the archive is bytes the walk must
+// never touch. Collecting past the cap and running on to EOF reaches them and
+// fails.
+func TestReadArchiveFileListStopsAtMemberCap(t *testing.T) {
+	const capMembers = 10
+
+	dir := t.TempDir()
+	raw := poisonedTar(t, 100, capMembers+1, 1024)
+	tarPath := filepath.Join(dir, "capped.tar")
+	assert.NoError(t, os.WriteFile(tarPath, raw, 0o600))
+
+	tarGzPath := filepath.Join(dir, "capped.tar.gz")
+	out, err := os.Create(tarGzPath)
+	assert.NoError(t, err)
+	gw := gzip.NewWriter(out)
+	_, err = gw.Write(raw)
+	assert.NoError(t, err)
+	assert.NoError(t, gw.Close())
+	assert.NoError(t, out.Close())
+
+	fixtures := []structs.File{
+		{Path: tarPath, Name: "capped.tar", DisplayName: "capped.tar", Suffix: ".tar"},
+		{Path: tarGzPath, Name: "capped.tar.gz", DisplayName: "capped.tar.gz", Suffix: ".gz"},
+	}
+	for _, f := range fixtures {
+		t.Run(f.Name, func(t *testing.T) {
+			list, truncated, err := ReadArchiveFileList(f, capMembers, 100*1024*1024)
+			assert.NoError(t, err, "the walk must stop at the cap, short of the unreadable tail")
+			assert.True(t, truncated)
+			assert.Nil(t, list)
+
+			// A cap of 1000 never fires, so the same walk runs into the poisoned
+			// tail and errors - that is what makes the NoError above meaningful.
+			_, _, err = ReadArchiveFileList(f, 1000, 100*1024*1024)
+			assert.ErrorIs(t, err, tar.ErrHeader)
+		})
+	}
+}
+
 // TestReadArchiveFileListFailsClosed: a non-positive limit means "nothing
 // qualifies", never "unlimited".
 func TestReadArchiveFileListFailsClosed(t *testing.T) {
