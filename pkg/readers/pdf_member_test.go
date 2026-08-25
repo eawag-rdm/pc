@@ -139,7 +139,8 @@ func TestPDFMemberCancelledScanStaysSilent(t *testing.T) {
 	// could not be parsed" would accuse a perfectly readable document of the
 	// caller's own cancellation. The walk ends with it, so the text member
 	// behind it (which TestPDFMemberExtractedInZip yields from the same shape)
-	// is not read either.
+	// is not yielded either; that it is not even opened is
+	// TestPDFMemberCancelledZipWalkStops' subject.
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	path := writeZipFixture(t, []zipMember{
@@ -148,6 +149,54 @@ func TestPDFMemberCancelledScanStaysSilent(t *testing.T) {
 	})
 	u := InitArchiveIterator(ctx, path, "fixture.zip", testMemberLimits, nil)
 	assert.Empty(t, drainMembers(u), "a cancelled scan must yield nothing from the PDF member on")
+	assert.Empty(t, u.SkipMessages(), "an extractable PDF member skipped for cancellation adds no ack")
+}
+
+func TestPDFMemberCancelledZipWalkStops(t *testing.T) {
+	// Nothing behind the cancelled PDF is yielded either way (HasNext reads
+	// iterationEnded), so what this pins is the work: the index loop has to
+	// leave when the member handler ended the iteration, or it opens,
+	// decompresses and charges the member behind it for nobody.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	path := writeZipFixture(t, []zipMember{
+		{"doc.pdf", writeMinimalPDF("archived secret token here")},
+		{"readme.txt", []byte("plain text\n")},
+	})
+
+	u := InitArchiveIterator(ctx, path, "fixture.zip", testMemberLimits, nil)
+	// documents, does not pin
+	assert.Empty(t, drainMembers(u))
+
+	assert.Equal(t, 0, u.processedFileCount, "the member behind the cancellation point must not be buffered")
+	assert.Zero(t, u.totalMemoryUsed, "nor charged against the archive memory budget")
+}
+
+func TestPDFMemberCancelledTarGzWalkStops(t *testing.T) {
+	// Same cancellation, streamed shape: the tar walk decompresses member by
+	// member, so the loop has to leave on the ended iteration instead of
+	// pulling the next member's body through the gzip reader for nobody.
+	path := filepath.Join(t.TempDir(), "cancelled.tar.gz")
+	writeTarGzFixture(t, path, []struct {
+		name    string
+		content []byte
+	}{
+		{"a.txt", []byte("plain text\n")},
+		{"doc.pdf", writeMinimalPDF("archived secret token here")},
+		{"big.txt", bytes.Repeat([]byte("t"), 1024*1024)},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	u := InitArchiveIterator(ctx, path, "cancelled.tar.gz", testMemberLimits, nil)
+	got := drainMembers(u)
+	// documents, does not pin
+	assert.Len(t, got, 1)
+	assert.Contains(t, got, "a.txt", "the member before the cancellation point stays scanned")
+
+	assert.Equal(t, 1, u.processedFileCount, "the member behind it must not be buffered")
+	assert.Less(t, u.walkCounter.count, int64(64*1024), "nor decompressed")
+	// documents, does not pin
 	assert.Empty(t, u.SkipMessages(), "an extractable PDF member skipped for cancellation adds no ack")
 }
 

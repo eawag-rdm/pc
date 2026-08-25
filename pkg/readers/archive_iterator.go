@@ -451,6 +451,11 @@ func (u *UnpackedFileIterator) bufferNextTar() bool {
 		if u.tryBufferMember(header.Name, header.Size, u.tarReader) {
 			return true
 		}
+		// The member handler ends the iteration when the caller gave up; walking
+		// on would decompress and buffer the next qualifying member for nobody.
+		if u.iterationEnded {
+			return false
+		}
 	}
 }
 
@@ -851,6 +856,11 @@ func (u *UnpackedFileIterator) bufferNextZip() bool {
 			u.fileIndex = i
 			return true
 		}
+		// The member handler ends the iteration when the caller gave up; walking
+		// on would decompress and buffer the next qualifying member for nobody.
+		if u.iterationEnded {
+			return false
+		}
 	}
 
 	u.iterationEnded = true
@@ -913,6 +923,11 @@ func (u *UnpackedFileIterator) bufferNext7z() bool {
 		if ok {
 			u.fileIndex = i
 			return true
+		}
+		// The member handler ends the iteration when the caller gave up; walking
+		// on would decompress and buffer the next qualifying member for nobody.
+		if u.iterationEnded {
+			return false
 		}
 	}
 
