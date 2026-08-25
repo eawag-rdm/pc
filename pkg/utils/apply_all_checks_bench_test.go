@@ -46,6 +46,29 @@ func benchPipelineConfig() config.Config {
 	return cfg
 }
 
+// benchPipelineNoListConfig is benchPipelineConfig with the checks that read an
+// archive's member names switched off, which is what leaves the
+// archive-file-list scope empty. Everything else - tree, gates, keyword scan -
+// is unchanged.
+func benchPipelineNoListConfig() config.Config {
+	cfg := benchPipelineConfig()
+	rules := append([]config.RuleSpec(nil), cfg.Rules...)
+	for _, name := range []string{"IsValidName", "HasOnlyASCII", "HasNoWhiteSpace", "HasFileNameSpecialChars", "IsFileNameTooLong"} {
+		declared := false
+		for i := range rules {
+			if rules[i].Check == name {
+				rules[i].Enabled = false
+				declared = true
+			}
+		}
+		if !declared {
+			rules = append(rules, config.RuleSpec{Name: name, Check: name, Enabled: false})
+		}
+	}
+	cfg.Rules = rules
+	return cfg
+}
+
 // benchPipelinePlan compiles cfg against the real registry, as startup does once.
 func benchPipelinePlan(b *testing.B, cfg config.Config) *checks.Plan {
 	b.Helper()
@@ -107,6 +130,8 @@ func benchPipelineTree(b *testing.B, n int) []structs.File {
 // setup, not workload.
 //
 //   - plain: ApplyAllChecks, the parallel path both frontends take.
+//   - plain-nolist: plain over the same tree with an empty archive-file-list
+//     scope, where dispatch skips the cheap-list archive's listing outright.
 //   - progress: ApplyAllChecksWithProgress, same pool plus the rate-limited
 //     progress path - the sub-benchmark exists for the A/B against plain.
 func BenchmarkApplyAllChecks(b *testing.B) {
@@ -133,6 +158,16 @@ func BenchmarkApplyAllChecks(b *testing.B) {
 	b.Run("plain", func(b *testing.B) {
 		run(b, func() []structs.Message {
 			messages, diags := ApplyAllChecks(context.Background(), cfg, plan, files)
+			benchPipelineDiagnostics = diags
+			return messages
+		})
+	})
+
+	b.Run("plain-nolist", func(b *testing.B) {
+		noList := benchPipelineNoListConfig()
+		noListPlan := benchPipelinePlan(b, noList)
+		run(b, func() []structs.Message {
+			messages, diags := ApplyAllChecks(context.Background(), noList, noListPlan, files)
 			benchPipelineDiagnostics = diags
 			return messages
 		})

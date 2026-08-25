@@ -414,6 +414,13 @@ func skippedArchiveWork(names, content bool) string {
 }
 
 func applyChecksFilteredByFileOnArchiveFileList(ctx context.Context, sink *diagSink, config config.Config, entries []checks.PlanEntry, files []structs.File) []structs.Message {
+	// No file-list entries: nothing consumes a listing, so skip it. This drops the
+	// pass's side effects for these archives - pdf_files member rows, the walk-cap
+	// skip message, the reader-error warning - accepted: nothing was scheduled.
+	if len(entries) == 0 {
+		return []structs.Message{}
+	}
+
 	// Filter to only archive files, minus the stream-list ones: listing those
 	// costs a decompression, and the member phase owns their listing instead
 	// (streamListArchiveChecks).

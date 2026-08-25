@@ -18,6 +18,7 @@ import (
 
 	"github.com/eawag-rdm/pc/pkg/checks"
 	"github.com/eawag-rdm/pc/pkg/config"
+	"github.com/eawag-rdm/pc/pkg/helpers"
 	"github.com/eawag-rdm/pc/pkg/readers"
 	"github.com/eawag-rdm/pc/pkg/structs"
 )
@@ -1155,16 +1156,64 @@ func TestOverCapTarGzJudgesNoFileListRule(t *testing.T) {
 	assertRuleDiags(t, run(zip), structs.DiagWarning, 1, "list-dead")
 }
 
+// TestCheapListArchiveFeedsPDFFilesOnlyForFileListEntries: the cheap listing of
+// a zip has one observable outside its own findings, the pdf_files report - an
+// archive's PDF members reach it from that walk alone. With one file-list entry
+// the member row is there, with none it is not.
+func TestCheapListArchiveFeedsPDFFilesOnlyForFileListEntries(t *testing.T) {
+	// The tracker classifies by name, so the member only has to be NAMED like a
+	// PDF - buildNamedZip's one-byte bodies are what it holds.
+	const member = "inner.pdf"
+	archive := structs.ToFile(buildNamedZip(t, []string{member}), "bundle.zip", -1, "")
+	row := archive.Name + " -> " + member
+
+	// The checks that read an archive's member NAMES: switching all of them off
+	// is what empties the file-list scope, one of them back on is what fills it.
+	fileListChecks := []string{"IsValidName", "HasOnlyASCII", "HasNoWhiteSpace", "HasFileNameSpecialChars", "IsFileNameTooLong"}
+
+	// The loop variable is the one name check left on, empty for none.
+	for _, enabled := range []string{"", "HasNoWhiteSpace"} {
+		name, wantEntries := "no list entries", 0
+		if enabled != "" {
+			name, wantEntries = "one list entry", 1
+		}
+		wantTracked := enabled != ""
+		t.Run(name, func(t *testing.T) {
+			// The keyword check is declared off, so nothing content-scans the
+			// archive either and the listing walk is the only way to its members.
+			cfg := planConfig([]config.RuleSpec{{Name: "keywords", Check: "IsFreeOfKeywords", Enabled: false}})
+			for _, check := range fileListChecks {
+				cfg.Rules = append(cfg.Rules, config.RuleSpec{Name: check, Check: check, Enabled: check == enabled})
+			}
+			plan := compilePlan(t, cfg)
+			if got := len(plan.Scope(checks.ScopeArchiveFileList)); got != wantEntries {
+				t.Fatalf("the fixture must leave %d file-list entries, got %d", wantEntries, got)
+			}
+
+			resetGlobalScanState()
+			t.Cleanup(resetGlobalScanState)
+			ApplyAllChecks(context.Background(), cfg, plan, []structs.File{archive})
+			// PDFTracker is process-global: snapshot it before the reset clears it.
+			tracked := helpers.PDFTracker.SnapshotFiles()
+
+			if got := slices.Contains(tracked, row); got != wantTracked {
+				t.Errorf("pdf_files holds %q: %v, want %v (report: %v)", row, got, wantTracked, tracked)
+			}
+		})
+	}
+}
+
 // TestBenchFixturesCompile keeps the benchmark fixtures in the normal suite's
 // reach: nothing else runs them, so a fixture Compile refuses would surface
 // only on the day someone takes a measurement - and the measurements rest on
-// exactly these three configs. It pins that each still compiles, nothing about
-// the plan they compile to.
+// exactly these configs. It pins that each still compiles, nothing about the
+// plan they compile to.
 func TestBenchFixturesCompile(t *testing.T) {
 	fixtures := map[string]func() config.Config{
-		"benchFilterConfig":     benchFilterConfig,
-		"benchUnfilteredConfig": benchUnfilteredConfig,
-		"benchPipelineConfig":   benchPipelineConfig,
+		"benchFilterConfig":         benchFilterConfig,
+		"benchUnfilteredConfig":     benchUnfilteredConfig,
+		"benchPipelineConfig":       benchPipelineConfig,
+		"benchPipelineNoListConfig": benchPipelineNoListConfig,
 	}
 	for name, fixture := range fixtures {
 		t.Run(name, func(t *testing.T) {
