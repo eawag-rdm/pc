@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -783,6 +784,52 @@ func TestTarGzWalkCapSingleHugeMember(t *testing.T) {
 	}
 	assert.True(t, foundWalkStop)
 	assert.Less(t, nfi.walkCounter.count, int64(64*1024), "only tar headers may be decompressed")
+}
+
+func TestTarGzWalkCapOverflowingDeclaredSize(t *testing.T) {
+	// A crafted claim of math.MaxInt64 must take the same stop as the honest
+	// huge member above: added to the bytes already decompressed it wraps
+	// negative and reads as "fits", so only a subtraction against the remaining
+	// budget catches it. Accepting the wrap hands the member on to the
+	// per-member size gate, which acknowledges it by name instead of stopping
+	// the archive.
+	path := filepath.Join(t.TempDir(), "overflow.tar.gz")
+	writeTarGzHeaderOnly(t, path, "huge.txt", math.MaxInt64)
+
+	// Budget 4 x 64 KiB = 256 KiB.
+	nfi := InitArchiveIterator(context.Background(), path, "overflow.tar.gz",
+		ArchiveLimits{MaxMemberSize: 1024 * 1024, MaxTotalMemory: 64 * 1024, MaxMemberCount: 1000}, nil)
+	assert.False(t, nfi.HasFilesToUnpack())
+
+	msgs := nfi.SkipMessages()
+	if assert.Len(t, msgs, 1, "one archive-level stop, no member-level ack") {
+		assert.Contains(t, msgs[0].Content, "Stopped content scan of archive:")
+	}
+}
+
+func TestTarGzWalkCapBudgetSaturates(t *testing.T) {
+	// A huge configured memory budget must saturate the walk cap instead of
+	// wrapping it, which would stop every tar.gz at its first member (or, for
+	// budgets that wrap to around MinInt64, never stop one at all).
+	path := filepath.Join(t.TempDir(), "small.tar.gz")
+	writeTarGzFixture(t, path, []struct {
+		name    string
+		content []byte
+	}{{"a.txt", []byte("hello")}})
+
+	nfi := InitArchiveIterator(context.Background(), path, "small.tar.gz",
+		ArchiveLimits{MaxMemberSize: 1024 * 1024, MaxTotalMemory: math.MaxInt64, MaxMemberCount: 1000}, nil)
+	assert.True(t, nfi.HasFilesToUnpack())
+	count := 0
+	for nfi.HasNext() {
+		nfi.Next()
+		name, content, _ := nfi.UnpackedFile()
+		assert.Equal(t, "a.txt", name)
+		assert.Equal(t, []byte("hello"), content)
+		count++
+	}
+	assert.Equal(t, 1, count, "a saturated cap must not stop the walk")
+	assert.Empty(t, nfi.SkipMessages())
 }
 
 func TestTarGzMemberNamesMatchFileList(t *testing.T) {

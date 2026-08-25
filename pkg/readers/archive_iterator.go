@@ -357,7 +357,7 @@ func (u *UnpackedFileIterator) findFirstTarGz() bool {
 		}
 		u.gzipReader = gzipReader
 		tarGzStreamOpens.Add(1)
-		u.walkCounter = &countingReader{r: gzipReader, limit: declaredSizeBudgetMultiple * u.maxTotalMemory}
+		u.walkCounter = &countingReader{r: gzipReader, limit: walkByteBudget(u.maxTotalMemory)}
 		u.tarReader = tar.NewReader(u.walkCounter)
 		if u.MemberNames != nil {
 			u.fillMemberNames = u.MemberNames.BeginFill()
@@ -409,7 +409,9 @@ func (u *UnpackedFileIterator) bufferNextTar() bool {
 
 		// Stop before decompressing a member that would bust the walk cap anyway.
 		// This stays FIRST: cap enforcement must not slide into the drains.
-		if u.walkCounter != nil && u.walkCounter.count+header.Size > u.walkCounter.limit {
+		// Subtraction, not addition: a PAX header size of MaxInt64 wraps the sum
+		// negative and would slip past the stop.
+		if u.walkCounter != nil && header.Size > u.walkCounter.limit-u.walkCounter.count {
 			u.recordArchiveSkip(u.walkCapSkipReason())
 			u.iterationEnded = true
 			return false
