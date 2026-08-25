@@ -651,3 +651,164 @@ func TestAccessLog_RealIP(t *testing.T) {
 		})
 	}
 }
+
+// allowlistHandler builds a handler whose allow-list holds the given CIDRs,
+// with the [server] proxy-trust settings the derivation cases need. A nil srv
+// yields a handler with no rate limiter, as NewHandler builds one only from a
+// present [server] section.
+func allowlistHandler(t *testing.T, srv *config.ServerConfig, cidrs ...string) *Handler {
+	t.Helper()
+	h := NewHandler(&config.Config{Server: srv}, Config{}, discardLogger(), testPlan(&config.Config{Server: srv}))
+	prefixes, err := parseAllowedClients(cidrs)
+	if err != nil {
+		t.Fatalf("parseAllowedClients(%q): %v", cidrs, err)
+	}
+	h.allowedClients = prefixes
+	return h
+}
+
+// TestEnforceClientAllowlist_DerivedClientIP asserts which client the gate
+// admits. The IP it matches is the one the rate limiter derives, so the
+// allow-list composes with trustProxyHeaders/trustedProxies and is exactly as
+// strong as they are: a spoofed X-Real-IP from an untrusted peer must not open
+// the gate.
+func TestEnforceClientAllowlist_DerivedClientIP(t *testing.T) {
+	const allowedV4 = "192.0.2.0/24"
+
+	tests := []struct {
+		name        string
+		trustProxy  bool
+		proxies     []string
+		allowed     []string
+		remoteAddr  string
+		realIP      string
+		wantAllowed bool
+	}{
+		{name: "listed peer", allowed: []string{allowedV4}, remoteAddr: "192.0.2.9:1111", wantAllowed: true},
+		{name: "unlisted peer", allowed: []string{allowedV4}, remoteAddr: "198.51.100.9:1111"},
+		{name: "listed IPv6 peer", allowed: []string{"2001:db8::/32"}, remoteAddr: "[2001:db8::5]:1111", wantAllowed: true},
+		// A /128 entry admits exactly that host: an implementation matching on the
+		// limiter's /64-masked key would let the whole subnet in.
+		{name: "IPv6 host entry excludes its neighbour", allowed: []string{"2001:db8::/128"}, remoteAddr: "[2001:db8::1]:1111"},
+		{
+			name: "trusted proxy, header inside the list", trustProxy: true, proxies: []string{"127.0.0.1/32"},
+			allowed: []string{allowedV4}, remoteAddr: "127.0.0.1:1111", realIP: "192.0.2.9", wantAllowed: true,
+		},
+		{
+			name: "untrusted peer, spoofed header inside the list", trustProxy: true, proxies: []string{"127.0.0.1/32"},
+			allowed: []string{allowedV4}, remoteAddr: "198.51.100.9:1111", realIP: "192.0.2.9",
+		},
+		// The families are disjoint after unmapping: an IPv4-only list admits no
+		// IPv6 client, however wide its prefixes are.
+		{name: "IPv6 peer against an IPv4-only list", allowed: []string{allowedV4, "0.0.0.0/0"}, remoteAddr: "[2001:db8::5]:1111"},
+		// The proxy itself is listed, so a trusted proxy that forgets to set
+		// X-Real-IP still gets through - the allow-list is no stronger than the
+		// proxy-trust configuration.
+		{
+			name: "trusted and listed proxy without header", trustProxy: true, proxies: []string{"127.0.0.1/32"},
+			allowed: []string{"127.0.0.1/32"}, remoteAddr: "127.0.0.1:1111", wantAllowed: true,
+		},
+		// The zone makes the peer address unparseable, so no client IP can be
+		// derived and the gate fails closed - even against a list that admits
+		// every derivable address of both families.
+		{name: "underivable zoned peer", allowed: []string{"::/0", "0.0.0.0/0"}, remoteAddr: "[fe80::1%eth0]:1111"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := &config.ServerConfig{
+				TrustProxyHeaders:  tt.trustProxy,
+				TrustedProxies:     tt.proxies,
+				MaxTrackedRateKeys: 100,
+			}
+			h := allowlistHandler(t, srv, tt.allowed...)
+
+			called := false
+			inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				called = true
+				w.WriteHeader(http.StatusOK)
+			})
+
+			req := httptest.NewRequest("POST", "/api/v1/analyze", nil)
+			req.RemoteAddr = tt.remoteAddr
+			if tt.realIP != "" {
+				req.Header.Set("X-Real-IP", tt.realIP)
+			}
+			req = withRequestContext(req, "REQ-ALLOWLIST", DefaultContactMessage)
+			rr := httptest.NewRecorder()
+			h.enforceClientAllowlist(inner).ServeHTTP(rr, req)
+
+			if called != tt.wantAllowed {
+				t.Errorf("inner handler called = %v, want %v", called, tt.wantAllowed)
+			}
+			wantStatus := http.StatusNotFound
+			if tt.wantAllowed {
+				wantStatus = http.StatusOK
+			}
+			if rr.Code != wantStatus {
+				t.Errorf("status = %d, want %d", rr.Code, wantStatus)
+			}
+		})
+	}
+}
+
+// TestEnforceClientAllowlist_NilLimiterDenies pins the gate's defense in depth
+// for a handler built without a rate limiter (server.New refuses that
+// combination at boot, but a direct caller can still assemble it): the client IP
+// cannot be derived without the limiter, so the gate denies rather than passing
+// through the way the limiter middlewares do on a nil limiter.
+func TestEnforceClientAllowlist_NilLimiterDenies(t *testing.T) {
+	h := allowlistHandler(t, nil, "192.0.2.0/24")
+	if h.limiter != nil {
+		t.Fatal("this case needs a handler without a rate limiter")
+	}
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("inner handler must not be called without a limiter to derive the client IP")
+	})
+
+	req := httptest.NewRequest("POST", "/api/v1/analyze", nil)
+	req.RemoteAddr = "192.0.2.9:1111" // listed, and still denied
+	req = withRequestContext(req, "REQ-NOLIMITER", DefaultContactMessage)
+	rr := httptest.NewRecorder()
+	h.enforceClientAllowlist(inner).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", rr.Code)
+	}
+}
+
+// TestEnforceClientAllowlist_DenialLooksLikeAnUnknownPath asserts a denied
+// client gets the response an unknown URL gets - not a code that talks about
+// tokens or permissions and so confirms the endpoint. Both answers are taken
+// from the same wired route guard, so the claim is checked against what an
+// unregistered path really returns rather than against a constant.
+func TestEnforceClientAllowlist_DenialLooksLikeAnUnknownPath(t *testing.T) {
+	h := allowlistHandler(t, &config.ServerConfig{MaxTrackedRateKeys: 100}, "192.0.2.0/24")
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("inner handler must not be called for a denied client")
+	})
+	mux := http.NewServeMux()
+	mux.Handle("POST /api/v1/analyze", h.enforceClientAllowlist(inner))
+	wired := EnforceKnownRoutes(mux)
+
+	post := func(path, requestID string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("POST", path, nil)
+		req.RemoteAddr = "198.51.100.9:1111" // outside the allow-list
+		req = withRequestContext(req, requestID, DefaultContactMessage)
+		rr := httptest.NewRecorder()
+		wired.ServeHTTP(rr, req)
+		return rr
+	}
+
+	denied := post("/api/v1/analyze", "REQ-DENIED")
+	unknown := post("/api/v1/nope", "REQ-UNKNOWN")
+
+	if denied.Code != unknown.Code {
+		t.Errorf("denied status = %d, unknown path = %d; a denial must be indistinguishable", denied.Code, unknown.Code)
+	}
+	if got, want := decodeEnvelope(t, denied).Error.Code, decodeEnvelope(t, unknown).Error.Code; got != want {
+		t.Errorf("denied code = %q, unknown path = %q; a denial must be indistinguishable", got, want)
+	}
+}

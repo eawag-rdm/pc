@@ -649,6 +649,7 @@ See `pc.toml.example` for the full commented list.
 | `listenAddress` | `127.0.0.1:8080` | bind address (host:port) |
 | `trustProxyHeaders` | `true` | honor `X-Real-IP` from trusted proxies |
 | `trustedProxies` | - | CIDRs allowed to set `X-Real-IP` (set this behind nginx!) |
+| `allowedClients` | - | CIDRs allowed to reach `POST /api/v1/analyze`; empty admits every client. Any non-CIDR entry stops the boot |
 | `allowedOrigins` | - | CORS allow-list of exact origin URLs (your frontend) |
 | `perIPRequestsPerHour` | 4 | per-client-IP hourly budget (0 = unlimited) |
 | `globalRequestsPerHour` | 20 | all-clients hourly budget (0 = unlimited) |

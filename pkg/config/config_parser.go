@@ -167,6 +167,7 @@ type ServerConfig struct {
 	ListenAddress             string      // Address the server listens on (host:port). No setting is overridable by a flag (-config names the file, -help prints usage), so this is the sole source.
 	TrustProxyHeaders         bool        // Whether to trust proxy-set client IP headers
 	TrustedProxies            []string    // CIDRs allowed to set X-Real-IP
+	AllowedClients            []string    // CIDRs allowed to reach the analyze endpoint; empty disables the allow-list
 	AllowedOrigins            []string    // CORS allow-list of origin URLs
 	PerIPRequestsPerHour      int         // Per-IP hourly request budget
 	GlobalRequestsPerHour     int         // Global hourly request budget
@@ -232,6 +233,7 @@ func ParseConfig(filename string) (*Config, error) {
 			ListenAddress:             DefaultServerListenAddress,
 			TrustProxyHeaders:         DefaultServerTrustProxyHeaders,
 			TrustedProxies:            nil,
+			AllowedClients:            nil,
 			AllowedOrigins:            nil,
 			PerIPRequestsPerHour:      DefaultServerPerIPRequestsPerHour,
 			GlobalRequestsPerHour:     DefaultServerGlobalRequestsPerHour,
@@ -326,6 +328,9 @@ func ParseConfig(filename string) (*Config, error) {
 			return nil, err
 		}
 		if err := serverStringSlice(serverData, "trustedProxies", &c.Server.TrustedProxies); err != nil {
+			return nil, err
+		}
+		if err := serverStringSlice(serverData, "allowedClients", &c.Server.AllowedClients); err != nil {
 			return nil, err
 		}
 		if err := serverStringSlice(serverData, "allowedOrigins", &c.Server.AllowedOrigins); err != nil {

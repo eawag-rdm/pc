@@ -77,6 +77,12 @@ func New(cfg Config) (*Server, error) {
 	if err := validateServerSettings(pcConfig, listenAddr); err != nil {
 		return nil, fmt.Errorf("invalid PC config: %w", err)
 	}
+	// Reading pcConfig.Server here is safe only because validateServerSettings
+	// above has already rejected a nil [server] section.
+	allowedClients, err := parseAllowedClients(pcConfig.Server.AllowedClients)
+	if err != nil {
+		return nil, fmt.Errorf("invalid PC config: %w", err)
+	}
 
 	// slog JSON handler to stdout for request/access logging (§8). Check
 	// Messages are NOT routed through this; they stay in GlobalLogger, which is
@@ -93,6 +99,15 @@ func New(cfg Config) (*Server, error) {
 
 	// Create handler
 	handler := NewHandler(pcConfig, cfg, logger, plan)
+	handler.allowedClients = allowedClients
+	if len(allowedClients) > 0 {
+		// The gate matches the client IP the limiter derives, so without a limiter
+		// it would deny every request instead of the unlisted ones.
+		if handler.limiter == nil {
+			return nil, fmt.Errorf("invalid PC config: server allowedClients requires the rate limiter, which this configuration does not build")
+		}
+		logger.Info("client allow-list enabled", slog.Int("entries", len(allowedClients)))
+	}
 
 	// Optional per-package result cache (§ result caching): keyed on CKAN's
 	// metadata_modified, and cleared here at startup. A changed config or
@@ -131,12 +146,12 @@ func New(cfg Config) (*Server, error) {
 	// Also exempt from the limiter and semaphore so health-check polling is free.
 	mux.HandleFunc("GET /ready", handler.Ready)
 
-	// Analyze endpoint. The draining, rate-limit and concurrency gates wrap THIS
-	// route only (§4/§9): outer -> inner the analyze chain is
-	// draining -> rate-limit(per-IP) -> rate-limit(global) ->
-	// concurrency-gate (single slot, 2s busy-wait) -> token extraction
-	// (optional) -> handler. /health and /ready bypass it entirely (a draining
-	// server must still answer healthchecks).
+	// Analyze endpoint. The allow-list, draining, rate-limit and concurrency
+	// gates wrap THIS route only (§4/§9): outer -> inner the analyze chain is
+	// client allow-list (only when configured) -> draining ->
+	// rate-limit(per-IP) -> rate-limit(global) -> concurrency-gate (single slot,
+	// 2s busy-wait) -> token extraction (optional) -> handler. /health and /ready
+	// bypass it entirely (a draining server must still answer healthchecks).
 	//
 	// Per-IP is the OUTER (primary) limit and global is the INNER (backstop), so
 	// per-IP is checked FIRST. This ordering matters because the limiter uses a
@@ -150,6 +165,9 @@ func New(cfg Config) (*Server, error) {
 	analyze = handler.RateLimitGlobal(analyze)
 	analyze = handler.RateLimitPerIP(analyze)
 	analyze = handler.Draining(analyze)
+	if len(handler.allowedClients) > 0 {
+		analyze = handler.enforceClientAllowlist(analyze)
+	}
 	mux.Handle("POST /api/v1/analyze", analyze)
 
 	// Full middleware chain (outer -> inner, §9):

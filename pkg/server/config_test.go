@@ -346,3 +346,67 @@ func TestValidateServerSettings(t *testing.T) {
 		}
 	})
 }
+
+// TestParseAllowedClients asserts the allow-list grammar: CIDRs only, no host
+// bits, no IPv4-mapped prefixes, every entry mandatory. A rejected entry is an
+// error naming it (which server.New turns into a boot failure) - never a dropped
+// entry, which would silently change who can reach /analyze.
+func TestParseAllowedClients(t *testing.T) {
+	tests := []struct {
+		name    string
+		cidrs   []string
+		want    int    // number of prefixes on success
+		wantErr string // substring the rejection must carry; "" = must succeed
+	}{
+		{name: "empty list disables the gate", cidrs: nil, want: 0},
+		{name: "IPv4 and IPv6 prefixes", cidrs: []string{"192.0.2.0/24", "2001:db8::/32"}, want: 2},
+		{name: "single host prefixes", cidrs: []string{"192.0.2.7/32", "2001:db8::1/128"}, want: 2},
+		{name: "surrounding whitespace tolerated", cidrs: []string{" 192.0.2.0/24 "}, want: 1},
+		{name: "bare IPv4 rejected", cidrs: []string{"10.0.0.1"}, wantErr: `"10.0.0.1"`},
+		{name: "bare IPv6 rejected", cidrs: []string{"2001:db8::1"}, wantErr: `"2001:db8::1"`},
+		{name: "hostname rejected", cidrs: []string{"frontend.example.org"}, wantErr: `"frontend.example.org"`},
+		{name: "garbage rejected", cidrs: []string{"garbage"}, wantErr: `"garbage"`},
+		{name: "empty entry rejected", cidrs: []string{""}, wantErr: `entry ""`},
+		{name: "one bad entry rejects the whole list", cidrs: []string{"192.0.2.0/24", "10.0.0.1"}, wantErr: `"10.0.0.1"`},
+		// A /24 written where /32 was meant would otherwise admit 254 more hosts,
+		// so the entry is refused naming both readings.
+		{
+			name: "host bits rejected", cidrs: []string{"192.0.2.7/24"},
+			wantErr: `"192.0.2.7/24" has host bits set: write "192.0.2.0/24"`,
+		},
+		// The gate matches unmapped addresses, so a mapped prefix admits nobody.
+		// From /96 down the rejection names the IPv4 entry that was meant.
+		{
+			name: "IPv4-mapped prefix rejected", cidrs: []string{"::ffff:192.0.2.0/120"},
+			wantErr: `"::ffff:192.0.2.0/120" is an IPv4-mapped IPv6 prefix, which no client address can match: write it as "192.0.2.0/24"`,
+		},
+		// A wider mapped prefix spans more than the mapped IPv4 space, so there is
+		// no single IPv4 entry to name.
+		{
+			name: "wide IPv4-mapped prefix rejected", cidrs: []string{"::ffff:0.0.0.0/64"},
+			wantErr: `"::ffff:0.0.0.0/64" is an IPv4-mapped IPv6 prefix, which no client address can match: write it as plain IPv4`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			prefixes, err := parseAllowedClients(tt.cidrs)
+			if (err != nil) != (tt.wantErr != "") {
+				t.Fatalf("parseAllowedClients(%q) error = %v, wantErr %q", tt.cidrs, err, tt.wantErr)
+			}
+			if tt.wantErr != "" {
+				// The operator must be able to find the offending line.
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Errorf("error must contain %q, got: %v", tt.wantErr, err)
+				}
+				if prefixes != nil {
+					t.Errorf("a rejected list must yield no prefixes, got %v", prefixes)
+				}
+				return
+			}
+			if len(prefixes) != tt.want {
+				t.Errorf("parseAllowedClients(%q) = %v prefixes, want %d", tt.cidrs, len(prefixes), tt.want)
+			}
+		})
+	}
+}

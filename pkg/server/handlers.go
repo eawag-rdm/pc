@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"regexp"
 	"sync"
 	"sync/atomic"
@@ -96,6 +97,11 @@ type Handler struct {
 	// allowedOrigins is the CORS allow-list of origin URLs (§9). Empty means CORS
 	// is effectively disabled (no Access-Control-Allow-Origin is emitted).
 	allowedOrigins []string
+
+	// allowedClients holds the [server] allowedClients CIDRs, parsed once at boot
+	// (server.New). It is empty unless the operator configured the allow-list;
+	// New then installs enforceClientAllowlist as the outermost analyze gate.
+	allowedClients []netip.Prefix
 
 	// draining is set (atomically) when graceful shutdown begins. While set, new
 	// requests are rejected with server_restarting (503) so in-flight analyses

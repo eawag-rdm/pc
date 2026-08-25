@@ -366,3 +366,64 @@ the process **exits non-zero immediately** rather than hanging.
   also fires an admin alert - see §6). A panic inside a checks worker
   goroutine is likewise converted into a logged failure instead of killing
   the process.
+
+---
+
+## 9. Client allow-list (`allowedClients`)
+
+`POST /api/v1/analyze` can be restricted to a list of source networks. The
+feature is **off by default**: with the key absent or empty, every client may
+call the endpoint as before.
+
+```toml
+[server]
+allowedClients = ["192.0.2.0/24", "2001:db8:1::/48"]   # CIDRs only
+```
+
+- **CIDR-only grammar, checked at boot.** Every entry must be a CIDR
+  (`192.0.2.7/32` for a single host). A bare IP, a hostname or a typo **stops
+  the server**, naming the entry - no entry is ever silently dropped. An entry
+  with host bits set (`192.0.2.7/24`) is refused as well, because only you know
+  whether that meant the one host or the whole /24. This is stricter than
+  `trustedProxies`, which accepts such an entry and masks it to `192.0.2.0/24`,
+  so a line copied over from there can stop the start.
+- **`/analyze` only.** `/health` and `/ready` are never gated, so probes keep
+  working from the orchestrator's own addresses.
+- **A `POST` from a client outside the list gets exactly the `404 not_found`
+  response an unknown URL gets** - same status, same body. Only `POST` is gated,
+  so a method probe (`GET /api/v1/analyze`) still draws the usual
+  `405 method_not_allowed` with `Allow: POST` and reveals that the route exists:
+  the allow-list hides who may call the endpoint, not that it is there. Denials
+  appear in the access log as ordinary 404 requests; there is no separate event.
+- **It runs ahead of the rate limiter**, so denied requests never enter the
+  limiter's key map and cannot evict honest clients' counters.
+
+**It does not replace the rate limits.** Allow-listed clients still have their
+per-IP and global hourly budgets: the allow-list decides *who may ask*, the
+limiter *how often*.
+
+**It is exactly as strong as your proxy-trust configuration, and no stronger.**
+The address it matches is the same client IP the limiter derives (section 5):
+the connection's `RemoteAddr`, or `X-Real-IP` when `trustProxyHeaders = true`
+**and** the connection comes from a `trustedProxies` CIDR. An address that
+cannot be derived is denied (fail closed) - a zoned IPv6 peer such as
+`fe80::1%eth0` is one of those, so an `fe80::/10` entry cannot admit zoned
+link-local clients. The two families are matched separately: `0.0.0.0/0` does not cover
+IPv6 clients and `::/0` does not cover IPv4 ones, so a list meant to admit
+everything needs both.
+
+Behind a proxy, **first confirm the proxy sets (overwrites) `X-Real-IP`** -
+`proxy_set_header X-Real-IP $remote_addr;` as in section 5. Otherwise one of two
+things happens: no header arrives and the derived IP is the proxy itself, so the
+allow-list rejects *all* traffic; or the proxy passes a client-supplied header
+through, so anyone can present an allow-listed address.
+
+After deploying the key, **confirm the `client allow-list enabled` line in the
+boot log** (it carries the entry count): a binary older than the feature ignores
+unknown `[server]` keys silently and would keep admitting everyone.
+
+Operational cost: the list needs maintenance. IPv6 clients usually need their
+`/64` (a `/128` admits one address only), NAT pools and VPN ranges change, and
+if a browser frontend calls the API directly the client IP is the **user's**
+browser - an allow-list then ends public browser use (which is why CORS remains
+a separate, browser-only control).

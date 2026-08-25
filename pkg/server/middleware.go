@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -297,6 +298,51 @@ func (h *Handler) RateLimitPerIP(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// enforceClientAllowlist refuses requests from clients outside the [server]
+// allowedClients CIDRs. It is the OUTERMOST gate on the analyze route, ahead of
+// RateLimitPerIP, so a denied request never creates a limiter entry and cannot
+// evict an honest client's counter. server.New installs it only when the
+// allow-list is non-empty; an empty list matches nothing, so an installed gate
+// would deny every request. /health and /ready are never wrapped by it.
+//
+// A POST from an unlisted client renders the same not_found envelope an unknown
+// path gets; other methods still draw the route guard's 405 + Allow: POST, which
+// is outside the mux and so outside this gate. The denial appears in the access
+// log as an ordinary 404; there is no separate event.
+func (h *Handler) enforceClientAllowlist(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !h.clientAllowed(r) {
+			writeError(w, r, CodeNotFound)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// clientAllowed reports whether r's client IP falls inside an allow-list prefix.
+// The IP is the one the rate limiter derives (X-Real-IP only from a trusted
+// proxy, otherwise the connection address), so the allow-list is exactly as
+// strong as the trustProxyHeaders/trustedProxies configuration and no stronger.
+// It fails closed: an address that cannot be derived is not allowed.
+func (h *Handler) clientAllowed(r *http.Request) bool {
+	if h.limiter == nil {
+		return false
+	}
+	addr, ok := netip.AddrFromSlice(h.limiter.clientIP(r))
+	if !ok {
+		return false
+	}
+	// net.IP carries IPv4 in its 16-byte mapped form, which no IPv4 prefix
+	// contains; Unmap turns it back into a 4-byte address.
+	addr = addr.Unmap()
+	for _, prefix := range h.allowedClients {
+		if prefix.Contains(addr) {
+			return true
+		}
+	}
+	return false
 }
 
 // Concurrency is the single analysis serialization gate (concurrency = 1,

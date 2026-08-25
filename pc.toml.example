@@ -72,6 +72,8 @@ listenAddress      = "127.0.0.1:8080"
 trustProxyHeaders  = true
 # CIDRs allowed to set X-Real-IP (only these connections are trusted as proxies)
 trustedProxies     = ["127.0.0.1/32"]
+# CIDRs allowed to reach POST /api/v1/analyze; empty (the default) admits every client
+allowedClients     = []
 # CORS allow-list of origin URLs
 allowedOrigins     = ["https://frontend.example.org"]
 # Per-IP hourly request budget

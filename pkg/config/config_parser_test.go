@@ -206,6 +206,7 @@ func TestParseServerConfig(t *testing.T) {
 		assert.NotNil(t, config.Server)
 		assert.Equal(t, DefaultServerTrustProxyHeaders, config.Server.TrustProxyHeaders)
 		assert.Nil(t, config.Server.TrustedProxies)
+		assert.Nil(t, config.Server.AllowedClients)
 		assert.Nil(t, config.Server.AllowedOrigins)
 		assert.Equal(t, DefaultServerPerIPRequestsPerHour, config.Server.PerIPRequestsPerHour)
 		assert.Equal(t, DefaultServerGlobalRequestsPerHour, config.Server.GlobalRequestsPerHour)
@@ -222,6 +223,7 @@ func TestParseServerConfig(t *testing.T) {
 		[server]
 		trustProxyHeaders  = false
 		trustedProxies     = ["10.0.0.0/8", "192.168.0.0/16"]
+		allowedClients     = ["192.0.2.0/24", "2001:db8::/32"]
 		allowedOrigins     = ["https://a.example.org", "https://b.example.org"]
 		perIPRequestsPerHour  = 7
 		globalRequestsPerHour = 42
@@ -239,6 +241,7 @@ func TestParseServerConfig(t *testing.T) {
 		assert.NoError(t, err)
 		assert.False(t, config.Server.TrustProxyHeaders)
 		assert.Equal(t, []string{"10.0.0.0/8", "192.168.0.0/16"}, config.Server.TrustedProxies)
+		assert.Equal(t, []string{"192.0.2.0/24", "2001:db8::/32"}, config.Server.AllowedClients)
 		assert.Equal(t, []string{"https://a.example.org", "https://b.example.org"}, config.Server.AllowedOrigins)
 		assert.Equal(t, 7, config.Server.PerIPRequestsPerHour)
 		assert.Equal(t, 42, config.Server.GlobalRequestsPerHour)

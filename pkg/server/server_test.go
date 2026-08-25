@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -244,14 +245,90 @@ func TestNew_ResultCacheWipeFailure_FailsAtBoot(t *testing.T) {
 	}
 }
 
-// newTestServerConfigWithRequestTimeout builds a server Config whose pc.toml
-// sets [server] requestTimeoutSeconds, for tests that pin timeout arithmetic.
-func newTestServerConfigWithRequestTimeout(t *testing.T, seconds int) Config {
+// TestNew_BadAllowedClientsCIDR_FailsAtBoot asserts the allow-list's CIDR-only
+// grammar reaches the operator as a startup failure naming the entry, instead of
+// the entry being dropped - a dropped entry silently changes who can reach
+// /analyze.
+func TestNew_BadAllowedClientsCIDR_FailsAtBoot(t *testing.T) {
+	srv, err := New(newTestServerConfigWithServerLine(t, `allowedClients = ["192.0.2.0/24", "10.0.0.1"]`))
+	if err == nil {
+		t.Fatal("expected New to fail at boot for a non-CIDR allowedClients entry")
+	}
+	if srv != nil {
+		t.Error("New must not return a server when the config is invalid")
+	}
+	if !strings.Contains(err.Error(), "10.0.0.1") {
+		t.Errorf("startup error should name the offending entry, got: %v", err)
+	}
+}
+
+// TestNew_ClientAllowlist_GatesAnalyzeAheadOfTheLimiter drives the fully wired
+// chain: an unlisted client gets the unknown-path 404 and, because the gate is
+// the OUTERMOST analyze middleware, never reaches the rate limiter - so a flood
+// of denied requests can neither fill the limiter map nor evict honest clients'
+// counters. /health and /ready are not wrapped by the gate.
+func TestNew_ClientAllowlist_GatesAnalyzeAheadOfTheLimiter(t *testing.T) {
+	srv, err := New(newTestServerConfigWithServerLine(t, `allowedClients = ["192.0.2.0/24"]`))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	const unlisted = "198.51.100.9:1111"
+	do := func(method, path string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, path, strings.NewReader(`{"package_id":"some-package"}`))
+		req.RemoteAddr = unlisted
+		rr := httptest.NewRecorder()
+		srv.httpServer.Handler.ServeHTTP(rr, req)
+		return rr
+	}
+
+	rr := do("POST", "/api/v1/analyze")
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("unlisted client: status %d, want 404", rr.Code)
+	}
+	if code := decodeEnvelope(t, rr).Error.Code; code != CodeNotFound {
+		t.Errorf("unlisted client: code %q, want %q", code, CodeNotFound)
+	}
+	if got := srv.handler.limiter.trackedKeys(); got != 0 {
+		t.Errorf("denied request created %d limiter entries; the gate must run before RateLimitPerIP", got)
+	}
+
+	if rr := do("GET", "/health"); rr.Code != http.StatusOK {
+		t.Errorf("/health from an unlisted client: status %d, want 200", rr.Code)
+	}
+}
+
+// TestNew_NoAllowedClients_GateNotInstalled asserts the feature is off by
+// default: with the key absent no gate is installed at all, so an arbitrary
+// client still reaches the analyze chain exactly as before.
+func TestNew_NoAllowedClients_GateNotInstalled(t *testing.T) {
+	srv, err := New(newTestServerConfig(t, "127.0.0.1:0", "http://127.0.0.1:1", t.TempDir()))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if len(srv.handler.allowedClients) != 0 {
+		t.Fatalf("allowedClients = %v, want none when the key is absent", srv.handler.allowedClients)
+	}
+
+	req := httptest.NewRequest("POST", "/api/v1/analyze", strings.NewReader(`{}`))
+	req.RemoteAddr = "198.51.100.9:1111"
+	rr := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rr, req)
+
+	if rr.Code == http.StatusNotFound {
+		t.Fatal("an arbitrary client was refused; without allowedClients no gate may be installed")
+	}
+}
+
+// newTestServerConfigWithServerLine builds a server Config whose pc.toml carries
+// the given extra line in its [server] section, for tests that pin how a single
+// setting is wired at boot.
+func newTestServerConfigWithServerLine(t *testing.T, serverLine string) Config {
 	t.Helper()
 	path := t.TempDir() + "/pc.toml"
 	contents := "" +
 		"[server]\n" +
-		fmt.Sprintf("requestTimeoutSeconds = %d\n", seconds) +
+		serverLine + "\n" +
 		testChecksTOML +
 		"[collector.CkanCollector]\n" +
 		"attrs = {url = \"http://127.0.0.1:1\", token = \"\", verify = false, ckan_storage_path = \"" + t.TempDir() + "\"}\n"
@@ -269,7 +346,7 @@ func newTestServerConfigWithRequestTimeout(t *testing.T, seconds int) Config {
 // analysis_timeout (504) envelope and the client would see a dropped connection.
 func TestNew_WriteTimeout_ExceedsRequestTimeout(t *testing.T) {
 	const requestTimeoutSeconds = 600 // raised above the old hardcoded 300s
-	srv, err := New(newTestServerConfigWithRequestTimeout(t, requestTimeoutSeconds))
+	srv, err := New(newTestServerConfigWithServerLine(t, fmt.Sprintf("requestTimeoutSeconds = %d", requestTimeoutSeconds)))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -315,7 +392,7 @@ func TestServer_DrainTimeout(t *testing.T) {
 	})
 
 	t.Run("custom request timeout", func(t *testing.T) {
-		srv, err := New(newTestServerConfigWithRequestTimeout(t, 600))
+		srv, err := New(newTestServerConfigWithServerLine(t, "requestTimeoutSeconds = 600"))
 		if err != nil {
 			t.Fatalf("New: %v", err)
 		}
