@@ -588,3 +588,66 @@ func TestAccessLog_SkipsSuccessfulProbes(t *testing.T) {
 		})
 	}
 }
+
+// TestAccessLog_RealIP asserts the access record carries the X-Real-IP header
+// trimmed and length-capped but otherwise unparsed as real_ip - only when the
+// header is present and non-blank, and only under the same logClientIP privacy
+// gate as client_ip.
+func TestAccessLog_RealIP(t *testing.T) {
+	// Exactly 45 bytes, the cap the middleware applies, so a longer header must
+	// be recorded as this prefix alone.
+	const longestIPv6 = "ffff:ffff:ffff:ffff:ffff:ffff:255.255.255.255"
+
+	cases := []struct {
+		name        string
+		logClientIP bool
+		header      string
+		wantRealIP  string // "" = the attribute must be absent
+	}{
+		{"header trimmed", true, "  203.0.113.7  ", "203.0.113.7"},
+		{"blank header, no attribute", true, "  \t ", ""},
+		{"no header, no attribute", true, "", ""},
+		{"over-long header truncated", true, longestIPv6 + ":and-more-attacker-bytes", longestIPv6},
+		{"privacy gate closed", false, "203.0.113.7", ""},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			var mu sync.Mutex
+			logger := slog.New(slog.NewJSONHandler(&syncWriter{w: &buf, mu: &mu}, nil))
+			cfg := &config.Config{Server: &config.ServerConfig{LogClientIP: tt.logClientIP}}
+			handler := NewHandler(cfg, Config{}, logger, testPlan(cfg))
+
+			inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			})
+
+			req := httptest.NewRequest("POST", "/api/v1/analyze", nil)
+			if tt.header != "" {
+				req.Header.Set("X-Real-IP", tt.header)
+			}
+			req = withRequestContext(req, "REQ-REALIP", DefaultContactMessage)
+			handler.AccessLog(inner).ServeHTTP(httptest.NewRecorder(), req)
+
+			mu.Lock()
+			out := buf.Bytes()
+			mu.Unlock()
+
+			var rec map[string]any
+			if err := json.Unmarshal(bytes.TrimSpace(out), &rec); err != nil {
+				t.Fatalf("access record is not JSON: %v (%s)", err, out)
+			}
+			realIP, hasRealIP := rec["real_ip"]
+			if tt.wantRealIP == "" {
+				if hasRealIP {
+					t.Errorf("real_ip must be absent, got %v", realIP)
+				}
+			} else if realIP != tt.wantRealIP {
+				t.Errorf("real_ip = %v, want %q", realIP, tt.wantRealIP)
+			}
+			if _, hasClientIP := rec["client_ip"]; hasClientIP != tt.logClientIP {
+				t.Errorf("client_ip present = %v, want %v", hasClientIP, tt.logClientIP)
+			}
+		})
+	}
+}

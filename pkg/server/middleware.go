@@ -186,9 +186,11 @@ func (sr *statusRecorder) Write(b []byte) (int, error) {
 
 // AccessLog emits exactly one structured (slog JSON) access record per request
 // at completion: ts, level, request_id, method, path, package_id, status,
-// latency_ms, and client_ip (gated by logClientIP). Successful /health and
-// /ready probes are not logged (only failing ones). It never routes check
-// Messages and never logs the token.
+// latency_ms, client_ip, and real_ip when the request carries a present and
+// non-blank X-Real-IP header, whitespace-trimmed and capped at 45 bytes (both
+// IP fields gated by logClientIP). Successful /health and /ready probes are
+// not logged (only failing ones). It never routes check Messages and never
+// logs the token.
 func (h *Handler) AccessLog(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -223,6 +225,14 @@ func (h *Handler) AccessLog(next http.Handler) http.Handler {
 		}
 		if h.logClientIP {
 			attrs = append(attrs, slog.String("client_ip", clientIP(r)))
+			// Untrusted: any client can set this header. Not the limiter key - see rateLimiter.clientIP.
+			if realIP := strings.TrimSpace(r.Header.Get("X-Real-IP")); realIP != "" {
+				// 45 = longest IPv6 text form; caps attacker-controlled log volume.
+				if len(realIP) > 45 {
+					realIP = realIP[:45]
+				}
+				attrs = append(attrs, slog.String("real_ip", realIP))
+			}
 		}
 
 		h.logger.LogAttrs(r.Context(), slog.LevelInfo, "access", attrs...)

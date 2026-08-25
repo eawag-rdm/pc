@@ -657,7 +657,7 @@ See `pc.toml.example` for the full commented list.
 | `analysisBusyWaitSeconds` | 2 | wait for the single analysis slot before `service_busy` |
 | `maxTrackedRateKeys` | 10000 | rate-limiter memory bound |
 | `contactMessage` | … | contact suffix shown in error envelopes |
-| `logClientIP` | `true` | record the client IP in access logs |
+| `logClientIP` | `true` | record the client IP (`client_ip`, plus `real_ip` from `X-Real-IP`) in access logs |
 | `requestTimeoutSeconds` | 300 | hard bound for a WHOLE analysis (CKAN call + checks) → `analysis_timeout` (504) |
 | `ckanRequestTimeoutSeconds` | 10 | bound for the single CKAN `package_show` call → `ckan_unavailable` (502); must be ≤ `requestTimeoutSeconds` |
 | `resultCacheDir` | - (disabled) | absolute path of the per-package result cache directory; its reserved `entries/` subdir is wiped at every start (failure aborts the boot); empty disables caching |

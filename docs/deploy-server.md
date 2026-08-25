@@ -212,9 +212,14 @@ Notes:
 - **Dashboard change:** the oversized-response case used to be logged as class
   `transport` and is now `unusable_body` - update any query keyed on the old
   value.
-- `client_ip` is logged only when `logClientIP = true` (it is personal data
-  under the Swiss revFADP; documented purpose is abuse/security, and retention
-  is bounded by the Docker log driver settings above).
+- `client_ip` (the connection's address) is logged only when
+  `logClientIP = true` (it is personal data under the Swiss revFADP; documented
+  purpose is abuse/security, and retention is bounded by the Docker log driver
+  settings above). Under the same gate, a request carrying an `X-Real-IP`
+  header also gets a `real_ip` field with the header value whitespace-trimmed
+  and truncated to 45 bytes - it is *not* checked against `trustedProxies`, so
+  an untrusted client can put anything there. The limiter key is unaffected
+  (see section 5).
 
 ---
 
