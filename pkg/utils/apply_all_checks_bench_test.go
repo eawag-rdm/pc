@@ -3,6 +3,7 @@ package utils
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,13 +21,19 @@ var benchPipelineMessages []structs.Message
 // exercises the diagnostics path the way a caller does.
 var benchPipelineDiagnostics []structs.Diagnostic
 
+// benchContentScanCap is the workload's content-scan gate. It sits far above
+// every fixture body and below the one .tar.gz the tree writes over it, so the
+// measurement covers the archive dispatch refuses beside the ones it admits;
+// the default gate (1 GiB) would need a fixture no benchmark can write.
+const benchContentScanCap = 64 * 1024
+
 // benchPipelineConfig is the end-to-end workload: the parameterised checks are
 // declared here, the registry's remaining ones enter as synthesized default
 // rules (6 file checks in the compiled plan). No path filters, so every file
 // meets every check. Anchored rules are filled in, as a complete config
 // carries them.
 func benchPipelineConfig() config.Config {
-	return withRequiredAnchors(planConfig([]config.RuleSpec{
+	cfg := withRequiredAnchors(planConfig([]config.RuleSpec{
 		{Name: "HasOnlyASCII", Check: "HasOnlyASCII", Enabled: true},
 		{Name: "IsFreeOfKeywords", Check: "IsFreeOfKeywords", Enabled: true, Params: []map[string]interface{}{
 			{"keywords": []string{"password"}, "info": "Possible credentials in file"},
@@ -35,6 +42,8 @@ func benchPipelineConfig() config.Config {
 			{"disallowed_names": []string{".Rhistory", "__pycache__"}},
 		}},
 	}))
+	cfg.General.MaxContentScanFileSize = benchContentScanCap
+	return cfg
 }
 
 // benchPipelinePlan compiles cfg against the real registry, as startup does once.
@@ -51,7 +60,8 @@ func benchPipelinePlan(b *testing.B, cfg config.Config) *checks.Plan {
 // the fixture cannot be synthetic. Bodies stay a few hundred bytes so the
 // measurement is dispatch and checking, not I/O. The first files carry the
 // finding paths (keyword content + whitespace name, non-ASCII name, disallowed
-// name) and the zip pulls in the archive phases.
+// name), the zip pulls in the archive phases, and the two .tar.gz files cover
+// both sides of the stream-list refusal.
 func benchPipelineTree(b *testing.B, n int) []structs.File {
 	b.Helper()
 	dir := b.TempDir()
@@ -64,6 +74,11 @@ func benchPipelineTree(b *testing.B, n int) []structs.File {
 		}
 		files = append(files, structs.ToFile(path, "", -1, ""))
 	}
+	writeTarGz := func(name string, body []byte) {
+		path := filepath.Join(dir, name)
+		writeTarGzFixture(b, path, "member one.txt", body)
+		files = append(files, structs.ToFile(path, "", -1, ""))
+	}
 
 	body := strings.Repeat("lorem ipsum dolor sit amet ", 12) // ~324 B
 	write("secrets b.txt", "password = hunter2\n"+body)
@@ -71,6 +86,12 @@ func benchPipelineTree(b *testing.B, n int) []structs.File {
 	write(".Rhistory", body)
 
 	files = append(files, structs.ToFile(writeZipFixture(b, dir), "", -1, "")) // member-name walk + content scan
+	writeTarGz("notes.tar.gz", []byte(body))                                   // under the cap: both archive passes walk it
+	// Over the cap, so dispatch hands it to neither pass. Incompressible bytes:
+	// the gate reads the archive's size ON DISK, which gzip must not shrink.
+	incompressible := make([]byte, 2*benchContentScanCap)
+	rand.New(rand.NewSource(1)).Read(incompressible)
+	writeTarGz("bulk.tar.gz", incompressible)
 
 	exts := [...]string{"txt", "csv", "md", "log"}
 	for i := len(files); i < n; i++ {

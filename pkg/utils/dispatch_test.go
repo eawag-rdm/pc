@@ -1,9 +1,12 @@
 package utils
 
 import (
+	"archive/tar"
 	"archive/zip"
+	"compress/gzip"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -475,12 +478,14 @@ func TestExecutedCheckMultisetUnchanged(t *testing.T) {
 	}
 }
 
-// TestOversizedFileAcknowledgedOnce pins the two content-scan size gates
-// against the dispatch that decides which of them a file meets: the file pass
-// acknowledges an over-cap plain file, the archive-member pass acknowledges an
-// over-cap archive, and no file is acknowledged twice. Only the whole pipeline
-// can pin it - the gates sit in two scopes, and which files reach the second
-// one is the dispatch's decision (IsArchive), not the check's.
+// TestOversizedFileAcknowledgedOnce pins the content-scan size gates against
+// the dispatch that decides which of them a file meets: the file pass
+// acknowledges an over-cap plain file, the archive-member pass an over-cap
+// archive it may list cheaply, and dispatch itself the over-cap .tar.gz it
+// hands to neither archive pass - and no file is acknowledged twice. Only the
+// whole pipeline can pin it: the gates sit in three places, and which files
+// reach which is the dispatch's decision (IsArchive, and the listing cost of the
+// format), not the check's.
 func TestOversizedFileAcknowledgedOnce(t *testing.T) {
 	dir := t.TempDir()
 	var files []structs.File
@@ -509,10 +514,11 @@ func TestOversizedFileAcknowledgedOnce(t *testing.T) {
 	resetGlobalScanState()
 
 	// The unreadable archives draw unrelated findings and diagnostics; only the
-	// skip acknowledgements are this test's business.
+	// skip acknowledgements are this test's business - both wordings of them,
+	// the content gates' and dispatch's refusal of a tar.gz.
 	acknowledged := map[string][]string{}
 	for _, m := range messages {
-		if !strings.HasPrefix(m.Content, "Skipped content scan") {
+		if !strings.HasPrefix(m.Content, "Skipped ") {
 			continue
 		}
 		src, ok := m.Source.(structs.File)
@@ -522,9 +528,12 @@ func TestOversizedFileAcknowledgedOnce(t *testing.T) {
 		acknowledged[src.Name] = append(acknowledged[src.Name], m.Content)
 	}
 	want := map[string]string{
-		"data.zip":    "Skipped content scan of archive:",
-		"data.tar":    "Skipped content scan of archive:",
-		"data.tar.gz": "Skipped content scan of archive:",
+		"data.zip": "Skipped content scan of archive:",
+		"data.tar": "Skipped content scan of archive:",
+		// Listing a tar.gz costs a decompression, so over the cap dispatch refuses
+		// the archive outright: the one message it emits covers the member-name
+		// checks as well, and the content gate is never reached.
+		"data.tar.gz": "Skipped archive checks (member-name checks and content scan):",
 		"data.gz":     "Skipped content scan of archive:",
 		"data.txt":    "Skipped content scan of file:",
 	}
@@ -538,6 +547,229 @@ func TestOversizedFileAcknowledgedOnce(t *testing.T) {
 			t.Errorf("%s: acknowledged as %q, want %q", name, got[0], prefix)
 		}
 	}
+}
+
+// tarGzMember is the fixture archive's only member: the whitespace in its NAME
+// is a file-list finding and the keyword in its BODY a member-pass one, so a
+// pass that opens the archive against the refusal leaves a visible trace.
+const tarGzMember = "notes file.txt"
+
+// tarGzFixture writes a VALID one-member .tar.gz. Valid on purpose: an archive
+// refused on its SIZE has to be one both archive passes could otherwise walk -
+// corrupt bytes would stop each of them for the wrong reason and prove nothing.
+func tarGzFixture(t *testing.T) structs.File {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "data.tar.gz")
+	writeTarGzFixture(t, path, tarGzMember, []byte("a password inside"))
+	return structs.ToFile(path, "data.tar.gz", -1, "")
+}
+
+// writeTarGzFixture writes a one-member .tar.gz at path. testing.TB, so the
+// tests and the pipeline benchmark share the one writer.
+func writeTarGzFixture(tb testing.TB, path, member string, body []byte) {
+	tb.Helper()
+	f, err := os.Create(path)
+	if err != nil {
+		tb.Fatalf("create tar.gz: %v", err)
+	}
+	gz := gzip.NewWriter(f)
+	tw := tar.NewWriter(gz)
+	if err := tw.WriteHeader(&tar.Header{Name: member, Mode: 0o600, Size: int64(len(body))}); err != nil {
+		tb.Fatalf("write member header: %v", err)
+	}
+	if _, err := tw.Write(body); err != nil {
+		tb.Fatalf("write member: %v", err)
+	}
+	for _, closer := range []io.Closer{tw, gz, f} {
+		if err := closer.Close(); err != nil {
+			tb.Fatalf("close tar.gz: %v", err)
+		}
+	}
+}
+
+// TestOverCapTarGzRefusedByBothArchivePasses pins the refusal end to end: a
+// .tar.gz over the content-scan cap is opened by NEITHER archive pass - its
+// member list costs a decompression - so its member draws no finding and its
+// bytes no diagnostic, and it says so ONCE, in a message covering the
+// member-name checks and the content scan together. The content clause is there
+// only when a member-scope rule had admitted the container, the only case where
+// a content scan was ever scheduled. The refusal reaches no further than those
+// two passes: the file and repository passes keep the full file set (the
+// dormant repository-scope secret scan has its own size gate).
+func TestOverCapTarGzRefusedByBothArchivePasses(t *testing.T) {
+	cases := []struct {
+		name    string
+		scope   []string
+		skipped string
+	}{
+		{
+			name:    "a member rule admits the container",
+			scope:   nil, // the keyword check's own scopes: file and archive-member
+			skipped: "member-name checks and content scan",
+		},
+		{
+			name:    "the only keyword rule is file-scoped",
+			scope:   []string{"file"},
+			skipped: "member-name checks",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			archive := tarGzFixture(t)
+			info, err := os.Stat(archive.Path)
+			if err != nil {
+				t.Fatalf("stat fixture: %v", err)
+			}
+			cfg := planConfig([]config.RuleSpec{{
+				Name: "keywords", Check: "IsFreeOfKeywords", Enabled: true, Scope: tc.scope,
+				Params: []map[string]interface{}{
+					{"keywords": []string{"password"}, "info": "found"},
+				},
+			}})
+			// A one-byte cap puts the fixture over the gate.
+			cfg.General.MaxContentScanFileSize = 1
+			plan := compilePlan(t, cfg)
+
+			resetGlobalScanState()
+			messages, diags := ApplyAllChecks(context.Background(), cfg, plan, []structs.File{archive})
+			resetGlobalScanState()
+
+			var got, opened []structs.Message
+			for _, m := range messages {
+				src, ok := m.Source.(structs.File)
+				if !ok || src.Path != archive.Path {
+					continue
+				}
+				// A member carries the ARCHIVE's path under its own name, so
+				// anything filed under the member name is a walk that happened.
+				if src.Name == tarGzMember {
+					opened = append(opened, m)
+					continue
+				}
+				got = append(got, m)
+			}
+			if len(opened) > 0 {
+				t.Errorf("neither archive pass may open it, yet its member drew findings: %v", opened)
+			}
+			for _, d := range diags {
+				if strings.Contains(d.Message, archive.Name) {
+					t.Errorf("neither archive pass may read it, yet a diagnostic reports on it: %s", d.Message)
+				}
+			}
+			if len(got) != 1 {
+				t.Fatalf("a refused archive must produce exactly one message, got %d: %v", len(got), got)
+			}
+			want := fmt.Sprintf("Skipped archive checks (%s): listing this archive means decompressing its stream; file size (%d bytes) exceeds maximum (1 bytes).", tc.skipped, info.Size())
+			if got[0].Content != want {
+				t.Errorf("acknowledgement is\n %q\nwant %q", got[0].Content, want)
+			}
+			if got[0].TestName != "ArchiveFileList" {
+				t.Errorf("the acknowledgement is filed under %q, want ArchiveFileList", got[0].TestName)
+			}
+			if !got[0].Skipped || got[0].Reason != got[0].Content {
+				t.Errorf("the refusal must be a skip acknowledgement carrying its reason: %+v", got[0])
+			}
+		})
+	}
+}
+
+// TestRefuseStreamListArchivesNothingScheduled pins the third case of the
+// refusal, the one the end-to-end test cannot reach: when neither archive pass
+// had scheduled anything for the over-cap archive, no acknowledgement is owed
+// and none is emitted - and the archive is withheld from both passes all the
+// same.
+func TestRefuseStreamListArchivesNothingScheduled(t *testing.T) {
+	general := &config.GeneralConfig{MaxContentScanFileSize: 1}
+
+	refusals, remaining := refuseStreamListArchives(context.Background(), general, nil, nil, []structs.File{tarGzFixture(t)})
+
+	if len(refusals) != 0 {
+		t.Errorf("nothing was scheduled for the archive, so nothing is owed an acknowledgement, got: %v", refusals)
+	}
+	if len(remaining) != 0 {
+		t.Errorf("the refused archive must be withheld from the archive passes even without a message, got: %v", remaining)
+	}
+}
+
+// TestAtCapTarGzWalkedByBothPasses is the other side of the refusal: at (not
+// over) the cap the same .tar.gz reaches both archive passes exactly as it did
+// before - the name checks see its member list, the content scan its member
+// bodies - and nothing about it is acknowledged as skipped.
+func TestAtCapTarGzWalkedByBothPasses(t *testing.T) {
+	archive := tarGzFixture(t)
+	info, err := os.Stat(archive.Path)
+	if err != nil {
+		t.Fatalf("stat fixture: %v", err)
+	}
+
+	cfg := planConfig([]config.RuleSpec{{
+		Name: "keywords", Check: "IsFreeOfKeywords", Enabled: true,
+		Params: []map[string]interface{}{
+			{"keywords": []string{"password"}, "info": "found"},
+		},
+	}})
+	// At exactly the cap the archive is still walked: the refusal gate is
+	// strictly greater-than, in step with the content gate in
+	// pkg/checks/checks_by_file.go (fileInfo.Size() > cap).
+	cfg.General.MaxContentScanFileSize = info.Size()
+	plan := compilePlan(t, cfg)
+
+	resetGlobalScanState()
+	messages, _ := ApplyAllChecks(context.Background(), cfg, plan, []structs.File{archive})
+	resetGlobalScanState()
+
+	found := map[string]int{}
+	for _, m := range messages {
+		src, ok := m.Source.(structs.File)
+		if !ok {
+			continue
+		}
+		if m.Skipped {
+			t.Errorf("an archive under the cap must not be acknowledged as skipped: %q", m.Content)
+			continue
+		}
+		if src.Name == tarGzMember {
+			found[m.TestName]++
+		}
+	}
+	// The whitespace in the member name is the file-list pass's finding, the
+	// keyword in its body the member pass's: one walk each, as before.
+	if found["HasNoWhiteSpace"] != 1 {
+		t.Errorf("expected the member name to be checked once, got %d findings: %v", found["HasNoWhiteSpace"], found)
+	}
+	if found["IsFreeOfKeywords"] != 1 {
+		t.Errorf("expected the member body to be scanned once, got %d findings: %v", found["IsFreeOfKeywords"], found)
+	}
+}
+
+// TestOverCapTarGzJudgesNoFileListRule pins the bookkeeping half of the
+// refusal: a member list that was never walked proves nothing about the rules
+// that would have selected over it, so none of them may be marked alive or
+// dead. The rule matches no member of anything, so the run that DOES walk an
+// archive is the control - without it, a silent scope and a silent rule name
+// look the same. The bookkeeping is per scope, not per archive: a walked
+// archive beside a refused one still marks the scope exercised, so a rule whose
+// only match sat inside the refused archive can still be reported dead - that
+// is accepted, the report is advisory.
+func TestOverCapTarGzJudgesNoFileListRule(t *testing.T) {
+	cfg := planConfig(nil)
+	cfg.Rules = []config.RuleSpec{asciiRule("list-dead", []string{"archive-file-list"}, "zzz-no-such-member")}
+	cfg.General.MaxContentScanFileSize = 1
+	plan := compilePlan(t, cfg)
+
+	run := func(file structs.File) []structs.Diagnostic {
+		resetGlobalScanState()
+		_, diags := ApplyAllChecks(context.Background(), cfg, plan, []structs.File{file})
+		resetGlobalScanState()
+		return diags
+	}
+
+	// The refused archive leaves the scope unexercised: no verdict on its rules.
+	assertRuleDiags(t, run(tarGzFixture(t)), structs.DiagWarning, 0, "list-dead")
+	// A zip of the same size is listed without decompressing anything, so it IS
+	// walked past the cap - and the very same rule is then reported dead.
+	zip := structs.ToFile(buildNamedZip(t, []string{"alpha.txt"}), "data.zip", -1, "")
+	assertRuleDiags(t, run(zip), structs.DiagWarning, 1, "list-dead")
 }
 
 // TestBenchFixturesCompile keeps the benchmark fixtures in the normal suite's

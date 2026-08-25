@@ -145,6 +145,40 @@ func TestReadArchiveFileList(t *testing.T) {
 		}
 	}
 }
+
+// TestIsStreamListArchiveMatchesDispatch keeps the predicate and
+// ReadArchiveFileList's format dispatch in step: the decompressed-byte budget
+// belongs to the tar.gz reader alone, so a one-byte budget truncates exactly the
+// walks that decompress a stream - and those are exactly the names the predicate
+// must claim. It is an agreement check between the predicate and
+// ReadArchiveFileList's dispatch for exactly the names listed below, no more.
+func TestIsStreamListArchiveMatchesDispatch(t *testing.T) {
+	fixtures := []struct {
+		file    structs.File
+		members int // what a complete listing returns; 0 where the walk stops or the format is not listed
+	}{
+		{file: structs.File{Path: "../../testdata/archives/test.zip", Name: "test.zip", DisplayName: "test.zip", Suffix: ".zip"}, members: 3},
+		{file: structs.File{Path: "../../testdata/archives/test.tar", Name: "test.tar", DisplayName: "test.tar", Suffix: ".tar"}, members: 3},
+		{file: structs.File{Path: "../../testdata/archives/test.7z", Name: "test.7z", DisplayName: "test.7z", Suffix: ".7z"}, members: 3},
+		{file: structs.File{Path: "../../testdata/archives/test.tar.gz", Name: "test.tar.gz", DisplayName: "test.tar.gz", Suffix: ".gz"}},
+		// A bare .gz matches no branch of the dispatch, so the path behind the
+		// name is never opened.
+		{file: structs.File{Path: "../../testdata/archives/test.tar.gz", Name: "test.gz", DisplayName: "test.gz", Suffix: ".gz"}},
+		// .tgz is deliberately unrecognized: neither the dispatch nor the
+		// predicate claims it.
+		{file: structs.File{Path: "../../testdata/archives/test.tar.gz", Name: "test.tgz", DisplayName: "test.tgz", Suffix: ".tgz"}},
+	}
+	for _, test := range fixtures {
+		t.Run(test.file.Name, func(t *testing.T) {
+			list, truncated, err := ReadArchiveFileList(test.file, 1000, 1)
+			assert.NoError(t, err)
+			assert.Equal(t, IsStreamListArchive(test.file.Name), truncated,
+				"a one-byte walk budget must stop exactly the listings that decompress")
+			assert.Len(t, list, test.members)
+		})
+	}
+}
+
 func TestRead7ZipFileList(t *testing.T) {
 	tests := []struct {
 		filepath string

@@ -189,6 +189,13 @@ func IsSupportedArchive(filePath string) bool {
 	return false
 }
 
+// IsStreamListArchive reports whether listing this archive's members costs a
+// decompression of the stream, which of the supported formats only .tar.gz does
+// (zip and 7z carry an index, tar seeks over member bodies).
+func IsStreamListArchive(filePath string) bool {
+	return strings.HasSuffix(filePath, ".tar.gz")
+}
+
 // ReadArchiveFileList lists an archive's members for the name checks.
 // maxMembers and maxTotalMemory come from config.GeneralConfig.ArchiveLimits
 // (the only defaulting site); non-positive limits fail closed, never

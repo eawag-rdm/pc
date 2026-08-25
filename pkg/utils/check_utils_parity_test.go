@@ -218,6 +218,16 @@ func TestApplyAllChecks_ProgressVariantParity(t *testing.T) {
 	// Single file: the same branch goes sequential (threshold is 2 files), which
 	// the run above never reaches.
 	assertEngineParity(t, *cfg, files[:1])
+
+	// A .tar.gz over the content-scan cap, which dispatch takes away from both
+	// archive passes before either runs: its acknowledgement is the one message
+	// neither of them produces, so this is where the second engine's half of
+	// that classification is pinned.
+	capped := *cfg
+	general := *cfg.General
+	general.MaxContentScanFileSize = 1
+	capped.General = &general
+	assertEngineParity(t, capped, append(files, tarGzFixture(t)))
 }
 
 // TestApplyAllChecksWithProgress_TotalCountsDispatchedItems pins the announced

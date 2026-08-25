@@ -3,6 +3,7 @@ package utils
 import (
 	"context"
 	"fmt"
+	"os"
 	"runtime"
 	"sync"
 	"time"
@@ -339,6 +340,79 @@ func applyFileChecks(ctx context.Context, sink *diagSink, entries []checks.PlanE
 	return messages
 }
 
+// refuseStreamListArchives takes the archives the two archive passes may not
+// open away from them: a stream-list archive over the content-scan cap, whose
+// member list cannot be had without decompressing its stream. It returns the
+// acknowledgements dispatch owes for them and the file set both passes run on -
+// files itself when nothing is refused, so the common case copies nothing. It
+// runs once, before either pass, because the two have to refuse the same
+// archives and only one message stands for both.
+//
+// The size comes from os.Stat, like the content gates in pkg/checks: a CKAN
+// File.Size is metadata. A stat error leaves the archive to the passes, whose
+// own reads report it. A cancelled run refuses nothing: the passes stop at their
+// own cancellation points.
+//
+// general is nil only for a config built in code - a loaded one without
+// [general] is a load error (checks.Compile) - and its cap is then unknown, so
+// nothing is refused.
+func refuseStreamListArchives(ctx context.Context, general *config.GeneralConfig, listEntries, memberEntries []checks.PlanEntry, files []structs.File) ([]structs.Message, []structs.File) {
+	if ctx.Err() != nil || general == nil {
+		return nil, files
+	}
+	limit := general.MaxContentScanFileSize
+	var refusals []structs.Message
+	var remaining []structs.File // nil until the first refusal: no refusal, no copy
+	var scratch matchScratch
+	for i, file := range files {
+		var size int64
+		refused := false
+		if file.IsArchive && readers.IsStreamListArchive(file.Name) {
+			if info, err := os.Stat(file.Path); err == nil && info.Size() > limit {
+				size, refused = info.Size(), true
+			}
+		}
+		if !refused {
+			if remaining != nil {
+				remaining = append(remaining, file)
+			}
+			continue
+		}
+		if remaining == nil {
+			remaining = append(make([]structs.File, 0, len(files)), files[:i]...)
+			// The container gate of the member pass: the refusal matches the
+			// container against the member-scope entries with the same rule
+			// matching that pass applies to it, so the two agree on the verdict
+			// and the message cannot claim a content scan the pass would never
+			// have scheduled.
+			scratch = newMatchScratch(memberEntries, nil)
+		}
+		if skipped := skippedArchiveWork(len(listEntries) > 0, len(scratch.match(memberEntries, file)) > 0); skipped != "" {
+			refusals = append(refusals, archiveSizeSkipMessage(file, size, limit, skipped))
+		}
+	}
+	if remaining == nil {
+		remaining = files
+	}
+	return refusals, remaining
+}
+
+// skippedArchiveWork names the work a refused archive loses: the member-name
+// checks when the plan schedules any, the content scan when a member-scope entry
+// admits the container. Neither means nothing was scheduled for this archive, so
+// nothing is owed an acknowledgement.
+func skippedArchiveWork(names, content bool) string {
+	switch {
+	case names && content:
+		return "member-name checks and content scan"
+	case names:
+		return "member-name checks"
+	case content:
+		return "content scan"
+	}
+	return ""
+}
+
 func applyChecksFilteredByFileOnArchiveFileList(ctx context.Context, sink *diagSink, config config.Config, entries []checks.PlanEntry, files []structs.File) []structs.Message {
 	// Filter to only archive files
 	var archiveFiles []structs.File
@@ -399,6 +473,23 @@ func archiveWalkLimits(cfg config.Config) (maxMembers int, maxTotalMemory int64)
 // acknowledgement in server responses, hiding the reason.
 func archiveWalkSkipMessage(archiveFile structs.File, maxMembers int) structs.Message {
 	reason := fmt.Sprintf("Skipped name checks of archive members: the archive holds more than %d members, or listing it would decompress more data than the archive walk budget allows.", maxMembers)
+	return structs.Message{
+		Content:  reason,
+		Source:   archiveFile,
+		TestName: "ArchiveFileList",
+		Skipped:  true,
+		Reason:   reason,
+	}
+}
+
+// archiveSizeSkipMessage acknowledges a stream-list archive the file-list and
+// member passes never see. It carries both of them: skipped names the work each
+// loses, and the content half is worded by the caller exactly when a member-scope
+// entry had admitted the container - the check that would otherwise acknowledge
+// that half is never invoked. It shares archiveWalkSkipMessage's TestName: both
+// are dispatch's word about one archive's member list, and renderers group by it.
+func archiveSizeSkipMessage(archiveFile structs.File, size, limit int64, skipped string) structs.Message {
+	reason := fmt.Sprintf("Skipped archive checks (%s): listing this archive means decompressing its stream; file size (%d bytes) exceeds maximum (%d bytes).", skipped, size, limit)
 	return structs.Message{
 		Content:  reason,
 		Source:   archiveFile,
@@ -650,9 +741,16 @@ func ApplyAllChecks(ctx context.Context, config config.Config, plan *checks.Plan
 	var messages []structs.Message
 	sink := &diagSink{rules: newRuleReport(plan)}
 
+	listChecks := plan.Scope(checks.ScopeArchiveFileList)
+	memberChecks := plan.Scope(checks.ScopeArchiveMember)
+	// The archives the two archive passes may not open, taken away from them
+	// once: both have to refuse the same ones, and one message stands for both.
+	refusals, remaining := refuseStreamListArchives(ctx, config.General, listChecks, memberChecks, files)
+
 	messages = append(messages, applyChecksFilteredByFile(ctx, sink, plan.Scope(checks.ScopeFile), files)...)
-	messages = append(messages, applyChecksFilteredByFileOnArchiveFileList(ctx, sink, config, plan.Scope(checks.ScopeArchiveFileList), files)...)
-	messages = append(messages, applyChecksFilteredByFileOnArchive(ctx, sink, plan.Scope(checks.ScopeArchiveMember), files)...)
+	messages = append(messages, refusals...)
+	messages = append(messages, applyChecksFilteredByFileOnArchiveFileList(ctx, sink, config, listChecks, remaining)...)
+	messages = append(messages, applyChecksFilteredByFileOnArchive(ctx, sink, memberChecks, remaining)...)
 	messages = append(messages, applyChecksFilteredByRepository(ctx, sink, plan.Scope(checks.ScopeRepository), files)...)
 
 	// Surface a clear, non-issue notice when there was nothing to analyse.
@@ -705,6 +803,9 @@ func ApplyAllChecksWithProgress(ctx context.Context, config config.Config, plan 
 	memberChecks := plan.Scope(checks.ScopeArchiveMember)
 	repositoryChecks := plan.Scope(checks.ScopeRepository)
 
+	// The archives the two archive passes may not open; see ApplyAllChecks.
+	refusals, remaining := refuseStreamListArchives(ctx, config.General, listChecks, memberChecks, files)
+
 	// Calculate total number of tests (including skipped tests). The file phase's
 	// term, added by begin below, counts WORK ITEMS (one per file) where phases
 	// 2-4 count checks, so the counter is no longer "tests" and the file phase's
@@ -754,7 +855,8 @@ func ApplyAllChecksWithProgress(ctx context.Context, config config.Config, plan 
 	if progressCallback != nil {
 		progressCallback(structs.Progress{Phase: structs.PhaseArchiveFileList, Current: testsRun, Total: totalTests, Start: true})
 	}
-	archiveListTests := applyChecksFilteredByFileOnArchiveFileList(ctx, sink, config, listChecks, files)
+	messages = append(messages, refusals...)
+	archiveListTests := applyChecksFilteredByFileOnArchiveFileList(ctx, sink, config, listChecks, remaining)
 	messages = append(messages, archiveListTests...)
 	// Update count for archive list tests (including skipped ones)
 	for _, file := range files {
@@ -767,7 +869,7 @@ func ApplyAllChecksWithProgress(ctx context.Context, config config.Config, plan 
 	if progressCallback != nil {
 		progressCallback(structs.Progress{Phase: structs.PhaseArchiveContent, Current: testsRun, Total: totalTests, Start: true})
 	}
-	archiveContentTests := applyChecksFilteredByFileOnArchive(ctx, sink, memberChecks, files)
+	archiveContentTests := applyChecksFilteredByFileOnArchive(ctx, sink, memberChecks, remaining)
 	messages = append(messages, archiveContentTests...)
 	// Update count for archive content tests (including skipped ones)
 	for _, file := range files {
