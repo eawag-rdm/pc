@@ -785,6 +785,119 @@ func TestTarGzWalkCapSingleHugeMember(t *testing.T) {
 	assert.Less(t, nfi.walkCounter.count, int64(64*1024), "only tar headers may be decompressed")
 }
 
+func TestTarGzMemberNamesMatchFileList(t *testing.T) {
+	archive := structs.File{Path: "../../testdata/archives/test.tar.gz", Name: "test.tar.gz", DisplayName: "test.tar.gz", Suffix: ".gz"}
+	want, truncated, err := ReadArchiveFileList(archive, 1000, 100*1024*1024)
+	require.NoError(t, err)
+	require.False(t, truncated)
+
+	collector := structs.NewArchiveNameCollector(1000)
+	nfi := InitArchiveIterator(context.Background(), archive.Path, archive.Name,
+		ArchiveLimits{MaxMemberSize: 1024 * 1024, MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 1000}, nil)
+	nfi.MemberNames = collector
+	assert.True(t, nfi.HasFilesToUnpack())
+	for nfi.HasNext() {
+		nfi.Next()
+	}
+
+	names, ok := collector.Result()
+	assert.True(t, ok, "a walk that reached the end of the archive must yield the member list")
+	// Every header, so the directory and the zero-size member are in there too -
+	// the name checks must see exactly what the file-list walk shows them.
+	assert.Equal(t, want, names)
+}
+
+func TestTarGzMemberNamesCapTruncates(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "capped.tar.gz")
+	text := []byte(strings.Repeat("line\n", 200))
+	var members []struct {
+		name    string
+		content []byte
+	}
+	for i := 0; i < 8; i++ {
+		members = append(members, struct {
+			name    string
+			content []byte
+		}{fmt.Sprintf("m%d.txt", i), text})
+	}
+	writeTarGzFixture(t, path, members)
+
+	collector := structs.NewArchiveNameCollector(3)
+	nfi := InitArchiveIterator(context.Background(), path, "capped.tar.gz",
+		ArchiveLimits{MaxMemberSize: 1024 * 1024, MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 1000}, nil)
+	nfi.MemberNames = collector
+	assert.True(t, nfi.HasFilesToUnpack())
+	count := 0
+	for nfi.HasNext() {
+		nfi.Next()
+		count++
+	}
+	assert.Equal(t, 8, count, "the content scan keeps every member the cap has nothing to do with")
+
+	names, ok := collector.Result()
+	assert.False(t, ok, "more members than the cap must not yield a member list")
+	assert.Nil(t, names)
+}
+
+func TestTarGzMemberNamesTruncatedStreamYieldsNoList(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cut.tar.gz")
+	text := []byte(strings.Repeat("line\n", 200))
+	writeTarGzFixture(t, path, []struct {
+		name    string
+		content []byte
+	}{{"a.txt", text}, {"b.txt", text}, {"c.txt", text}})
+	// A truncated upload: the compressed stream stops mid-archive, so the walk
+	// runs out of data instead of reaching the end-of-archive marker.
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	require.NoError(t, os.Truncate(path, info.Size()-40))
+
+	collector := structs.NewArchiveNameCollector(1000)
+	nfi := InitArchiveIterator(context.Background(), path, "cut.tar.gz",
+		ArchiveLimits{MaxMemberSize: 1024 * 1024, MaxTotalMemory: 100 * 1024 * 1024, MaxMemberCount: 1000}, nil)
+	nfi.MemberNames = collector
+	assert.True(t, nfi.HasFilesToUnpack(), "the members before the cut are still readable")
+	for nfi.HasNext() {
+		nfi.Next()
+	}
+
+	_, ok := collector.Result()
+	assert.False(t, ok, "a stream that ends short of the archive leaves a partial list, not a member list")
+}
+
+func TestTarGzMemberNamesCapBoundsHeaderFlood(t *testing.T) {
+	// The worst shape: a small tar.gz holding hundreds of thousands of zero-size
+	// members, all of them inside the walk budget. Counting only content-scan
+	// candidates would never reach the cap here (there are none), so the walk
+	// would run to a clean end and hand out a list as wide as the archive.
+	path := filepath.Join(t.TempDir(), "flood.tar.gz")
+	f, err := os.Create(path)
+	require.NoError(t, err)
+	gw := gzip.NewWriter(f)
+	tw := tar.NewWriter(gw)
+	header := tar.Header{Mode: 0o600, Size: 0, Typeflag: tar.TypeReg}
+	for i := 0; i < 200_000; i++ {
+		header.Name = fmt.Sprintf("m%07d", i)
+		if err := tw.WriteHeader(&header); err != nil {
+			t.Fatalf("writing member %d: %v", i, err)
+		}
+	}
+	require.NoError(t, tw.Close())
+	require.NoError(t, gw.Close())
+	require.NoError(t, f.Close())
+
+	collector := structs.NewArchiveNameCollector(1000)
+	nfi := InitArchiveIterator(context.Background(), path, "flood.tar.gz",
+		ArchiveLimits{MaxMemberSize: 1024 * 1024, MaxTotalMemory: 200 * 1024 * 1024, MaxMemberCount: 1000}, nil)
+	nfi.MemberNames = collector
+	assert.False(t, nfi.HasFilesToUnpack(), "zero-size members are never content-scan candidates")
+	assert.Empty(t, nfi.SkipMessages(), "the walk must end on the archive, not on a budget")
+
+	names, ok := collector.Result()
+	assert.False(t, ok, "a header flood past the cap must not yield a member list")
+	assert.Nil(t, names, "the collected names must be released, not held for the rest of the walk")
+}
+
 // buildMemberZip writes a zip archive with the given members to a temp path.
 func buildMemberZip(t *testing.T, members map[string][]byte) string {
 	t.Helper()

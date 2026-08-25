@@ -228,6 +228,18 @@ func TestApplyAllChecks_ProgressVariantParity(t *testing.T) {
 	general.MaxContentScanFileSize = 1
 	capped.General = &general
 	assertEngineParity(t, capped, append(files, tarGzFixture(t)))
+
+	// The same .tar.gz UNDER the cap, with a member-scope keyword rule admitting
+	// it: dispatch fuses its content scan and its member-name walk into one
+	// decompression and runs both from the member phase, so this is where the
+	// second engine's half of the fused path is pinned.
+	fused := planConfig([]config.RuleSpec{{
+		Name: "keywords", Check: "IsFreeOfKeywords", Enabled: true,
+		Params: []map[string]interface{}{
+			{"keywords": []string{"password"}, "info": "found"},
+		},
+	}})
+	assertEngineParity(t, fused, []structs.File{tarGzFixture(t)})
 }
 
 // TestApplyAllChecksWithProgress_TotalCountsDispatchedItems pins the announced

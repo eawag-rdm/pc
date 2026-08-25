@@ -38,6 +38,15 @@ type UnpackedFileIterator struct {
 	ArchiveName   string
 	MaxMemberSize int64
 
+	// MemberNames is the collector the caller copies over from the archive
+	// File's hand-off field, so the member names this walk already sees do not
+	// have to be decompressed a second time for the name checks. Only the
+	// tar.gz walk fills it; nil - the hot path - collects nothing.
+	//
+	// Assign it before the first HasFilesToUnpack/HasNext or nothing is
+	// collected.
+	MemberNames *structs.ArchiveNameCollector
+
 	// ctx bounds a member's PDF extraction. Stored rather than threaded
 	// because one iterator serves one request, so it outlives nothing.
 	ctx context.Context
@@ -98,6 +107,11 @@ type UnpackedFileIterator struct {
 
 	// walkCounter bounds decompressed bytes for tar.gz walks (nil otherwise).
 	walkCounter *countingReader
+
+	// fillMemberNames is true between a claimed MemberNames fill and the Finish
+	// that closes it. The member loop tests this one bool, so a walk with no
+	// collector - and a walk whose fill was refused - costs what it costs today.
+	fillMemberNames bool
 
 	tarFile        *os.File
 	tarReader      *tar.Reader
@@ -342,10 +356,37 @@ func (u *UnpackedFileIterator) findFirstTarGz() bool {
 			return false
 		}
 		u.gzipReader = gzipReader
+		tarGzStreamOpens.Add(1)
 		u.walkCounter = &countingReader{r: gzipReader, limit: declaredSizeBudgetMultiple * u.maxTotalMemory}
 		u.tarReader = tar.NewReader(u.walkCounter)
+		if u.MemberNames != nil {
+			u.fillMemberNames = u.MemberNames.BeginFill()
+		}
 	}
 	return u.bufferNextTar()
+}
+
+// noteMemberName hands one tar header to the claimed MemberNames fill. The File
+// is built exactly as ReadTarGzFileListWithDisplayName builds it, so the fused
+// walk and the standalone file list hand the name checks identical input -
+// except for ArchiveName, which is the archive's Name here and its DISPLAY name
+// there, and which dispatch rewrites on the collected members before running any
+// check over them.
+func (u *UnpackedFileIterator) noteMemberName(header *tar.Header) {
+	member := structs.ToFileWithDisplay(u.ArchivePath, header.Name, header.Name, header.Size, "", u.ArchiveName)
+	member.RelPath = member.Name
+	u.MemberNames.Note(member)
+}
+
+// endMemberNames finishes a claimed MemberNames fill, exactly once per walk. It
+// is reached from the end of the archive alone; every other exit leaves a
+// partial list, which stays unusable precisely because it is never finished.
+func (u *UnpackedFileIterator) endMemberNames() {
+	if !u.fillMemberNames {
+		return
+	}
+	u.fillMemberNames = false
+	u.MemberNames.Finish()
 }
 
 // bufferNextTar advances the tar stream until the next scannable text member
@@ -359,6 +400,9 @@ func (u *UnpackedFileIterator) bufferNextTar() bool {
 			if errors.Is(err, errWalkCapExceeded) {
 				u.recordArchiveSkip(u.walkCapSkipReason())
 			}
+			if errors.Is(err, io.EOF) {
+				u.endMemberNames()
+			}
 			u.iterationEnded = true
 			return false
 		}
@@ -369,6 +413,12 @@ func (u *UnpackedFileIterator) bufferNextTar() bool {
 			u.recordArchiveSkip(u.walkCapSkipReason())
 			u.iterationEnded = true
 			return false
+		}
+
+		// Every header, before any admission gate: the name checks see the
+		// directories and the zero-size members too.
+		if u.fillMemberNames {
+			u.noteMemberName(header)
 		}
 
 		// Ack precedence: name filter (silent) -> size -> memory. Members the

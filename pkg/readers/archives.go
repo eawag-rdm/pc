@@ -10,6 +10,7 @@ import (
 	"os"
 	"path"
 	"strings"
+	"sync/atomic"
 
 	"github.com/eawag-rdm/pc/pkg/structs"
 
@@ -28,6 +29,21 @@ func walkByteBudget(maxTotalMemory int64) int64 {
 		return math.MaxInt64
 	}
 	return declaredSizeBudgetMultiple * maxTotalMemory
+}
+
+// tarGzStreamOpens counts how often a gzip reader was built over a tar.gz
+// archive stream, in the file-list walk and in the content walk alike. Test
+// instrumentation: dispatch tests pin the single-walk invariant by counting
+// opens. One atomic add per archive open, nothing per member.
+var tarGzStreamOpens atomic.Int64
+
+// TarGzStreamOpens reports how many tar.gz streams this process has opened for
+// reading. Test instrumentation; see tarGzStreamOpens. The counter is
+// process-wide and only ever grows, so a test reads it as a DELTA around the
+// run it measures - and must not run in parallel with anything else that walks
+// an archive.
+func TarGzStreamOpens() int64 {
+	return tarGzStreamOpens.Load()
 }
 
 // ReadZipFileListWithDisplayName reads the file list with archive display name
@@ -118,6 +134,7 @@ func ReadTarGzFileListWithDisplayName(filePath string, archiveDisplayName string
 		return nil, false, err
 	}
 	defer gzipReader.Close()
+	tarGzStreamOpens.Add(1)
 
 	counter := &countingReader{r: gzipReader, limit: walkByteBudget(maxTotalMemory)}
 	tarReader := tar.NewReader(counter)

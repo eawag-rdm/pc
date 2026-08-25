@@ -36,6 +36,14 @@ type workItem struct {
 	File   structs.File
 	Scope  checks.Scope
 	Checks []checks.PlanEntry
+
+	// Run, when non-nil, is the item's whole processing and the fields above
+	// only name its subject: the pool calls it with its own context instead of
+	// running Checks over File. A stream-list archive enters the archive pool
+	// this way, one routine owning both of its scopes, so the pool's worker cap
+	// governs every extraction the phase runs. It carries its own panic guard,
+	// like every other body that runs on a worker goroutine.
+	Run func(context.Context) []structs.Message
 }
 
 // workResult represents the result of processing a work item
@@ -101,9 +109,14 @@ func (wp *workerPool) worker(id int) {
 	}
 }
 
-// processWorkItem applies all checks to a single file
+// processWorkItem applies all checks to a single file, or runs the item's own
+// routine where it brought one.
 // This ensures all checks for a single file run in the same worker to avoid IO conflicts
 func (wp *workerPool) processWorkItem(work workItem) []structs.Message {
+	if work.Run != nil {
+		return work.Run(wp.ctx)
+	}
+
 	var allMessages []structs.Message
 
 	// Run all checks for this file sequentially in the same worker

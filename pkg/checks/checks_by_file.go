@@ -420,6 +420,10 @@ func keywordsInArchive(ctx context.Context, file structs.File, batch *Batch, rul
 
 	archiveIterator := readers.InitArchiveIterator(ctx, file.Path, file.Name, batch.limits, batch.admit)
 	defer archiveIterator.Close()
+	// Dispatch's hand-off: the walk below notes the member names it passes so the
+	// name checks need no second decompression. Nil for every caller but the one
+	// dispatch routine that fuses the two walks.
+	archiveIterator.MemberNames = file.MemberNames
 	if !archiveIterator.HasFilesToUnpack() {
 		// Even with no scannable members, the iterator may have skipped members
 		// (too large / over memory budget). Surface those acknowledgements.

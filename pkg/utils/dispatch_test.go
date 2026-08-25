@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"sort"
 	"strings"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/eawag-rdm/pc/pkg/checks"
 	"github.com/eawag-rdm/pc/pkg/config"
+	"github.com/eawag-rdm/pc/pkg/readers"
 	"github.com/eawag-rdm/pc/pkg/structs"
 )
 
@@ -217,7 +219,7 @@ func TestMemberRulesUnionScansEachMemberOnce(t *testing.T) {
 	plan := compilePlan(t, cfg)
 
 	archive := structs.ToFile(zipPath, "bundle.zip", -1, "")
-	messages := applyChecksFilteredByFileOnArchive(context.Background(), &diagSink{}, plan.Scope(checks.ScopeArchiveMember), []structs.File{archive})
+	messages := applyChecksFilteredByFileOnArchive(context.Background(), &diagSink{}, cfg, nil, plan.Scope(checks.ScopeArchiveMember), []structs.File{archive})
 
 	found := map[string][][]string{} // member -> the rules each of its findings names
 	for _, m := range messages {
@@ -691,32 +693,53 @@ func TestRefuseStreamListArchivesNothingScheduled(t *testing.T) {
 	}
 }
 
-// TestAtCapTarGzWalkedByBothPasses is the other side of the refusal: at (not
-// over) the cap the same .tar.gz reaches both archive passes exactly as it did
-// before - the name checks see its member list, the content scan its member
-// bodies - and nothing about it is acknowledged as skipped.
-func TestAtCapTarGzWalkedByBothPasses(t *testing.T) {
+// keywordConfig is the one-rule config the fused-walk tests run: a keyword the
+// fixture members carry, over the check's own scopes (file and archive-member),
+// so a member-scope entry admits the container and the content walk happens.
+func keywordConfig() config.Config {
+	return planConfig([]config.RuleSpec{{
+		Name: "keywords", Check: "IsFreeOfKeywords", Enabled: true,
+		Params: []map[string]interface{}{
+			{"keywords": []string{"password"}, "info": "found"},
+		},
+	}})
+}
+
+// runPipeline runs the whole pipeline over files and reports its messages
+// together with the number of tar.gz streams it decompressed. The counter is
+// process-wide, so the DELTA is what one run is worth - and that delta is the
+// single-walk contract: an under-cap .tar.gz costs one decompression, whichever
+// archive scopes are scheduled over it.
+func runPipeline(t *testing.T, cfg config.Config, files []structs.File) ([]structs.Message, int64) {
+	t.Helper()
+	plan := compilePlan(t, cfg)
+
+	resetGlobalScanState()
+	before := readers.TarGzStreamOpens()
+	messages, _ := ApplyAllChecks(context.Background(), cfg, plan, files)
+	opens := readers.TarGzStreamOpens() - before
+	resetGlobalScanState()
+	return messages, opens
+}
+
+// TestAtCapTarGzWalkedOnce is the other side of the refusal: at (not over) the
+// cap the same .tar.gz is walked for both archive scopes - the name checks see
+// its member list, the content scan its member bodies - off ONE decompression of
+// its stream, and nothing about it is acknowledged as skipped.
+func TestAtCapTarGzWalkedOnce(t *testing.T) {
 	archive := tarGzFixture(t)
 	info, err := os.Stat(archive.Path)
 	if err != nil {
 		t.Fatalf("stat fixture: %v", err)
 	}
 
-	cfg := planConfig([]config.RuleSpec{{
-		Name: "keywords", Check: "IsFreeOfKeywords", Enabled: true,
-		Params: []map[string]interface{}{
-			{"keywords": []string{"password"}, "info": "found"},
-		},
-	}})
+	cfg := keywordConfig()
 	// At exactly the cap the archive is still walked: the refusal gate is
 	// strictly greater-than, in step with the content gate in
 	// pkg/checks/checks_by_file.go (fileInfo.Size() > cap).
 	cfg.General.MaxContentScanFileSize = info.Size()
-	plan := compilePlan(t, cfg)
 
-	resetGlobalScanState()
-	messages, _ := ApplyAllChecks(context.Background(), cfg, plan, []structs.File{archive})
-	resetGlobalScanState()
+	messages, opens := runPipeline(t, cfg, []structs.File{archive})
 
 	found := map[string]int{}
 	for _, m := range messages {
@@ -732,13 +755,373 @@ func TestAtCapTarGzWalkedByBothPasses(t *testing.T) {
 			found[m.TestName]++
 		}
 	}
-	// The whitespace in the member name is the file-list pass's finding, the
-	// keyword in its body the member pass's: one walk each, as before.
+	// The whitespace in the member name is a file-list finding, the keyword in
+	// its body a member-scope one - both off the single walk that produced them.
 	if found["HasNoWhiteSpace"] != 1 {
 		t.Errorf("expected the member name to be checked once, got %d findings: %v", found["HasNoWhiteSpace"], found)
 	}
 	if found["IsFreeOfKeywords"] != 1 {
 		t.Errorf("expected the member body to be scanned once, got %d findings: %v", found["IsFreeOfKeywords"], found)
+	}
+	if opens != 1 {
+		t.Errorf("the archive's stream was decompressed %d times, want exactly 1", opens)
+	}
+}
+
+// TestUnderCapTarGzWithoutContentScanIsListedOnce is the fused walk's other
+// branch: with no member-scope entry admitting the container there is no content
+// walk to ride, so the member names come from the plain listing instead - still
+// one decompression, and still the file-list findings.
+func TestUnderCapTarGzWithoutContentScanIsListedOnce(t *testing.T) {
+	cfg := keywordConfig()
+	cfg.Rules[0].Scope = []string{"file"}
+
+	messages, opens := runPipeline(t, cfg, []structs.File{tarGzFixture(t)})
+
+	names := 0
+	for _, m := range messages {
+		src, ok := m.Source.(structs.File)
+		if !ok || src.Name != tarGzMember {
+			continue
+		}
+		switch m.TestName {
+		case "HasNoWhiteSpace":
+			names++
+		case "IsFreeOfKeywords":
+			t.Errorf("the only keyword rule is file-scoped, so no member body may be scanned: %q", m.Content)
+		}
+	}
+	if names != 1 {
+		t.Errorf("expected the member name to be checked once, got %d findings", names)
+	}
+	if opens != 1 {
+		t.Errorf("the archive's stream was decompressed %d times, want exactly 1", opens)
+	}
+}
+
+// tarGzTree writes a .tar.gz holding dirs directory entries in front of members
+// regular members, each carrying the keyword. The two kinds count differently
+// against the archive member cap - the name collector counts every HEADER it
+// passes, the content walk only the members it would unpack - which is what lets
+// a test truncate the member list without stopping the content scan. Every name
+// holds a space, so an unbusted list draws one whitespace finding per entry.
+func tarGzTree(t *testing.T, dirs, members int) structs.File {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "tree.tar.gz")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create tar.gz: %v", err)
+	}
+	gz := gzip.NewWriter(f)
+	tw := tar.NewWriter(gz)
+	for i := range dirs {
+		header := &tar.Header{Name: fmt.Sprintf("dir %d/", i), Mode: 0o700, Typeflag: tar.TypeDir}
+		if err := tw.WriteHeader(header); err != nil {
+			t.Fatalf("write directory header: %v", err)
+		}
+	}
+	body := []byte("a password inside")
+	for i := range members {
+		header := &tar.Header{Name: fmt.Sprintf("notes %d.txt", i), Mode: 0o600, Size: int64(len(body))}
+		if err := tw.WriteHeader(header); err != nil {
+			t.Fatalf("write member header: %v", err)
+		}
+		if _, err := tw.Write(body); err != nil {
+			t.Fatalf("write member: %v", err)
+		}
+	}
+	for _, closer := range []io.Closer{tw, gz, f} {
+		if err := closer.Close(); err != nil {
+			t.Fatalf("close tar.gz: %v", err)
+		}
+	}
+	return structs.ToFile(path, "tree.tar.gz", -1, "")
+}
+
+// TestFusedWalkTruncatedMemberListDropsNameChecks: the fused walk's member list
+// is bounded like the file-list pass's, and past the bound it is partial by
+// construction. The content scan still delivers - it counts unpack candidates,
+// not headers - but no name check may run on a partial list, and the listing
+// walk the archive falls back to acknowledges it exactly once.
+func TestFusedWalkTruncatedMemberListDropsNameChecks(t *testing.T) {
+	const memberCap = 4
+	// Five headers over the cap, two unpack candidates under it.
+	archive := tarGzTree(t, 3, 2)
+
+	cfg := keywordConfig()
+	cfg.General.MaxArchiveMemberCount = memberCap
+
+	messages, opens := runPipeline(t, cfg, []structs.File{archive})
+
+	content, names := 0, 0
+	var skips []structs.Message
+	for _, m := range messages {
+		src, ok := m.Source.(structs.File)
+		if !ok {
+			continue
+		}
+		switch {
+		case m.Skipped && src.Name == archive.Name:
+			skips = append(skips, m)
+		case m.TestName == "IsFreeOfKeywords" && src.ArchiveName != "":
+			content++
+		case m.TestName == "HasNoWhiteSpace":
+			names++
+		}
+	}
+	if content != 2 {
+		t.Errorf("the content walk counts unpack candidates, so both members must still be scanned, got %d findings", content)
+	}
+	if names != 0 {
+		t.Errorf("a partial member list must draw no name checks, got %d findings", names)
+	}
+	if len(skips) != 1 {
+		t.Fatalf("a partial member list is acknowledged exactly once, got %d: %v", len(skips), skips)
+	}
+	if !strings.Contains(skips[0].Reason, fmt.Sprintf("more than %d members", memberCap)) {
+		t.Errorf("the acknowledgement must name the configured member cap: %q", skips[0].Reason)
+	}
+	// The fused walk plus the listing it falls back to: the partial list is
+	// dropped rather than reported on, so the plain walk gets its own attempt.
+	if opens != 2 {
+		t.Errorf("the archive's stream was decompressed %d times, want 2 (the content walk and the listing walk it falls back to)", opens)
+	}
+}
+
+// TestFusedWalkWithoutFileListRulesIsNeverListed: with the file-list scope empty
+// there is nothing to run over a member list, so dispatch collects none and
+// falls back to no listing walk either - and an archive whose member list would
+// bust the walk bounds draws no acknowledgement for a list nobody asked for. Its
+// content scan is untouched by any of that.
+func TestFusedWalkWithoutFileListRulesIsNeverListed(t *testing.T) {
+	// Five headers past a cap of four: a listing walk taken here would truncate,
+	// and so announce itself.
+	archive := tarGzTree(t, 3, 2)
+
+	// One member-scope rule; every check that reads an archive's member NAMES is
+	// switched off, which is what leaves the file-list scope empty.
+	cfg := planConfig([]config.RuleSpec{
+		{
+			Name: "keywords", Check: "IsFreeOfKeywords", Enabled: true, Scope: []string{"archive-member"},
+			Params: []map[string]interface{}{
+				{"keywords": []string{"password"}, "info": "found"},
+			},
+		},
+		{Name: "names", Check: "IsValidName", Enabled: false},
+		{Name: "ascii", Check: "HasOnlyASCII", Enabled: false},
+		{Name: "whitespace", Check: "HasNoWhiteSpace", Enabled: false},
+		{Name: "special-chars", Check: "HasFileNameSpecialChars", Enabled: false},
+		{Name: "name-length", Check: "IsFileNameTooLong", Enabled: false},
+	})
+	cfg.General.MaxArchiveMemberCount = 4
+	if entries := compilePlan(t, cfg).Scope(checks.ScopeArchiveFileList); len(entries) != 0 {
+		t.Fatalf("the fixture must leave the file-list scope empty, got %d entries", len(entries))
+	}
+
+	messages, opens := runPipeline(t, cfg, []structs.File{archive})
+
+	content := 0
+	for _, m := range messages {
+		if m.TestName == "ArchiveFileList" {
+			t.Errorf("nothing was scheduled over the member list, so nothing may be reported about it: %q", m.Content)
+		}
+		if src, ok := m.Source.(structs.File); ok && m.TestName == "IsFreeOfKeywords" && src.ArchiveName != "" {
+			content++
+		}
+	}
+	if content != 2 {
+		t.Errorf("the content scan is unaffected: %d member findings, want 2", content)
+	}
+	if opens != 1 {
+		t.Errorf("the archive's stream was decompressed %d times, want exactly 1", opens)
+	}
+}
+
+// TestFusedWalkKeepsTheArchiveDisplayName: the content walk labels its members
+// with the archive File's Name, the file-list reader with its DISPLAY name - two
+// different strings for a CKAN resource, and the display name is what every
+// finding of an archive member has always carried.
+func TestFusedWalkKeepsTheArchiveDisplayName(t *testing.T) {
+	const display = "Field notes 2026"
+	path := filepath.Join(t.TempDir(), "data.tar.gz")
+	writeTarGzFixture(t, path, tarGzMember, []byte("a password inside"))
+	archive := structs.ToFileWithDisplay(path, "data.tar.gz", display, -1, "", "")
+
+	messages, opens := runPipeline(t, keywordConfig(), []structs.File{archive})
+
+	labels := map[string][]string{}
+	for _, m := range messages {
+		if src, ok := m.Source.(structs.File); ok && src.Name == tarGzMember {
+			labels[m.TestName] = append(labels[m.TestName], src.ArchiveName)
+		}
+	}
+	for _, testName := range []string{"HasNoWhiteSpace", "IsFreeOfKeywords"} {
+		got := labels[testName]
+		if len(got) != 1 {
+			t.Errorf("%s: %d member findings, want 1: %v", testName, len(got), got)
+			continue
+		}
+		if got[0] != display {
+			t.Errorf("%s: the member finding names archive %q, want the display name %q", testName, got[0], display)
+		}
+	}
+	if opens != 1 {
+		t.Errorf("the archive's stream was decompressed %d times, want exactly 1", opens)
+	}
+}
+
+// TestFusedWalkDropsTheNameCollector pins the retention contract where it can
+// actually fire: a member-scope check that sources a message at the File it was
+// handed - which is how the content gate acknowledges an oversized archive - must
+// not carry dispatch's name collector out on it.
+func TestFusedWalkDropsTheNameCollector(t *testing.T) {
+	echo := mockEntry("echoesItsFile", func(file structs.File) []structs.Message {
+		return []structs.Message{{Content: "sourced at the file it was handed", Source: file}}
+	})
+
+	// A file-list entry beside it, or dispatch hands out no collector at all and
+	// there is nothing for the check to carry away.
+	cfg := planConfig(nil)
+	plan := compilePlan(t, cfg)
+	messages := streamListArchiveChecks(context.Background(), &diagSink{}, cfg,
+		plan.Scope(checks.ScopeArchiveFileList), []checks.PlanEntry{echo}, tarGzFixture(t))
+
+	echoed := 0
+	for _, m := range messages {
+		src, ok := m.Source.(structs.File)
+		if !ok || m.TestName != "echoesItsFile" {
+			continue
+		}
+		echoed++
+		if src.MemberNames != nil {
+			t.Errorf("the member-name collector left dispatch on a finding: %+v", m)
+		}
+	}
+	if echoed != 1 {
+		t.Fatalf("expected the mock check's one message, got %d: %v", echoed, messages)
+	}
+}
+
+// TestFusedWalkSecondMemberCheckListsSeparately: the collector rides ONE content
+// walk, so a second member-scope check means no collector at all. Both checks
+// then scan the archive exactly as they did before the fusion, the member names
+// come from the listing walk beside them - two decompressions, correct output -
+// and nothing is acknowledged as unlistable.
+func TestFusedWalkSecondMemberCheckListsSeparately(t *testing.T) {
+	cfg := keywordConfig()
+	plan := compilePlan(t, cfg)
+	keywords := planEntry(t, plan, "IsFreeOfKeywords", checks.ScopeArchiveMember)
+	echo := mockEntry("echoesItsFile", func(structs.File) []structs.Message {
+		return []structs.Message{{Content: "the second member check ran"}}
+	})
+
+	resetGlobalScanState()
+	before := readers.TarGzStreamOpens()
+	messages := streamListArchiveChecks(context.Background(), &diagSink{}, cfg,
+		plan.Scope(checks.ScopeArchiveFileList), []checks.PlanEntry{keywords, echo}, tarGzFixture(t))
+	opens := readers.TarGzStreamOpens() - before
+	resetGlobalScanState()
+
+	found := map[string]int{}
+	for _, m := range messages {
+		if m.Skipped {
+			t.Errorf("a listable archive must not be acknowledged as skipped: %q", m.Content)
+		}
+		found[m.TestName]++
+	}
+	for _, testName := range []string{"IsFreeOfKeywords", "echoesItsFile", "HasNoWhiteSpace"} {
+		if found[testName] != 1 {
+			t.Errorf("%s: %d findings, want 1: %v", testName, found[testName], found)
+		}
+	}
+	if opens != 2 {
+		t.Errorf("the archive's stream was decompressed %d times, want 2 (the content walk and the listing walk)", opens)
+	}
+}
+
+// TestFusedWalkUnopenedArchiveStillGetsListed: a .tar.gz the content check never
+// got into - garbage where its gzip stream should be - leaves the collector
+// unclaimed, which says nothing about the archive's members. The listing attempt
+// the file-list pass would have made is still owed, and it fails on the same
+// bytes: a diagnostic, where an acknowledgement would claim a member list was
+// skipped by a walk that never happened.
+func TestFusedWalkUnopenedArchiveStillGetsListed(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "data.tar.gz")
+	if err := os.WriteFile(path, []byte("not a gzip stream at all"), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	archive := structs.ToFile(path, "data.tar.gz", -1, "")
+
+	cfg := keywordConfig()
+	plan := compilePlan(t, cfg)
+	resetGlobalScanState()
+	messages, diags := ApplyAllChecks(context.Background(), cfg, plan, []structs.File{archive})
+	resetGlobalScanState()
+
+	for _, m := range messages {
+		src, ok := m.Source.(structs.File)
+		if !ok {
+			continue
+		}
+		if m.TestName == "ArchiveFileList" {
+			t.Errorf("no walk opened the archive, so no member list may be reported skipped: %q", m.Content)
+		}
+		if src.ArchiveName != "" {
+			t.Errorf("an unreadable archive has no members to report on: %+v", m)
+		}
+	}
+	reported := false
+	for _, d := range diags {
+		if strings.Contains(d.Message, archive.Name) {
+			reported = true
+		}
+	}
+	if !reported {
+		t.Errorf("the failed listing must be reported as a diagnostic, got %v", diags)
+	}
+}
+
+// TestFusedWalkRunsSeveralArchivesOnThePool: two stream-list archives are two
+// items of the archive-member pool, which is the phase's parallel branch. Each
+// archive keeps its own member-name finding, its own member-body finding and its
+// own single decompression - a walk that ran on the wrong archive, or an item
+// the pool never picked up, shows up as a missing finding or a missing open.
+func TestFusedWalkRunsSeveralArchivesOnThePool(t *testing.T) {
+	if runtime.GOMAXPROCS(0) < 2 {
+		t.Skip("the phase takes its sequential branch on one processor, so the pool is never reached")
+	}
+	dir := t.TempDir()
+	names := []string{"one.tar.gz", "two.tar.gz"}
+	var files []structs.File
+	for _, name := range names {
+		path := filepath.Join(dir, name)
+		writeTarGzFixture(t, path, tarGzMember, []byte("a password inside"))
+		files = append(files, structs.ToFile(path, name, -1, ""))
+	}
+
+	messages, opens := runPipeline(t, keywordConfig(), files)
+
+	found := map[string]map[string]int{}
+	for _, m := range messages {
+		src, ok := m.Source.(structs.File)
+		if !ok || src.Name != tarGzMember {
+			continue
+		}
+		if found[src.ArchiveName] == nil {
+			found[src.ArchiveName] = map[string]int{}
+		}
+		found[src.ArchiveName][m.TestName]++
+	}
+	for _, name := range names {
+		if found[name]["HasNoWhiteSpace"] != 1 {
+			t.Errorf("%s: %d member-name findings, want 1: %v", name, found[name]["HasNoWhiteSpace"], found[name])
+		}
+		if found[name]["IsFreeOfKeywords"] != 1 {
+			t.Errorf("%s: %d member-body findings, want 1: %v", name, found[name]["IsFreeOfKeywords"], found[name])
+		}
+	}
+	if opens != 2 {
+		t.Errorf("the two archives' streams were decompressed %d times, want exactly 2", opens)
 	}
 }
 

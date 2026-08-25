@@ -23,6 +23,12 @@ type File struct {
 	Suffix      string
 	IsArchive   bool
 	ArchiveName string // Name of parent archive if this file is inside an archive
+	// MemberNames is dispatch's hand-off for the single-walk fusion: dispatch
+	// sets it only on the File it passes to the archive-member check and it is
+	// nil everywhere else. It is stripped from the member-check messages
+	// dispatch collects - the scrub loop in utils.streamListArchiveChecks - so a
+	// finding never carries a whole archive's member list into the result set.
+	MemberNames *ArchiveNameCollector
 }
 
 func GetFileSize(file string) int64 {

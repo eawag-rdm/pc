@@ -414,10 +414,12 @@ func skippedArchiveWork(names, content bool) string {
 }
 
 func applyChecksFilteredByFileOnArchiveFileList(ctx context.Context, sink *diagSink, config config.Config, entries []checks.PlanEntry, files []structs.File) []structs.Message {
-	// Filter to only archive files
+	// Filter to only archive files, minus the stream-list ones: listing those
+	// costs a decompression, and the member phase owns their listing instead
+	// (streamListArchiveChecks).
 	var archiveFiles []structs.File
 	for _, file := range files {
-		if file.IsArchive {
+		if file.IsArchive && !readers.IsStreamListArchive(file.Name) {
 			archiveFiles = append(archiveFiles, file)
 		}
 	}
@@ -512,12 +514,20 @@ func archiveFileListChecks(ctx context.Context, sink *diagSink, cfg config.Confi
 		// The list is partial by construction: run no checks on it.
 		return append(messages, archiveWalkSkipMessage(archiveFile, maxMembers))
 	}
+	return archiveFileListMemberChecks(ctx, sink, entries, archiveFile, fileList)
+}
+
+// archiveFileListMemberChecks runs the file-list scope over one archive's member
+// list, whichever walk produced it: the reader's own listing pass, or the fused
+// content walk that noted the same names on its way through.
+func archiveFileListMemberChecks(ctx context.Context, sink *diagSink, entries []checks.PlanEntry, archiveFile structs.File, fileList []structs.File) []structs.Message {
+	var messages []structs.Message
 
 	// One rule-report buffer per ARCHIVE, taken and folded here: on the parallel
 	// path this function is the worker goroutine, so a buffer shared with the
 	// other archives would be a data race. The scope counts as exercised only
-	// past the returns above, and only for a member list this call really walked
-	// - one that was never walked proves nothing about its rules.
+	// past the caller's own returns, and only for a member list some walk really
+	// produced - one that was never walked proves nothing about its rules.
 	marks := sink.rules.local(checks.ScopeArchiveFileList, entries)
 	walked := len(fileList) > 0
 	defer func() { sink.rules.fold(checks.ScopeArchiveFileList, marks, walked) }()
@@ -596,37 +606,52 @@ func applyArchiveFileListChecksParallel(ctx context.Context, sink *diagSink, cfg
 	return allMessages
 }
 
-// applyChecksFilteredByFileOnArchive is the archive-member phase. It takes no
-// rule marks: what its selection decides is the CONTAINER's gate, not the member
-// rule's own selector, so nothing observable here is reportable (newRuleReport).
-func applyChecksFilteredByFileOnArchive(ctx context.Context, sink *diagSink, entries []checks.PlanEntry, files []structs.File) []structs.Message {
-	// Filter to only archive files
-	var archiveFiles []structs.File
+// applyChecksFilteredByFileOnArchive is the archive-member phase. Its own
+// selection takes no rule marks: what it decides is the CONTAINER's gate, not
+// the member rule's own selector, so nothing observable here is reportable
+// (newRuleReport). The stream-list archives it hands over to the fused walk DO
+// fold marks - of the file-list scope, whose checks that walk runs too.
+func applyChecksFilteredByFileOnArchive(ctx context.Context, sink *diagSink, cfg config.Config, listEntries, memberEntries []checks.PlanEntry, files []structs.File) []structs.Message {
+	// Filter to only archive files. The stream-list ones skip this phase's
+	// selection - one routine owns both halves of them and matches the container
+	// itself - but they ride the same pool: what they do is extraction like any
+	// other archive's, and the pool's worker count is what bounds it.
+	var archiveFiles, streamList []structs.File
 	for _, file := range files {
-		if file.IsArchive {
-			archiveFiles = append(archiveFiles, file)
+		if !file.IsArchive {
+			continue
 		}
+		if readers.IsStreamListArchive(file.Name) {
+			streamList = append(streamList, file)
+			continue
+		}
+		archiveFiles = append(archiveFiles, file)
 	}
 
-	if len(archiveFiles) == 0 {
-		return []structs.Message{}
+	// One work list for the whole phase: a stream-list archive's item is the
+	// fused walk of both its archive scopes.
+	workItems := filterChecksForFiles(memberEntries, checks.ScopeArchiveMember, archiveFiles, nil)
+	for _, file := range streamList {
+		workItems = append(workItems, streamListWorkItem(sink, cfg, listEntries, memberEntries, file))
 	}
 
 	// Use parallel processing for archives as they are CPU-intensive
-	if len(archiveFiles) >= 2 && runtime.GOMAXPROCS(0) > 1 {
-		return applyArchiveChecksParallel(ctx, sink, entries, archiveFiles)
+	if len(workItems) >= 2 && runtime.GOMAXPROCS(0) > 1 {
+		return applyArchiveChecksParallel(ctx, sink, workItems)
 	}
-
-	scratch := newMatchScratch(entries, nil)
 
 	// Sequential processing for single archives
 	var messages = []structs.Message{}
-	for _, file := range archiveFiles {
+	for _, item := range workItems {
 		if ctx.Err() != nil {
 			return messages
 		}
-		for _, entry := range scratch.match(entries, file) {
-			ret := safeRunCheck(ctx, sink, entry, file, checks.ScopeArchiveMember)
+		if item.Run != nil {
+			messages = append(messages, item.Run(ctx)...)
+			continue
+		}
+		for _, entry := range item.Checks {
+			ret := safeRunCheck(ctx, sink, entry, item.File, item.Scope)
 			if ret != nil {
 				// Add test name to each message
 				for j := range ret {
@@ -639,6 +664,110 @@ func applyChecksFilteredByFileOnArchive(ctx context.Context, sink *diagSink, ent
 	return messages
 }
 
+// streamListWorkItem is one stream-list archive's place in the archive-member
+// pool: an item whose processing is the fused walk of both its archive scopes.
+// The member-name checks of these archives therefore run from the member phase
+// - a narrow exception to the phase split, because the walk that scans their
+// content is also the only affordable way to list them.
+func streamListWorkItem(sink *diagSink, cfg config.Config, listEntries, memberEntries []checks.PlanEntry, archiveFile structs.File) workItem {
+	return workItem{
+		File:  archiveFile,
+		Scope: checks.ScopeArchiveMember,
+		Run: func(ctx context.Context) []structs.Message {
+			// The whole body runs under ONE guard (not just the check
+			// invocations): it walks untrusted archive bytes on a bare worker
+			// goroutine, where an unrecovered panic would kill the process, and
+			// one guard for both scopes is the intent - a panic in either half
+			// discards this archive's findings as a unit rather than leaving
+			// half of them to stand for the archive.
+			return safeRun(sink, "Processing archive '"+archiveFile.Name+"'", archiveFile.GetDisplayName(), func() []structs.Message {
+				return streamListArchiveChecks(ctx, sink, cfg, listEntries, memberEntries, archiveFile)
+			})
+		},
+	}
+}
+
+// streamListArchiveChecks runs both archive scopes over ONE stream-list archive
+// off a single decompression of its stream.
+//
+// When a single member-scope entry admits the container, the content walk notes
+// the member names it passes and the file-list entries then run on that list.
+// Everywhere else - nothing content-scans this archive, several entries do, the
+// check bailed before opening it, or its walk stopped short of the archive's end
+// - the plain file-list walk runs here instead, exactly as it would have in its
+// own pass, and owns whatever findings, acknowledgement or diagnostic that
+// archive has coming.
+func streamListArchiveChecks(ctx context.Context, sink *diagSink, cfg config.Config, listEntries, memberEntries []checks.PlanEntry, archiveFile structs.File) []structs.Message {
+	scratch := newMatchScratch(memberEntries, nil)
+	matched := scratch.match(memberEntries, archiveFile)
+	if len(matched) == 0 {
+		if ctx.Err() != nil || len(listEntries) == 0 {
+			return nil
+		}
+		return archiveFileListChecks(ctx, sink, cfg, listEntries, archiveFile)
+	}
+
+	// The collector rides ONE walk: a second content check would open the archive
+	// again and its fill would be refused, so with more than one matched entry
+	// the names come from the listing walk instead - two decompressions, correct
+	// output. With no file-list check to run there is nothing to collect for.
+	// Its cap comes from the same config resolution as the walk's own member cap
+	// (config.GeneralConfig.ArchiveLimits, via archiveWalkLimits here and via
+	// checks.archiveLimits there), so the two bounds cannot drift apart - they
+	// count different things, headers against unpack candidates, which is why
+	// either can bust while the other holds.
+	maxMembers, _ := archiveWalkLimits(cfg)
+	var collector *structs.ArchiveNameCollector
+	handed := archiveFile
+	if len(matched) == 1 && len(listEntries) > 0 {
+		collector = structs.NewArchiveNameCollector(maxMembers)
+		handed.MemberNames = collector
+	}
+
+	var messages []structs.Message
+	for _, entry := range matched {
+		ret := safeRunCheck(ctx, sink, entry, handed, checks.ScopeArchiveMember)
+		if ret != nil {
+			for j := range ret {
+				ret[j].TestName = entry.Def.Name
+			}
+			messages = append(messages, ret...)
+		}
+	}
+	if collector != nil {
+		// The collector is dispatch's private hand-off to the calls above, and a
+		// check that acknowledges the archive sources its message at the File it
+		// was handed: strip it before any of these travel on, or one finding pins
+		// a whole member list in the result set.
+		for i := range messages {
+			if src, ok := messages[i].Source.(structs.File); ok && src.MemberNames != nil {
+				src.MemberNames = nil
+				messages[i].Source = src
+			}
+		}
+
+		if members, ok := collector.Result(); ok {
+			// The walk labels its members with the archive's Name, the file-list
+			// reader with its display name - which for a CKAN resource is a
+			// different string, and what every finding of this archive has always
+			// carried.
+			display := archiveFile.GetDisplayName()
+			for i := range members {
+				members[i].ArchiveName = display
+			}
+			return append(messages, archiveFileListMemberChecks(ctx, sink, listEntries, archiveFile, members)...)
+		}
+	}
+	// No member list came out of the content walk, whatever stopped it: the
+	// listing the file-list pass would have done is then still owed, and it
+	// reaches its own verdict on the same bytes - the acknowledgement for a list
+	// that busts the walk bounds, the diagnostic for an archive it cannot read.
+	if ctx.Err() != nil || len(listEntries) == 0 {
+		return messages
+	}
+	return append(messages, archiveFileListChecks(ctx, sink, cfg, listEntries, archiveFile)...)
+}
+
 // archiveWorkers sizes the archive-member pass: half the CPU budget as a proxy
 // for "fewer concurrent extractions, lower peak memory" - the constraint is
 // extraction MEMORY, which no CPU quota bounds. Halving alone would collapse a
@@ -649,11 +778,13 @@ func archiveWorkers(procs int) int {
 	return min(procs, max(2, procs/2))
 }
 
-// applyArchiveChecksParallel processes archive files in parallel. Archive
-// extraction is memory-intensive, so it uses a fraction of the CPU budget.
-func applyArchiveChecksParallel(ctx context.Context, sink *diagSink, entries []checks.PlanEntry, files []structs.File) []structs.Message {
+// applyArchiveChecksParallel processes the archive-member phase's work list in
+// parallel. Archive extraction is memory-intensive, so it uses a fraction of the
+// CPU budget - and every archive of the phase rides this one pool, so that
+// fraction is the whole phase's concurrent-extraction bound.
+func applyArchiveChecksParallel(ctx context.Context, sink *diagSink, workItems []workItem) []structs.Message {
 	numWorkers := archiveWorkers(runtime.GOMAXPROCS(0))
-	return runChecksPool(ctx, sink, filterChecksForFiles(entries, checks.ScopeArchiveMember, files, nil), numWorkers, nil)
+	return runChecksPool(ctx, sink, workItems, numWorkers, nil)
 }
 
 func applyChecksFilteredByRepository(ctx context.Context, sink *diagSink, entries []checks.PlanEntry, files []structs.File) []structs.Message {
@@ -750,7 +881,7 @@ func ApplyAllChecks(ctx context.Context, config config.Config, plan *checks.Plan
 	messages = append(messages, applyChecksFilteredByFile(ctx, sink, plan.Scope(checks.ScopeFile), files)...)
 	messages = append(messages, refusals...)
 	messages = append(messages, applyChecksFilteredByFileOnArchiveFileList(ctx, sink, config, listChecks, remaining)...)
-	messages = append(messages, applyChecksFilteredByFileOnArchive(ctx, sink, memberChecks, remaining)...)
+	messages = append(messages, applyChecksFilteredByFileOnArchive(ctx, sink, config, listChecks, memberChecks, remaining)...)
 	messages = append(messages, applyChecksFilteredByRepository(ctx, sink, plan.Scope(checks.ScopeRepository), files)...)
 
 	// Surface a clear, non-issue notice when there was nothing to analyse.
@@ -869,7 +1000,7 @@ func ApplyAllChecksWithProgress(ctx context.Context, config config.Config, plan 
 	if progressCallback != nil {
 		progressCallback(structs.Progress{Phase: structs.PhaseArchiveContent, Current: testsRun, Total: totalTests, Start: true})
 	}
-	archiveContentTests := applyChecksFilteredByFileOnArchive(ctx, sink, memberChecks, remaining)
+	archiveContentTests := applyChecksFilteredByFileOnArchive(ctx, sink, config, listChecks, memberChecks, remaining)
 	messages = append(messages, archiveContentTests...)
 	// Update count for archive content tests (including skipped ones)
 	for _, file := range files {

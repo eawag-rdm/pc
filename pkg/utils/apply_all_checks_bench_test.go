@@ -86,7 +86,7 @@ func benchPipelineTree(b *testing.B, n int) []structs.File {
 	write(".Rhistory", body)
 
 	files = append(files, structs.ToFile(writeZipFixture(b, dir), "", -1, "")) // member-name walk + content scan
-	writeTarGz("notes.tar.gz", []byte(body))                                   // under the cap: both archive passes walk it
+	writeTarGz("notes.tar.gz", []byte(body))                                   // under the cap: one fused walk serves both archive scopes
 	// Over the cap, so dispatch hands it to neither pass. Incompressible bytes:
 	// the gate reads the archive's size ON DISK, which gzip must not shrink.
 	incompressible := make([]byte, 2*benchContentScanCap)

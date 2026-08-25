@@ -179,10 +179,10 @@ func newRuleReport(plan *checks.Plan) *ruleReport {
 // the plan's own slice.
 //
 // A mismatch is a wiring bug, and the answer to it is to switch reporting off
-// for that phase, not to panic: one caller (archiveFileListChecks) runs under
-// safeRun, which would turn the panic into a subject-tagged diagnostic and thus
-// into a depositor-facing "this archive could not be fully scanned" - a bug in
-// here must never become a message to the end user.
+// for that phase, not to panic: one caller (archiveFileListMemberChecks) runs
+// under safeRun, which would turn the panic into a subject-tagged diagnostic
+// and thus into a depositor-facing "this archive could not be fully scanned" -
+// a bug in here must never become a message to the end user.
 func (r *ruleReport) local(scope checks.Scope, entries []checks.PlanEntry) *ruleMarks {
 	if r == nil || r.scopes[scope] == nil {
 		return nil
