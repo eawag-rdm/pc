@@ -952,6 +952,30 @@ func TestIsFreeOfKeywords_OversizedFileEmitsSkipMessage(t *testing.T) {
 	}
 }
 
+// TestIsFreeOfKeywords_OversizedArchiveSilentAtFileScope pins which pass
+// acknowledges an over-cap file: an archive is skipped SILENTLY here, because
+// the archive-member pass is dispatched on the same IsArchive flag and hits the
+// same gate, which acknowledges it there - one message, not two. That the two
+// passes together leave exactly one acknowledgement is pinned end to end in
+// pkg/utils, where the dispatch lives.
+func TestIsFreeOfKeywords_OversizedArchiveSilentAtFileScope(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "data.zip")
+	if err := os.WriteFile(path, []byte("password is hunter2"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Built the way the collectors build it, so the suffix decides IsArchive
+	// here exactly as it does in a real run.
+	file := structs.ToFile(path, "data.zip", -1, "")
+
+	// MaxContentScanFileSize of 1 byte forces the size-skip branch.
+	cfg := newKeywordConfig(1, 10*1024*1024, 100*1024*1024)
+
+	messages := runRule(t, "IsFreeOfKeywords", cfg, ScopeFile, file)
+	if len(messages) != 0 {
+		t.Fatalf("expected no file-scope message for an archive, got %+v", messages)
+	}
+}
+
 func TestIsFreeOfKeywords_NormalFileNotSkipped(t *testing.T) {
 	path := tempFile([]byte("password is hunter2"))
 	defer os.Remove(path)

@@ -540,8 +540,16 @@ func keywordsInFile(ctx context.Context, file structs.File, batch *Batch, rules 
 
 	// Check if file exceeds the configured maximum size for content scanning.
 	// Emit a skip acknowledgement Message so every output (CLI plain, TUI, JSON)
-	// surfaces that the file's content was not scanned.
+	// surfaces that the file's content was not scanned. An archive is silent
+	// here: dispatch routes it to the archive pass, whose size gate owns the
+	// acknowledgement. A keyword rule scoped to file only therefore leaves an
+	// over-cap archive unacknowledged - accepted; under the cap, file scope
+	// still content-sniffs it (mislabelled text is scanned, a bare .gz acks as
+	// binary).
 	if fileInfo.Size() > batch.maxContentScan {
+		if file.IsArchive {
+			return messages
+		}
 		return append(messages, oversizeSkip(file, "file", fileInfo.Size(), batch.maxContentScan))
 	}
 

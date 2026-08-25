@@ -475,6 +475,71 @@ func TestExecutedCheckMultisetUnchanged(t *testing.T) {
 	}
 }
 
+// TestOversizedFileAcknowledgedOnce pins the two content-scan size gates
+// against the dispatch that decides which of them a file meets: the file pass
+// acknowledges an over-cap plain file, the archive-member pass acknowledges an
+// over-cap archive, and no file is acknowledged twice. Only the whole pipeline
+// can pin it - the gates sit in two scopes, and which files reach the second
+// one is the dispatch's decision (IsArchive), not the check's.
+func TestOversizedFileAcknowledgedOnce(t *testing.T) {
+	dir := t.TempDir()
+	var files []structs.File
+	for _, name := range []string{"data.zip", "data.tar", "data.tar.gz", "data.gz", "data.txt"} {
+		path := filepath.Join(dir, name)
+		// Both gates read os.Stat before any reader opens the file, so the
+		// archives reach them without being valid containers.
+		if err := os.WriteFile(path, []byte("password"), 0o600); err != nil {
+			t.Fatalf("write fixture %q: %v", name, err)
+		}
+		files = append(files, structs.ToFile(path, name, -1, ""))
+	}
+
+	cfg := planConfig([]config.RuleSpec{{
+		Name: "keywords", Check: "IsFreeOfKeywords", Enabled: true,
+		Params: []map[string]interface{}{
+			{"keywords": []string{"password"}, "info": "found"},
+		},
+	}})
+	// A one-byte cap puts every fixture over the gate.
+	cfg.General.MaxContentScanFileSize = 1
+	plan := compilePlan(t, cfg)
+
+	resetGlobalScanState()
+	messages, _ := ApplyAllChecks(context.Background(), cfg, plan, files)
+	resetGlobalScanState()
+
+	// The unreadable archives draw unrelated findings and diagnostics; only the
+	// skip acknowledgements are this test's business.
+	acknowledged := map[string][]string{}
+	for _, m := range messages {
+		if !strings.HasPrefix(m.Content, "Skipped content scan") {
+			continue
+		}
+		src, ok := m.Source.(structs.File)
+		if !ok {
+			t.Fatalf("skip acknowledgement without a file source: %+v", m)
+		}
+		acknowledged[src.Name] = append(acknowledged[src.Name], m.Content)
+	}
+	want := map[string]string{
+		"data.zip":    "Skipped content scan of archive:",
+		"data.tar":    "Skipped content scan of archive:",
+		"data.tar.gz": "Skipped content scan of archive:",
+		"data.gz":     "Skipped content scan of archive:",
+		"data.txt":    "Skipped content scan of file:",
+	}
+	for name, prefix := range want {
+		got := acknowledged[name]
+		if len(got) != 1 {
+			t.Errorf("%s: %d skip acknowledgements, want exactly 1: %v", name, len(got), got)
+			continue
+		}
+		if !strings.HasPrefix(got[0], prefix) {
+			t.Errorf("%s: acknowledged as %q, want %q", name, got[0], prefix)
+		}
+	}
+}
+
 // TestBenchFixturesCompile keeps the benchmark fixtures in the normal suite's
 // reach: nothing else runs them, so a fixture Compile refuses would surface
 // only on the day someone takes a measurement - and the measurements rest on
