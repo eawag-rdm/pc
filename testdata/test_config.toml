@@ -27,10 +27,13 @@ summaryMinGroupSizeForTruncation = 3
 
 [server]
 # pc-server HTTP API settings. Most values mirror the built-in defaults;
-# allowedOrigins and trustedProxies are illustrative (both default to nil).
+# allowedOrigins and trustedProxies are illustrative (both default to nil);
+# allowedClients stays commented on purpose (a live key would gate the tests).
 listenAddress           = "127.0.0.1:8080"
 trustProxyHeaders       = true
 trustedProxies          = ["127.0.0.1/32"]
+# CIDRs allowed to POST /api/v1/analyze; empty or absent admits every client
+# allowedClients          = ["127.0.0.1/32", "::1/128"]
 allowedOrigins          = ["http://localhost:3000"]
 perIPRequestsPerHour    = 4
 globalRequestsPerHour   = 20
