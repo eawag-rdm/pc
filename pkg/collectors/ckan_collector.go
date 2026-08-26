@@ -559,9 +559,10 @@ func CkanPackageModifiedAt(ctx context.Context, packageID string, config config.
 	// Both spellings, quoted: package_show accepts an id or a name, so the probe
 	// must resolve whichever the caller passed. Quoting keeps a value with Solr
 	// syntax in it from becoming query structure, and the whole term is escaped
-	// on the way into the URL.
+	// on the way into the URL. Parenthesized: CKAN silently drops an fq whose top
+	// level contains a bare OR, degrading the filter to match-all.
 	term := solrPhraseEscaper.Replace(packageID)
-	fq := neturl.QueryEscape(fmt.Sprintf(`name:"%s" OR id:"%s"`, term, term))
+	fq := neturl.QueryEscape(fmt.Sprintf(`(name:"%s" OR id:"%s")`, term, term))
 	url := fmt.Sprintf("%s/api/3/action/package_search?fq=%s&rows=1&include_private=true", urlAttr, fq)
 
 	jsonStr, err := Request(ctx, url, token, verify)

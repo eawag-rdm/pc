@@ -161,7 +161,7 @@ func TestCkanPackageModifiedAt_SuccessAndEscaping(t *testing.T) {
 	}
 	// Decoded: an unescaped id would have split fq at its '&' and lost the
 	// second half into a parameter of its own.
-	if want := `name:"a&evil=1" OR id:"a&evil=1"`; gotQuery.Get("fq") != want {
+	if want := `(name:"a&evil=1" OR id:"a&evil=1")`; gotQuery.Get("fq") != want {
 		t.Errorf("fq = %q, want %q", gotQuery.Get("fq"), want)
 	}
 	if got := gotQuery.Get("rows"); got != "1" {
@@ -199,7 +199,7 @@ func TestCkanPackageModifiedAt_SolrTermEscaping(t *testing.T) {
 	if _, _, err := CkanPackageModifiedAt(context.Background(), `a" OR name:*`, ckanTestConfig(srv.URL)); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if want := `name:"a\" OR name:*" OR id:"a\" OR name:*"`; gotFq != want {
+	if want := `(name:"a\" OR name:*" OR id:"a\" OR name:*")`; gotFq != want {
 		t.Errorf("fq = %q, want %q", gotFq, want)
 	}
 }
