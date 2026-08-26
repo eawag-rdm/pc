@@ -984,7 +984,7 @@ func TestHandler_Analyze_ProbeFailure_FallsThrough(t *testing.T) {
 	// first request probes for it (and re-analyses, because the timestamp no
 	// longer matches). Without a stored entry there would be nothing to
 	// revalidate and no probe to fail.
-	if err := cache.put("probe-pkg", "2026-07-27T09:00:00.000000", `{"stale":"entry"}`); err != nil {
+	if err := cache.put("probe-pkg", "2026-07-27T09:00:00.000000", []byte(`{"stale":"entry"}`)); err != nil {
 		t.Fatalf("seeding the stale entry: %v", err)
 	}
 	logged := func() string {
@@ -2027,7 +2027,7 @@ func TestHandler_Analyze_MalformedResource_Surfaced(t *testing.T) {
 
 func TestWithRequestID_Additive(t *testing.T) {
 	in := `{"timestamp":"t","scanned":[],"skipped":[]}`
-	out, err := withRequestID(in, "REQ-XYZ")
+	out, err := withRequestID([]byte(in), "REQ-XYZ")
 	if err != nil {
 		t.Fatalf("withRequestID error: %v", err)
 	}
@@ -2057,7 +2057,7 @@ func TestWithRequestID_Additive(t *testing.T) {
 // TestWithRequestID_EmptyObject covers the one body shape that has no key to
 // separate request_id from: the comma must not be emitted.
 func TestWithRequestID_EmptyObject(t *testing.T) {
-	out, err := withRequestID("{}", "REQ-EMPTY")
+	out, err := withRequestID([]byte("{}"), "REQ-EMPTY")
 	if err != nil {
 		t.Fatalf("withRequestID error: %v", err)
 	}
@@ -2080,7 +2080,7 @@ func TestWithRequestID_RejectsNonObject(t *testing.T) {
 		"string": `"result"`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			out, err := withRequestID(body, "REQ-BAD")
+			out, err := withRequestID([]byte(body), "REQ-BAD")
 			if err == nil {
 				t.Fatalf("expected an error for body %q, got %s", body, out)
 			}
@@ -2101,7 +2101,7 @@ func TestWithRequestID_SingleAllocation(t *testing.T) {
 		t.Skip("allocation counts differ under the race detector")
 	}
 
-	body := `{"payload":"` + strings.Repeat("x", 100*1024) + `"}`
+	body := []byte(`{"payload":"` + strings.Repeat("x", 100*1024) + `"}`)
 
 	allocs := testing.AllocsPerRun(10, func() {
 		if _, err := withRequestID(body, "REQ-ALLOC"); err != nil {

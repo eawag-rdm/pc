@@ -423,7 +423,7 @@ const ckanProbeTimeoutCap = 5 * time.Second
 // the error mapping here; where there is a stored entry to revalidate it is
 // preceded by a package_search freshness probe that can answer the request from
 // the cache.
-func (h *Handler) runAnalysis(ctx context.Context, packageID, token string) (body string, fileCount, skippedCount int, cached bool, errCode, errMsg string) {
+func (h *Handler) runAnalysis(ctx context.Context, packageID, token string) (body []byte, fileCount, skippedCount int, cached bool, errCode, errMsg string) {
 	h.analysisMu.Lock()
 	defer h.analysisMu.Unlock()
 
@@ -488,7 +488,7 @@ func (h *Handler) runAnalysis(ctx context.Context, packageID, token string) (bod
 	h.logCKANOutcome(ctx, packageID, "package_show", err, time.Since(ckanStart))
 	if err != nil {
 		code, msg := mapCKANError(err)
-		return "", 0, 0, false, code, msg
+		return nil, 0, 0, false, code, msg
 	}
 
 	// A package that exists (package_show returned 200) but has zero analyzable
@@ -531,7 +531,7 @@ func (h *Handler) runAnalysis(ctx context.Context, packageID, token string) (bod
 	formatter := jsonformatter.NewJSONFormatter()
 	jsonResult, err := formatter.FormatResultsCompact(messages, helpers.PDFTracker.SnapshotFiles(), nil)
 	if err != nil {
-		return "", 0, 0, false, CodeInternalError, ""
+		return nil, 0, 0, false, CodeInternalError, ""
 	}
 
 	// Store the successful result for future identical-freshness requests.
@@ -541,11 +541,20 @@ func (h *Handler) runAnalysis(ctx context.Context, packageID, token string) (bod
 	// Best-effort: a cache write failure is logged but never fails the request.
 	if ctx.Err() == nil {
 		if cacheErr := h.cache.put(packageID, metadataModified, jsonResult); cacheErr != nil {
-			h.logger.LogAttrs(ctx, slog.LevelWarn, "result_cache_write_failed",
-				slog.String("request_id", GetRequestIDFromContext(ctx)),
-				slog.String("package_id", packageID),
-				slog.String("error", cacheErr.Error()),
-			)
+			if errors.Is(cacheErr, errUncacheableTimestamp) {
+				// Nothing else reports it: this package stays uncacheable for good.
+				h.logger.LogAttrs(ctx, slog.LevelInfo, "result_cache_uncacheable",
+					slog.String("request_id", GetRequestIDFromContext(ctx)),
+					slog.String("package_id", packageID),
+					slog.String("metadata_modified", metadataModified),
+				)
+			} else {
+				h.logger.LogAttrs(ctx, slog.LevelWarn, "result_cache_write_failed",
+					slog.String("request_id", GetRequestIDFromContext(ctx)),
+					slog.String("package_id", packageID),
+					slog.String("error", cacheErr.Error()),
+				)
+			}
 		}
 	}
 	return jsonResult, len(files), countSkipped(messages), false, "", ""
@@ -554,9 +563,10 @@ func (h *Handler) runAnalysis(ctx context.Context, packageID, token string) (bod
 // cachedIfFresh returns the stored analysis of packageID when a package_search
 // probe says the cached entry still matches the package's live
 // metadata_modified (CKAN bumps it on every dataset/resource change), so the
-// document fetch and the checks phase can both be skipped. The two timestamps
-// are compared in their canonical form (normalizeModifiedTimestamp): the search
-// index and the document spell one instant differently.
+// document fetch and the checks phase can both be skipped. Nothing compares two
+// timestamps: the live one names the only entry file that could answer this
+// request (canonicalized, since the search index and the document spell one
+// instant differently), so that file's existence is the whole freshness test.
 //
 // A probe is made only when it could save something. Without a cache, or with
 // no entry stored for this package, package_show is unavoidable and a search
@@ -574,12 +584,12 @@ func (h *Handler) runAnalysis(ctx context.Context, packageID, token string) (bod
 //
 // Every probe is logged with the probe_result it ended in, because the outcome
 // that costs the most is the one that looks healthiest (probeResultStale).
-func (h *Handler) cachedIfFresh(ctx context.Context, packageID string, pcConfig config.Config) (string, bool) {
+func (h *Handler) cachedIfFresh(ctx context.Context, packageID string, pcConfig config.Config) ([]byte, bool) {
 	if h.cache == nil {
-		return "", false
+		return nil, false
 	}
 	if !h.cache.has(packageID) {
-		return "", false
+		return nil, false
 	}
 	start := time.Now()
 	probeCtx, probeCancel := context.WithTimeout(ctx, min(configuredCkanRequestTimeout(h.pcConfig), ckanProbeTimeoutCap))
@@ -604,7 +614,7 @@ func (h *Handler) cachedIfFresh(ctx context.Context, packageID string, pcConfig 
 		}
 		h.logCKANProbeOutcome(ctx, packageID, probeResultStale, time.Since(start))
 	}
-	return "", false
+	return nil, false
 }
 
 // probe_result values, one per probe record: the entry was served off the probe
@@ -888,7 +898,7 @@ func deepCopyConfigForRequest(pcConfig *config.Config, token string) config.Conf
 // response key order therefore changes from alphabetical - what re-marshaling
 // the body through a map produced - to the struct's field order, with
 // request_id first.
-func withRequestID(jsonResult, requestID string) ([]byte, error) {
+func withRequestID(jsonResult []byte, requestID string) ([]byte, error) {
 	// Every body reaching here is a formatter-produced object; anything else is
 	// corruption, not a shape to support.
 	if len(jsonResult) == 0 || jsonResult[0] != '{' {
@@ -903,7 +913,7 @@ func withRequestID(jsonResult, requestID string) ([]byte, error) {
 	out := make([]byte, 0, len(idKey)+len(idBytes)+len(jsonResult))
 	out = append(out, idKey...)
 	out = append(out, idBytes...)
-	if jsonResult == "{}" {
+	if string(jsonResult) == "{}" {
 		return append(out, '}'), nil
 	}
 	out = append(out, ',')

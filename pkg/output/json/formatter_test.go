@@ -1,6 +1,7 @@
 package json
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -679,12 +680,12 @@ func TestFormatResultsCompact_SameDocumentWithoutIndentation(t *testing.T) {
 	if !strings.Contains(indented, "\n  ") {
 		t.Fatal("FormatResults is no longer indented")
 	}
-	if strings.Contains(compact, "\n  ") {
+	if bytes.Contains(compact, []byte("\n  ")) {
 		t.Error("FormatResultsCompact is indented; the server would put the whitespace on the wire")
 	}
 
 	var compactObj map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(compact), &compactObj); err != nil {
+	if err := json.Unmarshal(compact, &compactObj); err != nil {
 		t.Fatalf("compact result is not valid JSON: %v", err)
 	}
 }

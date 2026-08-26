@@ -673,8 +673,10 @@ with a `Retry-After` header.
 ### Result cache
 
 **Server-only** (the CLI never caches). When `resultCacheDir` is set, each
-successful analysis is stored as one JSON file per package, keyed on the
-package's CKAN `metadata_modified` timestamp, which `package_show` carries.
+successful analysis is stored as one file per package, named after the package
+id and the CKAN `metadata_modified` timestamp `package_show` carries. The file
+holds the response body verbatim, so the filename alone decides freshness and a
+hit costs a single read.
 A repeat request for an unchanged package is served from the cache after a
 single `package_search` probe for that timestamp - the full `package_show` and
 the analysis are both skipped (response header `X-PC-Cache: hit`/`miss`).

@@ -150,15 +150,17 @@ func (jf *JSONFormatter) FormatResults(location, collector string, messages []st
 
 // FormatResultsCompact renders the same document as FormatResults, without the
 // indentation: for machine consumers the whitespace is only bytes on the wire.
-func (jf *JSONFormatter) FormatResultsCompact(messages []structs.Message, pdfFiles []string, diagnostics []structs.Diagnostic) (string, error) {
+// The marshaled bytes are handed back as they are - the server caches and
+// splices them, and a copy of a multi-megabyte body buys nothing.
+func (jf *JSONFormatter) FormatResultsCompact(messages []structs.Message, pdfFiles []string, diagnostics []structs.Diagnostic) ([]byte, error) {
 	result := buildScanResult(messages, pdfFiles, diagnostics)
 
 	jsonBytes, err := json.Marshal(result)
 	if err != nil {
-		return "", fmt.Errorf("failed to marshal JSON: %w", err)
+		return nil, fmt.Errorf("failed to marshal JSON: %w", err)
 	}
 
-	return string(jsonBytes), nil
+	return jsonBytes, nil
 }
 
 // buildScanResult assembles the result both formatters render.
