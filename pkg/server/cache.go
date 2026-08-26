@@ -171,13 +171,13 @@ func isEntryFile(name, prefix string) bool {
 	return strings.HasPrefix(name, prefix) && strings.HasSuffix(name, ".json")
 }
 
-// has reports whether an entry exists for packageID, without reading one. It
+// has reports whether a live entry exists for packageID, without reading one. It
 // gates the freshness probe, and a false positive - an entry the probe then
-// finds stale or expired - costs nothing but that probe. The listing is
-// unsorted: any match answers, so ordering the names buys nothing. A read error
-// on the entries dir - permissions, say - deliberately reads as "no entry" and
-// writes no log line: probes are then skipped silently, while the same breakage
-// still surfaces on the write path as result_cache_write_failed.
+// finds stale - costs nothing but that probe. The listing is unsorted: any match
+// answers, so ordering the names buys nothing. A read error on the entries dir -
+// permissions, say - deliberately reads as "no entry" and writes no log line:
+// probes are then skipped silently, while the same breakage still surfaces on
+// the write path as result_cache_write_failed.
 func (c *resultCache) has(packageID string) bool {
 	if c == nil {
 		return false
@@ -193,9 +193,17 @@ func (c *resultCache) has(packageID string) bool {
 	}
 	prefix := packageID + "."
 	for _, de := range dirEntries {
-		if !de.IsDir() && isEntryFile(de.Name(), prefix) {
-			return true
+		if de.IsDir() || !isEntryFile(de.Name(), prefix) {
+			continue
 		}
+		// An entry past the TTL can never be served, so it must buy no probe.
+		if c.maxAge > 0 {
+			info, err := de.Info()
+			if err != nil || c.now().Sub(info.ModTime()) > c.maxAge {
+				continue
+			}
+		}
+		return true
 	}
 	return false
 }

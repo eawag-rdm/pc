@@ -360,6 +360,32 @@ func TestResultCache_TTLExpiry(t *testing.T) {
 	}
 }
 
+// TestResultCache_HasSkipsExpiredEntry pins that the probe gate agrees with the
+// read: an entry get() would refuse for its age must not report as present,
+// because the only thing has() buys is a CKAN round-trip nothing can serve.
+// Aged like the TTL test, mtime and now() from one instant, so the boundary
+// holds either way - at exactly maxAge the entry is still live for both.
+func TestResultCache_HasSkipsExpiredEntry(t *testing.T) {
+	c := newTestCache(t, 10, time.Hour)
+
+	if err := c.put("pkg", modifiedFixture, []byte(bodyFixture)); err != nil {
+		t.Fatal(err)
+	}
+	base := time.Date(2026, 7, 28, 12, 0, 0, 0, time.UTC)
+	if err := os.Chtimes(c.entryPath("pkg", modifiedFixture), base, base); err != nil {
+		t.Fatal(err)
+	}
+
+	c.now = func() time.Time { return base.Add(time.Hour) }
+	if !c.has("pkg") {
+		t.Error("an entry aged exactly maxAge is still servable and must gate a probe")
+	}
+	c.now = func() time.Time { return base.Add(2 * time.Hour) }
+	if c.has("pkg") {
+		t.Error("an expired entry must not report as present - the probe it buys can serve nothing")
+	}
+}
+
 func TestResultCache_Eviction(t *testing.T) {
 	c := newTestCache(t, 2, 0)
 	for i, id := range []string{"pkg-a", "pkg-b", "pkg-c"} {

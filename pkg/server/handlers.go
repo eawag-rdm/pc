@@ -569,7 +569,7 @@ func (h *Handler) runAnalysis(ctx context.Context, packageID, token string) (bod
 // instant differently), so that file's existence is the whole freshness test.
 //
 // A probe is made only when it could save something. Without a cache, or with
-// no entry stored for this package, package_show is unavoidable and a search
+// no live entry stored for this package, package_show is unavoidable and a search
 // ahead of it would just add latency to a request that already holds the single
 // analysis slot - so the first request for a package after the startup wipe
 // makes no probe at all.
@@ -624,11 +624,11 @@ func (h *Handler) cachedIfFresh(ctx context.Context, packageID string, pcConfig 
 //
 // A stale probe is normal once per package change. Stale on every request for a
 // package means the search index reports a genuinely different instant (a
-// lagging Solr), a metadata_modified spelling neither normalization layout
-// parses, or a resultCacheMaxAgeHours shorter than the gap between requests (the
-// entry expires before the probe that would serve it): the probe stays healthy,
-// the cache can never hit again, and requests keep succeeding - only always at
-// full price.
+// lagging Solr) or a metadata_modified spelling neither normalization layout
+// parses: the probe stays healthy, the cache can never hit again, and requests
+// keep succeeding - only always at full price. A resultCacheMaxAgeHours shorter
+// than the gap between requests leaves no record at all - the expired entry
+// gates no probe, so those requests look like a package that was never cached.
 const (
 	probeResultMatched  = "matched"
 	probeResultStale    = "stale"
