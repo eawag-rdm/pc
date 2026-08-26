@@ -636,3 +636,55 @@ func TestJSONStructureIntegrity(t *testing.T) {
 		t.Error("JSON missing warnings field")
 	}
 }
+
+// TestFormatResultsCompact_SameDocumentWithoutIndentation pins that the compact
+// variant the server puts on the wire carries none of the CLI output's
+// indentation and is still a valid JSON document. Both variants render the same
+// buildScanResult, so whitespace is all that can differ.
+func TestFormatResultsCompact_SameDocumentWithoutIndentation(t *testing.T) {
+	formatter := NewJSONFormatter()
+
+	scanned := structs.File{Name: "data.csv", Path: "/data/data.csv"}
+	oversized := structs.File{Name: "huge.bin", Path: "/data/huge.bin"}
+	messages := []structs.Message{
+		{
+			Content:  "Found keyword 'password'",
+			Source:   scanned,
+			TestName: "IsFreeOfKeywords",
+			Rules:    []string{"keywords-default"},
+		},
+		{
+			Content:  "Skipped content scan of file: file too large.",
+			Source:   oversized,
+			TestName: "IsFreeOfKeywords",
+			Skipped:  true,
+			Reason:   "file too large",
+		},
+	}
+	diagnostics := []structs.Diagnostic{
+		{Level: structs.DiagWarning, Message: "a warning", Subject: "data.csv", Timestamp: "2026-08-26T00:00:00Z"},
+	}
+	pdfFiles := []string{"report.pdf"}
+
+	indented, err := formatter.FormatResults("/data", "LocalCollector", messages, 2, pdfFiles, diagnostics)
+	if err != nil {
+		t.Fatalf("FormatResults failed: %v", err)
+	}
+	compact, err := formatter.FormatResultsCompact(messages, pdfFiles, diagnostics)
+	if err != nil {
+		t.Fatalf("FormatResultsCompact failed: %v", err)
+	}
+
+	// Self-check: without an indented reference the assertion below pins nothing.
+	if !strings.Contains(indented, "\n  ") {
+		t.Fatal("FormatResults is no longer indented")
+	}
+	if strings.Contains(compact, "\n  ") {
+		t.Error("FormatResultsCompact is indented; the server would put the whitespace on the wire")
+	}
+
+	var compactObj map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(compact), &compactObj); err != nil {
+		t.Fatalf("compact result is not valid JSON: %v", err)
+	}
+}

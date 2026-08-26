@@ -853,11 +853,21 @@ func TestHandler_Analyze_ResultCache(t *testing.T) {
 	if got := rr2.Header().Get("X-PC-Cache"); got != "hit" {
 		t.Errorf("second: X-PC-Cache = %q, want hit", got)
 	}
+	// Both bodies go on the wire compact: the server formats with
+	// FormatResultsCompact, and a hit republishes those very bytes. Indentation
+	// here would be pure payload for every client of every response.
+	raw1, raw2 := rr1.Body.Bytes(), rr2.Body.Bytes()
+	if bytes.Contains(raw1, []byte("\n")) {
+		t.Error("first: response body is indented, not compact")
+	}
+	if bytes.Contains(raw2, []byte("\n")) {
+		t.Error("second: cached response body is indented, not compact")
+	}
 	var b1, b2 map[string]json.RawMessage
-	if err := json.Unmarshal(rr1.Body.Bytes(), &b1); err != nil {
+	if err := json.Unmarshal(raw1, &b1); err != nil {
 		t.Fatal(err)
 	}
-	if err := json.Unmarshal(rr2.Body.Bytes(), &b2); err != nil {
+	if err := json.Unmarshal(raw2, &b2); err != nil {
 		t.Fatal(err)
 	}
 	if string(b1["request_id"]) == string(b2["request_id"]) {
@@ -2034,6 +2044,73 @@ func TestWithRequestID_Additive(t *testing.T) {
 	var id string
 	if err := json.Unmarshal(obj["request_id"], &id); err != nil || id != "REQ-XYZ" {
 		t.Errorf("request_id = %q (err %v), want REQ-XYZ", id, err)
+	}
+
+	// The body is spliced, never parsed and re-marshaled: everything after the
+	// opening brace must survive byte for byte. A re-marshal would reorder the
+	// keys (map marshaling sorts them) and this would fail.
+	if !bytes.HasSuffix(out, []byte(in[1:])) {
+		t.Errorf("body was rewritten, not spliced: %s", out)
+	}
+}
+
+// TestWithRequestID_EmptyObject covers the one body shape that has no key to
+// separate request_id from: the comma must not be emitted.
+func TestWithRequestID_EmptyObject(t *testing.T) {
+	out, err := withRequestID("{}", "REQ-EMPTY")
+	if err != nil {
+		t.Fatalf("withRequestID error: %v", err)
+	}
+	var obj map[string]string
+	if err := json.Unmarshal(out, &obj); err != nil {
+		t.Fatalf("unmarshal %s: %v", out, err)
+	}
+	if len(obj) != 1 || obj["request_id"] != "REQ-EMPTY" {
+		t.Errorf("got %v, want only request_id=REQ-EMPTY", obj)
+	}
+}
+
+// TestWithRequestID_RejectsNonObject pins the corruption guard: the splice can
+// only extend a JSON object, so anything else is refused instead of producing a
+// malformed body.
+func TestWithRequestID_RejectsNonObject(t *testing.T) {
+	for name, body := range map[string]string{
+		"empty":  "",
+		"array":  `[{"timestamp":"t"}]`,
+		"string": `"result"`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			out, err := withRequestID(body, "REQ-BAD")
+			if err == nil {
+				t.Fatalf("expected an error for body %q, got %s", body, out)
+			}
+			if out != nil {
+				t.Errorf("expected no body alongside the error, got %s", out)
+			}
+		})
+	}
+}
+
+// TestWithRequestID_SingleAllocation pins the point of the splice: one output
+// buffer, sized once, however large the body is. Three allocations are the
+// floor - the id boxed into the empty interface json.Marshal takes, that
+// marshal's own bytes, and the buffer itself - so a buffer that had to grow, or
+// a second copy of the body, raises the count.
+func TestWithRequestID_SingleAllocation(t *testing.T) {
+	if raceDetectorEnabled {
+		t.Skip("allocation counts differ under the race detector")
+	}
+
+	body := `{"payload":"` + strings.Repeat("x", 100*1024) + `"}`
+
+	allocs := testing.AllocsPerRun(10, func() {
+		if _, err := withRequestID(body, "REQ-ALLOC"); err != nil {
+			t.Fatalf("withRequestID error: %v", err)
+		}
+	})
+
+	if allocs > 3 {
+		t.Errorf("withRequestID allocated %.1f times, want at most 3 (the id's boxing and marshal, and the one output buffer)", allocs)
 	}
 }
 

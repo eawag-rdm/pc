@@ -138,6 +138,31 @@ func NewJSONFormatter() *JSONFormatter {
 // the formatter reads no process state, so what it renders is exactly what it
 // was handed.
 func (jf *JSONFormatter) FormatResults(location, collector string, messages []structs.Message, totalFiles int, pdfFiles []string, diagnostics []structs.Diagnostic) (string, error) {
+	result := buildScanResult(messages, pdfFiles, diagnostics)
+
+	jsonBytes, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal JSON: %w", err)
+	}
+
+	return string(jsonBytes), nil
+}
+
+// FormatResultsCompact renders the same document as FormatResults, without the
+// indentation: for machine consumers the whitespace is only bytes on the wire.
+func (jf *JSONFormatter) FormatResultsCompact(messages []structs.Message, pdfFiles []string, diagnostics []structs.Diagnostic) (string, error) {
+	result := buildScanResult(messages, pdfFiles, diagnostics)
+
+	jsonBytes, err := json.Marshal(result)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal JSON: %w", err)
+	}
+
+	return string(jsonBytes), nil
+}
+
+// buildScanResult assembles the result both formatters render.
+func buildScanResult(messages []structs.Message, pdfFiles []string, diagnostics []structs.Diagnostic) ScanResult {
 	result := ScanResult{
 		Timestamp:             time.Now().UTC().Format(time.RFC3339),
 		Scanned:               make([]ScannedFile, 0),
@@ -173,13 +198,7 @@ func (jf *JSONFormatter) FormatResults(location, collector string, messages []st
 		result.PDFFiles = pdfFiles
 	}
 
-	// Generate JSON
-	jsonBytes, err := json.MarshalIndent(result, "", "  ")
-	if err != nil {
-		return "", fmt.Errorf("failed to marshal JSON: %w", err)
-	}
-
-	return string(jsonBytes), nil
+	return result
 }
 
 // subjectKey creates a unique key for a subject considering archive context

@@ -360,6 +360,11 @@ func (h *Handler) Analyze(w http.ResponseWriter, r *http.Request) {
 	// 10. Add request_id to the response body (additive) and return.
 	body, err := withRequestID(jsonResult, requestID)
 	if err != nil {
+		h.logger.LogAttrs(ctx, slog.LevelError, "response_body_failed",
+			slog.String("request_id", requestID),
+			slog.String("package_id", req.PackageID),
+			slog.String("error", err.Error()),
+		)
 		writeError(w, r, CodeInternalError)
 		return
 	}
@@ -524,7 +529,7 @@ func (h *Handler) runAnalysis(ctx context.Context, packageID, token string) (bod
 	// Format results as JSON. PDFTracker.SnapshotFiles takes a locked copy; we
 	// also still hold analysisMu, so no concurrent reset/append can intervene.
 	formatter := jsonformatter.NewJSONFormatter()
-	jsonResult, err := formatter.FormatResults(packageID, "CkanCollector", messages, len(files), helpers.PDFTracker.SnapshotFiles(), nil)
+	jsonResult, err := formatter.FormatResultsCompact(messages, helpers.PDFTracker.SnapshotFiles(), nil)
 	if err != nil {
 		return "", 0, 0, false, CodeInternalError, ""
 	}
@@ -877,18 +882,32 @@ func deepCopyConfigForRequest(pcConfig *config.Config, token string) config.Conf
 }
 
 // withRequestID injects request_id into an already-formatted JSON object,
-// preserving the existing shape (additive only).
+// preserving the existing shape (additive only). The body is spliced, not
+// parsed: results run to several megabytes, and unmarshaling one just to add a
+// single key costs more than everything else a cached response does. The
+// response key order therefore changes from alphabetical - what re-marshaling
+// the body through a map produced - to the struct's field order, with
+// request_id first.
 func withRequestID(jsonResult, requestID string) ([]byte, error) {
-	var obj map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(jsonResult), &obj); err != nil {
-		return nil, err
+	// Every body reaching here is a formatter-produced object; anything else is
+	// corruption, not a shape to support.
+	if len(jsonResult) == 0 || jsonResult[0] != '{' {
+		return nil, errors.New("result body is not a JSON object")
 	}
 	idBytes, err := json.Marshal(requestID)
 	if err != nil {
 		return nil, err
 	}
-	obj["request_id"] = idBytes
-	return json.Marshal(obj)
+
+	const idKey = `{"request_id":`
+	out := make([]byte, 0, len(idKey)+len(idBytes)+len(jsonResult))
+	out = append(out, idKey...)
+	out = append(out, idBytes...)
+	if jsonResult == "{}" {
+		return append(out, '}'), nil
+	}
+	out = append(out, ',')
+	return append(out, jsonResult[1:]...), nil
 }
 
 // respondJSON writes a JSON body with the given status.
