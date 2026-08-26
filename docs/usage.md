@@ -661,7 +661,7 @@ See `pc.toml.example` for the full commented list.
 | `contactMessage` | … | contact suffix shown in error envelopes |
 | `logClientIP` | `true` | record the client IP (`client_ip`, plus `real_ip` from `X-Real-IP`) in access logs |
 | `requestTimeoutSeconds` | 300 | hard bound for a WHOLE analysis (CKAN call + checks) → `analysis_timeout` (504) |
-| `ckanRequestTimeoutSeconds` | 10 | bound for the single CKAN `package_show` call → `ckan_unavailable` (502); must be ≤ `requestTimeoutSeconds` |
+| `ckanRequestTimeoutSeconds` | 10 | bound for the CKAN `package_show` call → `ckan_unavailable` (502); must be ≤ `requestTimeoutSeconds`; the cache's freshness probe uses this or 5s, whichever is smaller |
 | `resultCacheDir` | - (disabled) | absolute path of the per-package result cache directory; its reserved `entries/` subdir is wiped at every start (failure aborts the boot); empty disables caching |
 | `resultCacheMaxEntries` | 500 | max cached packages before oldest-entry eviction |
 | `resultCacheMaxAgeHours` | 0 (no limit) | max age of a cache entry; 0 disables the age limit |
@@ -674,12 +674,24 @@ with a `Retry-After` header.
 
 **Server-only** (the CLI never caches). When `resultCacheDir` is set, each
 successful analysis is stored as one JSON file per package, keyed on the
-package's CKAN `metadata_modified` timestamp - which the mandatory
-`package_show` call already carries, so freshness costs no extra CKAN request.
-A repeat request for an unchanged package is served from the cache in a single
-CKAN round-trip (response header `X-PC-Cache: hit`/`miss`; the `package_show`
-still runs per request, so authorization is enforced exactly as without the
-cache).
+package's CKAN `metadata_modified` timestamp, which `package_show` carries.
+A repeat request for an unchanged package is served from the cache after a
+single `package_search` probe for that timestamp - the full `package_show` and
+the analysis are both skipped (response header `X-PC-Cache: hit`/`miss`).
+
+The probe carries the request's token and searches with `include_private`, so
+private packages are probed too, each under its own token's visibility: a caller
+who may not read the package matches nothing and falls through to
+`package_show` and its usual 404/403. Two consequences are accepted
+deliberately, both bounded. An *invalid* token on a **public** cached package is
+served from the cache - CKAN treats an unusable key as anonymous, and public
+data is anonymous-readable anyway. And a package that has just been made private
+keeps being served from the cache until the search index catches up: until it
+does, a caller with no right to read the package can receive the analysis that
+was stored while it was still readable. How long that lasts is the deployment's
+Solr commit interval, not something the server can bound. Search-index lag is
+the trade throughout: in that same window a just-edited package can be served
+from the cache, or an unchanged one re-analysed in full.
 
 Entries live in an `entries/` subdirectory that the server owns wholesale. The
 server reserves that one name inside `resultCacheDir` (a file or symlink

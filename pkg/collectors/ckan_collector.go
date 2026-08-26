@@ -47,9 +47,10 @@ type MalformedResourceError struct {
 
 func (e *MalformedResourceError) Error() string { return e.Msg }
 
-// CKANError carries the outcome of the single CKAN package_show call so the
-// caller (the server) can map it to the fixed error catalogue (spec §3, §5)
-// WITHOUT re-fetching. It distinguishes:
+// CKANError carries the outcome of a CKAN call so the caller (the server) can
+// map the package_show one to the fixed error catalogue (spec §3, §5) WITHOUT
+// re-fetching; a freshness-probe error is logged, never mapped. It
+// distinguishes:
 //   - a transport/connection failure (Transport == true, StatusCode == 0) →
 //     mapped to ckan_unavailable;
 //   - a response that DID arrive but is unusable - malformed JSON, no "result"
@@ -84,9 +85,11 @@ type CKANError struct {
 // as named constants makes the "static, nothing interpolated" guarantee
 // enumerable: a new unusable case must add a constant here, not a format call.
 const (
-	unusableDetailOversized     = "package_show response exceeded the size limit"
-	unusableDetailMalformedJSON = "malformed JSON in package_show response"
-	unusableDetailNoResult      = "package_show response has no 'result' object"
+	unusableDetailOversized           = "package_show response exceeded the size limit"
+	unusableDetailMalformedJSON       = "malformed JSON in package_show response"
+	unusableDetailNoResult            = "package_show response has no 'result' object"
+	unusableDetailSearchMalformedJSON = "malformed JSON in package_search response"
+	unusableDetailSearchNoResult      = "package_search response has no 'result' object"
 )
 
 func (e *CKANError) Error() string {
@@ -148,8 +151,9 @@ var (
 	ckanClientNoVerify = &http.Client{Transport: newCkanTransport(false)}
 )
 
-// Request performs the single CKAN package_show GET. The supplied context bounds
-// the in-flight call: when its deadline fires (the server's hard requestTimeout,
+// Request performs a CKAN Action API GET - the package_show fetch, or the
+// freshness probe's package_search. The supplied context bounds the in-flight
+// call: when its deadline fires (the server's hard requestTimeout,
 // spec §2) or it is cancelled (client disconnect), client.Do and the subsequent
 // body read are aborted instead of blocking on a slow/hung CKAN socket. A
 // cancelled/expired context surfaces as a transport *CKANError (mapped to
@@ -445,38 +449,46 @@ func resolveLocalResource(resourceURL, displayLabel, ckanStoragePath string) (st
 	return path, nil
 }
 
+// ckanEndpoint reads the CKAN transport settings - base URL, token and TLS
+// verification mode - out of a config, for every call that talks to CKAN.
+//
+// The nil check is not redundant with the map lookup: a missing
+// [collector.CkanCollector] section leaves a nil *CollectorConfig in the map, so
+// dereferencing .Attrs would panic. The server rejects that at boot
+// (validateCkanCollector), but the CLI path never runs boot validation, so the
+// guard has to live here.
+func ckanEndpoint(config config.Config) (url, token string, verify bool, err error) {
+	cc, ok := config.Collectors["CkanCollector"]
+	if !ok || cc == nil {
+		return "", "", false, fmt.Errorf("CkanCollector configuration is missing: add a [collector.CkanCollector] section")
+	}
+	url, ok = cc.Attrs["url"].(string)
+	if !ok {
+		return "", "", false, fmt.Errorf("url attribute not found or not a string")
+	}
+	token, ok = cc.Attrs["token"].(string)
+	if !ok {
+		return "", "", false, fmt.Errorf("token attribute not found or not a string")
+	}
+	verify, ok = cc.Attrs["verify"].(bool)
+	if !ok {
+		return "", "", false, fmt.Errorf("verify attribute not found or not a bool")
+	}
+	return url, token, verify, nil
+}
+
 // CkanPackageShow performs THE single CKAN package_show call for a package
 // (spec §5) and returns the parsed "result" object. The context bounds the
 // upstream HTTP call so a slow/hung CKAN cannot outlive the caller's deadline
 // (spec §2); CLI callers with no deadline pass context.Background(). It is the
-// sole owner of the CKAN transport concerns (token, TLS verification, URL
-// construction): every consumer of package data - file collection
-// (CkanFilesFromResult) and the metadata checks (metadata.CkanMetadataFromJSON)
-// - works from the returned document, so one analysis costs exactly one CKAN
-// request.
+// sole fetch of the package document: every consumer of package data - file
+// collection (CkanFilesFromResult) and the metadata checks
+// (metadata.CkanMetadataFromJSON) - works from the returned document, so one
+// analysis fetches the package exactly once.
 func CkanPackageShow(ctx context.Context, package_id string, config config.Config) (map[string]interface{}, error) {
-	collectorName := "CkanCollector"
-
-	// Guard the lookup once: a missing [collector.CkanCollector] section leaves a
-	// nil *CollectorConfig in the map, so dereferencing .Attrs would panic. The
-	// server validates this at boot (validateCkanCollector); this defence-in-depth
-	// guard protects the CLI path too without changing server behaviour.
-	cc, ok := config.Collectors[collectorName]
-	if !ok || cc == nil {
-		return nil, fmt.Errorf("CkanCollector configuration is missing: add a [collector.CkanCollector] section")
-	}
-
-	urlAttr, ok := cc.Attrs["url"].(string)
-	if !ok {
-		return nil, fmt.Errorf("url attribute not found or not a string")
-	}
-	token, ok := cc.Attrs["token"].(string)
-	if !ok {
-		return nil, fmt.Errorf("token attribute not found or not a string")
-	}
-	verify, ok := cc.Attrs["verify"].(bool)
-	if !ok {
-		return nil, fmt.Errorf("verify attribute not found or not a bool")
+	urlAttr, token, verify, err := ckanEndpoint(config)
+	if err != nil {
+		return nil, err
 	}
 
 	// Always escape the package id when building the CKAN URL (spec §2): the id
@@ -505,6 +517,96 @@ func CkanPackageShow(ctx context.Context, package_id string, config config.Confi
 		return nil, &CKANError{Unusable: true, Detail: unusableDetailNoResult}
 	}
 	return result, nil
+}
+
+// solrPhraseEscaper escapes the two characters that can end or reshape a quoted
+// Solr term. Everything else inside the quotes is literal to Solr, and URL
+// escaping does not help here: an embedded '"' terminates the phrase after CKAN
+// has decoded the parameter.
+var solrPhraseEscaper = strings.NewReplacer(`\`, `\\`, `"`, `\"`)
+
+// CkanPackageModifiedAt is a best-effort freshness probe: it asks package_search
+// for one package's metadata_modified instead of fetching the whole document,
+// so a caller holding a cached result can revalidate it without paying for a
+// full package_show. ok is true ONLY when the search matched exactly one
+// package, that package IS the one asked for (its id or name), and it carried a
+// non-empty metadata_modified. Every other outcome - no match, several matches,
+// a different package, a missing field - returns ok=false with a nil error, and
+// a transport/HTTP/parse failure returns ok=false with the error for logging. A
+// false ok is never an error condition for the caller: it falls back to
+// package_show, which owns the error surface. In particular a count of 0 is
+// ambiguous (an absent package and one this token may not read look identical
+// here), so it must never be mapped to a response code.
+//
+// The search runs with include_private=true: without it stock CKAN never
+// returns private datasets from search at all, which would make the probe -
+// and with it the cache - inert for every token-gated package. With it CKAN
+// applies the request token's own permission labels, so a private package
+// appears only for a token authorized to read it.
+//
+// packageID is expected to be a valid CKAN name or id; the Solr terms it goes
+// into are escaped so a stray quote or backslash cannot restructure the query,
+// not so that arbitrary text becomes a meaningful search.
+//
+// The exported signature is provisional: the freshness probe has a single
+// consumer (the server's result cache) and may grow more of the search result.
+func CkanPackageModifiedAt(ctx context.Context, packageID string, config config.Config) (string, bool, error) {
+	urlAttr, token, verify, err := ckanEndpoint(config)
+	if err != nil {
+		return "", false, err
+	}
+
+	// Both spellings, quoted: package_show accepts an id or a name, so the probe
+	// must resolve whichever the caller passed. Quoting keeps a value with Solr
+	// syntax in it from becoming query structure, and the whole term is escaped
+	// on the way into the URL.
+	term := solrPhraseEscaper.Replace(packageID)
+	fq := neturl.QueryEscape(fmt.Sprintf(`name:"%s" OR id:"%s"`, term, term))
+	url := fmt.Sprintf("%s/api/3/action/package_search?fq=%s&rows=1&include_private=true", urlAttr, fq)
+
+	jsonStr, err := Request(ctx, url, token, verify)
+	if err != nil {
+		return "", false, err
+	}
+	jsonMap, err := JSONToMap(jsonStr)
+	if err != nil {
+		// Same hygiene as package_show: log what the parser objected to (never
+		// body content) and return the fixed Detail.
+		output.GlobalLogger.Warning("CKAN package_search response could not be parsed as JSON: %v", err)
+		return "", false, &CKANError{Unusable: true, Detail: unusableDetailSearchMalformedJSON}
+	}
+	result, ok := jsonMap["result"].(map[string]interface{})
+	if !ok {
+		output.GlobalLogger.Warning("CKAN package_search response has no 'result' object")
+		return "", false, &CKANError{Unusable: true, Detail: unusableDetailSearchNoResult}
+	}
+
+	// Exactly one match, or the probe cannot say which package it is looking at.
+	count, ok := result["count"].(float64)
+	if !ok || count != 1 {
+		return "", false, nil
+	}
+	results, ok := result["results"].([]interface{})
+	if !ok || len(results) != 1 {
+		return "", false, nil
+	}
+	pkg, ok := results[0].(map[string]interface{})
+	if !ok {
+		return "", false, nil
+	}
+	// The filter query is a request, not a promise: a mangled query or an
+	// analysed Solr field can match a neighbouring package, whose timestamp
+	// would then be trusted as this package's freshness signal.
+	id, _ := pkg["id"].(string)
+	name, _ := pkg["name"].(string)
+	if id != packageID && name != packageID {
+		return "", false, nil
+	}
+	modified, ok := pkg["metadata_modified"].(string)
+	if !ok || modified == "" {
+		return "", false, nil
+	}
+	return modified, true, nil
 }
 
 // CkanFilesFromResult maps an already-fetched package_show result to the

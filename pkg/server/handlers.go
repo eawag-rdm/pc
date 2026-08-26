@@ -278,12 +278,13 @@ func (h *Handler) Analyze(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), configuredRequestTimeout(h.pcConfig))
 	defer cancel()
 
-	// 6-9. Run the single CKAN package_show + analysis under analysisMu: the
+	// 6-9. Run the CKAN package_show + analysis under analysisMu: the
 	// per-request reset, the collect/check work that accumulates into the
 	// process-global GlobalLogger and PDFTracker, and the snapshot read used to
 	// build the body must be one serialized unit, or a concurrent request's
 	// reset bleeds into / races with this one (§6, §9). The double fetch is
-	// collapsed (spec §5): the collector's package_show is the only CKAN call.
+	// collapsed (spec §5): the collector's package_show is the only call that
+	// yields package data.
 	requestID := GetRequestID(r)
 	start := time.Now()
 	h.logger.LogAttrs(ctx, slog.LevelInfo, "analysis_start",
@@ -388,15 +389,23 @@ func configuredRequestTimeout(pcConfig *config.Config) time.Duration {
 	return defaultRequestTimeout
 }
 
-// configuredCkanRequestTimeout derives the upper bound for the single CKAN
+// configuredCkanRequestTimeout derives the upper bound for the CKAN
 // package_show call from [server] ckanRequestTimeoutSeconds. It is always at
-// most the whole-analysis timeout (enforced by validateServerSettings).
+// most the whole-analysis timeout (enforced by validateServerSettings). The
+// freshness probe is bounded separately (ckanProbeTimeoutCap).
 func configuredCkanRequestTimeout(pcConfig *config.Config) time.Duration {
 	if pcConfig != nil && pcConfig.Server != nil && pcConfig.Server.CkanRequestTimeoutSeconds > 0 {
 		return time.Duration(pcConfig.Server.CkanRequestTimeoutSeconds) * time.Second
 	}
 	return defaultCkanRequestTimeout
 }
+
+// ckanProbeTimeoutCap is the freshness probe's own upper bound, applied on top
+// of the (never longer) package_show budget: a probe slower than this cannot
+// pay for itself. What it would eat is not the package_show that answers the
+// request - that call opens a deadline of its own - but the request's own
+// latency, waited out while holding the single analysis slot.
+const ckanProbeTimeoutCap = 5 * time.Second
 
 // runAnalysis performs the global-state-touching part of an analysis under
 // analysisMu and returns the formatted JSON body plus the analyzed-file and
@@ -405,46 +414,60 @@ func configuredCkanRequestTimeout(pcConfig *config.Config) time.Duration {
 // the collect/check work, and the PDFTracker snapshot read keeps the
 // process-global GlobalLogger/PDFTracker from leaking or racing across
 // concurrent requests (§6, §9). The collector's package_show is the single CKAN
-// call (spec §5); its outcome drives the error mapping here.
+// call that yields package data (spec §5) and the only one whose outcome drives
+// the error mapping here; with a result cache configured it is preceded by a
+// package_search freshness probe that can answer the request from the cache.
 func (h *Handler) runAnalysis(ctx context.Context, packageID, token string) (body string, fileCount, skippedCount int, cached bool, errCode, errMsg string) {
 	h.analysisMu.Lock()
 	defer h.analysisMu.Unlock()
-
-	// Per-request reset of process-global state. GlobalLogger buffers check
-	// Messages and PDFTracker accumulates PDF notes; both leak/race across
-	// requests if not cleared at the start of each analysis (§6, §9).
-	output.GlobalLogger.ClearMessages()
-	helpers.PDFTracker.Reset()
 
 	// Deep-copy the PC config (and the CkanCollector Attrs map) per request so
 	// one request's token can never bleed into another's analysis (§9).
 	pcConfigCopy := deepCopyConfigForRequest(h.pcConfig, token)
 
-	// Single CKAN call: package_show via the collector. Its outcome (a
-	// MalformedResourceError, a structured collectors.CKANError, the
+	// A cached result that the freshness probe still vouches for answers the
+	// request without the document fetch or the checks phase. The probe runs
+	// under analysisMu with everything else here, which costs nothing: the
+	// Concurrency middleware's single slot already serializes whole requests.
+	if cachedBody, hit := h.cachedIfFresh(ctx, packageID, pcConfigCopy); hit {
+		return cachedBody, 0, 0, true, "", ""
+	}
+
+	// Per-request reset of process-global state. GlobalLogger buffers check
+	// Messages and PDFTracker accumulates PDF notes; both leak/race across
+	// requests if not cleared at the start of each analysis (§6, §9). It has to
+	// happen AFTER the probe: the probe's transport warnings go to GlobalLogger
+	// too, and analysis.Run drains that buffer into this request's diagnostics.
+	output.GlobalLogger.ClearMessages()
+	helpers.PDFTracker.Reset()
+
+	// The package data comes from ONE call: package_show via the collector. Its
+	// outcome (a MalformedResourceError, a structured collectors.CKANError, the
 	// ErrResourceUnreadable sentinel, or a transport error) maps to the
-	// catalogue (spec §5). A genuinely absent / private-unauthorized package is a
-	// CKAN 404 surfaced here as package_not_found. The call gets its own, much
-	// shorter deadline (ckanRequestTimeoutSeconds, default 10s) nested inside the
-	// whole-analysis deadline: a CKAN instance that cannot answer a metadata GET
-	// within that window is unavailable (mapped to ckan_unavailable), and must
-	// not eat the checks phase's time budget.
+	// catalogue (spec §5) - the probe above maps nothing. A genuinely absent /
+	// private-unauthorized package is a CKAN 404 surfaced here as
+	// package_not_found. The call gets its own, much shorter deadline
+	// (ckanRequestTimeoutSeconds, default 10s) nested inside the whole-analysis
+	// deadline: a CKAN instance that cannot answer a metadata GET within that
+	// window is unavailable (mapped to ckan_unavailable), and must not eat the
+	// checks phase's time budget. The deadline starts fresh here: whatever the
+	// probe above spent delayed the request, it did not shorten this call.
 	ckanStart := time.Now()
 	ckanCtx, ckanCancel := context.WithTimeout(ctx, configuredCkanRequestTimeout(h.pcConfig))
 	result, err := collectors.CkanPackageShow(ckanCtx, packageID, pcConfigCopy)
 	ckanCancel()
 
-	// Result cache: metadata_modified from the fetched document is the
-	// freshness signal (CKAN bumps it on every dataset/resource change). On a
-	// hit the expensive file mapping + checks phase is skipped entirely - the
-	// request cost one CKAN round-trip. Authorization is unaffected: a caller
-	// whose token cannot read the package failed the fetch above and never
-	// reaches the cache.
+	// The fetched document's metadata_modified is what the entry is keyed on:
+	// the probe only decides whether the cache is worth reading, never what is
+	// written. The cache is read here too, because the probe may have been
+	// skipped, unavailable or ambiguous while the entry is in fact fresh.
+	// Authorization is unaffected on this path either: a caller whose token
+	// cannot read the package failed the fetch above and never reaches this read.
 	var metadataModified string
 	if err == nil {
 		metadataModified, _ = result["metadata_modified"].(string)
 		if cachedBody, ok := h.cache.get(packageID, metadataModified); ok {
-			h.logCKANOutcome(ctx, packageID, nil, time.Since(ckanStart))
+			h.logCKANOutcome(ctx, packageID, "package_show", nil, time.Since(ckanStart))
 			return cachedBody, 0, 0, true, "", ""
 		}
 	}
@@ -456,7 +479,7 @@ func (h *Handler) runAnalysis(ctx context.Context, packageID, token string) (bod
 		// same catalogue mapping as fetch failures.
 		files, err = collectors.CkanFilesFromResult(result, pcConfigCopy)
 	}
-	h.logCKANOutcome(ctx, packageID, err, time.Since(ckanStart))
+	h.logCKANOutcome(ctx, packageID, "package_show", err, time.Since(ckanStart))
 	if err != nil {
 		code, msg := mapCKANError(err)
 		return "", 0, 0, false, code, msg
@@ -521,6 +544,69 @@ func (h *Handler) runAnalysis(ctx context.Context, packageID, token string) (bod
 	}
 	return jsonResult, len(files), countSkipped(messages), false, "", ""
 }
+
+// cachedIfFresh returns the stored analysis of packageID when a package_search
+// probe says the cached entry still matches the package's live
+// metadata_modified (CKAN bumps it on every dataset/resource change), so the
+// document fetch and the checks phase can both be skipped. Without a cache
+// there is nothing to revalidate and no probe is made.
+//
+// Two invariants live here. The probe is capped at 5s of the whole-analysis
+// budget (ckanProbeTimeoutCap), so a slow search index can delay a request by
+// no more than that. And it maps nothing: an ambiguous or failed probe simply
+// returns ok=false, leaving the whole error surface to package_show.
+// Authorization is unaffected either way - the probe carries the request's
+// token, and a package this caller may not read does not match, which falls
+// through to package_show and its usual 404/403.
+//
+// Every probe is logged with the probe_result it ended in, because the outcome
+// that costs the most is the one that looks healthiest (probeResultStale).
+func (h *Handler) cachedIfFresh(ctx context.Context, packageID string, pcConfig config.Config) (string, bool) {
+	if h.cache == nil {
+		return "", false
+	}
+	start := time.Now()
+	probeCtx, probeCancel := context.WithTimeout(ctx, min(configuredCkanRequestTimeout(h.pcConfig), ckanProbeTimeoutCap))
+	modified, ok, err := collectors.CkanPackageModifiedAt(probeCtx, packageID, pcConfig)
+	probeCancel()
+
+	switch {
+	case err != nil:
+		// Not a request failure - the analysis continues with package_show - but a
+		// search endpoint that is broken or unreachable makes every hit pay for a
+		// full fetch again, so it must reach the operator. A client that went away
+		// mid-probe aborted this call itself and says nothing about the endpoint.
+		if ctx.Err() == nil {
+			h.logCKANProbeFailure(ctx, packageID, err, time.Since(start))
+		}
+	case !ok:
+		h.logCKANProbeOutcome(ctx, packageID, probeResultUnusable, time.Since(start))
+	default:
+		if cachedBody, hit := h.cache.get(packageID, modified); hit {
+			h.logCKANProbeOutcome(ctx, packageID, probeResultMatched, time.Since(start))
+			return cachedBody, true
+		}
+		h.logCKANProbeOutcome(ctx, packageID, probeResultStale, time.Since(start))
+	}
+	return "", false
+}
+
+// probe_result values, one per probe record: the entry was served off the probe
+// (matched), the probe answered but the entry did not match it (stale), the
+// search could not identify the package - no match, several, no timestamp -
+// (unusable), or the probe could not be made at all (failed).
+//
+// A stale probe is normal once per package change and once per cold entry.
+// Stale on every request for a package is the signature of package_search and
+// package_show no longer spelling metadata_modified the same way: the probe
+// stays healthy, the cache can never hit again, and requests keep succeeding -
+// only always at full price.
+const (
+	probeResultMatched  = "matched"
+	probeResultStale    = "stale"
+	probeResultUnusable = "unusable"
+	probeResultFailed   = "failed"
+)
 
 // unscannedReason is the soft, user-facing acknowledgement shown (as a skipped[]
 // entry) for a file whose content could not be fully scanned - read error,
@@ -607,11 +693,14 @@ func countSkipped(messages []structs.Message) int {
 	return n
 }
 
-// mapCKANError maps the single package_show outcome to a catalogue code and an
-// optional dynamic, user-facing message (§3, §5). The message is non-empty only
-// for malformed_resource, where it is the collector's authored, safe-to-surface
-// text naming the exact resource + package; every other code uses its fixed
-// catalogue message (msg == ""). Mapping:
+// mapCKANError maps the package_show outcome to a catalogue code and an
+// optional dynamic, user-facing message (§3, §5). It is fed by that call alone:
+// a freshness-probe error must never enter this mapping, because a search that
+// answers nothing is ambiguous (absent and unauthorized look identical) and
+// would map an available package to a client error. The message is non-empty
+// only for malformed_resource, where it is the collector's authored,
+// safe-to-surface text naming the exact resource + package; every other code
+// uses its fixed catalogue message (msg == ""). Mapping:
 //   - MalformedResourceError (resource missing url_type+url, or an upload
 //     missing name/url/size) -> malformed_resource (422) + its message;
 //   - ErrResourceUnreadable (a url_type=="upload" file missing/escaping storage)
@@ -682,15 +771,42 @@ func mapCKANError(err error) (code, msg string) {
 	return CodeInternalError, ""
 }
 
-// logCKANOutcome emits the CKAN-upstream-outcome slog event (spec §8): the HTTP
-// status (or the error class - "transport" for no response, "unusable_body" for
-// a response that arrived but cannot be used, "resource_unreadable",
-// "collector") and the call latency, keyed by request_id. It never logs the
-// token or the package-id-carrying URL.
-func (h *Handler) logCKANOutcome(ctx context.Context, packageID string, err error, latency time.Duration) {
+// logCKANOutcome emits the CKAN-upstream-outcome slog event (spec §8): the
+// action it is about, the HTTP status (or the error class - "transport" for no
+// response, "unusable_body" for a response that arrived but cannot be used,
+// "resource_unreadable", "collector") and the call latency, keyed by
+// request_id. It never logs the token or the package-id-carrying URL.
+func (h *Handler) logCKANOutcome(ctx context.Context, packageID, action string, err error, latency time.Duration) {
+	h.logger.LogAttrs(ctx, slog.LevelInfo, "ckan_upstream_outcome", ckanOutcomeAttrs(ctx, packageID, action, err, latency)...)
+}
+
+// logCKANProbeFailure reports a freshness probe that could not be made. The
+// request itself continues with package_show, so this is not a failure event -
+// it is the dedicated event for a broken package_search, whose cost is paid as
+// slower requests rather than as errors.
+func (h *Handler) logCKANProbeFailure(ctx context.Context, packageID string, err error, latency time.Duration) {
+	attrs := append(ckanOutcomeAttrs(ctx, packageID, "package_search", err, latency), slog.String("probe_result", probeResultFailed))
+	h.logger.LogAttrs(ctx, slog.LevelInfo, "ckan_probe_failed", attrs...)
+}
+
+// logCKANProbeOutcome emits the ckan_upstream_outcome record of a probe that
+// reached CKAN, classified by probe_result. All three classes are logged, not
+// just the served one: a probe that answers cleanly and still never matches the
+// cache costs an extra round-trip on every request and surfaces nowhere else.
+func (h *Handler) logCKANProbeOutcome(ctx context.Context, packageID, result string, latency time.Duration) {
+	attrs := append(ckanOutcomeAttrs(ctx, packageID, "package_search", nil, latency), slog.String("probe_result", result))
+	h.logger.LogAttrs(ctx, slog.LevelInfo, "ckan_upstream_outcome", attrs...)
+}
+
+// ckanOutcomeAttrs builds the attrs shared by both CKAN slog events: the
+// request_id, the package id, the CKAN action, the latency, and the outcome
+// discriminators. Without the action a probe-served cache hit and a
+// package_show outcome are indistinguishable in the log.
+func ckanOutcomeAttrs(ctx context.Context, packageID, action string, err error, latency time.Duration) []slog.Attr {
 	attrs := []slog.Attr{
 		slog.String("request_id", GetRequestIDFromContext(ctx)),
 		slog.String("package_id", packageID),
+		slog.String("ckan_action", action),
 		slog.Int64("latency_ms", latency.Milliseconds()),
 	}
 	switch {
@@ -719,7 +835,7 @@ func (h *Handler) logCKANOutcome(ctx context.Context, packageID string, err erro
 			attrs = append(attrs, slog.String("transport_error_class", "collector"))
 		}
 	}
-	h.logger.LogAttrs(ctx, slog.LevelInfo, "ckan_upstream_outcome", attrs...)
+	return attrs
 }
 
 // deepCopyConfigForRequest returns a copy of pcConfig safe for concurrent use

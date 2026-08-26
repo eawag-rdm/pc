@@ -18,6 +18,7 @@ import (
 
 	"github.com/eawag-rdm/pc/pkg/checks"
 	"github.com/eawag-rdm/pc/pkg/config"
+	"github.com/eawag-rdm/pc/pkg/output"
 	"github.com/eawag-rdm/pc/pkg/readers"
 	"github.com/eawag-rdm/pc/pkg/structs"
 )
@@ -284,6 +285,36 @@ func TestErrorCatalogue_StatusAndMessage(t *testing.T) {
 			}
 		})
 	}
+}
+
+// ckanCalls counts CKAN Action API requests per action, so a test can pin which
+// upstream calls a request really made - the freshness probe exists precisely to
+// stop cache hits from calling package_show.
+type ckanCalls struct {
+	mu     sync.Mutex
+	counts map[string]int
+}
+
+func newCKANCalls() *ckanCalls {
+	return &ckanCalls{counts: map[string]int{}}
+}
+
+// record tallies one call to the action named by the request path.
+func (c *ckanCalls) record(path string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.counts[path[strings.LastIndex(path, "/")+1:]]++
+}
+
+func (c *ckanCalls) count(action string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.counts[action]
+}
+
+// isPackageSearch reports whether r asks for the freshness probe's action.
+func isPackageSearch(r *http.Request) bool {
+	return strings.HasSuffix(r.URL.Path, "/package_search")
 }
 
 // fakeCKAN returns an httptest server that answers package_show with a package
@@ -733,19 +764,52 @@ func TestHandler_Analyze_ConcurrentPDF_RaceClean(t *testing.T) {
 
 // TestHandler_Analyze_ResultCache drives the full analyze flow against a fake
 // CKAN and asserts the cache contract: an unchanged metadata_modified serves
-// the cached body (X-PC-Cache: hit, fresh request_id, package_show still
-// called once per request for auth+freshness), and a bumped metadata_modified
-// forces a full re-analysis.
+// the cached body (X-PC-Cache: hit, fresh request_id) after nothing but the
+// freshness probe - package_show, the expensive call, must not run on a hit -
+// and a bumped metadata_modified forces a full re-analysis. The last two
+// requests pin what the probe alone decides: a token the search index answers
+// nothing for falls through to package_show and gets CKAN's verdict, and a
+// token it does answer for is served the stored body without any package_show.
 func TestHandler_Analyze_ResultCache(t *testing.T) {
+	const (
+		token          = "tok"
+		foreignToken   = "other-tok"
+		probeOnlyToken = "probe-only-tok"
+	)
 	var mu sync.Mutex
 	metadataModified := "2026-07-28T10:00:00.000000"
-	var calls int
+	calls := newCKANCalls()
 	ckan := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.record(r.URL.Path)
 		mu.Lock()
-		calls++
 		mm := metadataModified
 		mu.Unlock()
+		auth := r.Header.Get("Authorization")
 		w.Header().Set("Content-Type", "application/json")
+		if isPackageSearch(r) {
+			// The probe must carry the requesting client's own token: CKAN
+			// searches under that token's permissions, so a probe that dropped or
+			// reused one would revalidate the entry as somebody else.
+			if auth != token && auth != foreignToken && auth != probeOnlyToken {
+				t.Errorf("probe Authorization = %q, want the requesting client's token", auth)
+			}
+			if auth == foreignToken {
+				// A package the caller may not read matches nothing at all.
+				io.WriteString(w, `{"success":true,"result":{"count":0,"results":[]}}`)
+				return
+			}
+			io.WriteString(w, `{"success":true,"result":{"count":1,"results":[`+
+				`{"id":"cache-pkg","metadata_modified":"`+mm+`"}]}}`)
+			return
+		}
+		// Only the owning token gets the document; probeOnlyToken is answered by
+		// the search index but not by package_show, which is the shape the probe's
+		// accepted property is about.
+		if auth != token {
+			// What CKAN answers a caller who may not read the package.
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		io.WriteString(w, `{"success":true,"result":{"name":"cache-pkg","metadata_modified":"`+mm+`","resources":[]}}`)
 	}))
 	defer ckan.Close()
@@ -758,12 +822,19 @@ func TestHandler_Analyze_ResultCache(t *testing.T) {
 	handler.cache = cache
 
 	// 1st request: miss, full analysis, result stored.
-	rr1 := analyzeWithToken(handler, "cache-pkg", "tok")
+	rr1 := analyzeWithToken(handler, "cache-pkg", token)
 	if rr1.Code != http.StatusOK {
 		t.Fatalf("first: expected 200, got %d (body: %s)", rr1.Code, rr1.Body.String())
 	}
 	if got := rr1.Header().Get("X-PC-Cache"); got != "miss" {
 		t.Errorf("first: X-PC-Cache = %q, want miss", got)
+	}
+	// A cold request probes and then fetches: nothing is cached to revalidate.
+	if got := calls.count("package_search"); got != 1 {
+		t.Errorf("first: package_search called %d times, want 1", got)
+	}
+	if got := calls.count("package_show"); got != 1 {
+		t.Errorf("first: package_show called %d times, want 1", got)
 	}
 
 	// 2nd request, unchanged package: hit - same body except request_id. Use a
@@ -772,7 +843,7 @@ func TestHandler_Analyze_ResultCache(t *testing.T) {
 	body2 := bytes.NewBufferString(`{"package_id":"cache-pkg"}`)
 	req2 := httptest.NewRequest("POST", "/api/v1/analyze", body2)
 	req2 = withRequestContext(req2, "REQ-SECOND", DefaultContactMessage)
-	req2 = req2.WithContext(context.WithValue(req2.Context(), CKANTokenKey, "tok"))
+	req2 = req2.WithContext(context.WithValue(req2.Context(), CKANTokenKey, token))
 	rr2 := httptest.NewRecorder()
 	handler.Analyze(rr2, req2)
 	if rr2.Code != http.StatusOK {
@@ -800,21 +871,262 @@ func TestHandler_Analyze_ResultCache(t *testing.T) {
 		t.Error("cached response content must equal the original analysis")
 	}
 
-	// package_show still runs once per request (auth + freshness signal).
-	mu.Lock()
-	if calls != 2 {
-		t.Errorf("expected 2 package_show calls after 2 requests, got %d", calls)
+	// THE feature: the hit was served off the probe alone. package_show is the
+	// expensive call and must not have run a second time.
+	if got := calls.count("package_search"); got != 2 {
+		t.Errorf("second: package_search called %d times in total, want 2", got)
 	}
+	if got := calls.count("package_show"); got != 1 {
+		t.Errorf("second: package_show called %d times in total, want 1 - a cache hit must not fetch the document", got)
+	}
+
+	mu.Lock()
 	metadataModified = "2026-07-28T11:11:11.000000" // package changed upstream
 	mu.Unlock()
 
-	// 3rd request: freshness mismatch -> full re-analysis.
-	rr3 := analyzeWithToken(handler, "cache-pkg", "tok")
+	// 3rd request: the probe reports the new freshness, so the entry is stale ->
+	// full re-analysis, which fetches the document again.
+	rr3 := analyzeWithToken(handler, "cache-pkg", token)
 	if rr3.Code != http.StatusOK {
 		t.Fatalf("third: expected 200, got %d", rr3.Code)
 	}
 	if got := rr3.Header().Get("X-PC-Cache"); got != "miss" {
 		t.Errorf("third: X-PC-Cache = %q, want miss after metadata_modified bump", got)
+	}
+	if got := calls.count("package_show"); got != 2 {
+		t.Errorf("third: package_show called %d times in total, want 2 - a changed package must be re-fetched", got)
+	}
+
+	// 4th request, a foreign token on the now-cached package. What this pins is
+	// mechanical, not an authorization guarantee in the code: the request's own
+	// token is what reaches package_search, and a probe that identifies nothing
+	// reads no cache entry - so the request falls through to package_show, whose
+	// verdict (here CKAN's own 404) decides it. Whom the index answers for is the
+	// fixture's decision, exactly as it is CKAN's in production.
+	showsBefore := calls.count("package_show")
+	rr4 := analyzeWithToken(handler, "cache-pkg", foreignToken)
+	if rr4.Code != http.StatusNotFound {
+		t.Fatalf("foreign token: expected 404, got %d (body: %s)", rr4.Code, rr4.Body.String())
+	}
+	if resp := decodeEnvelope(t, rr4); resp.Error.Code != CodePackageNotFound {
+		t.Errorf("foreign token: error code = %q, want %q", resp.Error.Code, CodePackageNotFound)
+	}
+	if got := calls.count("package_show"); got != showsBefore+1 {
+		t.Errorf("foreign token: package_show called %d times in total, want %d - the probe must not answer for a caller it found nothing for", got, showsBefore+1)
+	}
+
+	// 5th request, a token the search index DOES answer for while package_show
+	// would 404 it: the entry is served on the probe's word alone. This is the
+	// feature's accepted property - a probe match is not re-checked against the
+	// document - and it is pinned here so a later "hardening" that re-fetches on
+	// hits cannot quietly turn every hit back into a full round-trip.
+	showsBefore = calls.count("package_show")
+	rr5 := analyzeWithToken(handler, "cache-pkg", probeOnlyToken)
+	if rr5.Code != http.StatusOK {
+		t.Fatalf("probe-only token: expected 200, got %d (body: %s)", rr5.Code, rr5.Body.String())
+	}
+	if got := rr5.Header().Get("X-PC-Cache"); got != "hit" {
+		t.Errorf("probe-only token: X-PC-Cache = %q, want hit - a matching probe serves the entry", got)
+	}
+	if got := calls.count("package_show"); got != showsBefore {
+		t.Errorf("probe-only token: package_show called %d times in total, want %d - a probe match is not re-checked against the document", got, showsBefore)
+	}
+}
+
+// TestHandler_Analyze_ProbeFailure_FallsThrough pins what a broken search
+// endpoint costs and does not cost: the request still succeeds off package_show,
+// which owns the error surface, the failure reaches the operator as
+// ckan_probe_failed, and the cache still works - the second request is served
+// from the entry the first one stored, found by the post-fetch cache read. The
+// probe's own CKAN warning must also stay out of the request's scan
+// diagnostics, which is what running the per-request reset after the probe buys.
+func TestHandler_Analyze_ProbeFailure_FallsThrough(t *testing.T) {
+	// Buffering mode, as the server sets it at boot: only then does a collector
+	// warning reach analysis.Run's drain at all, so only then is the leak this
+	// test guards against reachable.
+	output.GlobalLogger.SetJSONMode(true)
+	output.GlobalLogger.ClearMessages()
+	t.Cleanup(func() { output.GlobalLogger.ClearMessages() })
+
+	var mu sync.Mutex
+	calls := newCKANCalls()
+	ckan := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.record(r.URL.Path)
+		if isPackageSearch(r) {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"success":true,"result":{"name":"probe-pkg","metadata_modified":"2026-07-28T10:00:00.000000","resources":[]}}`)
+	}))
+	defer ckan.Close()
+
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&syncWriter{w: &logBuf, mu: &mu}, nil))
+	handler := NewHandler(ckanPCConfig(ckan.URL), Config{}, logger, testPlan(ckanPCConfig(ckan.URL)))
+	cache, err := newResultCache(t.TempDir(), 10, 0)
+	if err != nil {
+		t.Fatalf("newResultCache: %v", err)
+	}
+	handler.cache = cache
+	logged := func() string {
+		mu.Lock()
+		defer mu.Unlock()
+		return logBuf.String()
+	}
+
+	rr1 := analyzeWithToken(handler, "probe-pkg", "tok")
+	if rr1.Code != http.StatusOK {
+		t.Fatalf("first: a broken probe must not fail the request, got %d (body: %s)", rr1.Code, rr1.Body.String())
+	}
+	if got := rr1.Header().Get("X-PC-Cache"); got != "miss" {
+		t.Errorf("first: X-PC-Cache = %q, want miss", got)
+	}
+	if got := calls.count("package_show"); got != 1 {
+		t.Errorf("first: package_show called %d times, want 1 - a failed probe must fall through", got)
+	}
+	// A search endpoint that stops working costs every hit a full fetch, and no
+	// other event says so: the operator sees this line or nothing.
+	if !strings.Contains(logged(), "ckan_probe_failed") {
+		t.Error("a failed probe must be logged, got: " + logged())
+	}
+	// Both CKAN records name the call they are about, or a probe outcome and a
+	// package_show outcome cannot be told apart in a dashboard; the probe record
+	// also names which of the four outcomes it was.
+	for _, want := range []string{`"ckan_action":"package_search"`, `"ckan_action":"package_show"`, `"probe_result":"failed"`} {
+		if !strings.Contains(logged(), want) {
+			t.Errorf("expected %s in the CKAN records, got: %s", want, logged())
+		}
+	}
+
+	// The warning the failed probe wrote to the process-global buffer is drained
+	// by analysis.Run into THIS request's diagnostics unless the per-request
+	// reset wipes it first: a CKAN blip must not be reported as something the
+	// package's own scan found.
+	if strings.Contains(logged(), "scan_diagnostic") {
+		t.Errorf("a probe failure must not surface as a scan diagnostic, got: %s", logged())
+	}
+
+	// The entry is fresh, but only the fetched document can say so: the
+	// post-fetch cache read is what still turns this into a hit.
+	rr2 := analyzeWithToken(handler, "probe-pkg", "tok")
+	if rr2.Code != http.StatusOK {
+		t.Fatalf("second: expected 200, got %d (body: %s)", rr2.Code, rr2.Body.String())
+	}
+	if got := rr2.Header().Get("X-PC-Cache"); got != "hit" {
+		t.Errorf("second: X-PC-Cache = %q, want hit - the fetched document revalidates the entry", got)
+	}
+	if got := calls.count("package_show"); got != 2 {
+		t.Errorf("second: package_show called %d times, want 2 - without a usable probe the document is fetched every time", got)
+	}
+}
+
+// TestHandler_Analyze_ProbeDrift_LogsStale pins the alarm for the one probe
+// failure that looks healthy: package_search reporting a metadata_modified
+// package_show never writes. Every probe then succeeds, every entry the probe
+// looks up misses, and every request still answers 200 off the post-fetch cache
+// read - having paid the package_show the probe exists to save. The only symptom
+// is a probe_result of "stale" once per request instead of once per change.
+func TestHandler_Analyze_ProbeDrift_LogsStale(t *testing.T) {
+	var mu sync.Mutex
+	calls := newCKANCalls()
+	ckan := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.record(r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		if isPackageSearch(r) {
+			// The right package, its timestamp spelled the way Solr stores it.
+			io.WriteString(w, `{"success":true,"result":{"count":1,"results":[`+
+				`{"id":"drift-pkg","metadata_modified":"2026-07-28T10:00:00Z"}]}}`)
+			return
+		}
+		io.WriteString(w, `{"success":true,"result":{"name":"drift-pkg","metadata_modified":"2026-07-28T10:00:00.000000","resources":[]}}`)
+	}))
+	defer ckan.Close()
+
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&syncWriter{w: &logBuf, mu: &mu}, nil))
+	handler := NewHandler(ckanPCConfig(ckan.URL), Config{}, logger, testPlan(ckanPCConfig(ckan.URL)))
+	cache, err := newResultCache(t.TempDir(), 10, 0)
+	if err != nil {
+		t.Fatalf("newResultCache: %v", err)
+	}
+	handler.cache = cache
+	logged := func() string {
+		mu.Lock()
+		defer mu.Unlock()
+		return logBuf.String()
+	}
+
+	// The first request stores the entry.
+	rr1 := analyzeWithToken(handler, "drift-pkg", "tok")
+	if rr1.Code != http.StatusOK {
+		t.Fatalf("first: expected 200, got %d (body: %s)", rr1.Code, rr1.Body.String())
+	}
+	if got := rr1.Header().Get("X-PC-Cache"); got != "miss" {
+		t.Errorf("first: X-PC-Cache = %q, want miss", got)
+	}
+
+	// The second is still served from it - by the post-fetch read, after the
+	// package_show that the probe was supposed to make unnecessary. Drift is
+	// invisible in the response and shows up only as cost.
+	rr2 := analyzeWithToken(handler, "drift-pkg", "tok")
+	if rr2.Code != http.StatusOK {
+		t.Fatalf("second: expected 200, got %d (body: %s)", rr2.Code, rr2.Body.String())
+	}
+	if got := rr2.Header().Get("X-PC-Cache"); got != "hit" {
+		t.Errorf("second: X-PC-Cache = %q, want hit", got)
+	}
+	if got := calls.count("package_show"); got != 2 {
+		t.Errorf("package_show called %d times, want 2 - a probe that never matches saves nothing", got)
+	}
+	// Each stale record must name the request and the package it is about, or the
+	// operator cannot tell drift on one package from a busy day.
+	var stale int
+	for _, line := range bytes.Split(bytes.TrimSpace([]byte(logged())), []byte("\n")) {
+		var rec map[string]any
+		if err := json.Unmarshal(line, &rec); err != nil {
+			t.Fatalf("log line is not JSON: %v (%s)", err, line)
+		}
+		if rec["probe_result"] != probeResultStale {
+			continue
+		}
+		stale++
+		if rec["package_id"] != "drift-pkg" || rec["request_id"] != "REQ-drift-pkg" {
+			t.Errorf("stale probe record must name request and package, got %v", rec)
+		}
+	}
+	// One per request, not one per change: that ratio IS the drift signature, and
+	// nothing else in the logs reports it.
+	if stale != 2 {
+		t.Errorf("stale probe records = %d, want 2 (one per request); log: %s", stale, logged())
+	}
+}
+
+// TestHandler_Analyze_CacheDisabled_NeverProbes: with no result cache there is
+// nothing to revalidate, so the request must not spend a search on it.
+func TestHandler_Analyze_CacheDisabled_NeverProbes(t *testing.T) {
+	calls := newCKANCalls()
+	ckan := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.record(r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		if isPackageSearch(r) {
+			io.WriteString(w, `{"success":true,"result":{"count":1,"results":[`+
+				`{"id":"nocache-pkg","metadata_modified":"2026-07-28T10:00:00.000000"}]}}`)
+			return
+		}
+		io.WriteString(w, `{"success":true,"result":{"name":"nocache-pkg","metadata_modified":"2026-07-28T10:00:00.000000","resources":[]}}`)
+	}))
+	defer ckan.Close()
+
+	handler := NewHandler(ckanPCConfig(ckan.URL), Config{}, discardLogger(), testPlan(ckanPCConfig(ckan.URL)))
+	if rr := analyzeWithToken(handler, "nocache-pkg", "tok"); rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+	if got := calls.count("package_search"); got != 0 {
+		t.Errorf("package_search called %d times, want 0 - no cache, no probe", got)
+	}
+	if got := calls.count("package_show"); got != 1 {
+		t.Errorf("package_show called %d times, want 1", got)
 	}
 }
 

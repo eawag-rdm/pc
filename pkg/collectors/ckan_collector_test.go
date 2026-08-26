@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/http/httptrace"
+	neturl "net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -118,6 +119,212 @@ func TestCkanPackageShow_SuccessAndEscaping(t *testing.T) {
 	if gotQuery != "id=a%26evil%3D1" {
 		t.Errorf("package id not escaped: got query %q", gotQuery)
 	}
+}
+
+// probeTestConfig builds the probe's CkanCollector config with a token, so a
+// test can assert the token travels with the search request.
+func probeTestConfig(srvURL, token string) config.Config {
+	cfg := ckanTestConfig(srvURL)
+	cfg.Collectors["CkanCollector"].Attrs["token"] = token
+	return cfg
+}
+
+// TestCkanPackageModifiedAt_SuccessAndEscaping asserts the probe returns the
+// searched package's metadata_modified and builds the query CKAN needs: both id
+// spellings quoted inside fq, one row, private packages included - with the
+// package id escaped, so an id carrying query syntax cannot restructure the
+// request. The request carries the caller's token, which is what makes a
+// private package visible to its owner and invisible to everybody else.
+func TestCkanPackageModifiedAt_SuccessAndEscaping(t *testing.T) {
+	var gotQuery neturl.Values
+	var gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.Query()
+		gotAuth = r.Header.Get("Authorization")
+		io.WriteString(w, `{"success":true,"result":{"count":1,"results":[`+
+			`{"id":"a&evil=1","metadata_modified":"2026-08-26T09:00:00.000000"}]}}`)
+	}))
+	defer srv.Close()
+
+	modified, ok, err := CkanPackageModifiedAt(context.Background(), "a&evil=1", probeTestConfig(srv.URL, "probe-token"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !ok {
+		t.Fatal("a single exact match must be usable")
+	}
+	if modified != "2026-08-26T09:00:00.000000" {
+		t.Errorf("metadata_modified = %q, want the searched package's value", modified)
+	}
+	if gotAuth != "probe-token" {
+		t.Errorf("Authorization = %q, want the configured token - CKAN decides visibility by it", gotAuth)
+	}
+	// Decoded: an unescaped id would have split fq at its '&' and lost the
+	// second half into a parameter of its own.
+	if want := `name:"a&evil=1" OR id:"a&evil=1"`; gotQuery.Get("fq") != want {
+		t.Errorf("fq = %q, want %q", gotQuery.Get("fq"), want)
+	}
+	if got := gotQuery.Get("rows"); got != "1" {
+		t.Errorf("rows = %q, want 1", got)
+	}
+	// Without it, stock CKAN answers no private dataset at all and the cache is
+	// inert for every token-gated package.
+	if got := gotQuery.Get("include_private"); got != "true" {
+		t.Errorf("include_private = %q, want true", got)
+	}
+	// fl would hand back raw Solr documents, whose metadata_modified is
+	// serialized differently from package_show's - no cached entry would ever
+	// match again.
+	if gotQuery.Has("fl") {
+		t.Errorf("fl must not be sent, got %q", gotQuery.Get("fl"))
+	}
+	if got := gotQuery.Get("evil"); got != "" {
+		t.Errorf("the package id leaked into its own parameter: evil=%q", got)
+	}
+}
+
+// TestCkanPackageModifiedAt_SolrTermEscaping asserts the quoted Solr terms
+// survive an id carrying the two characters that would otherwise end or reshape
+// the phrase. URL escaping does not cover this: CKAN decodes the parameter
+// before Solr parses it, so an embedded quote would close the term and turn the
+// rest of the id into query syntax.
+func TestCkanPackageModifiedAt_SolrTermEscaping(t *testing.T) {
+	var gotFq string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotFq = r.URL.Query().Get("fq")
+		io.WriteString(w, `{"success":true,"result":{"count":0,"results":[]}}`)
+	}))
+	defer srv.Close()
+
+	if _, _, err := CkanPackageModifiedAt(context.Background(), `a" OR name:*`, ckanTestConfig(srv.URL)); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if want := `name:"a\" OR name:*" OR id:"a\" OR name:*"`; gotFq != want {
+		t.Errorf("fq = %q, want %q", gotFq, want)
+	}
+}
+
+// TestCkanPackageModifiedAt_UnusableResults asserts every ambiguous answer is a
+// plain "cannot say" - no error, no value - so the caller falls back to
+// package_show instead of acting on it. A count of 0 in particular must not be
+// read as "absent": an unauthorized package looks exactly the same.
+func TestCkanPackageModifiedAt_UnusableResults(t *testing.T) {
+	for name, body := range map[string]string{
+		"no match":               `{"success":true,"result":{"count":0,"results":[]}}`,
+		"several matches":        `{"success":true,"result":{"count":2,"results":[{"id":"pkg","metadata_modified":"2026-08-26T09:00:00.000000"}]}}`,
+		"missing field":          `{"success":true,"result":{"count":1,"results":[{"id":"pkg"}]}}`,
+		"empty field":            `{"success":true,"result":{"count":1,"results":[{"id":"pkg","metadata_modified":""}]}}`,
+		"count without a result": `{"success":true,"result":{"count":1,"results":[]}}`,
+		"result is not a dict":   `{"success":true,"result":{"count":1,"results":["x"]}}`,
+		// A hit on a neighbouring package would be cached as this one's
+		// freshness: the filter query is trusted for nothing.
+		"another package": `{"success":true,"result":{"count":1,"results":[{"id":"other","name":"other","metadata_modified":"2026-08-26T09:00:00.000000"}]}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				io.WriteString(w, body)
+			}))
+			defer srv.Close()
+
+			modified, ok, err := CkanPackageModifiedAt(context.Background(), "pkg", ckanTestConfig(srv.URL))
+			if err != nil {
+				t.Errorf("an ambiguous search is not an error, got %v", err)
+			}
+			if ok {
+				t.Errorf("ok = true for %q, want false", body)
+			}
+			if modified != "" {
+				t.Errorf("modified = %q, want empty when unusable", modified)
+			}
+		})
+	}
+}
+
+// TestCkanPackageModifiedAt_Failures asserts a probe that could not be made
+// returns the typed error for logging - never a usable value.
+func TestCkanPackageModifiedAt_Failures(t *testing.T) {
+	t.Run("http error", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+		}))
+		defer srv.Close()
+
+		_, ok, err := CkanPackageModifiedAt(context.Background(), "pkg", ckanTestConfig(srv.URL))
+		if ok {
+			t.Error("a failed probe must not be usable")
+		}
+		var ckanErr *CKANError
+		if !errors.As(err, &ckanErr) {
+			t.Fatalf("expected *CKANError, got %T (%v)", err, err)
+		}
+		if ckanErr.StatusCode != http.StatusInternalServerError {
+			t.Errorf("StatusCode = %d, want 500", ckanErr.StatusCode)
+		}
+	})
+
+	t.Run("action failure in a 200 body", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			io.WriteString(w, `{"success":false,"error":{"__type":"Validation Error"}}`)
+		}))
+		defer srv.Close()
+
+		_, ok, err := CkanPackageModifiedAt(context.Background(), "pkg", ckanTestConfig(srv.URL))
+		if ok {
+			t.Error("a failed probe must not be usable")
+		}
+		if err == nil {
+			t.Fatal("expected an error for success:false")
+		}
+	})
+
+	// The Detail is what the server logs, so it must name the call that
+	// actually failed - not package_show, which was never made.
+	t.Run("unparseable body", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			io.WriteString(w, "<html>oops</html>")
+		}))
+		defer srv.Close()
+
+		_, ok, err := CkanPackageModifiedAt(context.Background(), "pkg", ckanTestConfig(srv.URL))
+		if ok {
+			t.Error("a failed probe must not be usable")
+		}
+		var ckanErr *CKANError
+		if !errors.As(err, &ckanErr) {
+			t.Fatalf("expected *CKANError, got %T (%v)", err, err)
+		}
+		if ckanErr.Detail != unusableDetailSearchMalformedJSON {
+			t.Errorf("Detail = %q, want %q", ckanErr.Detail, unusableDetailSearchMalformedJSON)
+		}
+	})
+
+	t.Run("body without a result object", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			io.WriteString(w, `{"success":true}`)
+		}))
+		defer srv.Close()
+
+		_, ok, err := CkanPackageModifiedAt(context.Background(), "pkg", ckanTestConfig(srv.URL))
+		if ok {
+			t.Error("a failed probe must not be usable")
+		}
+		var ckanErr *CKANError
+		if !errors.As(err, &ckanErr) {
+			t.Fatalf("expected *CKANError, got %T (%v)", err, err)
+		}
+		if ckanErr.Detail != unusableDetailSearchNoResult {
+			t.Errorf("Detail = %q, want %q", ckanErr.Detail, unusableDetailSearchNoResult)
+		}
+	})
+
+	t.Run("missing config", func(t *testing.T) {
+		_, ok, err := CkanPackageModifiedAt(context.Background(), "pkg", config.Config{
+			Collectors: map[string]*config.CollectorConfig{"CkanCollector": nil},
+		})
+		if ok || err == nil {
+			t.Fatalf("expected an error for a nil CkanCollector config, got ok=%v err=%v", ok, err)
+		}
+	})
 }
 
 func TestJSONToMap(t *testing.T) {

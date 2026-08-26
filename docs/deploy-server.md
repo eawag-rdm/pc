@@ -115,6 +115,19 @@ wasm cache below persists across recreations: the server deletes the cache's
 (second replica, blue/green overlap) wipes the first one's entries at its boot;
 give each instance its own directory.
 
+With the cache on, freshness is probed with `package_search` (one cheap Solr
+lookup for the package's `metadata_modified`); only a changed - or unrecognised -
+package goes on to pay for `package_show` plus the analysis. The probe carries
+the request's token and searches with `include_private`, so a private package is
+revalidated for a token that may read it and matches nothing for one that may
+not. Search-index lag is the trade: for the few seconds CKAN needs to index an
+edit, a just-edited package can be served from the cache, an unchanged one can be
+run in full again, and a package just made private keeps being served from the
+cache. The other side of the bargain is the miss path: every cache miss - a first
+analysis, an evicted entry, a genuinely changed package - now pays one extra CKAN
+round-trip for the probe before its `package_show`. A probe that fails logs
+`ckan_probe_failed` and costs only that request its `package_show`.
+
 **Secret scanner (betterleaks).** *Dormant since 2026-08-04: the scan ships
 disabled (`enabled = false`) because it is too slow for our latency target;
 the binary stays bundled and the check reactivates by flipping the rule's own
@@ -202,13 +215,29 @@ Notes:
 - The access log emits **one record per request** with `request_id`, method,
   path, `package_id`, status and `latency_ms`.
 - The token / `Authorization` header is **never** logged.
-- The `ckan_upstream_outcome` record carries either `ckan_status` (CKAN
-  answered with a usable body) or `transport_error_class`: `transport` (no
-  response at all), `unusable_body` (a response arrived but cannot be used -
-  malformed JSON, no `result` object, or past the size cap),
+- The `ckan_upstream_outcome` record carries `ckan_action` (`package_show`, or
+  `package_search` for a freshness probe that reached CKAN) and either
+  `ckan_status` (CKAN answered with a usable body) or `transport_error_class`:
+  `transport` (no response at all), `unusable_body` (a response arrived but
+  cannot be used - malformed JSON, no `result` object, or past the size cap),
   `resource_unreadable`, or `collector`. For `unusable_body` an extra
-  `ckan_error_detail` field names which of the three it was (a fixed string; it
-  never carries body content, a URL or the token).
+  `ckan_error_detail` field names the case and the call it came from (a fixed
+  string; it never carries body content, a URL or the token).
+- Every freshness-probe record additionally carries `probe_result`: `matched`
+  (the cached entry was served off it), `stale` (the probe answered, the cached
+  entry did not match it), `unusable` (the search could not identify the
+  package - no match, several, or no timestamp) or `failed` (the probe could not
+  be made, logged as `ckan_probe_failed` instead of `ckan_upstream_outcome`).
+- `ckan_probe_failed` reports a freshness probe that could not be made. The
+  request itself still succeeded - it fell through to `package_show` - so these
+  records say the search endpoint is broken and every cache hit is paying for a
+  full fetch again. They are **not** the only degradation signal: a probe that
+  keeps working while the cache stops hitting produces `probe_result: stale`
+  instead. One `stale` per package change or cold entry is normal; **`stale` on
+  every request for the same package is the drift signature** - `package_search`
+  and `package_show` no longer spell `metadata_modified` the same way, so no
+  entry can ever match again. Alert on that ratio: nothing else reports it, the
+  requests all succeed, they just never stop paying full price.
 - **Dashboard change:** the oversized-response case used to be logged as class
   `transport` and is now `unusable_body` - update any query keyed on the old
   value.
@@ -368,11 +397,15 @@ the process **exits non-zero immediately** rather than hanging.
   raises `WriteTimeout` with it.
 - Request bodies are capped (the analyze body is a tiny JSON object).
 - Two nested timeouts bound an analysis: `ckanRequestTimeoutSeconds`
-  (default **10s**) caps the single CKAN `package_show` call - a CKAN that
+  (default **10s**) caps the CKAN `package_show` call - a CKAN that
   cannot answer a metadata GET within it is reported as `ckan_unavailable`
   (502) - and `requestTimeoutSeconds` (default **300s**) caps the whole
   request including the checks phase; when it fires the checks stop between
-  files and the client receives `analysis_timeout` (504).
+  files and the client receives `analysis_timeout` (504). The result cache's
+  `package_search` probe is bounded separately, by the smaller of
+  `ckanRequestTimeoutSeconds` and 5s: `package_show` opens a fresh deadline
+  afterwards either way, so what an unbounded probe would cost is the latency of
+  every request it fronts - waited out while holding the single analysis slot.
 - A panic in any handler is recovered and returned as `internal_error` (500)
   without crashing the process or leaking a stack trace to the client (this
   also fires an admin alert - see §6). A panic inside a checks worker
