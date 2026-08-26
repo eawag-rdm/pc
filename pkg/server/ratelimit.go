@@ -56,9 +56,14 @@ type rateLimiter struct {
 
 	// trustProxyHeaders gates whether X-Real-IP is consulted at all; when true
 	// it is honored only for connections whose RemoteAddr is within
-	// trustedProxies (the [server] CIDRs, parsed once at boot).
+	// trustedProxies.
 	trustProxyHeaders bool
-	trustedProxies    []netip.Prefix
+
+	// trustedProxies holds the [server] trustedProxies CIDRs: server.New parses
+	// them once at boot and installs them here after construction, and until then
+	// the empty list trusts no address. The matching semantics live on
+	// containsAddr.
+	trustedProxies []netip.Prefix
 
 	// now is injectable so tests can drive the clock across hour boundaries.
 	now func() time.Time
@@ -68,10 +73,8 @@ type rateLimiter struct {
 // apply the burst factor: limit = perHour × (1 + burstFactor), rounded down,
 // with a floor of 1 so a positive per-hour budget always admits at least one
 // request (§4). A non-positive per-hour budget disables that scope (limit 0 =
-// unlimited). trustedProxies must hold unmapped prefixes - what parsePrefixList
-// returns - because the peer address is unmapped before it is matched; an
-// IPv4-mapped prefix would trust nobody.
-func newRateLimiter(perIPPerHour, globalPerHour int, burstFactor float64, cachedFactor int, maxTrackedKeys int, trustProxyHeaders bool, trustedProxies []netip.Prefix) *rateLimiter {
+// unlimited).
+func newRateLimiter(perIPPerHour, globalPerHour int, burstFactor float64, cachedFactor int, maxTrackedKeys int, trustProxyHeaders bool) *rateLimiter {
 	if cachedFactor < 0 {
 		cachedFactor = 0
 	}
@@ -84,7 +87,6 @@ func newRateLimiter(perIPPerHour, globalPerHour int, burstFactor float64, cached
 		cachedGlobalLimit: effectiveLimit(globalPerHour*cachedFactor, burstFactor),
 		maxTrackedKeys:    maxTrackedKeys,
 		trustProxyHeaders: trustProxyHeaders,
-		trustedProxies:    trustedProxies,
 		now:               time.Now,
 	}
 }

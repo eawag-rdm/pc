@@ -160,7 +160,6 @@ func NewHandler(pcConfig *config.Config, serverCfg Config, logger *slog.Logger, 
 			s.CachedRequestLimitFactor,
 			s.MaxTrackedRateKeys,
 			s.TrustProxyHeaders,
-			nil, // server.New wires the parsed trusted-proxy prefixes
 		)
 		if s.AnalysisBusyWaitSeconds > 0 {
 			busyWait = time.Duration(s.AnalysisBusyWaitSeconds) * time.Second

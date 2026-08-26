@@ -36,9 +36,9 @@ func (c *fixedClock) advance(d time.Duration) {
 
 // newTestLimiter builds a limiter with an injected clock pinned to a known
 // instant inside an hour (so the next-boundary math is deterministic).
-func newTestLimiter(t *testing.T, perIP, global int, burst float64, maxKeys int, trustProxies bool, proxies []netip.Prefix) (*rateLimiter, *fixedClock) {
+func newTestLimiter(t *testing.T, perIP, global int, burst float64, maxKeys int) (*rateLimiter, *fixedClock) {
 	t.Helper()
-	rl := newRateLimiter(perIP, global, burst, 0, maxKeys, trustProxies, proxies)
+	rl := newRateLimiter(perIP, global, burst, 0, maxKeys, false)
 	clk := &fixedClock{t: time.Date(2026, 6, 24, 10, 30, 0, 0, time.UTC)}
 	rl.now = clk.now
 	return rl, clk
@@ -47,7 +47,7 @@ func newTestLimiter(t *testing.T, perIP, global int, burst float64, maxKeys int,
 // TestRateLimiter_PerIPCap: with perIP=4, burst=0.5 the effective cap is 6; the
 // 7th request in the window is rejected (§4 acceptance: 429 on N+1).
 func TestRateLimiter_PerIPCap(t *testing.T) {
-	rl, _ := newTestLimiter(t, 4, 0, 0.5, 1000, false, nil)
+	rl, _ := newTestLimiter(t, 4, 0, 0.5, 1000)
 	const want = 6
 	for i := 1; i <= want; i++ {
 		ok, count, limit, _ := rl.allow("1.2.3.4", scopeIP)
@@ -70,7 +70,7 @@ func TestRateLimiter_PerIPCap(t *testing.T) {
 // TestRateLimiter_GlobalCap: global=20, burst=0.5 -> cap 30; the 31st request
 // across all keys is rejected regardless of which IP it came from.
 func TestRateLimiter_GlobalCap(t *testing.T) {
-	rl, _ := newTestLimiter(t, 0, 20, 0.5, 1000, false, nil)
+	rl, _ := newTestLimiter(t, 0, 20, 0.5, 1000)
 	const want = 30
 	for i := 1; i <= want; i++ {
 		ok, _, limit, _ := rl.allow(globalKey, scopeGlobal)
@@ -89,7 +89,7 @@ func TestRateLimiter_GlobalCap(t *testing.T) {
 // TestRateLimiter_HourBoundaryReset: a full window rejects, then advancing past
 // the clock-hour boundary resets the counter and admits again (injected clock).
 func TestRateLimiter_HourBoundaryReset(t *testing.T) {
-	rl, clk := newTestLimiter(t, 2, 0, 0, 1000, false, nil) // cap = 2
+	rl, clk := newTestLimiter(t, 2, 0, 0, 1000) // cap = 2
 	for i := 1; i <= 2; i++ {
 		if ok, _, _, _ := rl.allow("9.9.9.9", scopeIP); !ok {
 			t.Fatalf("request %d rejected early", i)
@@ -109,8 +109,8 @@ func TestRateLimiter_HourBoundaryReset(t *testing.T) {
 // TestRateLimiter_RetryAfterToBoundary: retryAfter is the time to the next hour
 // boundary. At 10:30 that is 30 minutes.
 func TestRateLimiter_RetryAfterToBoundary(t *testing.T) {
-	rl, _ := newTestLimiter(t, 1, 0, 0, 1000, false, nil) // cap = 1
-	rl.allow("5.5.5.5", scopeIP)                          // consume the single slot
+	rl, _ := newTestLimiter(t, 1, 0, 0, 1000) // cap = 1
+	rl.allow("5.5.5.5", scopeIP)              // consume the single slot
 	_, _, _, retry := rl.allow("5.5.5.5", scopeIP)
 	if retry != 30*time.Minute {
 		t.Errorf("retryAfter = %v, want 30m", retry)
@@ -120,7 +120,7 @@ func TestRateLimiter_RetryAfterToBoundary(t *testing.T) {
 // TestRateLimiter_UnlimitedScope: a non-positive per-hour budget disables the
 // scope (limit 0) and never rejects or tracks keys.
 func TestRateLimiter_UnlimitedScope(t *testing.T) {
-	rl, _ := newTestLimiter(t, 0, 0, 0.5, 1000, false, nil)
+	rl, _ := newTestLimiter(t, 0, 0, 0.5, 1000)
 	for i := 0; i < 100; i++ {
 		if ok, _, limit, _ := rl.allow("7.7.7.7", scopeIP); !ok || limit != 0 {
 			t.Fatalf("unlimited scope rejected at i=%d (limit=%d)", i, limit)
@@ -157,7 +157,8 @@ func TestEffectiveLimit(t *testing.T) {
 // trusted-proxy CIDR; a spoofed header from an untrusted RemoteAddr is ignored
 // and the connection address is used (§4).
 func TestClientIPKey_ProxyTrust(t *testing.T) {
-	rl := newRateLimiter(4, 0, 0.5, 0, 1000, true, []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32"), netip.MustParsePrefix("10.0.0.0/8")})
+	rl := newRateLimiter(4, 0, 0.5, 0, 1000, true)
+	rl.trustedProxies = []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32"), netip.MustParsePrefix("10.0.0.0/8")}
 
 	// Trusted proxy: X-Real-IP wins.
 	r := httptest.NewRequest("POST", "/api/v1/analyze", nil)
@@ -180,7 +181,8 @@ func TestClientIPKey_ProxyTrust(t *testing.T) {
 // TestClientIPKey_ProxyHeadersDisabled: with trustProxyHeaders=false, X-Real-IP
 // is never consulted even from an otherwise-trusted address.
 func TestClientIPKey_ProxyHeadersDisabled(t *testing.T) {
-	rl := newRateLimiter(4, 0, 0.5, 0, 1000, false, []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")})
+	rl := newRateLimiter(4, 0, 0.5, 0, 1000, false)
+	rl.trustedProxies = []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")}
 	r := httptest.NewRequest("POST", "/api/v1/analyze", nil)
 	r.RemoteAddr = "127.0.0.1:5555"
 	r.Header.Set("X-Real-IP", "203.0.113.7")
@@ -215,7 +217,7 @@ func TestIPKey_IPv6On64(t *testing.T) {
 // TestIPKey_IPv6PerIPCap: requests from distinct hosts in the same /64 share the
 // per-IP bucket, so the cap counts them together.
 func TestIPKey_IPv6PerIPCap(t *testing.T) {
-	rl, _ := newTestLimiter(t, 2, 0, 0, 1000, false, nil) // cap = 2
+	rl, _ := newTestLimiter(t, 2, 0, 0, 1000) // cap = 2
 	k1 := ipKey(net.ParseIP("2001:db8::1"))
 	k2 := ipKey(net.ParseIP("2001:db8::2"))
 	if k1 != k2 {
@@ -232,7 +234,7 @@ func TestIPKey_IPv6PerIPCap(t *testing.T) {
 // than the cap (after their windows have gone stale) evicts old entries so the
 // tracked-key count stays bounded (§4 limiter memory bound).
 func TestRateLimiter_EvictsStaleEntries(t *testing.T) {
-	rl, clk := newTestLimiter(t, 4, 0, 0.5, 3, false, nil) // maxKeys = 3
+	rl, clk := newTestLimiter(t, 4, 0, 0.5, 3) // maxKeys = 3
 
 	// Fill three keys in the current window.
 	for _, k := range []string{"a", "b", "c"} {
@@ -258,7 +260,7 @@ func TestRateLimiter_EvictsStaleEntries(t *testing.T) {
 // is in the current window, inserting a new key evicts the oldest-seen one so
 // the map never grows past the cap.
 func TestRateLimiter_EvictsWhenAllCurrent(t *testing.T) {
-	rl, clk := newTestLimiter(t, 4, 0, 0.5, 2, false, nil) // maxKeys = 2
+	rl, clk := newTestLimiter(t, 4, 0, 0.5, 2) // maxKeys = 2
 
 	rl.allow("a", scopeIP)
 	clk.advance(time.Second)
@@ -645,7 +647,7 @@ func (rl *rateLimiter) trackedKeys() int {
 // TestRateLimiter_RefundCached: a cache hit refunds its main-budget token, so
 // hits well past the main cap stay admitted while the cached budget lasts.
 func TestRateLimiter_RefundCached(t *testing.T) {
-	rl := newRateLimiter(4, 0, 0, 100, 1000, false, nil)
+	rl := newRateLimiter(4, 0, 0, 100, 1000, false)
 	clk := &fixedClock{t: time.Date(2026, 6, 24, 10, 30, 0, 0, time.UTC)}
 	rl.now = clk.now
 
@@ -663,7 +665,7 @@ func TestRateLimiter_RefundCached(t *testing.T) {
 // window is exhausted, further hits keep their main-budget charge (full price).
 func TestRateLimiter_RefundCached_BudgetSpent(t *testing.T) {
 	// main cap 1, cached cap 2 (factor 2, no burst).
-	rl := newRateLimiter(1, 0, 0, 2, 1000, false, nil)
+	rl := newRateLimiter(1, 0, 0, 2, 1000, false)
 	clk := &fixedClock{t: time.Date(2026, 6, 24, 10, 30, 0, 0, time.UTC)}
 	rl.now = clk.now
 
@@ -689,7 +691,7 @@ func TestRateLimiter_RefundCached_BudgetSpent(t *testing.T) {
 // counter as well.
 func TestRateLimiter_RefundCached_GlobalScope(t *testing.T) {
 	// per-IP unlimited, global cap 1, cached global cap 2.
-	rl := newRateLimiter(0, 1, 0, 2, 1000, false, nil)
+	rl := newRateLimiter(0, 1, 0, 2, 1000, false)
 	clk := &fixedClock{t: time.Date(2026, 6, 24, 10, 30, 0, 0, time.UTC)}
 	rl.now = clk.now
 
@@ -712,7 +714,7 @@ func TestRateLimiter_RefundCached_GlobalScope(t *testing.T) {
 // TestRateLimiter_RefundCached_Disabled: factor 0 disables refunds; the main
 // cap applies to cache hits unchanged.
 func TestRateLimiter_RefundCached_Disabled(t *testing.T) {
-	rl := newRateLimiter(1, 0, 0, 0, 1000, false, nil)
+	rl := newRateLimiter(1, 0, 0, 0, 1000, false)
 	clk := &fixedClock{t: time.Date(2026, 6, 24, 10, 30, 0, 0, time.UTC)}
 	rl.now = clk.now
 
@@ -729,7 +731,7 @@ func TestRateLimiter_RefundCached_Disabled(t *testing.T) {
 // TestRateLimiter_RefundCached_StaleWindow: a refund landing after the hour
 // rolled over is a no-op and does not corrupt the fresh window's counter.
 func TestRateLimiter_RefundCached_StaleWindow(t *testing.T) {
-	rl := newRateLimiter(4, 0, 0, 100, 1000, false, nil)
+	rl := newRateLimiter(4, 0, 0, 100, 1000, false)
 	clk := &fixedClock{t: time.Date(2026, 6, 24, 10, 30, 0, 0, time.UTC)}
 	rl.now = clk.now
 
