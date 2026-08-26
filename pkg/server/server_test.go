@@ -299,7 +299,7 @@ func TestNew_TrustedProxies_ReachTheLimiter(t *testing.T) {
 }
 
 // TestNew_ClientAllowlist_GatesAnalyzeAheadOfTheLimiter drives the fully wired
-// chain: an unlisted client gets the unknown-path 404 and, because the gate is
+// chain: an unlisted client gets 403 client_not_allowed and, because the gate is
 // the OUTERMOST analyze middleware, never reaches the rate limiter - so a flood
 // of denied requests can neither fill the limiter map nor evict honest clients'
 // counters. /health and /ready are not wrapped by the gate.
@@ -319,11 +319,11 @@ func TestNew_ClientAllowlist_GatesAnalyzeAheadOfTheLimiter(t *testing.T) {
 	}
 
 	rr := do("POST", "/api/v1/analyze")
-	if rr.Code != http.StatusNotFound {
-		t.Fatalf("unlisted client: status %d, want 404", rr.Code)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("unlisted client: status %d, want 403", rr.Code)
 	}
-	if code := decodeEnvelope(t, rr).Error.Code; code != CodeNotFound {
-		t.Errorf("unlisted client: code %q, want %q", code, CodeNotFound)
+	if code := decodeEnvelope(t, rr).Error.Code; code != CodeClientNotAllowed {
+		t.Errorf("unlisted client: code %q, want %q", code, CodeClientNotAllowed)
 	}
 	if got := srv.handler.limiter.trackedKeys(); got != 0 {
 		t.Errorf("denied request created %d limiter entries; the gate must run before RateLimitPerIP", got)
@@ -351,8 +351,16 @@ func TestNew_NoAllowedClients_GateNotInstalled(t *testing.T) {
 	rr := httptest.NewRecorder()
 	srv.httpServer.Handler.ServeHTTP(rr, req)
 
+	// A wrongly-installed gate answers 403 client_not_allowed; the 404 check
+	// keeps the route itself pinned as registered.
+	if rr.Code == http.StatusForbidden {
+		t.Fatalf("an arbitrary client was refused with %d; without allowedClients no gate may be installed", rr.Code)
+	}
+	if code := decodeEnvelope(t, rr).Error.Code; code == CodeClientNotAllowed {
+		t.Fatalf("response carries %q; without allowedClients no gate may be installed", code)
+	}
 	if rr.Code == http.StatusNotFound {
-		t.Fatal("an arbitrary client was refused; without allowedClients no gate may be installed")
+		t.Fatal("the analyze route is not registered")
 	}
 }
 

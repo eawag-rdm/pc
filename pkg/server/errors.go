@@ -15,6 +15,7 @@ const (
 	CodeInvalidToken       = "invalid_token"
 	CodeTokenRequired      = "token_required"
 	CodeAccessDenied       = "access_denied"
+	CodeClientNotAllowed   = "client_not_allowed"
 	CodePackageNotFound    = "package_not_found"
 	CodeNotFound           = "not_found"
 	CodeMethodNotAllowed   = "method_not_allowed"
@@ -46,6 +47,7 @@ var errorCatalogue = map[string]catalogueEntry{
 	CodeInvalidToken:       {http.StatusUnauthorized, "The access token wasn't accepted. Please check that it's correct and hasn't expired."},
 	CodeTokenRequired:      {http.StatusUnauthorized, "This dataset isn't publicly readable and no access token was provided. Please pass your access token - you can create one in your CKAN user profile."},
 	CodeAccessDenied:       {http.StatusForbidden, "Your token doesn't have permission to read this dataset."},
+	CodeClientNotAllowed:   {http.StatusForbidden, "This client isn't authorized to use this service."},
 	CodePackageNotFound:    {http.StatusNotFound, "We couldn't find a dataset with that name. Either the name is misspelled, or it's private - make it public in CKAN, or provide your access token to that package."},
 	CodeNotFound:           {http.StatusNotFound, "There's nothing at this URL. Please check the endpoint path."},
 	CodeMethodNotAllowed:   {http.StatusMethodNotAllowed, "This endpoint doesn't support that HTTP method."},

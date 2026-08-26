@@ -299,37 +299,37 @@ func (h *Handler) RateLimitPerIP(next http.Handler) http.Handler {
 	})
 }
 
-// enforceClientAllowlist refuses requests from clients outside the [server]
+// enforceClientAllowlist refuses requests from peers outside the [server]
 // allowedClients CIDRs. It is the OUTERMOST gate on the analyze route, ahead of
 // RateLimitPerIP, so a denied request never creates a limiter entry and cannot
 // evict an honest client's counter. server.New installs it only when the
 // allow-list is non-empty; an empty list matches nothing, so an installed gate
 // would deny every request. /health and /ready are never wrapped by it.
 //
-// A POST from an unlisted client renders the same not_found envelope an unknown
-// path gets; other methods still draw the route guard's 405 + Allow: POST, which
-// is outside the mux and so outside this gate. The denial appears in the access
-// log as an ordinary 404; there is no separate event.
+// A POST from an unlisted peer renders the client_not_allowed envelope (403);
+// the denial appears in the access log as an ordinary 403 request, with no
+// separate event. Only POST is gated, so a method probe (GET /api/v1/analyze)
+// still draws the route guard's 405 + Allow: POST from outside the mux.
 func (h *Handler) enforceClientAllowlist(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !h.clientAllowed(r) {
-			writeError(w, r, CodeNotFound)
+			writeError(w, r, CodeClientNotAllowed)
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
 }
 
-// clientAllowed reports whether r's client IP falls inside an allow-list prefix.
-// The IP is the one the rate limiter derives (X-Real-IP only from a trusted
-// proxy, otherwise the connection address), so the allow-list is exactly as
-// strong as the trustProxyHeaders/trustedProxies configuration and no stronger.
-// It fails closed: an address that cannot be derived is not allowed.
+// clientAllowed reports whether the connection's peer address falls inside an
+// allow-list prefix. It matches RemoteAddr and NEVER X-Real-IP: the peer address
+// is established by the kernel, while the header is set by whoever is upstream -
+// any client reaching a proxy that does not overwrite it could present an
+// allow-listed address. The gate is therefore independent of the
+// trustProxyHeaders/trustedProxies settings the limiter's own key derivation
+// uses. It fails closed: a peer address that cannot be parsed - a zoned IPv6
+// address such as fe80::1%eth0 included - is not allowed.
 func (h *Handler) clientAllowed(r *http.Request) bool {
-	if h.limiter == nil {
-		return false
-	}
-	return containsAddr(h.allowedClients, h.limiter.clientIP(r))
+	return containsAddr(h.allowedClients, hostIP(r.RemoteAddr))
 }
 
 // Concurrency is the single analysis serialization gate (concurrency = 1,

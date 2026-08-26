@@ -255,6 +255,10 @@ func (rl *rateLimiter) clientIPKey(r *http.Request) string {
 }
 
 // clientIP resolves the effective client IP for r per the proxy-trust policy.
+// This derivation is the rate limiter's alone: the client allow-list gate
+// deliberately does not use it, because a header is spoofable by any client
+// reaching a proxy that does not overwrite it - the gate matches the connection
+// peer instead.
 func (rl *rateLimiter) clientIP(r *http.Request) net.IP {
 	remoteIP := hostIP(r.RemoteAddr)
 

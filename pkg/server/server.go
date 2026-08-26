@@ -105,17 +105,13 @@ func New(cfg Config) (*Server, error) {
 	handler := NewHandler(pcConfig, cfg, logger, plan)
 	handler.allowedClients = allowedClients
 	if len(allowedClients) > 0 {
-		// The gate matches the client IP the limiter derives, so without a limiter
-		// it would deny every request instead of the unlisted ones.
-		if handler.limiter == nil {
-			return nil, fmt.Errorf("invalid PC config: server allowedClients requires the rate limiter, which this configuration does not build")
-		}
 		logger.Info("client allow-list enabled", slog.Int("entries", len(allowedClients)))
 	}
 	// NewHandler builds the limiter without proxy trust, so the prefixes parsed
 	// above are installed here: the [server] strings are parsed exactly once. The
-	// limiter is the only consumer of X-Real-IP, so a configured list without one
-	// would trust nobody - refused rather than ignored.
+	// limiter is the only consumer that ACTS on X-Real-IP (the access log merely
+	// records it), so a configured list without a limiter would trust nobody -
+	// refused rather than ignored.
 	if len(trustedProxies) > 0 && handler.limiter == nil {
 		return nil, fmt.Errorf("invalid PC config: server trustedProxies requires the rate limiter, which this configuration does not build")
 	}
@@ -163,7 +159,9 @@ func New(cfg Config) (*Server, error) {
 	// client allow-list (only when configured) -> draining ->
 	// rate-limit(per-IP) -> rate-limit(global) -> concurrency-gate (single slot,
 	// 2s busy-wait) -> token extraction (optional) -> handler. /health and /ready
-	// bypass it entirely (a draining server must still answer healthchecks).
+	// bypass it entirely (a draining server must still answer healthchecks). The
+	// two client-address gates resolve DIFFERENT addresses: the allow-list matches
+	// the connection peer, the limiters key on their header-aware derived IP.
 	//
 	// Per-IP is the OUTER (primary) limit and global is the INNER (backstop), so
 	// per-IP is checked FIRST. This ordering matters because the limiter uses a

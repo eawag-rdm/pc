@@ -400,12 +400,12 @@ allowedClients = ["192.0.2.0/24", "2001:db8:1::/48"]   # CIDRs only
   unchanged.
 - **`/analyze` only.** `/health` and `/ready` are never gated, so probes keep
   working from the orchestrator's own addresses.
-- **A `POST` from a client outside the list gets exactly the `404 not_found`
-  response an unknown URL gets** - same status, same body. Only `POST` is gated,
-  so a method probe (`GET /api/v1/analyze`) still draws the usual
-  `405 method_not_allowed` with `Allow: POST` and reveals that the route exists:
-  the allow-list hides who may call the endpoint, not that it is there. Denials
-  appear in the access log as ordinary 404 requests; there is no separate event.
+- **A `POST` from a client outside the list gets `403 client_not_allowed`** in
+  the standard error envelope. Denials appear in the access log as ordinary 403
+  requests; there is no separate event. Only `POST` is gated, so
+  `GET /api/v1/analyze` draws the usual `405 method_not_allowed` with
+  `Allow: POST`, and an `OPTIONS` preflight is answered `204` by CORS upstream of
+  both the route guard and the gate.
 - **It runs ahead of the rate limiter**, so denied requests never enter the
   limiter's key map and cannot evict honest clients' counters.
 
@@ -413,25 +413,40 @@ allowedClients = ["192.0.2.0/24", "2001:db8:1::/48"]   # CIDRs only
 per-IP and global hourly budgets: the allow-list decides *who may ask*, the
 limiter *how often*.
 
-**It is exactly as strong as your proxy-trust configuration, and no stronger.**
-The address it matches is the same client IP the limiter derives (section 5):
-the connection's `RemoteAddr`, or `X-Real-IP` when `trustProxyHeaders = true`
-**and** the connection comes from a `trustedProxies` CIDR. An address that
-cannot be derived is denied (fail closed) - a zoned IPv6 peer such as
-`fe80::1%eth0` is one of those, so an `fe80::/10` entry cannot admit zoned
-link-local clients. The two families are matched separately: `0.0.0.0/0` does not cover
-IPv6 clients and `::/0` does not cover IPv4 ones, so a list meant to admit
-everything needs both.
+**It matches the connection's peer address, never a header.** The gate reads
+`RemoteAddr` - the address the kernel sees - and never `X-Real-IP`, so it is
+independent of `trustProxyHeaders`/`trustedProxies` (section 5) and no request
+header can influence it. An address that cannot be parsed is denied (fail
+closed) - a zoned IPv6 peer such as `fe80::1%eth0` is one of those, so an
+`fe80::/10` entry cannot admit zoned link-local clients. The two families are
+matched separately: `0.0.0.0/0` does not cover IPv6 clients and `::/0` does not
+cover IPv4 ones, so a list meant to admit everything needs both.
 
-Behind a proxy, **first confirm the proxy sets (overwrites) `X-Real-IP`** -
-`proxy_set_header X-Real-IP $remote_addr;` as in section 5. Otherwise one of two
-things happens: no header arrives and the derived IP is the proxy itself, so the
-allow-list rejects *all* traffic; or the proxy passes a client-supplied header
-through, so anyone can present an allow-listed address.
+**Behind a reverse proxy the list therefore controls which HOSTS may reach the
+endpoint.** The peer is the proxy, so listing it admits every client that
+connects through it - the allow-list cannot tell those clients apart. The rate
+limiter can, but only when `trustProxyHeaders = true`, `trustedProxies` names the
+proxy and the proxy itself overwrites `X-Real-IP` (section 5); without all three,
+every client behind the proxy shares one rate-limit bucket.
+
+**This is a change:** the gate used to match the client IP the rate limiter
+derives, so behind a proxy an `allowedClients` holding the END CLIENTS' CIDRs
+worked. It now matches the connection peer, so such a list denies everything -
+list the **proxy's** address instead. Denials also moved from
+`404 not_found` to `403 client_not_allowed`, which matters for any client keying
+on the old response.
 
 After deploying the key, **confirm the `client allow-list enabled` line in the
 boot log** (it carries the entry count): a binary older than the feature ignores
 unknown `[server]` keys silently and would keep admitting everyone.
+
+Debugging a lockout: the access log's `client_ip` field (section 4, needs
+`logClientIP = true`) shows the connection peer as logged - IPv6 bracketed. The
+gate parses that same peer itself and denies outright when it cannot (a
+zone-suffixed IPv6 address, say), so a logged value is not proof that anything
+was matched. `real_ip` plays no part in the decision. Note also that a `403` on
+`/api/v1/analyze` can come from this gate **or** from a token `access_denied` -
+the access record carries no error code, so correlate by `request_id`.
 
 Operational cost: the list needs maintenance. IPv6 clients usually need their
 `/64` (a `/128` admits one address only), NAT pools and VPN ranges change, and

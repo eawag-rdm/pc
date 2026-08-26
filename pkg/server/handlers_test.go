@@ -202,7 +202,8 @@ func TestHandler_Analyze_NoCKANURL(t *testing.T) {
 // code can never silently render as a fallback internal_error.
 var allErrorCodes = []string{
 	CodeMissingPackage, CodeInvalidPackageName, CodeInvalidRequest,
-	CodeInvalidToken, CodeTokenRequired, CodeAccessDenied, CodePackageNotFound,
+	CodeInvalidToken, CodeTokenRequired, CodeAccessDenied, CodeClientNotAllowed,
+	CodePackageNotFound,
 	CodeNotFound, CodeMethodNotAllowed,
 	CodeRateLimited, CodeServiceBusy, CodeServiceNotReady, CodeServerRestarting,
 	CodeCKANUnavailable, CodeMalformedResource, CodeAnalysisTimeout,

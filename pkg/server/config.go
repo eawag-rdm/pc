@@ -161,10 +161,11 @@ func validateServerSettings(pcConfig *config.Config, addr string) error {
 	return nil
 }
 
-// parsePrefixList turns one [server] CIDR list into prefixes: allowedClients,
-// matched against the client IP the limiter derives, or trustedProxies, matched
-// against the connection's peer address. key names the offending list in every
-// error. The grammar is CIDR-only and every entry must parse: a bad entry is an
+// parsePrefixList turns one [server] CIDR list into prefixes: allowedClients for
+// the allow-list gate, trustedProxies for the limiter's proxy trust. Both are
+// matched against the connection's peer address; only the limiter's own
+// rate-limit key derivation is header-aware. key names the offending list in
+// every error. The grammar is CIDR-only and every entry must parse: a bad entry is an
 // error (and so a boot failure), never a dropped entry. Dropping one would
 // silently change who can reach /analyze - locking out the client it was meant
 // to admit, or, if it was the only entry, everyone - or silently withdraw a
