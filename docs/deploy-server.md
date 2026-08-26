@@ -123,9 +123,11 @@ revalidated for a token that may read it and matches nothing for one that may
 not. Search-index lag is the trade: for the few seconds CKAN needs to index an
 edit, a just-edited package can be served from the cache, an unchanged one can be
 run in full again, and a package just made private keeps being served from the
-cache. The other side of the bargain is the miss path: every cache miss - a first
-analysis, an evicted entry, a genuinely changed package - now pays one extra CKAN
-round-trip for the probe before its `package_show`. A probe that fails logs
+cache. The other side of the bargain is the miss path, and only a request with a
+stored entry to revalidate pays it: a genuinely changed package costs one extra
+CKAN round-trip - the probe reports `stale`, then `package_show` runs anyway. A
+first analysis or an absent (evicted, wiped at startup) entry has nothing to
+revalidate and makes no probe at all. A probe that fails logs
 `ckan_probe_failed` and costs only that request its `package_show`.
 
 **Secret scanner (betterleaks).** *Dormant since 2026-08-04: the scan ships
@@ -233,11 +235,13 @@ Notes:
   records say the search endpoint is broken and every cache hit is paying for a
   full fetch again. They are **not** the only degradation signal: a probe that
   keeps working while the cache stops hitting produces `probe_result: stale`
-  instead. One `stale` per package change or cold entry is normal; **`stale` on
-  every request for the same package is the drift signature** - `package_search`
-  and `package_show` no longer spell `metadata_modified` the same way, so no
-  entry can ever match again. Alert on that ratio: nothing else reports it, the
-  requests all succeed, they just never stop paying full price.
+  instead. One `stale` per package change is normal; **`stale` on every request
+  for the same package is the drift signature** - the search index reports a
+  genuinely different instant (a lagging Solr), `metadata_modified` arrives in a
+  spelling neither normalization layout parses, or `resultCacheMaxAgeHours` is
+  shorter than the gap between requests, so no entry can ever match again. Alert
+  on that ratio: nothing else reports it, the requests all succeed, they just
+  never stop paying full price.
 - **Dashboard change:** the oversized-response case used to be logged as class
   `transport` and is now `unusable_body` - update any query keyed on the old
   value.

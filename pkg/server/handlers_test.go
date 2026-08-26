@@ -829,9 +829,10 @@ func TestHandler_Analyze_ResultCache(t *testing.T) {
 	if got := rr1.Header().Get("X-PC-Cache"); got != "miss" {
 		t.Errorf("first: X-PC-Cache = %q, want miss", got)
 	}
-	// A cold request probes and then fetches: nothing is cached to revalidate.
-	if got := calls.count("package_search"); got != 1 {
-		t.Errorf("first: package_search called %d times, want 1", got)
+	// A cold request only fetches: with no entry to revalidate, a probe could
+	// not have answered it.
+	if got := calls.count("package_search"); got != 0 {
+		t.Errorf("first: package_search called %d times, want 0", got)
 	}
 	if got := calls.count("package_show"); got != 1 {
 		t.Errorf("first: package_show called %d times, want 1", got)
@@ -873,8 +874,8 @@ func TestHandler_Analyze_ResultCache(t *testing.T) {
 
 	// THE feature: the hit was served off the probe alone. package_show is the
 	// expensive call and must not have run a second time.
-	if got := calls.count("package_search"); got != 2 {
-		t.Errorf("second: package_search called %d times in total, want 2", got)
+	if got := calls.count("package_search"); got != 1 {
+		t.Errorf("second: package_search called %d times in total, want 1", got)
 	}
 	if got := calls.count("package_show"); got != 1 {
 		t.Errorf("second: package_show called %d times in total, want 1 - a cache hit must not fetch the document", got)
@@ -969,6 +970,13 @@ func TestHandler_Analyze_ProbeFailure_FallsThrough(t *testing.T) {
 		t.Fatalf("newResultCache: %v", err)
 	}
 	handler.cache = cache
+	// A package analysed before it changed upstream: the entry exists, so the
+	// first request probes for it (and re-analyses, because the timestamp no
+	// longer matches). Without a stored entry there would be nothing to
+	// revalidate and no probe to fail.
+	if err := cache.put("probe-pkg", "2026-07-27T09:00:00.000000", `{"stale":"entry"}`); err != nil {
+		t.Fatalf("seeding the stale entry: %v", err)
+	}
 	logged := func() string {
 		mu.Lock()
 		defer mu.Unlock()
@@ -1102,9 +1110,13 @@ func TestHandler_Analyze_ProbeTimestampFormats_Matches(t *testing.T) {
 	if got := calls.count("package_show"); got != 1 {
 		t.Errorf("package_show called %d times, want 1 - the probe must match the document's own timestamp", got)
 	}
+	if got := calls.count("package_search"); got != 1 {
+		t.Errorf("package_search called %d times, want 1 - only the second request had an entry to probe for", got)
+	}
 
-	// Exactly one matched record: the cold request's probe found no entry, the
-	// second one's did. Anything else and the two spellings drifted apart again.
+	// Exactly one matched record: the cold request had no entry to probe for, the
+	// second one's probe matched it. Anything else and the two spellings drifted
+	// apart again.
 	if matched := countProbeRecords(t, []byte(logged()), probeResultMatched, "format-pkg"); matched != 1 {
 		t.Errorf("matched probe records = %d, want 1; log: %s", matched, logged())
 	}
@@ -1115,7 +1127,8 @@ func TestHandler_Analyze_ProbeTimestampFormats_Matches(t *testing.T) {
 // package_show never writes. Every probe then succeeds, every entry the probe
 // looks up misses, and every request still answers 200 off the post-fetch cache
 // read - having paid the package_show the probe exists to save. The only symptom
-// is a probe_result of "stale" once per request instead of once per change.
+// is a probe_result of "stale" on every probing request instead of once per
+// change.
 func TestHandler_Analyze_ProbeDrift_LogsStale(t *testing.T) {
 	var mu sync.Mutex
 	calls := newCKANCalls()
@@ -1166,13 +1179,57 @@ func TestHandler_Analyze_ProbeDrift_LogsStale(t *testing.T) {
 	if got := rr2.Header().Get("X-PC-Cache"); got != "hit" {
 		t.Errorf("second: X-PC-Cache = %q, want hit", got)
 	}
-	if got := calls.count("package_show"); got != 2 {
-		t.Errorf("package_show called %d times, want 2 - a probe that never matches saves nothing", got)
+
+	// A third request is what tells the two readings of one stale record apart:
+	// stale once ever (the package changed) from stale on every probing request
+	// (the drift). Only the first request had no entry to revalidate.
+	rr3 := analyzeWithToken(handler, "drift-pkg", "tok")
+	if rr3.Code != http.StatusOK {
+		t.Fatalf("third: expected 200, got %d (body: %s)", rr3.Code, rr3.Body.String())
 	}
-	// One per request, not one per change: that ratio IS the drift signature, and
-	// nothing else in the logs reports it.
+	if got := calls.count("package_show"); got != 3 {
+		t.Errorf("package_show called %d times, want 3 - a probe that never matches saves nothing", got)
+	}
+	// One per probing request, not one per change: that ratio IS the drift
+	// signature, and nothing else in the logs reports it.
 	if stale := countProbeRecords(t, []byte(logged()), probeResultStale, "drift-pkg"); stale != 2 {
-		t.Errorf("stale probe records = %d, want 2 (one per request); log: %s", stale, logged())
+		t.Errorf("stale probe records = %d, want 2 (one per probing request); log: %s", stale, logged())
+	}
+}
+
+// TestHandler_Analyze_NoCachedEntry_SkipsProbe: with nothing stored for the
+// package - every first request after the startup wipe - the probe has no entry
+// it could serve, so the request must not spend a search ahead of the
+// package_show it needs anyway.
+func TestHandler_Analyze_NoCachedEntry_SkipsProbe(t *testing.T) {
+	calls := newCKANCalls()
+	ckan := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.record(r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		if isPackageSearch(r) {
+			io.WriteString(w, `{"success":true,"result":{"count":1,"results":[`+
+				`{"id":"cold-pkg","metadata_modified":"2026-07-28T10:00:00.000000"}]}}`)
+			return
+		}
+		io.WriteString(w, `{"success":true,"result":{"name":"cold-pkg","metadata_modified":"2026-07-28T10:00:00.000000","resources":[]}}`)
+	}))
+	defer ckan.Close()
+
+	handler := NewHandler(ckanPCConfig(ckan.URL), Config{}, discardLogger(), testPlan(ckanPCConfig(ckan.URL)))
+	cache, err := newResultCache(t.TempDir(), 10, 0)
+	if err != nil {
+		t.Fatalf("newResultCache: %v", err)
+	}
+	handler.cache = cache
+
+	if rr := analyzeWithToken(handler, "cold-pkg", "tok"); rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+	if got := calls.count("package_search"); got != 0 {
+		t.Errorf("package_search called %d times, want 0 - an empty cache has nothing to revalidate", got)
+	}
+	if got := calls.count("package_show"); got != 1 {
+		t.Errorf("package_show called %d times, want 1", got)
 	}
 }
 

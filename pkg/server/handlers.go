@@ -415,8 +415,9 @@ const ckanProbeTimeoutCap = 5 * time.Second
 // process-global GlobalLogger/PDFTracker from leaking or racing across
 // concurrent requests (§6, §9). The collector's package_show is the single CKAN
 // call that yields package data (spec §5) and the only one whose outcome drives
-// the error mapping here; with a result cache configured it is preceded by a
-// package_search freshness probe that can answer the request from the cache.
+// the error mapping here; where there is a stored entry to revalidate it is
+// preceded by a package_search freshness probe that can answer the request from
+// the cache.
 func (h *Handler) runAnalysis(ctx context.Context, packageID, token string) (body string, fileCount, skippedCount int, cached bool, errCode, errMsg string) {
 	h.analysisMu.Lock()
 	defer h.analysisMu.Unlock()
@@ -548,8 +549,15 @@ func (h *Handler) runAnalysis(ctx context.Context, packageID, token string) (bod
 // cachedIfFresh returns the stored analysis of packageID when a package_search
 // probe says the cached entry still matches the package's live
 // metadata_modified (CKAN bumps it on every dataset/resource change), so the
-// document fetch and the checks phase can both be skipped. Without a cache
-// there is nothing to revalidate and no probe is made.
+// document fetch and the checks phase can both be skipped. The two timestamps
+// are compared in their canonical form (normalizeModifiedTimestamp): the search
+// index and the document spell one instant differently.
+//
+// A probe is made only when it could save something. Without a cache, or with
+// no entry stored for this package, package_show is unavoidable and a search
+// ahead of it would just add latency to a request that already holds the single
+// analysis slot - so the first request for a package after the startup wipe
+// makes no probe at all.
 //
 // Two invariants live here. The probe is capped at 5s of the whole-analysis
 // budget (ckanProbeTimeoutCap), so a slow search index can delay a request by
@@ -563,6 +571,9 @@ func (h *Handler) runAnalysis(ctx context.Context, packageID, token string) (bod
 // that costs the most is the one that looks healthiest (probeResultStale).
 func (h *Handler) cachedIfFresh(ctx context.Context, packageID string, pcConfig config.Config) (string, bool) {
 	if h.cache == nil {
+		return "", false
+	}
+	if !h.cache.has(packageID) {
 		return "", false
 	}
 	start := time.Now()
@@ -596,11 +607,13 @@ func (h *Handler) cachedIfFresh(ctx context.Context, packageID string, pcConfig 
 // search could not identify the package - no match, several, no timestamp -
 // (unusable), or the probe could not be made at all (failed).
 //
-// A stale probe is normal once per package change and once per cold entry.
-// Stale on every request for a package is the signature of package_search and
-// package_show no longer spelling metadata_modified the same way: the probe
-// stays healthy, the cache can never hit again, and requests keep succeeding -
-// only always at full price.
+// A stale probe is normal once per package change. Stale on every request for a
+// package means the search index reports a genuinely different instant (a
+// lagging Solr), a metadata_modified spelling neither normalization layout
+// parses, or a resultCacheMaxAgeHours shorter than the gap between requests (the
+// entry expires before the probe that would serve it): the probe stays healthy,
+// the cache can never hit again, and requests keep succeeding - only always at
+// full price.
 const (
 	probeResultMatched  = "matched"
 	probeResultStale    = "stale"

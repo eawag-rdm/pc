@@ -145,6 +145,24 @@ func normalizeModifiedTimestamp(s string) string {
 	return t.UTC().Format("2006-01-02T15:04:05.000Z07:00")
 }
 
+// has reports whether an entry file exists for packageID, without reading or
+// parsing it. A false positive (an entry that turns out corrupt, stale or
+// expired) costs nothing but the probe; get() goes on to reject it. A stat
+// error - permissions on the entries dir, say - deliberately reads as "no
+// entry" and writes no log line: probes are then skipped silently, while the
+// same breakage still surfaces on the write path as result_cache_write_failed.
+func (c *resultCache) has(packageID string) bool {
+	if c == nil {
+		return false
+	}
+	path := c.entryPath(packageID)
+	if path == "" {
+		return false
+	}
+	_, err := os.Stat(path)
+	return err == nil
+}
+
 // get returns the cached body for packageID if the entry exists, matches the
 // live metadataModified, and is within the TTL. An empty metadataModified
 // never hits: without the freshness signal a stale result could be served

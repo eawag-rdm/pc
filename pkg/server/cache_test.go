@@ -32,6 +32,9 @@ func TestResultCache_Disabled(t *testing.T) {
 	if _, ok := c.get("pkg", "2026-01-01"); ok {
 		t.Error("nil get must miss")
 	}
+	if c.has("pkg") {
+		t.Error("nil has must be false - a disabled cache has nothing to probe for")
+	}
 }
 
 func TestResultCache_RoundTrip(t *testing.T) {
@@ -306,6 +309,10 @@ func TestResultCache_RejectsUnsafeIDs(t *testing.T) {
 		}
 		if _, ok := c.get(id, "mm"); ok {
 			t.Errorf("get must miss for unsafe/invalid id %q", id)
+		}
+		// An id that can never be cached must never cost a freshness probe.
+		if c.has(id) {
+			t.Errorf("has must be false for unsafe/invalid id %q", id)
 		}
 	}
 	// Nothing may have been written outside (or inside) the cache dir.
