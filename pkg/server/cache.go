@@ -12,9 +12,10 @@ import (
 
 // resultCache is the per-package on-disk cache of successful analyze response
 // bodies (spec: buffer repeat requests for unchanged packages). Freshness is
-// keyed on the CKAN package's metadata_modified timestamp, which the single
-// package_show call already carries - CKAN bumps it on every dataset or
-// resource change, so no extra CKAN (activity log) call is needed.
+// decided against the CKAN package's metadata_modified timestamp as either
+// endpoint reports it (package_show at put, the package_search probe or
+// package_show at get) - CKAN bumps it on every dataset or resource change, so
+// no extra CKAN (activity log) call is needed.
 //
 // Layout: the cache owns the "entries" subdirectory of the configured dir and
 // nothing else - one JSON file per package, <dir>/entries/<package_id>.json.
@@ -52,8 +53,9 @@ type resultCache struct {
 // config or version identity: the startup wipe guarantees every entry the
 // process reads was written by the process itself.
 type cacheEntry struct {
-	// MetadataModified is the CKAN metadata_modified the analysis saw. The
-	// entry is fresh only while the live package reports the same value.
+	// MetadataModified is the canonical (millisecond-UTC) form of the CKAN
+	// metadata_modified the analysis saw. The entry is fresh while the live
+	// value normalizes to the same string.
 	MetadataModified string    `json:"metadata_modified"`
 	CachedAt         time.Time `json:"cached_at"`
 	// Body is the formatted analysis response WITHOUT request_id (that is
@@ -120,6 +122,29 @@ func (c *resultCache) entryPath(packageID string) string {
 	return filepath.Join(c.dir, packageID+".json")
 }
 
+// normalizeModifiedTimestamp canonicalizes a CKAN metadata_modified string to
+// millisecond-precision UTC, so that the package_search (Solr: milliseconds and
+// a trailing Z) and package_show (Python isoformat: microseconds, no zone)
+// spellings of the same instant compare equal. Solr truncates the sub-second
+// part rather than rounding it, which is what the .000 verb below does too.
+// Input that parses as neither form is returned unchanged: the comparison then
+// degrades to the byte equality it had before, never to a false hit. Accepted:
+// two changes to one package within the same millisecond canonicalize equal and
+// the first one's cached body is served - the probe side carries no finer
+// resolution to tell them apart.
+func normalizeModifiedTimestamp(s string) string {
+	t, err := time.Parse(time.RFC3339Nano, s)
+	if err != nil {
+		// The isoformat side carries no zone at all; CKAN writes it in UTC,
+		// which is also what a zone-less layout yields.
+		t, err = time.Parse("2006-01-02T15:04:05.999999999", s)
+		if err != nil {
+			return s
+		}
+	}
+	return t.UTC().Format("2006-01-02T15:04:05.000Z07:00")
+}
+
 // get returns the cached body for packageID if the entry exists, matches the
 // live metadataModified, and is within the TTL. An empty metadataModified
 // never hits: without the freshness signal a stale result could be served
@@ -128,6 +153,10 @@ func (c *resultCache) get(packageID, metadataModified string) (string, bool) {
 	if c == nil || metadataModified == "" {
 		return "", false
 	}
+	// The live value arrives in whichever spelling its CKAN endpoint uses - the
+	// freshness probe's and the fetched document's differ - while put stored
+	// the canonical one, so the compare below runs on canonical forms.
+	metadataModified = normalizeModifiedTimestamp(metadataModified)
 	path := c.entryPath(packageID)
 	if path == "" {
 		return "", false
@@ -161,7 +190,9 @@ func (c *resultCache) put(packageID, metadataModified, body string) error {
 		return fmt.Errorf("package id %q is not cacheable", packageID)
 	}
 	raw, err := json.Marshal(cacheEntry{
-		MetadataModified: metadataModified,
+		// Stored canonical: the entry is looked up with a timestamp that may
+		// come from either CKAN endpoint.
+		MetadataModified: normalizeModifiedTimestamp(metadataModified),
 		CachedAt:         c.now(),
 		Body:             body,
 	})

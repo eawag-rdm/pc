@@ -1021,6 +1021,95 @@ func TestHandler_Analyze_ProbeFailure_FallsThrough(t *testing.T) {
 	}
 }
 
+// countProbeRecords returns how many JSON records in logOutput report the given
+// probe_result, failing the test for any of them that does not name the request
+// and the package it is about - without those an operator cannot tell one
+// package's probes from a busy day. The request id is analyzeWithToken's.
+func countProbeRecords(t *testing.T, logOutput []byte, probeResult, packageID string) int {
+	t.Helper()
+	var n int
+	for _, line := range bytes.Split(bytes.TrimSpace(logOutput), []byte("\n")) {
+		var rec map[string]any
+		if err := json.Unmarshal(line, &rec); err != nil {
+			t.Fatalf("log line is not JSON: %v (%s)", err, line)
+		}
+		if rec["probe_result"] != probeResult {
+			continue
+		}
+		n++
+		if rec["package_id"] != packageID || rec["request_id"] != "REQ-"+packageID {
+			t.Errorf("%s probe record must name request and package, got %v", probeResult, rec)
+		}
+	}
+	return n
+}
+
+// TestHandler_Analyze_ProbeTimestampFormats_Matches pins the probe against the
+// two spellings Eawag CKAN gives one metadata_modified: package_search answers
+// from Solr in millisecond UTC with a trailing Z, package_show in Python's
+// zone-less microsecond isoformat. They are never byte-equal, so a probe that
+// compared them raw reported "stale" on every request and paid the package_show
+// it exists to save.
+func TestHandler_Analyze_ProbeTimestampFormats_Matches(t *testing.T) {
+	var mu sync.Mutex
+	calls := newCKANCalls()
+	ckan := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.record(r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		if isPackageSearch(r) {
+			io.WriteString(w, `{"success":true,"result":{"count":1,"results":[`+
+				`{"id":"format-pkg","metadata_modified":"2025-02-19T12:35:21.757Z"}]}}`)
+			return
+		}
+		// The same instant as above, at the precision the database keeps it.
+		io.WriteString(w, `{"success":true,"result":{"name":"format-pkg","metadata_modified":"2025-02-19T12:35:21.757747","resources":[]}}`)
+	}))
+	defer ckan.Close()
+
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&syncWriter{w: &logBuf, mu: &mu}, nil))
+	handler := NewHandler(ckanPCConfig(ckan.URL), Config{}, logger, testPlan(ckanPCConfig(ckan.URL)))
+	cache, err := newResultCache(t.TempDir(), 10, 0)
+	if err != nil {
+		t.Fatalf("newResultCache: %v", err)
+	}
+	handler.cache = cache
+	logged := func() string {
+		mu.Lock()
+		defer mu.Unlock()
+		return logBuf.String()
+	}
+
+	// The first request has nothing to revalidate: it fetches and stores.
+	rr1 := analyzeWithToken(handler, "format-pkg", "tok")
+	if rr1.Code != http.StatusOK {
+		t.Fatalf("first: expected 200, got %d (body: %s)", rr1.Code, rr1.Body.String())
+	}
+	if got := rr1.Header().Get("X-PC-Cache"); got != "miss" {
+		t.Errorf("first: X-PC-Cache = %q, want miss", got)
+	}
+
+	// The second is answered by the probe alone, across the format difference.
+	rr2 := analyzeWithToken(handler, "format-pkg", "tok")
+	if rr2.Code != http.StatusOK {
+		t.Fatalf("second: expected 200, got %d (body: %s)", rr2.Code, rr2.Body.String())
+	}
+	// Not what discriminates: the post-fetch cache read sets "hit" on a probe miss
+	// too (see the drift test). The package_show count and the matched record do.
+	if got := rr2.Header().Get("X-PC-Cache"); got != "hit" {
+		t.Errorf("second: X-PC-Cache = %q, want hit", got)
+	}
+	if got := calls.count("package_show"); got != 1 {
+		t.Errorf("package_show called %d times, want 1 - the probe must match the document's own timestamp", got)
+	}
+
+	// Exactly one matched record: the cold request's probe found no entry, the
+	// second one's did. Anything else and the two spellings drifted apart again.
+	if matched := countProbeRecords(t, []byte(logged()), probeResultMatched, "format-pkg"); matched != 1 {
+		t.Errorf("matched probe records = %d, want 1; log: %s", matched, logged())
+	}
+}
+
 // TestHandler_Analyze_ProbeDrift_LogsStale pins the alarm for the one probe
 // failure that looks healthy: package_search reporting a metadata_modified
 // package_show never writes. Every probe then succeeds, every entry the probe
@@ -1034,9 +1123,10 @@ func TestHandler_Analyze_ProbeDrift_LogsStale(t *testing.T) {
 		calls.record(r.URL.Path)
 		w.Header().Set("Content-Type", "application/json")
 		if isPackageSearch(r) {
-			// The right package, its timestamp spelled the way Solr stores it.
+			// The right package, but the index reports an instant the document
+			// never carries - a search index out of step with the database.
 			io.WriteString(w, `{"success":true,"result":{"count":1,"results":[`+
-				`{"id":"drift-pkg","metadata_modified":"2026-07-28T10:00:00Z"}]}}`)
+				`{"id":"drift-pkg","metadata_modified":"2026-07-28T09:00:00Z"}]}}`)
 			return
 		}
 		io.WriteString(w, `{"success":true,"result":{"name":"drift-pkg","metadata_modified":"2026-07-28T10:00:00.000000","resources":[]}}`)
@@ -1079,25 +1169,9 @@ func TestHandler_Analyze_ProbeDrift_LogsStale(t *testing.T) {
 	if got := calls.count("package_show"); got != 2 {
 		t.Errorf("package_show called %d times, want 2 - a probe that never matches saves nothing", got)
 	}
-	// Each stale record must name the request and the package it is about, or the
-	// operator cannot tell drift on one package from a busy day.
-	var stale int
-	for _, line := range bytes.Split(bytes.TrimSpace([]byte(logged())), []byte("\n")) {
-		var rec map[string]any
-		if err := json.Unmarshal(line, &rec); err != nil {
-			t.Fatalf("log line is not JSON: %v (%s)", err, line)
-		}
-		if rec["probe_result"] != probeResultStale {
-			continue
-		}
-		stale++
-		if rec["package_id"] != "drift-pkg" || rec["request_id"] != "REQ-drift-pkg" {
-			t.Errorf("stale probe record must name request and package, got %v", rec)
-		}
-	}
 	// One per request, not one per change: that ratio IS the drift signature, and
 	// nothing else in the logs reports it.
-	if stale != 2 {
+	if stale := countProbeRecords(t, []byte(logged()), probeResultStale, "drift-pkg"); stale != 2 {
 		t.Errorf("stale probe records = %d, want 2 (one per request); log: %s", stale, logged())
 	}
 }

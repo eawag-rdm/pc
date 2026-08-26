@@ -333,6 +333,71 @@ func TestResultCache_EmptyMetadataModified(t *testing.T) {
 	}
 }
 
+// TestNormalizeModifiedTimestamp pins the property the freshness compare rests
+// on: the two spellings Eawag CKAN uses for one instant - package_search's
+// millisecond UTC and package_show's microsecond isoformat - canonicalize to
+// the same string, while anything unparseable is handed back untouched so the
+// compare falls back to byte equality instead of guessing.
+func TestNormalizeModifiedTimestamp(t *testing.T) {
+	const (
+		searchForm = "2025-02-19T12:35:21.757Z"   // Solr: milliseconds, trailing Z
+		showForm   = "2025-02-19T12:35:21.757747" // isoformat: microseconds, no zone
+	)
+	// Solr truncates the sub-second part (757747 -> 757); rounding would drift
+	// the two endpoints apart by a millisecond again.
+	if got := normalizeModifiedTimestamp(showForm); got != searchForm {
+		t.Errorf("normalizeModifiedTimestamp(%q) = %q, want %q", showForm, got, searchForm)
+	}
+
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"search form", searchForm, searchForm},
+		{"no fraction", "2025-02-19T12:35:21", "2025-02-19T12:35:21.000Z"},
+		{"offset zone", "2025-02-19T13:35:21.757+01:00", searchForm},
+		{"garbage", "not-a-time", "not-a-time"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := normalizeModifiedTimestamp(tc.in); got != tc.want {
+				t.Errorf("normalizeModifiedTimestamp(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestResultCache_TimestampSpellingsHit pins the cache-level consequence in both
+// directions: an entry stored with the timestamp package_show returned is found
+// again with the one package_search reports for the same instant, and one stored
+// with the probe's spelling is found with package_show's - put-side and get-side
+// normalization each carry a case of their own. An instant a millisecond away,
+// the finest resolution the probe reports, still misses.
+func TestResultCache_TimestampSpellingsHit(t *testing.T) {
+	c := newTestCache(t, 10, 0)
+	if err := c.put("my-pkg", "2025-02-19T12:35:21.757747", `{"result":"x"}`); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	body, ok := c.get("my-pkg", "2025-02-19T12:35:21.757Z")
+	if !ok || body != `{"result":"x"}` {
+		t.Fatalf("the probe's spelling must hit the stored entry, got ok=%v body=%q", ok, body)
+	}
+	if _, ok := c.get("my-pkg", "2025-02-19T12:35:21.758Z"); ok {
+		t.Error("a different instant must still miss")
+	}
+
+	// The reverse: what was stored is already canonical, so only the get side can
+	// still bridge to the document's own spelling.
+	if err := c.put("rev-pkg", "2025-02-19T12:35:21.757Z", `{"result":"y"}`); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	body, ok = c.get("rev-pkg", "2025-02-19T12:35:21.757747")
+	if !ok || body != `{"result":"y"}` {
+		t.Fatalf("the document's spelling must hit the entry stored from the probe's, got ok=%v body=%q", ok, body)
+	}
+}
+
 func TestResultCache_CorruptEntryIsMiss(t *testing.T) {
 	c := newTestCache(t, 10, 0)
 	if err := os.WriteFile(filepath.Join(c.dir, "pkg.json"), []byte("{not json"), 0o600); err != nil {
