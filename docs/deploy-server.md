@@ -219,7 +219,8 @@ Notes:
   header also gets a `real_ip` field with the header value whitespace-trimmed
   and truncated to 45 bytes - it is *not* checked against `trustedProxies`, so
   an untrusted client can put anything there. The limiter key is unaffected
-  (see section 5).
+  (see section 5), and so is the client allow-list, which matches the connection
+  peer and never reads the header (section 9).
 
 ---
 
