@@ -480,8 +480,13 @@ func archiveWalkLimits(cfg config.Config) (maxMembers int, maxTotalMemory int64)
 // walk bounds, mirroring the content path's member-count skip. It must be a
 // Message, not a logger warning: warnings collapse into the generic unscanned
 // acknowledgement in server responses, hiding the reason.
-func archiveWalkSkipMessage(archiveFile structs.File, maxMembers int) structs.Message {
-	reason := fmt.Sprintf("Skipped name checks of archive members: the archive holds more than %d members, or listing it would decompress more data than the archive walk budget allows.", maxMembers)
+func archiveWalkSkipMessage(archiveFile structs.File, maxMembers int, maxTotalMemory int64) structs.Message {
+	reason := fmt.Sprintf("Skipped name checks of archive members: member count exceeds maximum (%d).", maxMembers)
+	// A stream-list walk stops on the member cap OR on its decompressed-byte
+	// budget and reports both as one truncation flag, so both are named.
+	if readers.IsStreamListArchive(archiveFile.Name) {
+		reason = fmt.Sprintf("Skipped name checks of archive members: member count exceeds maximum (%d) or decompressed size exceeds the walk budget set by the total archive memory limit (%d bytes).", maxMembers, maxTotalMemory)
+	}
 	return structs.Message{
 		Content:  reason,
 		Source:   archiveFile,
@@ -498,7 +503,7 @@ func archiveWalkSkipMessage(archiveFile structs.File, maxMembers int) structs.Me
 // that half is never invoked. It shares archiveWalkSkipMessage's TestName: both
 // are dispatch's word about one archive's member list, and renderers group by it.
 func archiveSizeSkipMessage(archiveFile structs.File, size, limit int64, skipped string) structs.Message {
-	reason := fmt.Sprintf("Skipped archive checks (%s): listing this archive means decompressing its stream; file size (%d bytes) exceeds maximum (%d bytes).", skipped, size, limit)
+	reason := fmt.Sprintf("Skipped archive checks (%s): file size (%d bytes) exceeds maximum (%d bytes).", skipped, size, limit)
 	return structs.Message{
 		Content:  reason,
 		Source:   archiveFile,
@@ -519,7 +524,7 @@ func archiveFileListChecks(ctx context.Context, sink *diagSink, cfg config.Confi
 	}
 	if truncated {
 		// The list is partial by construction: run no checks on it.
-		return append(messages, archiveWalkSkipMessage(archiveFile, maxMembers))
+		return append(messages, archiveWalkSkipMessage(archiveFile, maxMembers, maxTotalMemory))
 	}
 	return archiveFileListMemberChecks(ctx, sink, entries, archiveFile, fileList)
 }

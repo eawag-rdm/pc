@@ -766,7 +766,7 @@ func totalTextLen(pages [][]byte) int {
 // pdfTooLargeReason acknowledges documents past the configured size gate;
 // shared by the pre-read Stat gate and the ReadPDF sentinel mapping.
 func pdfTooLargeReason(limit int64) string {
-	return fmt.Sprintf("Skipped content scan of file: PDF exceeds the maximum PDF size (%d bytes); not scanned.", limit)
+	return fmt.Sprintf("Skipped content scan of file: PDF exceeds the maximum PDF size (%d bytes).", limit)
 }
 
 // scanPDFFile extracts and keyword-scans a top-level PDF. handled = false
@@ -840,7 +840,7 @@ func scanPDFFile(ctx context.Context, file structs.File, batch *Batch, rules []*
 	case errors.Is(err, readers.ErrPDFTooLarge):
 		return ack(pdfTooLargeReason(limits.MaxFileBytes)), true
 	case errors.Is(err, readers.ErrPDFTooManyPages):
-		return ack(fmt.Sprintf("Skipped content scan of file: PDF exceeds the maximum page count (%d); not scanned.", limits.MaxPages)), true
+		return ack(fmt.Sprintf("Skipped content scan of file: PDF exceeds the maximum page count (%d).", limits.MaxPages)), true
 	case errors.Is(err, readers.ErrPDFRuntime):
 		output.GlobalLogger.FileWarning(file.GetDisplayName(), "PDF engine unavailable: %v", err)
 		return ack("Skipped content scan of file: PDF engine unavailable."), true
@@ -863,7 +863,7 @@ func scanPDFFile(ctx context.Context, file structs.File, batch *Batch, rules []*
 	if totalTextLen(pages) == 0 {
 		// Scanned/image-only PDF: the highest-risk shape (secrets live in
 		// the image), so it must not read as "scanned and clean".
-		return ack("Skipped content scan of file: PDF contains no extractable text (image-only or scanned)."), true
+		return ack("Skipped content scan of file: PDF contains no extractable text."), true
 	}
 
 	lowered := lowerAll(pages)

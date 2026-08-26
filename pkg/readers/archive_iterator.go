@@ -291,14 +291,15 @@ func (u *UnpackedFileIterator) walkCapSkipReason() string {
 
 // memberOpenSkipReason: the archive library could not open the member.
 func (u *UnpackedFileIterator) memberOpenSkipReason() string {
-	return "Skipped content scan of archive member: member could not be read (corrupt or unsupported entry)."
+	return "Skipped content scan of archive member: member could not be read."
 }
 
 // memberCountSkipReason: the archive holds more unpack candidates than the
-// configured limit ("more than": for tar.gz the exact count is unknowable
-// without decompressing the whole stream).
+// configured limit - "scannable", because filtered-out entries never count. The
+// message names the maximum and not the actual count: for the tar family the
+// exact total is unknowable without decompressing the whole stream.
 func (u *UnpackedFileIterator) memberCountSkipReason() string {
-	return fmt.Sprintf("Skipped content scan of archive: more than %d members eligible for content scanning (maximum archive member count).", u.maxMemberCount)
+	return fmt.Sprintf("Skipped content scan of archive: scannable member count exceeds maximum (%d).", u.maxMemberCount)
 }
 
 // admitMember reports whether a member survives the name filter, the first and
@@ -601,7 +602,7 @@ func (u *UnpackedFileIterator) tryBufferPDFMember(name string, declared int64, r
 	// turned away before any of it is decompressed.
 	if declared > u.maxPDFFileSize {
 		if byName {
-			u.recordSkip(name, fmt.Sprintf("Skipped content scan of archive member: PDF exceeds the maximum PDF size (%d bytes); not scanned.", u.maxPDFFileSize), declared)
+			u.recordSkip(name, fmt.Sprintf("Skipped content scan of archive member: PDF exceeds the maximum PDF size (%d bytes).", u.maxPDFFileSize), declared)
 		}
 		return false
 	}
@@ -687,10 +688,10 @@ func (u *UnpackedFileIterator) tryBufferPDFMember(name string, declared int64, r
 		u.recordSkip(name, "Skipped content scan of archive member: PDF extraction timed out.", declared)
 		return false
 	case errors.Is(err, ErrPDFTooLarge):
-		u.recordSkip(name, fmt.Sprintf("Skipped content scan of archive member: PDF exceeds the maximum PDF size (%d bytes); not scanned.", u.maxPDFFileSize), declared)
+		u.recordSkip(name, fmt.Sprintf("Skipped content scan of archive member: PDF exceeds the maximum PDF size (%d bytes).", u.maxPDFFileSize), declared)
 		return false
 	case errors.Is(err, ErrPDFTooManyPages):
-		u.recordSkip(name, fmt.Sprintf("Skipped content scan of archive member: PDF exceeds the maximum page count (%d); not scanned.", u.maxPDFPages), declared)
+		u.recordSkip(name, fmt.Sprintf("Skipped content scan of archive member: PDF exceeds the maximum page count (%d).", u.maxPDFPages), declared)
 		return false
 	case errors.Is(err, ErrPDFRuntime):
 		// One honest archive-level cause beats one bogus per-member parse
@@ -732,7 +733,7 @@ func (u *UnpackedFileIterator) tryBufferPDFMember(name string, declared int64, r
 	if len(text) == 0 {
 		// Scanned/image-only PDF: the highest-risk shape (secrets live in the
 		// image), so it must not read as "scanned and clean".
-		u.recordSkip(name, "Skipped content scan of archive member: PDF contains no extractable text (image-only or scanned).", declared)
+		u.recordSkip(name, "Skipped content scan of archive member: PDF contains no extractable text.", declared)
 		return false
 	}
 	if truncated {

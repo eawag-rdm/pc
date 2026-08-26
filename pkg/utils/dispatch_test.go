@@ -662,7 +662,7 @@ func TestOverCapTarGzRefusedByBothArchivePasses(t *testing.T) {
 			if len(got) != 1 {
 				t.Fatalf("a refused archive must produce exactly one message, got %d: %v", len(got), got)
 			}
-			want := fmt.Sprintf("Skipped archive checks (%s): listing this archive means decompressing its stream; file size (%d bytes) exceeds maximum (1 bytes).", tc.skipped, info.Size())
+			want := fmt.Sprintf("Skipped archive checks (%s): file size (%d bytes) exceeds maximum (1 bytes).", tc.skipped, info.Size())
 			if got[0].Content != want {
 				t.Errorf("acknowledgement is\n %q\nwant %q", got[0].Content, want)
 			}
@@ -879,8 +879,13 @@ func TestFusedWalkTruncatedMemberListDropsNameChecks(t *testing.T) {
 	if len(skips) != 1 {
 		t.Fatalf("a partial member list is acknowledged exactly once, got %d: %v", len(skips), skips)
 	}
-	if !strings.Contains(skips[0].Reason, fmt.Sprintf("more than %d members", memberCap)) {
-		t.Errorf("the acknowledgement must name the configured member cap: %q", skips[0].Reason)
+	// A tar.gz listing stops on the member cap or on its decompressed-byte
+	// budget and cannot tell the two apart, so the acknowledgement names both
+	// causes with their configured numbers.
+	_, totalMemory, _ := cfg.General.ArchiveLimits()
+	want := fmt.Sprintf("Skipped name checks of archive members: member count exceeds maximum (%d) or decompressed size exceeds the walk budget set by the total archive memory limit (%d bytes).", memberCap, totalMemory)
+	if skips[0].Reason != want {
+		t.Errorf("the acknowledgement is\n %q\nwant %q", skips[0].Reason, want)
 	}
 	// The fused walk plus the listing it falls back to: the partial list is
 	// dropped rather than reported on, so the plain walk gets its own attempt.

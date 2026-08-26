@@ -1065,7 +1065,7 @@ func TestOOXMLMemberMisnamedTextFallback(t *testing.T) {
 func countMemberCountAcks(msgs []structs.Message) int {
 	n := 0
 	for _, m := range msgs {
-		if strings.Contains(m.Content, "maximum archive member count") {
+		if strings.Contains(m.Content, "scannable member count exceeds maximum") {
 			n++
 		}
 	}

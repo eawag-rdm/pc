@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"strings"
 	"testing"
 
 	"github.com/eawag-rdm/pc/pkg/checks"
@@ -522,8 +521,11 @@ func TestArchiveFileListChecks_WalkCapSkipsArchive(t *testing.T) {
 	if !msgs[0].Skipped || msgs[0].Reason == "" {
 		t.Errorf("walk-cap message must be a skip acknowledgement with a reason: %+v", msgs[0])
 	}
-	if !strings.Contains(msgs[0].Reason, fmt.Sprintf("more than %d members", memberLimit)) {
-		t.Errorf("skip reason must name the configured member limit: %q", msgs[0].Reason)
+	// The full sentence: a zip walk has no byte budget to bust, so its
+	// acknowledgement names the member cap and nothing else - and cannot be
+	// satisfied by the content pass's own member-count message.
+	if want := fmt.Sprintf("Skipped name checks of archive members: member count exceeds maximum (%d).", memberLimit); msgs[0].Reason != want {
+		t.Errorf("skip reason is\n %q\nwant %q", msgs[0].Reason, want)
 	}
 	if src, ok := msgs[0].Source.(structs.File); !ok || src.Name != archive.Name {
 		t.Errorf("walk-cap message must be attributed to the archive, got %+v", msgs[0].Source)
