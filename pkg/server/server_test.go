@@ -262,6 +262,42 @@ func TestNew_BadAllowedClientsCIDR_FailsAtBoot(t *testing.T) {
 	}
 }
 
+// TestNew_BadTrustedProxiesCIDR_FailsAtBoot asserts trustedProxies runs the same
+// strict boot parse as allowedClients: an entry with host bits set stops the
+// start naming both readings. It used to be accepted and masked to 192.0.2.0/24,
+// silently widening proxy trust to the whole /24.
+func TestNew_BadTrustedProxiesCIDR_FailsAtBoot(t *testing.T) {
+	srv, err := New(newTestServerConfigWithServerLine(t, `trustedProxies = ["127.0.0.1/32", "192.0.2.7/24"]`))
+	if err == nil {
+		t.Fatal("expected New to fail at boot for a trustedProxies entry with host bits")
+	}
+	if srv != nil {
+		t.Error("New must not return a server when the config is invalid")
+	}
+	const want = `trustedProxies entry "192.0.2.7/24" has host bits set: write "192.0.2.0/24" for the network, or "192.0.2.7/32" for the single host`
+	if !strings.Contains(err.Error(), want) {
+		t.Errorf("startup error should name the key and both readings of the entry, got: %v", err)
+	}
+}
+
+// TestNew_TrustedProxies_ReachTheLimiter asserts the parsed prefixes are wired
+// into the limiter New builds. Without that wiring trustProxyHeaders is inert -
+// X-Real-IP is ignored and every client behind the proxy shares the proxy's
+// rate-limit bucket - and the boot succeeds silently either way.
+func TestNew_TrustedProxies_ReachTheLimiter(t *testing.T) {
+	srv, err := New(newTestServerConfigWithServerLine(t, "trustProxyHeaders = true\ntrustedProxies = [\"127.0.0.1/32\"]"))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	req := httptest.NewRequest("POST", "/api/v1/analyze", nil)
+	req.RemoteAddr = "127.0.0.1:5555"
+	req.Header.Set("X-Real-IP", "203.0.113.7")
+	if got := srv.handler.limiter.clientIPKey(req); got != "203.0.113.7" {
+		t.Errorf("key from the trusted proxy = %q, want the X-Real-IP client 203.0.113.7", got)
+	}
+}
+
 // TestNew_ClientAllowlist_GatesAnalyzeAheadOfTheLimiter drives the fully wired
 // chain: an unlisted client gets the unknown-path 404 and, because the gate is
 // the OUTERMOST analyze middleware, never reaches the rate limiter - so a flood

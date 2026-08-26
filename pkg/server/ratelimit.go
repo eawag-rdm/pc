@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 	"sync"
 	"time"
@@ -55,9 +56,9 @@ type rateLimiter struct {
 
 	// trustProxyHeaders gates whether X-Real-IP is consulted at all; when true
 	// it is honored only for connections whose RemoteAddr is within
-	// trustedProxies (parsed CIDRs).
+	// trustedProxies (the [server] CIDRs, parsed once at boot).
 	trustProxyHeaders bool
-	trustedProxies    []*net.IPNet
+	trustedProxies    []netip.Prefix
 
 	// now is injectable so tests can drive the clock across hour boundaries.
 	now func() time.Time
@@ -67,8 +68,10 @@ type rateLimiter struct {
 // apply the burst factor: limit = perHour × (1 + burstFactor), rounded down,
 // with a floor of 1 so a positive per-hour budget always admits at least one
 // request (§4). A non-positive per-hour budget disables that scope (limit 0 =
-// unlimited).
-func newRateLimiter(perIPPerHour, globalPerHour int, burstFactor float64, cachedFactor int, maxTrackedKeys int, trustProxyHeaders bool, trustedProxies []string) *rateLimiter {
+// unlimited). trustedProxies must hold unmapped prefixes - what parsePrefixList
+// returns - because the peer address is unmapped before it is matched; an
+// IPv4-mapped prefix would trust nobody.
+func newRateLimiter(perIPPerHour, globalPerHour int, burstFactor float64, cachedFactor int, maxTrackedKeys int, trustProxyHeaders bool, trustedProxies []netip.Prefix) *rateLimiter {
 	if cachedFactor < 0 {
 		cachedFactor = 0
 	}
@@ -81,7 +84,7 @@ func newRateLimiter(perIPPerHour, globalPerHour int, burstFactor float64, cached
 		cachedGlobalLimit: effectiveLimit(globalPerHour*cachedFactor, burstFactor),
 		maxTrackedKeys:    maxTrackedKeys,
 		trustProxyHeaders: trustProxyHeaders,
-		trustedProxies:    parseCIDRs(trustedProxies),
+		trustedProxies:    trustedProxies,
 		now:               time.Now,
 	}
 }
@@ -100,19 +103,6 @@ func effectiveLimit(perHour int, burstFactor float64) int {
 		limit = 1
 	}
 	return limit
-}
-
-// parseCIDRs parses a list of CIDR strings, silently dropping any that fail to
-// parse (configuration is validated elsewhere; a bad entry simply does not
-// grant proxy trust).
-func parseCIDRs(cidrs []string) []*net.IPNet {
-	var out []*net.IPNet
-	for _, c := range cidrs {
-		if _, ipNet, err := net.ParseCIDR(strings.TrimSpace(c)); err == nil {
-			out = append(out, ipNet)
-		}
-	}
-	return out
 }
 
 // allow records one request against the given key/scope and reports whether it
@@ -279,13 +269,26 @@ func (rl *rateLimiter) clientIP(r *http.Request) net.IP {
 }
 
 // isTrustedProxy reports whether ip falls within any configured trusted-proxy
-// CIDR.
+// prefix.
 func (rl *rateLimiter) isTrustedProxy(ip net.IP) bool {
-	if ip == nil {
+	return containsAddr(rl.trustedProxies, ip)
+}
+
+// containsAddr reports whether ip falls inside one of prefixes - the matcher
+// behind both [server] CIDR lists. The stored prefixes are always unmapped
+// (parsePrefixList refuses IPv4-mapped ones), so the address is unmapped before
+// the sweep: an unmapped IPv4 address matches only IPv4 prefixes and never a
+// wide IPv6 one such as ::/0, whereas a mapped address would do the reverse.
+// That is the matching the pre-netip implementation had. An address that is
+// neither 4 nor 16 bytes - nil included - matches nothing.
+func containsAddr(prefixes []netip.Prefix, ip net.IP) bool {
+	addr, ok := netip.AddrFromSlice(ip)
+	if !ok {
 		return false
 	}
-	for _, n := range rl.trustedProxies {
-		if n.Contains(ip) {
+	addr = addr.Unmap()
+	for _, prefix := range prefixes {
+		if prefix.Contains(addr) {
 			return true
 		}
 	}

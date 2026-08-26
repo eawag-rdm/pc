@@ -63,9 +63,10 @@ func (c Config) ListenAddress(pcConfig *config.Config) string {
 // validateServerSettings fails fast at boot if a [server] value is invalid, so
 // a bad TOML setting is caught before the server starts rather than surfacing as
 // a runtime failure (or a silent mis-binding). It validates the effective listen
-// address plus the rate-limit / proxy / origin settings. It does NOT cover
-// allowedClients: those entries are validated by the parseAllowedClients call
-// New makes beside this one, which turns them into the prefixes the gate uses.
+// address plus every other [server] setting except the two CIDR lists:
+// allowedClients and trustedProxies are validated by the parsePrefixList calls
+// New makes beside this one, which turn them into the prefixes the gate and the
+// limiter match against.
 func validateServerSettings(pcConfig *config.Config, addr string) error {
 	if pcConfig == nil || pcConfig.Server == nil {
 		return fmt.Errorf("server configuration is missing")
@@ -127,14 +128,6 @@ func validateServerSettings(pcConfig *config.Config, addr string) error {
 		}
 	}
 
-	// Trusted proxies must be valid CIDRs (only consulted when trustProxyHeaders
-	// is on, but validate regardless so a typo is caught at boot).
-	for _, cidr := range s.TrustedProxies {
-		if _, _, err := net.ParseCIDR(cidr); err != nil {
-			return fmt.Errorf("server trustedProxies entry %q is not a valid CIDR: %w", cidr, err)
-		}
-	}
-
 	// Allowed origins must be absolute URLs (scheme + host) so CORS matching is
 	// well-defined.
 	for _, origin := range s.AllowedOrigins {
@@ -168,38 +161,43 @@ func validateServerSettings(pcConfig *config.Config, addr string) error {
 	return nil
 }
 
-// parseAllowedClients turns the [server] allowedClients CIDRs into the prefixes
-// the allow-list gate matches a request's client IP against. The grammar is
-// CIDR-only and every entry must parse: a bad entry is an error (and so a boot
-// failure), never a dropped entry as in parseCIDRs. Dropping one would silently
-// change who can reach /analyze - locking out the client it was meant to admit,
-// or, if it was the only entry, everyone. An empty list yields no prefixes,
-// which is how the feature stays off.
-func parseAllowedClients(cidrs []string) ([]netip.Prefix, error) {
+// parsePrefixList turns one [server] CIDR list into prefixes: allowedClients,
+// matched against the client IP the limiter derives, or trustedProxies, matched
+// against the connection's peer address. key names the offending list in every
+// error. The grammar is CIDR-only and every entry must parse: a bad entry is an
+// error (and so a boot failure), never a dropped entry. Dropping one would
+// silently change who can reach /analyze - locking out the client it was meant
+// to admit, or, if it was the only entry, everyone - or silently withdraw a
+// proxy's trust, collapsing every client behind it into one rate-limit bucket.
+// An empty list yields no prefixes, and the two read that state oppositely: no
+// allowedClients admits every client (the gate is off), no trustedProxies trusts
+// no peer (every X-Real-IP is ignored).
+func parsePrefixList(key string, cidrs []string) ([]netip.Prefix, error) {
 	prefixes := make([]netip.Prefix, 0, len(cidrs))
 	for _, cidr := range cidrs {
 		prefix, err := netip.ParsePrefix(strings.TrimSpace(cidr))
 		if err != nil {
-			return nil, fmt.Errorf("server allowedClients entry %q is not a valid CIDR: %w", cidr, err)
+			return nil, fmt.Errorf("server %s entry %q is not a valid CIDR: %w", key, cidr, err)
 		}
-		// The gate matches unmapped addresses, so an IPv4-mapped prefix can never
-		// contain a client: a list of only such entries would boot clean and admit
-		// nobody.
+		// The matcher unmaps the address before comparing, so an IPv4-mapped
+		// prefix can never contain one: a list of only such entries would boot
+		// clean and match nobody.
 		if prefix.Addr().Is4In6() {
 			// From /96 down the prefix covers only the mapped IPv4 space, so the
-			// entry the operator meant can be named exactly; wider ones cannot.
+			// entry the operator meant can be named exactly; wider ones cannot. The
+			// suggestion is masked, or it would trip the host-bits check below.
 			if prefix.Bits() >= 96 {
-				plain := netip.PrefixFrom(prefix.Addr().Unmap(), prefix.Bits()-96)
-				return nil, fmt.Errorf("server allowedClients entry %q is an IPv4-mapped IPv6 prefix, which no client address can match: write it as %q", cidr, plain)
+				plain := netip.PrefixFrom(prefix.Addr().Unmap(), prefix.Bits()-96).Masked()
+				return nil, fmt.Errorf("server %s entry %q is an IPv4-mapped IPv6 prefix, which no address can match: write it as %q", key, cidr, plain)
 			}
-			return nil, fmt.Errorf("server allowedClients entry %q is an IPv4-mapped IPv6 prefix, which no client address can match: write it as plain IPv4", cidr)
+			return nil, fmt.Errorf("server %s entry %q is an IPv4-mapped IPv6 prefix, which no address can match: write it as plain IPv4", key, cidr)
 		}
 		// Host bits are refused rather than masked away: only the operator knows
 		// whether "192.0.2.7/24" meant that one host or its whole /24, and masking
-		// would silently admit 254 more of them.
+		// would silently widen the entry to 254 more of them.
 		if masked := prefix.Masked(); masked != prefix {
 			host := netip.PrefixFrom(prefix.Addr(), prefix.Addr().BitLen())
-			return nil, fmt.Errorf("server allowedClients entry %q has host bits set: write %q for the network, or %q for the single host", cidr, masked, host)
+			return nil, fmt.Errorf("server %s entry %q has host bits set: write %q for the network, or %q for the single host", key, cidr, masked, host)
 		}
 		prefixes = append(prefixes, prefix)
 	}

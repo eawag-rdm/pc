@@ -4,7 +4,6 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
-	"net/netip"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -330,19 +329,7 @@ func (h *Handler) clientAllowed(r *http.Request) bool {
 	if h.limiter == nil {
 		return false
 	}
-	addr, ok := netip.AddrFromSlice(h.limiter.clientIP(r))
-	if !ok {
-		return false
-	}
-	// net.IP carries IPv4 in its 16-byte mapped form, which no IPv4 prefix
-	// contains; Unmap turns it back into a 4-byte address.
-	addr = addr.Unmap()
-	for _, prefix := range h.allowedClients {
-		if prefix.Contains(addr) {
-			return true
-		}
-	}
-	return false
+	return containsAddr(h.allowedClients, h.limiter.clientIP(r))
 }
 
 // Concurrency is the single analysis serialization gate (concurrency = 1,

@@ -659,9 +659,18 @@ func TestAccessLog_RealIP(t *testing.T) {
 func allowlistHandler(t *testing.T, srv *config.ServerConfig, cidrs ...string) *Handler {
 	t.Helper()
 	h := NewHandler(&config.Config{Server: srv}, Config{}, discardLogger(), testPlan(&config.Config{Server: srv}))
-	prefixes, err := parseAllowedClients(cidrs)
+	// The limiter is built without proxy trust; server.New installs the parsed
+	// prefixes after construction, and so does this helper.
+	if srv != nil && h.limiter != nil {
+		proxies, err := parsePrefixList("trustedProxies", srv.TrustedProxies)
+		if err != nil {
+			t.Fatalf("parsePrefixList(trustedProxies, %q): %v", srv.TrustedProxies, err)
+		}
+		h.limiter.trustedProxies = proxies
+	}
+	prefixes, err := parsePrefixList("allowedClients", cidrs)
 	if err != nil {
-		t.Fatalf("parseAllowedClients(%q): %v", cidrs, err)
+		t.Fatalf("parsePrefixList(allowedClients, %q): %v", cidrs, err)
 	}
 	h.allowedClients = prefixes
 	return h

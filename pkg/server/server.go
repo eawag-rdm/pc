@@ -79,7 +79,11 @@ func New(cfg Config) (*Server, error) {
 	}
 	// Reading pcConfig.Server here is safe only because validateServerSettings
 	// above has already rejected a nil [server] section.
-	allowedClients, err := parseAllowedClients(pcConfig.Server.AllowedClients)
+	allowedClients, err := parsePrefixList("allowedClients", pcConfig.Server.AllowedClients)
+	if err != nil {
+		return nil, fmt.Errorf("invalid PC config: %w", err)
+	}
+	trustedProxies, err := parsePrefixList("trustedProxies", pcConfig.Server.TrustedProxies)
 	if err != nil {
 		return nil, fmt.Errorf("invalid PC config: %w", err)
 	}
@@ -108,6 +112,14 @@ func New(cfg Config) (*Server, error) {
 		}
 		logger.Info("client allow-list enabled", slog.Int("entries", len(allowedClients)))
 	}
+	// NewHandler builds the limiter without proxy trust, so the prefixes parsed
+	// above are installed here: the [server] strings are parsed exactly once. The
+	// limiter is the only consumer of X-Real-IP, so a configured list without one
+	// would trust nobody - refused rather than ignored.
+	if len(trustedProxies) > 0 && handler.limiter == nil {
+		return nil, fmt.Errorf("invalid PC config: server trustedProxies requires the rate limiter, which this configuration does not build")
+	}
+	handler.limiter.trustedProxies = trustedProxies
 
 	// Optional per-package result cache (§ result caching): keyed on CKAN's
 	// metadata_modified, and cleared here at startup. A changed config or

@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
 	"sync"
 	"testing"
@@ -35,9 +36,9 @@ func (c *fixedClock) advance(d time.Duration) {
 
 // newTestLimiter builds a limiter with an injected clock pinned to a known
 // instant inside an hour (so the next-boundary math is deterministic).
-func newTestLimiter(t *testing.T, perIP, global int, burst float64, maxKeys int, trustProxies bool, cidrs []string) (*rateLimiter, *fixedClock) {
+func newTestLimiter(t *testing.T, perIP, global int, burst float64, maxKeys int, trustProxies bool, proxies []netip.Prefix) (*rateLimiter, *fixedClock) {
 	t.Helper()
-	rl := newRateLimiter(perIP, global, burst, 0, maxKeys, trustProxies, cidrs)
+	rl := newRateLimiter(perIP, global, burst, 0, maxKeys, trustProxies, proxies)
 	clk := &fixedClock{t: time.Date(2026, 6, 24, 10, 30, 0, 0, time.UTC)}
 	rl.now = clk.now
 	return rl, clk
@@ -156,7 +157,7 @@ func TestEffectiveLimit(t *testing.T) {
 // trusted-proxy CIDR; a spoofed header from an untrusted RemoteAddr is ignored
 // and the connection address is used (§4).
 func TestClientIPKey_ProxyTrust(t *testing.T) {
-	rl := newRateLimiter(4, 0, 0.5, 0, 1000, true, []string{"127.0.0.1/32", "10.0.0.0/8"})
+	rl := newRateLimiter(4, 0, 0.5, 0, 1000, true, []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32"), netip.MustParsePrefix("10.0.0.0/8")})
 
 	// Trusted proxy: X-Real-IP wins.
 	r := httptest.NewRequest("POST", "/api/v1/analyze", nil)
@@ -179,7 +180,7 @@ func TestClientIPKey_ProxyTrust(t *testing.T) {
 // TestClientIPKey_ProxyHeadersDisabled: with trustProxyHeaders=false, X-Real-IP
 // is never consulted even from an otherwise-trusted address.
 func TestClientIPKey_ProxyHeadersDisabled(t *testing.T) {
-	rl := newRateLimiter(4, 0, 0.5, 0, 1000, false, []string{"127.0.0.1/32"})
+	rl := newRateLimiter(4, 0, 0.5, 0, 1000, false, []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")})
 	r := httptest.NewRequest("POST", "/api/v1/analyze", nil)
 	r.RemoteAddr = "127.0.0.1:5555"
 	r.Header.Set("X-Real-IP", "203.0.113.7")

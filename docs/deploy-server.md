@@ -254,6 +254,17 @@ location / {
 Guidance:
 - `trustedProxies` must list the address(es) nginx **connects from** (often
   `127.0.0.1/32` for a co-located proxy, or the proxy's Docker-network IP/CIDR).
+- Entries are parsed at boot under the same grammar as `allowedClients`
+  (section 9): CIDRs only, no host bits (`192.0.2.7/24` is refused - write
+  `192.0.2.0/24` for the network or `192.0.2.7/32` for the single host) and no
+  IPv4-mapped IPv6 prefixes (write the plain IPv4 form). A bad entry **stops the
+  server**, naming it - it is never silently dropped, which would leave the
+  proxy untrusted and key every client behind it on the proxy's own address.
+  **This is a change:** entries with host bits used to be accepted and silently
+  masked (`10.1.2.3/8` became `10.0.0.0/8`), and an IPv4-mapped entry such as
+  `::ffff:127.0.0.1/128` used to be normalized to `127.0.0.1/32` and work. Both
+  now stop the start, so rewrite them (`10.0.0.0/8`, `127.0.0.1/32`) before
+  upgrading.
 - If nginx connects over a Docker bridge, set `trustedProxies` to that bridge
   subnet (e.g. `172.17.0.0/16`), not `127.0.0.1/32`.
 - If you do **not** run behind a trusted proxy, set `trustProxyHeaders = false`
@@ -384,9 +395,9 @@ allowedClients = ["192.0.2.0/24", "2001:db8:1::/48"]   # CIDRs only
   (`192.0.2.7/32` for a single host). A bare IP, a hostname or a typo **stops
   the server**, naming the entry - no entry is ever silently dropped. An entry
   with host bits set (`192.0.2.7/24`) is refused as well, because only you know
-  whether that meant the one host or the whole /24. This is stricter than
-  `trustedProxies`, which accepts such an entry and masks it to `192.0.2.0/24`,
-  so a line copied over from there can stop the start.
+  whether that meant the one host or the whole /24. `trustedProxies`
+  (section 5) uses the same grammar, so a line moves between the two keys
+  unchanged.
 - **`/analyze` only.** `/health` and `/ready` are never gated, so probes keep
   working from the orchestrator's own addresses.
 - **A `POST` from a client outside the list gets exactly the `404 not_found`

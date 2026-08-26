@@ -128,7 +128,9 @@ type Handler struct {
 // logger writes JSON access records to stdout. plan is the compiled rule set
 // (checks.Compile) and is REQUIRED: without it the dispatch runs no check at
 // all, and the result would be a clean report - cached as such. Construction
-// panics on a nil plan.
+// panics on a nil plan. The two [server] CIDR lists are NOT wired here: server.New
+// parses them and installs the trusted-proxy prefixes and the client allow-list
+// on the constructed handler.
 func NewHandler(pcConfig *config.Config, serverCfg Config, logger *slog.Logger, plan *checks.Plan) *Handler {
 	if plan == nil {
 		panic("server: NewHandler requires a compiled *checks.Plan")
@@ -158,7 +160,7 @@ func NewHandler(pcConfig *config.Config, serverCfg Config, logger *slog.Logger, 
 			s.CachedRequestLimitFactor,
 			s.MaxTrackedRateKeys,
 			s.TrustProxyHeaders,
-			s.TrustedProxies,
+			nil, // server.New wires the parsed trusted-proxy prefixes
 		)
 		if s.AnalysisBusyWaitSeconds > 0 {
 			busyWait = time.Duration(s.AnalysisBusyWaitSeconds) * time.Second
