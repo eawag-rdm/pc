@@ -45,7 +45,7 @@ services:
       # 2) CKAN storage network share - READ-ONLY. The TARGET path here MUST
       #    equal [collector.CkanCollector].attrs.ckan_storage_path in pc.toml.
       #    Left side: where the network share is mounted on the host.
-      - /home/christian/eric_related/ckan_docker/eric/data/ckan:/nfsmount/ckan/default:ro
+      - /nfsmount/ckan/default:/nfsmount/ckan/default:ro
       # 3) Server state - named volume. Holds the result cache (only used when
       #    [server] resultCacheDir is set; it must then point INSIDE this
       #    target, e.g. resultCacheDir = "/var/lib/pc/cache") and the wasm
@@ -79,7 +79,7 @@ services:
       start_period: 5s
 
     # drain (requestTimeoutSeconds + 30s) + 10s slack; raise together. Best-effort - SIGKILL is the backstop.
-    stop_grace_period: 340s
+    stop_grace_period: 10s
 
     # Logs are JSON on stdout; Docker handles rotation (spec §8).
     logging:
