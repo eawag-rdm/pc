@@ -628,7 +628,7 @@ func TestIsTextFile(t *testing.T) {
 			filePath := tempFile(tt.content)
 			defer os.Remove(filePath)
 
-			result, err := isTextFile(filePath)
+			result, err := isTextFile(filePath, filepath.Base(filePath))
 			if err != nil {
 				t.Errorf("Error: %v", err)
 			}
@@ -674,7 +674,7 @@ func TestIsTextFileExampleFiles(t *testing.T) {
 		},
 	}
 	for _, test := range tests {
-		actual, err := isTextFile(test.filepath)
+		actual, err := isTextFile(test.filepath, filepath.Base(test.filepath))
 		if err != nil {
 			t.Errorf("Error: %v", err)
 		}
@@ -1470,6 +1470,54 @@ func TestIsFreeOfKeywords_BinaryFileEmitsSkipMessage(t *testing.T) {
 	}
 	if skipCount != 1 {
 		t.Errorf("expected exactly 1 binary skip message, got %d (messages: %+v)", skipCount, messages)
+	}
+}
+
+// TestIsFreeOfKeywords_RoutesOnNameNotPath pins content routing on the file
+// name: a CKAN FileStore path has no extension, only the resource name does.
+// Routing on the path sends OOXML to the binary skip, a PDF to the raw scan
+// (no page cited), and text that fails the content sniff to the binary skip.
+func TestIsFreeOfKeywords_RoutesOnNameNotPath(t *testing.T) {
+	read := func(path string) []byte {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return data
+	}
+	tests := []struct {
+		name    string
+		data    []byte
+		keyword string
+		cite    string // extra text the finding must carry
+	}{
+		{"test.xlsx", read("../../testdata/test.xlsx"), "column2", ""},
+		{"test.docx", read("../../testdata/test.docx"), "page", ""},
+		{"doc.pdf", buildTestPDF("clean first page", "the password lives here"), "password", "(page 2)"},
+		// Control bytes fail the sniff; only the .txt name marks it as text.
+		{"notes.txt", append([]byte("password=hunter2\n"), bytes.Repeat([]byte{0x01}, 40)...), "password", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "resources", "3f2", "a1b", "c9d-0000-1111")
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, tt.data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			file := structs.File{Path: path, Name: tt.name}
+			msgs := runRule(t, "IsFreeOfKeywords", keywordConfig([]string{tt.keyword}), ScopeFile, file)
+			found := false
+			for _, m := range msgs {
+				if !m.Skipped && strings.Contains(strings.ToLower(m.Content), tt.keyword) && strings.Contains(m.Content, tt.cite) {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("keyword %q must be detected in %s at an extensionless path, got %v", tt.keyword, tt.name, msgs)
+			}
+		})
 	}
 }
 

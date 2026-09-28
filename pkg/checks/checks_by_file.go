@@ -206,11 +206,10 @@ var textExtensions = map[string]bool{
 	".bat": true, ".ps1": true, ".rb": true, ".php": true, ".pl": true,
 }
 
-// isTextFile checks if a file is a text file using DetectContentType from the http package.
-// Enhanced to handle large files and improve detection accuracy.
-func isTextFile(filePath string) (bool, error) {
-	// Check file extension first for common text types
-	ext := strings.ToLower(filepath.Ext(filePath))
+// isTextFile reports whether a file is text: by the extension of name (a CKAN
+// FileStore path has none), else by sniffing the first 8 KB read from filePath.
+func isTextFile(filePath, name string) (bool, error) {
+	ext := strings.ToLower(filepath.Ext(name))
 	if textExtensions[ext] {
 		return true, nil
 	}
@@ -557,23 +556,23 @@ func keywordsInFile(ctx context.Context, file structs.File, batch *Batch, rules 
 		return append(messages, oversizeSkip(file, "file", fileInfo.Size(), batch.maxContentScan))
 	}
 
-	// Known OOXML containers route by extension BEFORE the text sniff:
+	// Known OOXML containers route by the name's extension BEFORE the text sniff:
 	// deterministic, saves the sniff read, and a container that happens to
 	// pass the printable heuristic is never raw-scanned. scanOOXMLFile falls
 	// through (handled = false) when the file does not open as a zip, so a
 	// text file misnamed .xlsx keeps being scanned as text below.
-	if kind := readers.OOXMLKind(file.Path); kind != "" {
+	if kind := readers.OOXMLKind(file.Name); kind != "" {
 		if msgs, handled := scanOOXMLFile(ctx, file, batch, rules, kind); handled {
 			return append(messages, msgs...)
 		}
 	}
-	if strings.EqualFold(filepath.Ext(file.Path), ".pdf") {
+	if strings.EqualFold(filepath.Ext(file.Name), ".pdf") {
 		if msgs, handled := scanPDFFile(ctx, file, batch, rules); handled {
 			return append(messages, msgs...)
 		}
 	}
 
-	isText, err := isTextFile(file.Path)
+	isText, err := isTextFile(file.Path, file.Name)
 	if err != nil {
 		return messages
 	}
