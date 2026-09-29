@@ -496,6 +496,21 @@ func archiveWalkSkipMessage(archiveFile structs.File, maxMembers int, maxTotalMe
 	}
 }
 
+// archiveReadSkipMessage acknowledges an archive whose file could not be read,
+// so its member names never read as checked and clean. The caller acks transient
+// read failures only; a format error stays the diagnostic it has always been.
+func archiveReadSkipMessage(archiveFile structs.File) structs.Message {
+	reason := "Skipped name checks of archive members: archive could not be read."
+	return structs.Message{
+		Content:   reason,
+		Source:    archiveFile,
+		TestName:  "ArchiveFileList",
+		Skipped:   true,
+		Transient: true,
+		Reason:    reason,
+	}
+}
+
 // archiveSizeSkipMessage acknowledges a stream-list archive the file-list and
 // member passes never see. It carries both of them: skipped names the work each
 // loses, and the content half is worded by the caller exactly when a member-scope
@@ -520,6 +535,9 @@ func archiveFileListChecks(ctx context.Context, sink *diagSink, cfg config.Confi
 	fileList, truncated, err := readers.ReadArchiveFileList(archiveFile, maxMembers, maxTotalMemory)
 	if err != nil {
 		sink.add(structs.DiagWarning, archiveFile.GetDisplayName(), "Error (archive filelist checks) reading archive file list of '%s' -> %v", archiveFile.Name, err)
+		if readers.IsTransientReadError(err) {
+			messages = append(messages, archiveReadSkipMessage(archiveFile))
+		}
 		return messages
 	}
 	if truncated {
@@ -773,7 +791,8 @@ func streamListArchiveChecks(ctx context.Context, sink *diagSink, cfg config.Con
 	// No member list came out of the content walk, whatever stopped it: the
 	// listing the file-list pass would have done is then still owed, and it
 	// reaches its own verdict on the same bytes - the acknowledgement for a list
-	// that busts the walk bounds, the diagnostic for an archive it cannot read.
+	// that busts the walk bounds or an archive it cannot read, the diagnostic for
+	// one it cannot parse.
 	if ctx.Err() != nil || len(listEntries) == 0 {
 		return messages
 	}

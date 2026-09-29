@@ -10,7 +10,9 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/eawag-rdm/pc/pkg/config"
@@ -1065,6 +1067,158 @@ func TestIsArchiveFreeOfKeywords_OversizedArchiveEmitsSkipMessage(t *testing.T) 
 	}
 }
 
+// TestUnreadableFileEmitsTransientSkipAck: a file the scan cannot read must be
+// acknowledged, never reported clean, and marked Transient so it is not cached.
+// Each row fails at a different read: the stat, the text sniff, the whole read.
+func TestUnreadableFileEmitsTransientSkipAck(t *testing.T) {
+	tests := []struct {
+		name   string
+		create bool
+	}{
+		{"missing.txt", false}, // os.Stat
+		{"locked.dat", true},   // isTextFile's sniff
+		{"locked.txt", true},   // os.ReadFile (text by extension, never sniffed)
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), tt.name)
+			if tt.create {
+				if os.Geteuid() == 0 {
+					t.Skip("chmod 0 does not block root")
+				}
+				if err := os.WriteFile(path, []byte("password"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chmod(path, 0); err != nil {
+					t.Fatal(err)
+				}
+			}
+			msgs := runRule(t, "IsFreeOfKeywords", keywordConfig([]string{"password"}), ScopeFile, structs.File{Path: path, Name: tt.name})
+			if len(msgs) != 1 || !msgs[0].Skipped || !msgs[0].Transient || msgs[0].Content != fileUnreadableReason {
+				t.Errorf("want one transient read skip ack, got %+v", msgs)
+			}
+		})
+	}
+}
+
+// TestNonRegularFileGetsNoContentAck: collectors list directories and special
+// files beside regular ones, and neither has content to scan - whatever its name
+// routes it to.
+func TestNonRegularFileGetsNoContentAck(t *testing.T) {
+	tests := []struct {
+		name string
+		fifo bool
+	}{
+		{"sub", false},
+		{"d.txt", false},
+		{"d.pdf", false},
+		{"d.xlsx", false},
+		{"fifo.txt", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), tt.name)
+			if tt.fifo {
+				if err := syscall.Mkfifo(path, 0o600); err != nil {
+					t.Skipf("no FIFO: %v", err)
+				}
+			} else if err := os.Mkdir(path, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			def, rules, batch := bindTestRule(t, "IsFreeOfKeywords", keywordConfig([]string{"password"}), ScopeFile)
+			// Opening a FIFO with no writer blocks, so the wait is bounded.
+			done := make(chan []structs.Message, 1)
+			go func() {
+				done <- def.RunFile(context.Background(), structs.File{Path: path, Name: tt.name, Size: -1}, ScopeFile, batch, rules)
+			}()
+			select {
+			case msgs := <-done:
+				if len(msgs) != 0 {
+					t.Errorf("a non-regular file must produce no message, got %+v", msgs)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("the scan blocked opening a non-regular file")
+			}
+		})
+	}
+}
+
+// TestUnreadableArchiveAtFileScope: the file-scope content scan of an archive
+// it cannot read stays silent when the archive pass reads the same file and
+// acknowledges it once. An archive of a format that pass cannot open is
+// acknowledged here.
+func TestUnreadableArchiveAtFileScope(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("chmod 0 does not block root")
+	}
+	lock := func(name string) string {
+		path := filepath.Join(t.TempDir(), name)
+		if err := os.WriteFile(path, []byte("PK"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(path, 0); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	tests := []struct {
+		path    string
+		wantAck bool
+	}{
+		{lock("locked.zip"), false},
+		{filepath.Join(t.TempDir(), "missing.zip"), false},
+		{lock("data.csv.gz"), true},
+	}
+	for _, tt := range tests {
+		file := structs.File{Path: tt.path, Name: filepath.Base(tt.path), IsArchive: true}
+		msgs := runRule(t, "IsFreeOfKeywords", keywordConfig([]string{"password"}), ScopeFile, file)
+		if !tt.wantAck {
+			if len(msgs) != 0 {
+				t.Errorf("%s: file scope must leave the archive to the archive pass, got %+v", file.Name, msgs)
+			}
+			continue
+		}
+		if len(msgs) != 1 || !msgs[0].Skipped || !msgs[0].Transient || msgs[0].Content != fileUnreadableReason {
+			t.Errorf("%s: want one transient read skip ack, got %+v", file.Name, msgs)
+		}
+	}
+}
+
+// TestUnreadableArchiveEmitsTransientSkipAck: an archive the member walk cannot
+// open is acknowledged at archive level and marked Transient, in every format.
+func TestUnreadableArchiveEmitsTransientSkipAck(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("chmod 0 does not block root")
+	}
+	for _, name := range []string{"test.zip", "test.tar", "test.tar.gz", "test.7z"} {
+		t.Run(name, func(t *testing.T) {
+			data, err := os.ReadFile(filepath.Join("../../testdata/archives", name))
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(t.TempDir(), name)
+			if err := os.WriteFile(path, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(path, 0); err != nil {
+				t.Fatal(err)
+			}
+			file := structs.File{Path: path, Name: name, IsArchive: true}
+			msgs := runRule(t, "IsFreeOfKeywords", keywordConfig([]string{"password"}), ScopeArchiveMember, file)
+			if len(msgs) != 1 || !msgs[0].Skipped || !msgs[0].Transient || msgs[0].Content != archiveUnreadableReason {
+				t.Errorf("want one transient archive read skip ack, got %+v", msgs)
+			}
+		})
+	}
+	t.Run("missing", func(t *testing.T) {
+		file := structs.File{Path: filepath.Join(t.TempDir(), "gone.zip"), Name: "gone.zip", IsArchive: true}
+		msgs := runRule(t, "IsFreeOfKeywords", keywordConfig([]string{"password"}), ScopeArchiveMember, file)
+		if len(msgs) != 1 || !msgs[0].Skipped || !msgs[0].Transient || msgs[0].Content != archiveUnreadableReason {
+			t.Errorf("want one transient archive read skip ack, got %+v", msgs)
+		}
+	})
+}
+
 func TestIsArchiveFreeOfKeywords_MemberSkipsEmitMessages(t *testing.T) {
 	archivePath := "../../testdata/archives/complex_archive.zip"
 	if _, err := os.Stat(archivePath); err != nil {
@@ -1243,6 +1397,17 @@ func failingReadPath(t *testing.T) string {
 		t.Skipf("%s read = %v, want a read failure", path, err)
 	}
 	return path
+}
+
+// TestStreamKeywordsAcknowledgesFailures: a streamed read that fails is
+// acknowledged as unreadable.
+func TestStreamKeywordsAcknowledgesFailures(t *testing.T) {
+	_, rules, batch := bindTestRule(t, "IsFreeOfKeywords", keywordConfig([]string{"password"}), ScopeFile)
+
+	msgs := streamKeywords(context.Background(), structs.File{Path: failingReadPath(t), Name: "big.txt"}, batch, rules)
+	if len(msgs) != 1 || !msgs[0].Transient || msgs[0].Content != fileUnreadableReason {
+		t.Errorf("failed read: want one transient read skip ack, got %+v", msgs)
+	}
 }
 
 // TestStreamedDedupIsPerUnit pins the unit half of the streamed dedup key. Two

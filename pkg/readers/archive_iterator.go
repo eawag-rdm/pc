@@ -238,20 +238,35 @@ func (u *UnpackedFileIterator) recordSkip(memberName, reason string, memberSize 
 }
 
 // recordArchiveSkip appends a skip acknowledgement for the archive as a whole
-// (declared-size gate, walk cap). Source is the archive File itself with an
-// empty ArchiveName, matching the existing archive-level message convention.
-func (u *UnpackedFileIterator) recordArchiveSkip(reason string) {
+// (declared-size gate, walk cap, unreadable archive, PDF engine unavailable).
+// Source is the archive File itself with an empty ArchiveName, matching the
+// existing archive-level message convention. transient marks a skip the server
+// must not cache.
+func (u *UnpackedFileIterator) recordArchiveSkip(reason string, transient bool) {
 	var size int64
 	if fi, err := os.Stat(u.ArchivePath); err == nil {
 		size = fi.Size()
 	}
 	archive := structs.ToFileWithDisplay(u.ArchivePath, u.ArchiveName, u.ArchiveName, size, "", "")
 	u.skipMessages = append(u.skipMessages, structs.Message{
-		Content: reason,
-		Source:  archive,
-		Skipped: true,
-		Reason:  reason,
+		Content:   reason,
+		Source:    archive,
+		Skipped:   true,
+		Transient: transient,
+		Reason:    reason,
 	})
+}
+
+// archiveUnreadableReason acknowledges an archive whose file could not be read.
+const archiveUnreadableReason = "Skipped content scan of archive: archive could not be read."
+
+// recordUnreadableArchive acknowledges an archive whose file could not be read,
+// marked Transient so the result is not cached. An error a retry cannot change
+// (a format error) stays log-only.
+func (u *UnpackedFileIterator) recordUnreadableArchive(err error) {
+	if IsTransientReadError(err) {
+		u.recordArchiveSkip(archiveUnreadableReason, true)
+	}
 }
 
 // SkipMessages returns the skip acknowledgements collected so far for archive
@@ -331,6 +346,7 @@ func (u *UnpackedFileIterator) findFirstTar() bool {
 		file, err := os.Open(u.ArchivePath)
 		if err != nil {
 			output.GlobalLogger.FileWarning(u.ArchiveName, "Error (archive content checks) opening tar file '%s' -> %v", u.ArchiveName, err)
+			u.recordUnreadableArchive(err)
 			u.iterationEnded = true
 			return false
 		}
@@ -345,6 +361,7 @@ func (u *UnpackedFileIterator) findFirstTarGz() bool {
 		file, err := os.Open(u.ArchivePath)
 		if err != nil {
 			output.GlobalLogger.FileWarning(u.ArchiveName, "Error (archive content checks) opening tar.gz file '%s' -> %v", u.ArchiveName, err)
+			u.recordUnreadableArchive(err)
 			u.iterationEnded = true
 			return false
 		}
@@ -399,7 +416,7 @@ func (u *UnpackedFileIterator) bufferNextTar() bool {
 		header, err := u.tarReader.Next()
 		if err != nil {
 			if errors.Is(err, errWalkCapExceeded) {
-				u.recordArchiveSkip(u.walkCapSkipReason())
+				u.recordArchiveSkip(u.walkCapSkipReason(), false)
 			}
 			if errors.Is(err, io.EOF) {
 				u.endMemberNames()
@@ -413,7 +430,7 @@ func (u *UnpackedFileIterator) bufferNextTar() bool {
 		// Subtraction, not addition: a PAX header size of MaxInt64 wraps the sum
 		// negative and would slip past the stop.
 		if u.walkCounter != nil && header.Size > u.walkCounter.limit-u.walkCounter.count {
-			u.recordArchiveSkip(u.walkCapSkipReason())
+			u.recordArchiveSkip(u.walkCapSkipReason(), false)
 			u.iterationEnded = true
 			return false
 		}
@@ -434,7 +451,7 @@ func (u *UnpackedFileIterator) bufferNextTar() bool {
 		// size- or memory-skipped; members already yielded stay scanned.
 		u.candidateCount++
 		if u.candidateCount > u.maxMemberCount {
-			u.recordArchiveSkip(u.memberCountSkipReason())
+			u.recordArchiveSkip(u.memberCountSkipReason(), false)
 			u.iterationEnded = true
 			return false
 		}
@@ -648,7 +665,7 @@ func (u *UnpackedFileIterator) tryBufferPDFMember(name string, declared int64, r
 	if remainingBudget <= 0 {
 		if !u.pdfBudgetAckSent {
 			u.pdfBudgetAckSent = true
-			u.recordArchiveSkip(fmt.Sprintf("Stopped PDF extraction for archive: cumulative PDF extraction time exceeds %s; remaining PDF members not scanned.", maxArchivePDFTime))
+			u.recordArchiveSkip(fmt.Sprintf("Stopped PDF extraction for archive: cumulative PDF extraction time exceeds %s; remaining PDF members not scanned.", maxArchivePDFTime), false)
 		}
 		return false
 	}
@@ -702,8 +719,7 @@ func (u *UnpackedFileIterator) tryBufferPDFMember(name string, declared int64, r
 		// failure for every PDF in the archive.
 		if !u.pdfBudgetAckSent {
 			u.pdfBudgetAckSent = true
-			u.recordArchiveSkip("Stopped PDF extraction for archive: PDF engine unavailable; PDF members not scanned.")
-			u.skipMessages[len(u.skipMessages)-1].Transient = true
+			u.recordArchiveSkip("Stopped PDF extraction for archive: PDF engine unavailable; PDF members not scanned.", true)
 		}
 		return false
 	case errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded):
@@ -946,18 +962,19 @@ func (u *UnpackedFileIterator) findFirst7z() bool {
 		reader, err := sevenzip.OpenReader(u.ArchivePath)
 		if err != nil {
 			output.GlobalLogger.FileWarning(u.ArchiveName, "Error (archive content checks) opening 7z file '%s' -> %v", u.ArchiveName, err)
+			u.recordUnreadableArchive(err)
 			u.iterationEnded = true
 			return false
 		}
 		u.sevenZipReader = reader
 	}
 	if !u.passes7zDeclaredSizeGate() {
-		u.recordArchiveSkip(u.declaredSizeGateSkipReason())
+		u.recordArchiveSkip(u.declaredSizeGateSkipReason(), false)
 		u.iterationEnded = true
 		return false
 	}
 	if u.sevenZipCandidateCountExceeded() {
-		u.recordArchiveSkip(u.memberCountSkipReason())
+		u.recordArchiveSkip(u.memberCountSkipReason(), false)
 		u.iterationEnded = true
 		return false
 	}
@@ -1026,13 +1043,14 @@ func (u *UnpackedFileIterator) findFirstZip() bool {
 		reader, err := zip.OpenReader(u.ArchivePath)
 		if err != nil {
 			output.GlobalLogger.FileWarning(u.ArchiveName, "Error (archive content checks) opening zip file '%s' -> %v", u.ArchiveName, err)
+			u.recordUnreadableArchive(err)
 			u.iterationEnded = true
 			return false
 		}
 		u.zipReader = reader
 	}
 	if u.zipCandidateCountExceeded() {
-		u.recordArchiveSkip(u.memberCountSkipReason())
+		u.recordArchiveSkip(u.memberCountSkipReason(), false)
 		u.iterationEnded = true
 		return false
 	}

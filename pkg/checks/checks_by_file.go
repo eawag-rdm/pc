@@ -110,6 +110,9 @@ func streamChunks(ctx context.Context, filePath string, scan func(chunk, lowered
 		}
 		n, err := file.Read(buffer)
 		if n == 0 {
+			if err != nil && err != io.EOF {
+				return err
+			}
 			break
 		}
 
@@ -403,10 +406,25 @@ func oversizeSkip(file structs.File, subject string, size, limit int64) structs.
 // fileUnreadableReason acknowledges a file whose content could not be read.
 const fileUnreadableReason = "Skipped content scan of file: file could not be read."
 
+// archiveUnreadableReason acknowledges an archive whose file could not be read.
+const archiveUnreadableReason = "Skipped content scan of archive: archive could not be read."
+
 // unreadableSkip acknowledges content that could not be read, so it never reads
 // as scanned and clean; transient keeps it uncached.
 func unreadableSkip(file structs.File, reason string, transient bool) structs.Message {
 	return structs.Message{Content: reason, Source: file, Skipped: true, Transient: transient, Reason: reason}
+}
+
+// fileReadSkip is unreadableSkip at file scope. An archive of a format the
+// archive pass handles is silent, as at the oversize gate: that pass reads the
+// same file and owns the acknowledgement. A keyword rule scoped to file only
+// therefore leaves an unreadable archive unacknowledged - accepted. One of a
+// format that pass does not handle (a bare .gz) is acknowledged here.
+func fileReadSkip(file structs.File, err error) []structs.Message {
+	if file.IsArchive && readers.IsSupportedArchive(file.Name) {
+		return nil
+	}
+	return []structs.Message{unreadableSkip(file, fileUnreadableReason, readers.IsTransientReadError(err))}
 }
 
 func keywordsInArchive(ctx context.Context, file structs.File, batch *Batch, rules []*BoundRule) []structs.Message {
@@ -417,7 +435,11 @@ func keywordsInArchive(ctx context.Context, file structs.File, batch *Batch, rul
 	fileInfo, err := os.Stat(file.Path)
 	if err != nil {
 		output.GlobalLogger.FileWarning(file.GetDisplayName(), "Error getting file info '%s': %v", file.Path, err)
-		return messages
+		// One of a format this pass does not handle is acknowledged at file scope.
+		if !readers.IsSupportedArchive(file.Name) {
+			return messages
+		}
+		return append(messages, unreadableSkip(file, archiveUnreadableReason, readers.IsTransientReadError(err)))
 	}
 
 	// The acquisition reads its bounds from the batch: they belong to the whole
@@ -547,6 +569,11 @@ func keywordsInFile(ctx context.Context, file structs.File, batch *Batch, rules 
 	fileInfo, err := os.Stat(file.Path)
 	if err != nil {
 		output.GlobalLogger.FileWarning(file.GetDisplayName(), "Error getting file info '%s': %v", file.Path, err)
+		return append(messages, fileReadSkip(file, err)...)
+	}
+	// Collectors list directories and special files too; only a regular file has
+	// content to scan, and a FIFO would block the read.
+	if !fileInfo.Mode().IsRegular() {
 		return messages
 	}
 
@@ -583,7 +610,8 @@ func keywordsInFile(ctx context.Context, file structs.File, batch *Batch, rules 
 
 	isText, err := isTextFile(file.Path, file.Name)
 	if err != nil {
-		return messages
+		output.GlobalLogger.FileWarning(file.GetDisplayName(), "Error reading file '%s': %v", file.Path, err)
+		return append(messages, fileReadSkip(file, err)...)
 	}
 
 	if isText {
@@ -595,7 +623,7 @@ func keywordsInFile(ctx context.Context, file structs.File, batch *Batch, rules 
 		content, err := os.ReadFile(file.Path)
 		if err != nil {
 			output.GlobalLogger.FileWarning(file.GetDisplayName(), "Error reading file '%s': %v", file.Path, err)
-			return messages
+			return append(messages, fileReadSkip(file, err)...)
 		}
 		body := [][]byte{content}
 		lowered := lowerAll(body)
@@ -685,6 +713,7 @@ func streamKeywords(ctx context.Context, file structs.File, batch *Batch, rules 
 	})
 	if err != nil {
 		output.GlobalLogger.FileWarning(file.GetDisplayName(), "Error streaming file '%s': %v", file.Path, err)
+		messages = append(messages, fileReadSkip(file, err)...)
 	}
 	return messages
 }

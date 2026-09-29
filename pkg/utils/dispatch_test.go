@@ -1087,6 +1087,85 @@ func TestFusedWalkUnopenedArchiveStillGetsListed(t *testing.T) {
 	}
 }
 
+// TestUnreadableArchiveAcknowledgedOncePerPass: an archive whose file cannot be
+// read is acknowledged once by the content scan and once by the name checks,
+// both uncached - through the plain zip passes and the fused tar.gz walk alike.
+// One the readers cannot parse keeps its diagnostic and gets no ack at all.
+func TestUnreadableArchiveAcknowledgedOncePerPass(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("chmod 0 does not block root")
+	}
+	tests := []struct {
+		name     string
+		corrupt  bool // readable garbage instead of a locked fixture
+		wantAcks int
+	}{
+		{"test.zip", false, 1},
+		{"test.tar.gz", false, 1},
+		{"test.zip", true, 0},
+	}
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("%s corrupt=%v", tt.name, tt.corrupt), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), tt.name)
+			data := []byte("not an archive")
+			if !tt.corrupt {
+				fixture, err := os.ReadFile(filepath.Join("../../testdata/archives", tt.name))
+				if err != nil {
+					t.Fatal(err)
+				}
+				data = fixture
+			}
+			if err := os.WriteFile(path, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if !tt.corrupt {
+				if err := os.Chmod(path, 0); err != nil {
+					t.Fatal(err)
+				}
+			}
+			archive := structs.ToFile(path, tt.name, -1, "")
+
+			cfg := keywordConfig()
+			plan := compilePlan(t, cfg)
+			resetGlobalScanState()
+			messages, _ := ApplyAllChecks(context.Background(), cfg, plan, []structs.File{archive})
+			resetGlobalScanState()
+
+			acks := map[string]int{}
+			for _, m := range messages {
+				if !m.Skipped {
+					continue
+				}
+				if !m.Transient {
+					t.Errorf("a read failure must not be cached: %+v", m)
+				}
+				acks[m.TestName]++
+			}
+			if acks["IsFreeOfKeywords"] != tt.wantAcks || acks["ArchiveFileList"] != tt.wantAcks || len(acks) > 2 {
+				t.Errorf("want %d content and %d name-list ack, got %v", tt.wantAcks, tt.wantAcks, acks)
+			}
+		})
+	}
+}
+
+// TestMissingBareGzipAcknowledgedOnce: a .gz the archive pass does not handle is
+// acknowledged by the file-scope content scan alone, not once per pass.
+func TestMissingBareGzipAcknowledgedOnce(t *testing.T) {
+	archive := structs.ToFile(filepath.Join(t.TempDir(), "data.csv.gz"), "data.csv.gz", -1, "")
+
+	messages, _ := runPipeline(t, keywordConfig(), []structs.File{archive})
+
+	var acks []structs.Message
+	for _, m := range messages {
+		if m.Skipped {
+			acks = append(acks, m)
+		}
+	}
+	if len(acks) != 1 || !acks[0].Transient || acks[0].Content != "Skipped content scan of file: file could not be read." {
+		t.Errorf("want one transient file read skip ack, got %+v", acks)
+	}
+}
+
 // TestFusedWalkRunsSeveralArchivesOnThePool: two stream-list archives are two
 // items of the archive-member pool, which is the phase's parallel branch. Each
 // archive keeps its own member-name finding, its own member-body finding and its
