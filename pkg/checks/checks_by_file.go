@@ -842,7 +842,8 @@ func scanPDFFile(ctx context.Context, file structs.File, batch *Batch, rules []*
 		return ack(fmt.Sprintf("Skipped content scan of file: PDF exceeds the maximum page count (%d).", limits.MaxPages)), true
 	case errors.Is(err, readers.ErrPDFRuntime):
 		output.GlobalLogger.FileWarning(file.GetDisplayName(), "PDF engine unavailable: %v", err)
-		return ack("Skipped content scan of file: PDF engine unavailable."), true
+		reason := "Skipped content scan of file: PDF engine unavailable."
+		return []structs.Message{{Content: reason, Source: file, Skipped: true, Transient: true, Reason: reason}}, true
 	case errors.Is(err, readers.ErrPDFPassword):
 		return ack("Skipped content scan of file: PDF is password-protected."), true
 	case errors.Is(err, readers.ErrPDFTimeout):

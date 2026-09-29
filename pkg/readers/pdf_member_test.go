@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/zlib"
 	"context"
+	"errors"
 	"fmt"
 	"hash/crc32"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/eawag-rdm/pc/pkg/structs"
 )
@@ -218,8 +220,25 @@ func TestPDFMemberTimeoutClampedToRemainingBudget(t *testing.T) {
 	assert.NotContains(t, drainMembers(u), "slow.pdf", "a member clamped to a nanosecond cannot extract")
 
 	msgs := u.SkipMessages()
-	assert.Len(t, msgs, 1, "the clamped member is acknowledged, not silently dropped")
+	require.Len(t, msgs, 1, "the clamped member is acknowledged, not silently dropped")
 	assert.Contains(t, msgs[0].Content, "PDF extraction timed out")
+	assert.False(t, msgs[0].Transient, "a timeout is deterministic enough to cache")
+}
+
+func TestPDFMemberEngineUnavailableTransient(t *testing.T) {
+	savePDFRuntime(t)
+	resetPDFRuntime()
+	pdfInitCooldown = 10 * time.Second
+	initFn = func() (*pdfWorkerPool, error) { return nil, errors.New("wasm init failed") }
+
+	path := writeZipFixture(t, []zipMember{{"doc.pdf", writeMinimalPDF("some text")}})
+	u := InitArchiveIterator(context.Background(), path, "fixture.zip", testMemberLimits, nil)
+	assert.NotContains(t, drainMembers(u), "doc.pdf")
+
+	msgs := u.SkipMessages()
+	require.Len(t, msgs, 1)
+	assert.Contains(t, msgs[0].Content, "PDF engine unavailable")
+	assert.True(t, msgs[0].Transient, "an engine that failed to start may start on retry")
 }
 
 func TestPDFMemberWallClockBudgetBreaker(t *testing.T) {
@@ -236,8 +255,9 @@ func TestPDFMemberWallClockBudgetBreaker(t *testing.T) {
 	assert.Contains(t, got, "keep.txt", "non-PDF members must keep scanning")
 
 	msgs := u.SkipMessages()
-	assert.Len(t, msgs, 1, "exactly one archive-level ack, then silence")
+	require.Len(t, msgs, 1, "exactly one archive-level ack, then silence")
 	assert.Contains(t, msgs[0].Content, "Stopped PDF extraction for archive")
+	assert.False(t, msgs[0].Transient, "an exhausted PDF time budget is cached like any other cap")
 	src, ok := msgs[0].Source.(structs.File)
 	assert.True(t, ok)
 	assert.Equal(t, "fixture.zip", src.Name, "budget ack is archive-level")

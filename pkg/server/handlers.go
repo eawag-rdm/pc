@@ -538,8 +538,9 @@ func (h *Handler) runAnalysis(ctx context.Context, packageID, token string) (bod
 	// Only when the context still lives: a fired one may mean ApplyAllChecks
 	// stopped between files and messages are partial; the handler renders 504/503
 	// instead of this body either way, so it must never become the cached one.
+	// Nor when a message is transient: the scan could not read what it should have.
 	// Best-effort: a cache write failure is logged but never fails the request.
-	if ctx.Err() == nil {
+	if ctx.Err() == nil && !anyTransient(messages) {
 		if cacheErr := h.cache.put(packageID, metadataModified, jsonResult); cacheErr != nil {
 			if errors.Is(cacheErr, errUncacheableTimestamp) {
 				// Nothing else reports it: this package stays uncacheable for good.
@@ -719,6 +720,17 @@ func countSkipped(messages []structs.Message) int {
 		}
 	}
 	return n
+}
+
+// anyTransient reports whether any message records something the scan could
+// not read, which makes the whole result unfit for the cache.
+func anyTransient(messages []structs.Message) bool {
+	for _, m := range messages {
+		if m.Transient {
+			return true
+		}
+	}
+	return false
 }
 
 // mapCKANError maps the package_show outcome to a catalogue code and an

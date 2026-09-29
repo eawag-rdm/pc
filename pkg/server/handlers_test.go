@@ -944,6 +944,76 @@ func TestHandler_Analyze_ResultCache(t *testing.T) {
 	}
 }
 
+// TestHandler_Analyze_TransientNotCached drives the cache gate through the
+// handler: a result holding a Transient message is never stored, so the same
+// request analyses again, while a deterministic skip is cached like any result.
+func TestHandler_Analyze_TransientNotCached(t *testing.T) {
+	tests := []struct {
+		name      string
+		transient bool
+		wantRuns  int
+		wantCache string
+	}{
+		{"transient skip is re-analysed", true, 2, "miss"},
+		{"deterministic skip is cached", false, 1, "hit"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			const mm = "2026-07-28T10:00:00.000000"
+			ckan := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if isPackageSearch(r) {
+					io.WriteString(w, `{"success":true,"result":{"count":1,"results":[`+
+						`{"id":"transient-pkg","metadata_modified":"`+mm+`"}]}}`)
+					return
+				}
+				io.WriteString(w, `{"success":true,"result":{"name":"transient-pkg","metadata_modified":"`+mm+`","resources":[]}}`)
+			}))
+			defer ckan.Close()
+
+			var mu sync.Mutex
+			runs := 0
+			def := checks.CheckDef{
+				Name:   "skipRepo",
+				Scopes: checks.ScopesOf(checks.ScopeRepository),
+				RunRepository: func(_ context.Context, repo structs.Repository, _ *checks.Batch, _ []*checks.BoundRule) []structs.Message {
+					mu.Lock()
+					runs++
+					mu.Unlock()
+					return []structs.Message{{Content: "skipped", Source: repo, Skipped: true, Transient: tt.transient, Reason: "skipped"}}
+				},
+			}
+			plan := checks.NewPlan(map[checks.Scope][]checks.PlanEntry{checks.ScopeRepository: {{
+				Def:   &def,
+				Batch: &checks.Batch{},
+				Rules: []*checks.BoundRule{{Rule: "skipRepo"}},
+			}}})
+			handler := NewHandler(ckanPCConfig(ckan.URL), Config{}, discardLogger(), plan)
+			cache, err := newResultCache(t.TempDir(), 10, 0)
+			if err != nil {
+				t.Fatalf("newResultCache: %v", err)
+			}
+			handler.cache = cache
+
+			if rr := analyzeWithToken(handler, "transient-pkg", "tok"); rr.Code != http.StatusOK {
+				t.Fatalf("first: expected 200, got %d (body: %s)", rr.Code, rr.Body.String())
+			}
+			rr := analyzeWithToken(handler, "transient-pkg", "tok")
+			if rr.Code != http.StatusOK {
+				t.Fatalf("second: expected 200, got %d (body: %s)", rr.Code, rr.Body.String())
+			}
+			if got := rr.Header().Get("X-PC-Cache"); got != tt.wantCache {
+				t.Errorf("second: X-PC-Cache = %q, want %q", got, tt.wantCache)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if runs != tt.wantRuns {
+				t.Errorf("check ran %d times, want %d", runs, tt.wantRuns)
+			}
+		})
+	}
+}
+
 // TestHandler_Analyze_ProbeFailure_FallsThrough pins what a broken search
 // endpoint costs and does not cost: the request still succeeds off package_show,
 // which owns the error surface, the failure reaches the operator as

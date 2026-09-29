@@ -699,6 +699,7 @@ func (u *UnpackedFileIterator) tryBufferPDFMember(name string, declared int64, r
 		if !u.pdfBudgetAckSent {
 			u.pdfBudgetAckSent = true
 			u.recordArchiveSkip("Stopped PDF extraction for archive: PDF engine unavailable; PDF members not scanned.")
+			u.skipMessages[len(u.skipMessages)-1].Transient = true
 		}
 		return false
 	case errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded):

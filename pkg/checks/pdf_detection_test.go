@@ -107,6 +107,9 @@ func TestPDFOverPageCountSkippedWhole(t *testing.T) {
 		}
 		if m.Skipped && strings.Contains(m.Content, "maximum page count") {
 			foundSkip = true
+			if m.Transient {
+				t.Errorf("a page-count skip is deterministic and must stay cacheable, got %+v", m)
+			}
 		}
 	}
 	if foundKeyword {

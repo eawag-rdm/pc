@@ -24,6 +24,10 @@ type Message struct {
 	// failure. Skip messages describe why a file (or archive member) was not
 	// content-scanned; they are surfaced in every output but never counted as issues.
 	Skipped bool
+	// Transient marks a scan that could not read something it should have been
+	// able to (PDF engine unavailable); the server does not cache a result
+	// holding one.
+	Transient bool
 	// Reason carries the human-readable explanation for a skip (only set when Skipped).
 	Reason string
 }
