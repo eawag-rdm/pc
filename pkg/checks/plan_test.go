@@ -229,9 +229,11 @@ func TestCompileReportsTwinsWithSiblingFaults(t *testing.T) {
 // scan runs off its rule's enabled flag, so a disabled scan is simply not in
 // the plan.
 func TestCompileSkipsDisabledSecretScan(t *testing.T) {
+	bin, _ := fakeScanner(t, "[]")
 	for _, enabled := range []bool{false, true} {
 		cfg := anchoredConfig([]config.RuleSpec{
-			{Name: "IsFreeOfSecrets", Check: "IsFreeOfSecrets", Enabled: enabled},
+			{Name: "IsFreeOfSecrets", Check: "IsFreeOfSecrets", Enabled: enabled,
+				Params: []map[string]interface{}{{"binary": bin}}},
 		})
 		plan := compileAnchored(t, cfg)
 		found := false

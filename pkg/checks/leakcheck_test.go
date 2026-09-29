@@ -633,6 +633,51 @@ func TestSecretParamsRefuseEnabled(t *testing.T) {
 	}
 }
 
+// TestSecretScannerProbedAtLoad pins that an enabled scan whose scanner is
+// missing fails at load, while a disabled one still loads.
+func TestSecretScannerProbedAtLoad(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "no-such-betterleaks")
+	tests := []struct {
+		name    string
+		enabled bool
+		binary  string // "" = the default name, searched on PATH
+		onPath  bool   // PATH holds a default-named scanner
+		wantErr string // "" = the rule loads
+	}{
+		{"an enabled scan is refused without its scanner", true, missing, false, missing},
+		{"a disabled scan loads without its scanner", false, missing, false, ""},
+		{"an enabled scan is refused when PATH lacks the default scanner", true, "", false, "betterleaks"},
+		{"an enabled scan finds the default scanner on PATH", true, "", true, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			spec := config.RuleSpec{Name: "secret-scan", Check: "IsFreeOfSecrets", Enabled: tt.enabled}
+			if tt.binary != "" {
+				spec.Params = []map[string]interface{}{{"binary": tt.binary}}
+			} else {
+				dir := t.TempDir()
+				if tt.onPath {
+					if err := os.WriteFile(filepath.Join(dir, "betterleaks"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+						t.Fatal(err)
+					}
+				}
+				t.Setenv("PATH", dir)
+			}
+			cfg := anchoredConfig([]config.RuleSpec{spec})
+			_, err := Compile(&cfg, NewRegistry())
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Errorf("want the rule to load, got %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("want an error naming %q, got %v", tt.wantErr, err)
+			}
+		})
+	}
+}
+
 func TestRunBetterleaksEdgeCases(t *testing.T) {
 	// Relative paths are refused.
 	if _, err := runBetterleaks(context.Background(), "true", []string{"relative.txt"}, 1); err == nil {

@@ -103,7 +103,8 @@ func (p *Plan) Scope(s Scope) []PlanEntry {
 // ([[rule]] sections and synthesized defaults - refusing a config silent about
 // the anchored checks), every rule's parameters are bound and its selectors
 // compiled - DISABLED rules included, so a config the checks could not honour
-// fails at load, not on the day a rule is re-enabled; only enabled rules enter
+// fails at load, not on the day a rule is re-enabled; an enabled rule also fails
+// when the host lacks what it runs (the secret scanner). Only enabled rules enter
 // the plan. Every load error is aggregated and named with its rule, so a config
 // author is told all of them at once rather than one per run.
 //

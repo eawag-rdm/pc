@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"regexp"
@@ -76,8 +77,9 @@ func leakAttrsFrom(attrs map[string]interface{}, general *config.GeneralConfig) 
 // Typing is strict: an unknown or wrong-typed knob is a load error, validated
 // for a DISABLED rule too (Compile binds those and then leaves them out of the
 // plan), so a config the scan could not honour fails at load, not on the day
-// the dormant scan is reactivated. A rule carries the knobs as its ONE
-// parameter set, where "enabled" is the rule's own key and refused here.
+// the dormant scan is reactivated; only an enabled rule has its scanner binary
+// looked up on PATH. A rule carries the knobs as its ONE parameter set, where
+// "enabled" is the rule's own key and refused here.
 func bindSecrets(spec config.RuleSpec, general *config.GeneralConfig) (*BoundRule, error) {
 	if len(spec.Params) > 1 {
 		return nil, fmt.Errorf("check %q takes one parameter set", spec.Check)
@@ -91,6 +93,12 @@ func bindSecrets(spec config.RuleSpec, general *config.GeneralConfig) (*BoundRul
 	}
 	// The child's cap comes from the CONFIG, never the live runtime - see leakAttrsFrom.
 	bound := leakAttrsFrom(table, general)
+	// An enabled scan without its scanner would skip every request; refuse it at load.
+	if spec.Enabled {
+		if _, err := exec.LookPath(bound.binary); err != nil {
+			return nil, fmt.Errorf("scanner not usable: %v", err)
+		}
+	}
 	return &BoundRule{
 		Rule:  spec.Name,
 		Rules: []string{spec.Name},
