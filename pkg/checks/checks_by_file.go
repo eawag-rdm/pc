@@ -400,6 +400,15 @@ func oversizeSkip(file structs.File, subject string, size, limit int64) structs.
 	return structs.Message{Content: reason, Source: file, Skipped: true, Reason: reason}
 }
 
+// fileUnreadableReason acknowledges a file whose content could not be read.
+const fileUnreadableReason = "Skipped content scan of file: file could not be read."
+
+// unreadableSkip acknowledges content that could not be read, so it never reads
+// as scanned and clean; transient keeps it uncached.
+func unreadableSkip(file structs.File, reason string, transient bool) structs.Message {
+	return structs.Message{Content: reason, Source: file, Skipped: true, Transient: transient, Reason: reason}
+}
+
 func keywordsInArchive(ctx context.Context, file structs.File, batch *Batch, rules []*BoundRule) []structs.Message {
 	var messages []structs.Message
 
@@ -727,6 +736,9 @@ func scanOOXMLFile(ctx context.Context, file structs.File, batch *Batch, rules [
 	}
 	if err != nil {
 		output.GlobalLogger.FileWarning(file.GetDisplayName(), "Error reading %s file '%s': %v", kind, file.Path, err)
+		if readers.IsTransientReadError(err) {
+			return append(messages, unreadableSkip(file, fileUnreadableReason, true)), true
+		}
 		reason := "Skipped content scan of file: container could not be parsed."
 		return append(messages, structs.Message{Content: reason, Source: file, Skipped: true, Reason: reason}), true
 	}
@@ -781,7 +793,7 @@ func scanPDFFile(ctx context.Context, file structs.File, batch *Batch, rules []*
 	}
 	readAck := func(err error) []structs.Message {
 		output.GlobalLogger.FileWarning(file.GetDisplayName(), "Error reading file '%s': %v", file.Path, err)
-		return ack("Skipped content scan of file: file could not be read.")
+		return []structs.Message{unreadableSkip(file, fileUnreadableReason, readers.IsTransientReadError(err))}
 	}
 
 	f, err := os.Open(file.Path)

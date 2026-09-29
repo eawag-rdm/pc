@@ -10,6 +10,7 @@ import (
 
 	"github.com/eawag-rdm/pc/pkg/config"
 	"github.com/eawag-rdm/pc/pkg/output"
+	"github.com/eawag-rdm/pc/pkg/readers"
 	"github.com/eawag-rdm/pc/pkg/selector"
 	"github.com/eawag-rdm/pc/pkg/structs"
 )
@@ -129,7 +130,7 @@ func readMeContainsTOC(repository structs.Repository, names []string) []structs.
 	if err != nil {
 		output.GlobalLogger.FileWarning(readmeFile.GetDisplayName(), "Error reading ReadMe file '%s': %v", readmeFile.Path, err)
 		reason := "Skipped table-of-contents check: the ReadMe could not be read."
-		return []structs.Message{{Content: reason, Source: readmeFile, Skipped: true, Reason: reason}}
+		return []structs.Message{{Content: reason, Source: readmeFile, Skipped: true, Transient: readers.IsTransientReadError(err), Reason: reason}}
 	}
 
 	missing_files := []string{}

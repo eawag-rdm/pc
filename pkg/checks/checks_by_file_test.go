@@ -15,6 +15,7 @@ import (
 
 	"github.com/eawag-rdm/pc/pkg/config"
 	"github.com/eawag-rdm/pc/pkg/optimization"
+	"github.com/eawag-rdm/pc/pkg/readers"
 	"github.com/eawag-rdm/pc/pkg/structs"
 )
 
@@ -901,6 +902,34 @@ func TestOOXMLParseErrorEmitsSkipAck(t *testing.T) {
 	if !found {
 		t.Errorf("expected parse-error ack, got %v", msgs)
 	}
+	for _, m := range msgs {
+		if m.Transient {
+			t.Errorf("a malformed container is a verdict, not a read failure, so it stays cacheable: %+v", m)
+		}
+	}
+}
+
+// TestOOXMLUnreadableEmitsReadSkipAck: a container that cannot be opened is a
+// read failure like any file's, not a parse verdict, so it is not cached.
+func TestOOXMLUnreadableEmitsReadSkipAck(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("chmod 0 does not block root")
+	}
+	path := filepath.Join(t.TempDir(), "locked.xlsx")
+	data, err := os.ReadFile("../../testdata/test.xlsx")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0); err != nil {
+		t.Fatal(err)
+	}
+	msgs := runRule(t, "IsFreeOfKeywords", keywordConfig([]string{"password"}), ScopeFile, structs.File{Path: path, Name: "locked.xlsx"})
+	if len(msgs) != 1 || !msgs[0].Skipped || !msgs[0].Transient || msgs[0].Content != fileUnreadableReason {
+		t.Errorf("want one transient read skip ack, got %+v", msgs)
+	}
 }
 
 func TestOOXMLMisnamedTextFileStillScanned(t *testing.T) {
@@ -1197,6 +1226,23 @@ func TestIsFreeOfKeywords_StreamedLargeFile(t *testing.T) {
 			}
 		})
 	}
+}
+
+// failingReadPath is a file that opens and stats but fails its first read with
+// EIO: /proc/self/mem at offset 0, unmapped in every process. chmod cannot give
+// that to root.
+func failingReadPath(t *testing.T) string {
+	t.Helper()
+	const path = "/proc/self/mem"
+	f, err := os.Open(path)
+	if err != nil {
+		t.Skipf("no %s: %v", path, err)
+	}
+	defer f.Close()
+	if _, err := f.Read(make([]byte, 1)); !readers.IsTransientReadError(err) {
+		t.Skipf("%s read = %v, want a read failure", path, err)
+	}
+	return path
 }
 
 // TestStreamedDedupIsPerUnit pins the unit half of the streamed dedup key. Two

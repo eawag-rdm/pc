@@ -225,6 +225,9 @@ func TestReadMeContainsTOCUnreadableReadme(t *testing.T) {
 	if !result[0].Skipped {
 		t.Errorf("expected Skipped=true, got %+v", result[0])
 	}
+	if result[0].Transient {
+		t.Errorf("a directory fails every read alike, so its skip stays cacheable: %+v", result[0])
+	}
 	if result[0].Reason != "Skipped table-of-contents check: the ReadMe could not be read." {
 		t.Errorf("unexpected skip reason: %q", result[0].Reason)
 	}
@@ -233,5 +236,20 @@ func TestReadMeContainsTOCUnreadableReadme(t *testing.T) {
 	}
 	if result[0].Content != result[0].Reason {
 		t.Errorf("expected Content to repeat the reason %q, got %q", result[0].Reason, result[0].Content)
+	}
+}
+
+// TestReadMeContainsTOCReadFailureIsTransient: a ReadMe whose read fails is
+// acknowledged the same way, but not cached - the next read may succeed.
+func TestReadMeContainsTOCReadFailureIsTransient(t *testing.T) {
+	repository := structs.Repository{Files: []structs.File{
+		{Name: "readme.md", Path: failingReadPath(t)},
+		{Name: "file1.txt"},
+	}}
+
+	result := runRepoRule(t, "ReadMeContainsTOC", readmeTestConfig(), repository)
+
+	if len(result) != 1 || !result[0].Skipped || !result[0].Transient {
+		t.Errorf("want one transient skip ack, got %+v", result)
 	}
 }

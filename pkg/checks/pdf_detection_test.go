@@ -422,12 +422,12 @@ func TestUnreadablePDFEmitsSkipAck(t *testing.T) {
 	msgs := runRule(t, "IsFreeOfKeywords", keywordConfig([]string{"password"}), ScopeFile, file)
 	found := false
 	for _, m := range msgs {
-		if m.Skipped && strings.Contains(m.Content, "could not be read") {
+		if m.Skipped && m.Transient && strings.Contains(m.Content, "could not be read") {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("unreadable PDF must produce a read skip ack, got %v", msgs)
+		t.Errorf("unreadable PDF must produce a transient read skip ack, got %v", msgs)
 	}
 }
 
