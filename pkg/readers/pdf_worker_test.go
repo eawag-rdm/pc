@@ -7,6 +7,7 @@ import (
 	"encoding/gob"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -25,15 +26,34 @@ import (
 // re-execution these tests need, like the lazy-init test's PC_LAZY_PDF_CHILD.
 const pdfStubEnv = "PC_PDF_STUB_WORKER"
 
+// pdfStubMarkerEnv names the file the die-once stubs race to create: the pool
+// starts a fresh process per worker, so "the first job" has to be decided by
+// something that outlives the worker that took it.
+const pdfStubMarkerEnv = "PC_PDF_STUB_MARKER"
+
 const (
 	stubEngineFailure = "engine-failure" // greets, then fails every job
 	stubDieMidJob     = "die-mid-job"    // greets, takes a job, dies unanswered
 	stubRefuseJob     = "refuse-job"     // greets with its job pipe already closed
 	stubGarbleAnswer  = "garble-answer"  // greets, takes a job, answers with a greeting
+	stubDieOnce       = "die-once"       // the test's first job dies unanswered, later ones answer
+	stubSlowDieOnce   = "slow-die-once"  // the test's first job dies after stubSlowDie, later workers greet late, record their timeout and hang
 	stubStopMidJob    = "stop-mid-job"   // answers once, then stops itself mid-job
 	stubNoHello       = "no-hello"       // never greets
 	stubBadVersion    = "bad-version"    // greets in a protocol nobody speaks
 )
+
+// stubSlowDie is how much of the document's timeout the slow-die-once stub
+// spends before dying.
+const stubSlowDie = 300 * time.Millisecond
+
+// stubSlowHello is how long a slow-die-once worker started after the death
+// takes to greet, so the retry's wait for a worker is measurable.
+const stubSlowHello = 600 * time.Millisecond
+
+// stubTimeoutSuffix names the file, beside the marker, where a slow-die-once
+// worker that took a retry records the timeout it was given.
+const stubTimeoutSuffix = ".timeout"
 
 // handlePDFStubWorker turns this process into one of the workers the real one
 // never is: silent, wrong-versioned, or broken. Called from TestMain before the
@@ -44,7 +64,8 @@ func handlePDFStubWorker() {
 		return
 	}
 	enc := gob.NewEncoder(os.Stdout)
-	switch os.Getenv(pdfStubEnv) {
+	kind := os.Getenv(pdfStubEnv)
+	switch kind {
 	case stubEngineFailure:
 		if err := enc.Encode(&pdfHello{ProtocolVersion: pdfProtocolVersion}); err != nil {
 			os.Exit(1)
@@ -85,6 +106,38 @@ func handlePDFStubWorker() {
 		// fails on a stream that is still open.
 		_ = enc.Encode(&pdfHello{ProtocolVersion: pdfProtocolVersion})
 		time.Sleep(time.Hour)
+	case stubDieOnce, stubSlowDieOnce:
+		if kind == stubSlowDieOnce {
+			if _, err := os.Stat(os.Getenv(pdfStubMarkerEnv)); err == nil {
+				time.Sleep(stubSlowHello)
+			}
+		}
+		if err := enc.Encode(&pdfHello{ProtocolVersion: pdfProtocolVersion}); err != nil {
+			os.Exit(1)
+		}
+		in := bufio.NewReader(os.Stdin)
+		var buf []byte
+		for {
+			job, err := readPDFJob(in, &buf)
+			if err != nil {
+				os.Exit(0)
+			}
+			marker, err := os.OpenFile(os.Getenv(pdfStubMarkerEnv), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+			if err == nil {
+				_ = marker.Close()
+				if kind == stubSlowDieOnce {
+					time.Sleep(stubSlowDie)
+				}
+				os.Exit(1) // the job is read, the answer never comes
+			}
+			if kind == stubSlowDieOnce {
+				_ = os.WriteFile(os.Getenv(pdfStubMarkerEnv)+stubTimeoutSuffix, []byte(strconv.FormatInt(job.TimeoutNanos, 10)), 0o600)
+				time.Sleep(time.Hour)
+			}
+			if err := enc.Encode(&pdfResult{Pages: [][]byte{[]byte("stub page")}}); err != nil {
+				os.Exit(1)
+			}
+		}
 	case stubStopMidJob:
 		if err := enc.Encode(&pdfHello{ProtocolVersion: pdfProtocolVersion}); err != nil {
 			os.Exit(1)
@@ -175,6 +228,101 @@ func TestPDFWorkerDyingMidJobIsACrash(t *testing.T) {
 
 	assert.Empty(t, pool.idle, "a worker that died mid-job must not be handed to the next file")
 	assert.Len(t, pool.spawn, 1, "its permit must come back so the pool can start a replacement")
+}
+
+func TestPDFWorkerCrashIsRetriedOnAnotherWorker(t *testing.T) {
+	// One dead worker is not yet a verdict: the document goes to another one,
+	// and a worker that answers there is what the caller gets.
+	t.Setenv(pdfStubMarkerEnv, filepath.Join(t.TempDir(), "died"))
+	pool := stubWorkerPool(t, stubDieOnce)
+
+	pages, _, err := ReadPDF(context.Background(), writeMinimalPDF("retried page"), testPDFLimits)
+	require.NoError(t, err, "the retry on another worker must answer for the crashed one")
+	require.Len(t, pages, 1)
+	assert.Equal(t, "stub page", string(pages[0]))
+	assert.Len(t, pool.idle, 1, "the worker that answered goes back to the pool")
+}
+
+func TestPDFWorkerCrashRetryGetsOnlyTheRemainingTime(t *testing.T) {
+	// The timeout is the document's, not the attempt's: a retry after a slow
+	// crash gets what is left of it, its wait for a worker paid out of that, or
+	// a document that crashes late and then hangs would hold a worker for
+	// nearly twice its timeout.
+	timings := testPDFPoolTimings()
+	timings.grace = 100 * time.Millisecond
+	marker := filepath.Join(t.TempDir(), "died")
+	t.Setenv(pdfStubMarkerEnv, marker)
+	t.Setenv(pdfStubEnv, stubSlowDieOnce)
+	installPDFPool(t, newPDFWorkerPool(testExecutable(t), 1, timings))
+	limits := testPDFLimits
+	// What the retry's worker has left to start in, after its slow greeting and
+	// the grace, is another stubSlowHello: room for a slow exec of the test
+	// binary before the retry's acquire deadline would let the crash stand.
+	limits.Timeout = stubSlowDie + timings.grace + 2*stubSlowHello
+
+	pages, _, extractTime, err := readPDF(context.Background(), writeMinimalPDF("hung page"), limits)
+	assert.ErrorIs(t, err, ErrPDFTimeout, "the retry that never answers times out")
+	assert.Nil(t, pages)
+	raw, err := os.ReadFile(marker + stubTimeoutSuffix)
+	require.NoError(t, err, "the retry must have reached a worker")
+	received, err := strconv.ParseInt(string(raw), 10, 64)
+	require.NoError(t, err)
+	assert.Positive(t, received)
+	// The first attempt spent stubSlowDie before dying, and the retry
+	// stubSlowHello waiting for its worker to greet.
+	assert.LessOrEqual(t, time.Duration(received), limits.Timeout-stubSlowDie-stubSlowHello, "the retry must get only what the first attempt and its own wait left of the timeout")
+	// Both attempts are charged, the retry's wait for its worker included.
+	assert.GreaterOrEqual(t, extractTime, limits.Timeout+timings.grace, "the budget must pay for both attempts and the retry's worker")
+	// And no more than a document that timed out: the slack is for killing the
+	// hung worker and reading its EOF, and stays below stubSlowDie so the first
+	// attempt counted twice cannot hide in it.
+	const slack = 250 * time.Millisecond
+	assert.LessOrEqual(t, extractTime, limits.Timeout+timings.grace+slack, "a crashing document must cost at most what a timing-out one does")
+}
+
+func TestPDFWorkerCrashRetryWaitsOnlyForTheRemainingTime(t *testing.T) {
+	// The retry's wait for a worker comes out of the same timeout: one that
+	// cannot be had with the grace still left is no retry, and the crash stands
+	// rather than a document running on past its timeout.
+	timings := testPDFPoolTimings()
+	timings.grace = 100 * time.Millisecond
+	t.Setenv(pdfStubMarkerEnv, filepath.Join(t.TempDir(), "died"))
+	t.Setenv(pdfStubEnv, stubSlowDieOnce)
+	installPDFPool(t, newPDFWorkerPool(testExecutable(t), 1, timings))
+	limits := testPDFLimits
+	// The crash leaves the retry more than the grace, but not enough to also
+	// wait out its worker's slow greeting. Half the greeting is also what the
+	// first attempt may overrun stubSlowDie by before no retry is tried at all.
+	limits.Timeout = stubSlowDie + timings.grace + stubSlowHello/2
+
+	pages, _, err := ReadPDF(context.Background(), writeMinimalPDF("late page"), limits)
+	assert.ErrorIs(t, err, ErrPDFWorkerCrashed, "a retry that could not get a worker in time must leave the crash standing")
+	assert.Nil(t, pages)
+}
+
+func TestPDFWorkerCrashWithoutTimeLeftIsNotRetried(t *testing.T) {
+	// A crash that leaves less of the timeout than the grace is final, even
+	// with a worker idle and ready to take the retry at once.
+	timings := testPDFPoolTimings()
+	timings.grace = 100 * time.Millisecond
+	t.Setenv(pdfStubMarkerEnv, filepath.Join(t.TempDir(), "died"))
+	t.Setenv(pdfStubEnv, stubSlowDieOnce)
+	pool := installPDFPool(t, newPDFWorkerPool(testExecutable(t), 2, timings))
+	workers := make([]*pdfWorker, 0, 2)
+	for i := 0; i < 2; i++ {
+		w, err := pool.acquire(context.Background())
+		require.NoError(t, err)
+		workers = append(workers, w)
+	}
+	for _, w := range workers {
+		pool.release(w)
+	}
+	limits := testPDFLimits
+	limits.Timeout = stubSlowDie + timings.grace/2
+
+	pages, _, err := ReadPDF(context.Background(), writeMinimalPDF("late page"), limits)
+	assert.ErrorIs(t, err, ErrPDFWorkerCrashed, "the crash must stand when no retry fits in the timeout")
+	assert.Nil(t, pages)
 }
 
 func TestPDFWorkerRefusingTheJobIsARuntimeError(t *testing.T) {

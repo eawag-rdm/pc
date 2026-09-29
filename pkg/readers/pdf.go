@@ -131,9 +131,9 @@ var (
 	// make every file's cause.
 	ErrPDFRuntime = errors.New("pdf engine unavailable")
 	// ErrPDFWorkerCrashed marks a worker that died after the whole job was
-	// written to it - a small job landing in the pipe buffer counts. The
-	// document most likely caused it, so, like a timeout, it is a verdict on
-	// the document.
+	// written to it - a small job landing in the pipe buffer counts - and, time
+	// permitting, another worker that did the same on the retry. The document
+	// most likely caused it, so, like a timeout, it is a verdict on the document.
 	ErrPDFWorkerCrashed = errors.New("pdf worker crashed")
 )
 
@@ -821,14 +821,17 @@ type pdfExchange struct {
 }
 
 // readPDF additionally reports how long extraction itself took, EXCLUDING
-// the pool wait. Callers that meter cumulative PDF time (the archive
-// iterator) must charge only this: queue time belongs to whichever archive
-// held the worker, and charging it would let one package's PDFs consume
-// another's budget - on a shared server, another tenant's.
+// the pool wait. Callers that meter cumulative PDF time (the archive iterator)
+// must charge only this: queue time belongs to whichever archive held the
+// worker, and charging it would let one package's PDFs consume another's
+// budget - on a shared server, another tenant's. The exception is a retry after
+// a crash, charged whole, getting a worker included: at most what was left of
+// the document's timeout plus the grace, so a crashing document costs its
+// archive at most what a timing-out one does.
 //
 // It is two measurements, deliberately: the worker's own extraction time when
-// the worker answered (whatever it answered), and the parent's wall-clock since
-// the worker was acquired when the parent gave up on it - a killed or abandoned
+// the worker answered (whatever it answered), and the parent's wall-clock
+// whenever it did not (timeout, crash) and for a retry - a killed or abandoned
 // job has no self-reported time, and reporting zero would make a wedged
 // document look free to the budget that exists to bound it.
 func readPDF(ctx context.Context, data []byte, limits PDFLimits) (pages [][]byte, truncated bool, extractTime time.Duration, err error) {
@@ -856,7 +859,41 @@ func readPDF(ctx context.Context, data []byte, limits PDFLimits) (pages [][]byte
 		timeout = DefaultPDFTimeout
 	}
 
-	w, err := pool.acquire(ctx)
+	pages, truncated, extractTime, err = readPDFOnce(ctx, pool, data, limits, timeout, time.Time{})
+	// One dead worker proves less than two: the document gets one more on
+	// another worker, within what is left of its timeout after the first
+	// attempt. A retry with less than the grace left is not worth another
+	// worker: it would most likely time out.
+	if errors.Is(err, ErrPDFWorkerCrashed) {
+		if remaining := timeout - extractTime; remaining > pool.timings.grace {
+			retryStart := time.Now()
+			retryPages, retryTruncated, _, retryErr := readPDFOnce(ctx, pool, data, limits, remaining, retryStart)
+			extractTime += time.Since(retryStart)
+			// A retry that found no worker in its time leaves the crash as the
+			// verdict, unless the caller's context has ended: that outranks both.
+			switch {
+			case !errors.Is(retryErr, context.DeadlineExceeded):
+				pages, truncated, err = retryPages, retryTruncated, retryErr
+			case ctx.Err() != nil:
+				err = ctx.Err()
+			}
+		}
+	}
+	return pages, truncated, extractTime, err
+}
+
+// readPDFOnce is one attempt on one worker, with timeout the document's
+// timeout, or for a retry what is left of it. It runs from since when that is
+// set, so the wait for the worker is paid out of it, and an attempt that cannot
+// get one with the grace still left ends in context.DeadlineExceeded while ctx
+// is live.
+func readPDFOnce(ctx context.Context, pool *pdfWorkerPool, data []byte, limits PDFLimits, timeout time.Duration, since time.Time) (pages [][]byte, truncated bool, extractTime time.Duration, err error) {
+	acquireCtx, cancel := ctx, func() {}
+	if !since.IsZero() {
+		acquireCtx, cancel = context.WithDeadline(ctx, since.Add(timeout-pool.timings.grace))
+	}
+	w, err := pool.acquire(acquireCtx)
+	cancel()
 	if err != nil {
 		if cerr := ctx.Err(); cerr != nil {
 			if errors.Is(err, cerr) {
@@ -866,11 +903,18 @@ func readPDF(ctx context.Context, data []byte, limits PDFLimits) (pages [][]byte
 			// would otherwise be invisible.
 			return nil, false, 0, fmt.Errorf("%w (worker: %v)", cerr, err)
 		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, false, 0, err
+		}
 		return nil, false, 0, fmt.Errorf("%w: %v", ErrPDFRuntime, err)
 	}
-	// The clock starts only once a worker is held, for the same reason
-	// acquisition waits on the caller's context alone.
+	// A first attempt's clock starts only once a worker is held, for the same
+	// reason its acquisition waits on the caller's context alone; a retry's wait
+	// is taken out of its timeout here.
 	start := time.Now()
+	if !since.IsZero() {
+		timeout -= start.Sub(since)
+	}
 
 	// The pre-flight gate is stale by the time a worker is held: a context that
 	// ended while we queued must not pay for a document parse.
