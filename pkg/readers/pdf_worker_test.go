@@ -28,6 +28,8 @@ const pdfStubEnv = "PC_PDF_STUB_WORKER"
 const (
 	stubEngineFailure = "engine-failure" // greets, then fails every job
 	stubDieMidJob     = "die-mid-job"    // greets, takes a job, dies unanswered
+	stubRefuseJob     = "refuse-job"     // greets with its job pipe already closed
+	stubGarbleAnswer  = "garble-answer"  // greets, takes a job, answers with a greeting
 	stubStopMidJob    = "stop-mid-job"   // answers once, then stops itself mid-job
 	stubNoHello       = "no-hello"       // never greets
 	stubBadVersion    = "bad-version"    // greets in a protocol nobody speaks
@@ -65,6 +67,24 @@ func handlePDFStubWorker() {
 		var buf []byte
 		_, _ = readPDFJob(bufio.NewReader(os.Stdin), &buf)
 		os.Exit(1) // the job is read, the answer never comes
+	case stubRefuseJob:
+		// Closed before the greeting, so the job write that follows it always
+		// fails rather than landing in the pipe buffer.
+		_ = os.Stdin.Close()
+		if err := enc.Encode(&pdfHello{ProtocolVersion: pdfProtocolVersion}); err != nil {
+			os.Exit(1)
+		}
+		time.Sleep(time.Hour)
+	case stubGarbleAnswer:
+		if err := enc.Encode(&pdfHello{ProtocolVersion: pdfProtocolVersion}); err != nil {
+			os.Exit(1)
+		}
+		var buf []byte
+		_, _ = readPDFJob(bufio.NewReader(os.Stdin), &buf)
+		// A pdfHello shares no field with a pdfResult, so the parent's decode
+		// fails on a stream that is still open.
+		_ = enc.Encode(&pdfHello{ProtocolVersion: pdfProtocolVersion})
+		time.Sleep(time.Hour)
 	case stubStopMidJob:
 		if err := enc.Encode(&pdfHello{ProtocolVersion: pdfProtocolVersion}); err != nil {
 			os.Exit(1)
@@ -141,19 +161,47 @@ func testExecutable(t *testing.T) string {
 	return exe
 }
 
-func TestPDFWorkerDyingMidJobIsARuntimeError(t *testing.T) {
-	// A worker that takes a job and dies with it leaves nothing to read. That
-	// is the engine failing, not the document, and the corpse must not stay in
-	// the pool for the next file to trip over.
+func TestPDFWorkerDyingMidJobIsACrash(t *testing.T) {
+	// A worker that takes a job and dies with it leaves nothing to read. The
+	// document most likely killed it, so it is a verdict on the document, and
+	// the corpse must not stay in the pool for the next file to trip over.
 	pool := stubWorkerPool(t, stubDieMidJob)
 
 	pages, truncated, err := ReadPDF(context.Background(), writeMinimalPDF("lost page"), testPDFLimits)
-	assert.ErrorIs(t, err, ErrPDFRuntime, "a worker that died mid-job is an engine failure, not a parse failure")
+	assert.ErrorIs(t, err, ErrPDFWorkerCrashed, "a worker that died mid-job is a crash, not a parse failure")
+	assert.NotErrorIs(t, err, ErrPDFRuntime, "a crash on the document must not read as an unavailable engine")
 	assert.Nil(t, pages)
 	assert.False(t, truncated)
 
 	assert.Empty(t, pool.idle, "a worker that died mid-job must not be handed to the next file")
 	assert.Len(t, pool.spawn, 1, "its permit must come back so the pool can start a replacement")
+}
+
+func TestPDFWorkerRefusingTheJobIsARuntimeError(t *testing.T) {
+	// A worker that cannot be handed the job was broken before the document
+	// reached it: that is the engine failing, not the document.
+	pool := stubWorkerPool(t, stubRefuseJob)
+
+	pages, _, err := ReadPDF(context.Background(), writeMinimalPDF("unsent page"), testPDFLimits)
+	assert.ErrorIs(t, err, ErrPDFRuntime, "a job that never reached the worker is an engine failure")
+	assert.NotErrorIs(t, err, ErrPDFWorkerCrashed, "the document never reached the worker, so it cannot have crashed it")
+	assert.Nil(t, pages)
+
+	assert.Empty(t, pool.idle, "a worker that could not take the job must not be handed to the next file")
+	assert.Len(t, pool.spawn, 1, "its permit must come back so the pool can start a replacement")
+}
+
+func TestPDFWorkerGarbledAnswerIsARuntimeError(t *testing.T) {
+	// A worker that answers with something unreadable is alive and took the
+	// job: that is the engine failing, not a crash the document caused.
+	pool := stubWorkerPool(t, stubGarbleAnswer)
+
+	pages, _, err := ReadPDF(context.Background(), writeMinimalPDF("garbled page"), testPDFLimits)
+	assert.ErrorIs(t, err, ErrPDFRuntime, "an unreadable answer from a live worker is an engine failure")
+	assert.NotErrorIs(t, err, ErrPDFWorkerCrashed, "a worker that answered did not crash")
+	assert.Nil(t, pages)
+
+	assert.Empty(t, pool.idle, "a worker that garbled its answer must not be handed to the next file")
 }
 
 func TestPDFWorkerDeadWhileIdleIsReplaced(t *testing.T) {

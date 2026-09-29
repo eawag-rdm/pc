@@ -168,9 +168,10 @@ func runPDFWorker() {
 		case errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF):
 			return // the parent closed the pipe or died: nothing left to answer
 		case err != nil:
-			// A stream this worker cannot make sense of. Dying quietly would
-			// reach the parent as a worker that lost the job in flight, with
-			// nothing anywhere to say what was actually refused.
+			// A stream this worker cannot make sense of - only a protocol fault
+			// gets here. With the job already in the pipe the parent reads the
+			// exit as a crash on the document, so stderr is the one place that
+			// says what was actually refused.
 			fmt.Fprintf(os.Stderr, "pdf worker: %v\n", err)
 			os.Exit(2)
 		}

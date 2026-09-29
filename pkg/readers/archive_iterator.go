@@ -687,6 +687,9 @@ func (u *UnpackedFileIterator) tryBufferPDFMember(name string, declared int64, r
 	case errors.Is(err, ErrPDFTimeout):
 		u.recordSkip(name, "Skipped content scan of archive member: PDF extraction timed out.", declared)
 		return false
+	case errors.Is(err, ErrPDFWorkerCrashed):
+		u.recordSkip(name, "Skipped content scan of archive member: PDF worker crashed on the document.", declared)
+		return false
 	case errors.Is(err, ErrPDFTooLarge):
 		u.recordSkip(name, fmt.Sprintf("Skipped content scan of archive member: PDF exceeds the maximum PDF size (%d bytes).", u.maxPDFFileSize), declared)
 		return false

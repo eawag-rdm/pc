@@ -241,6 +241,31 @@ func TestPDFMemberEngineUnavailableTransient(t *testing.T) {
 	assert.True(t, msgs[0].Transient, "an engine that failed to start may start on retry")
 }
 
+func TestPDFMemberWorkerCrashIsMemberLevel(t *testing.T) {
+	// A crash is a verdict on one document: the member is acknowledged like a
+	// timeout, cacheably, and the next PDF member still gets a worker.
+	stubWorkerPool(t, stubDieMidJob)
+
+	path := writeZipFixture(t, []zipMember{
+		{"a.pdf", writeMinimalPDF("first pdf")},
+		{"b.pdf", writeMinimalPDF("second pdf")},
+	})
+	u := InitArchiveIterator(context.Background(), path, "fixture.zip", testMemberLimits, nil)
+	got := drainMembers(u)
+	assert.NotContains(t, got, "a.pdf")
+	assert.NotContains(t, got, "b.pdf")
+
+	msgs := u.SkipMessages()
+	require.Len(t, msgs, 2, "one member-level ack per crashed member, extraction not stopped")
+	for i, name := range []string{"a.pdf", "b.pdf"} {
+		assert.Contains(t, msgs[i].Content, "PDF worker crashed")
+		assert.False(t, msgs[i].Transient, "a crash is deterministic enough to cache")
+		src, ok := msgs[i].Source.(structs.File)
+		require.True(t, ok)
+		assert.Equal(t, name, src.Name, "the crash ack names the member")
+	}
+}
+
 func TestPDFMemberWallClockBudgetBreaker(t *testing.T) {
 	path := writeZipFixture(t, []zipMember{
 		{"a.pdf", writeMinimalPDF("first pdf")},

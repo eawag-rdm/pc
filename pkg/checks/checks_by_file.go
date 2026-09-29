@@ -848,6 +848,8 @@ func scanPDFFile(ctx context.Context, file structs.File, batch *Batch, rules []*
 		return ack("Skipped content scan of file: PDF is password-protected."), true
 	case errors.Is(err, readers.ErrPDFTimeout):
 		return ack("Skipped content scan of file: PDF extraction timed out."), true
+	case errors.Is(err, readers.ErrPDFWorkerCrashed):
+		return ack("Skipped content scan of file: PDF worker crashed on the document."), true
 	case errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded):
 		// The scan was abandoned, not the document: no ack, because the
 		// request it would appear in is already dead.

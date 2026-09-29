@@ -7,6 +7,7 @@ import (
 	"encoding/gob"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"runtime"
@@ -123,11 +124,17 @@ var (
 	// scanned when most of it never was.
 	ErrPDFTooManyPages = errors.New("pdf has too many pages")
 	// ErrPDFRuntime marks an engine that could not serve the document: a pool
-	// that failed to initialize, a worker that could not be started or greeted,
-	// one that died with the job in flight, or a pool already shut down. Without
-	// a distinct sentinel each of those would report a bogus parse error instead
-	// of the one real cause, which repeated failures make every file's cause.
+	// that failed to initialize, a worker that could not be started, greeted or
+	// sent the whole job, or that answered with something unreadable, or a pool
+	// already shut down. Without a distinct sentinel each of those would report
+	// a bogus parse error instead of the one real cause, which repeated failures
+	// make every file's cause.
 	ErrPDFRuntime = errors.New("pdf engine unavailable")
+	// ErrPDFWorkerCrashed marks a worker that died after the whole job was
+	// written to it - a small job landing in the pipe buffer counts. The
+	// document most likely caused it, so, like a timeout, it is a verdict on
+	// the document.
+	ErrPDFWorkerCrashed = errors.New("pdf worker crashed")
 )
 
 // errPDFCancelled stands in when a context reports itself done without an
@@ -467,8 +474,10 @@ func (p *pdfWorkerPool) discard(w *pdfWorker, cause string) {
 // it, and everything else goes back warm.
 func (p *pdfWorkerPool) handBack(w *pdfWorker, ex pdfExchange, dataLen int) {
 	switch {
+	case errors.Is(ex.err, ErrPDFWorkerCrashed):
+		p.discard(w, "died on the job")
 	case ex.err != nil:
-		p.discard(w, "lost the job in flight")
+		p.discard(w, "failed the exchange")
 	case ex.res.ErrCode == pdfErrRuntime:
 		p.discard(w, "reported an engine failure")
 	case int64(dataLen) > pdfRecycleInputBytes || totalPageBytes(ex.res.Pages) > pdfRecycleTextBytes:
@@ -879,15 +888,25 @@ func readPDF(ctx context.Context, data []byte, limits PDFLimits) (pages [][]byte
 	// The exchange runs on its own goroutine so a wedged worker cannot pin the
 	// caller: a job too big for the pipe buffer blocks until the worker reads
 	// it, and the answer blocks until it replies. Killing the worker ends both.
+	// A worker that could not take the whole job was broken before the document
+	// reached it; one that took it and hung up most likely died of it. Any
+	// other unreadable answer came from a live worker, so the engine is broken.
 	done := make(chan pdfExchange, 1)
 	go func() {
 		if werr := w.writeJob(job); werr != nil {
-			done <- pdfExchange{err: werr}
+			done <- pdfExchange{err: fmt.Errorf("%w: %v", ErrPDFRuntime, werr)}
 			return
 		}
 		var res pdfResult
-		rerr := w.dec.Decode(&res)
-		done <- pdfExchange{res: res, err: rerr}
+		if rerr := w.dec.Decode(&res); rerr != nil {
+			cause := ErrPDFRuntime
+			if errors.Is(rerr, io.EOF) || errors.Is(rerr, io.ErrUnexpectedEOF) {
+				cause = ErrPDFWorkerCrashed
+			}
+			done <- pdfExchange{err: fmt.Errorf("%w: %v", cause, rerr)}
+			return
+		}
+		done <- pdfExchange{res: res}
 	}()
 	// From the job write, not from acquisition: the worker greeted the parent
 	// before it was handed out, so nothing but the extraction and the document's
@@ -907,9 +926,7 @@ func readPDF(ctx context.Context, data []byte, limits PDFLimits) (pages [][]byte
 			return nil, false, time.Since(start), cerr
 		}
 		if ex.err != nil {
-			// A worker that died mid-job took its answer with it: there is no
-			// document-level cause to report, only a broken engine.
-			return nil, false, time.Since(start), fmt.Errorf("%w: %v", ErrPDFRuntime, ex.err)
+			return nil, false, time.Since(start), ex.err
 		}
 		return ex.res.Pages, ex.res.Truncated, time.Duration(ex.res.ExtractNanos), pdfErrFromWire(ex.res.ErrCode, ex.res.Detail)
 	case <-ctx.Done():
