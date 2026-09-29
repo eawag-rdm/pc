@@ -1400,13 +1400,37 @@ func failingReadPath(t *testing.T) string {
 }
 
 // TestStreamKeywordsAcknowledgesFailures: a streamed read that fails is
-// acknowledged as unreadable.
+// acknowledged as unreadable, and the stream's own size gate as oversize.
 func TestStreamKeywordsAcknowledgesFailures(t *testing.T) {
 	_, rules, batch := bindTestRule(t, "IsFreeOfKeywords", keywordConfig([]string{"password"}), ScopeFile)
 
-	msgs := streamKeywords(context.Background(), structs.File{Path: failingReadPath(t), Name: "big.txt"}, batch, rules)
+	msgs := streamKeywords(context.Background(), structs.File{Path: failingReadPath(t), Name: "big.txt"}, streamChunkSize+1, batch, rules)
 	if len(msgs) != 1 || !msgs[0].Transient || msgs[0].Content != fileUnreadableReason {
 		t.Errorf("failed read: want one transient read skip ack, got %+v", msgs)
+	}
+
+	// Sparse: the gate refuses on the stat, so no byte of it is ever read.
+	path := filepath.Join(t.TempDir(), "huge.txt")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(maxStreamFileSize + 1); err != nil {
+		f.Close()
+		t.Skipf("no sparse file: %v", err)
+	}
+	info, err := f.Stat()
+	f.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st, ok := info.Sys().(*syscall.Stat_t); !ok || st.Blocks != 0 {
+		t.Skip("file system does not keep the file sparse")
+	}
+	const want = "Skipped content scan of file: file size (2147483649 bytes) exceeds maximum (2147483648 bytes)."
+	msgs = streamKeywords(context.Background(), structs.File{Path: path, Name: "huge.txt"}, maxStreamFileSize+1, batch, rules)
+	if len(msgs) != 1 || msgs[0].Transient || msgs[0].Content != want {
+		t.Errorf("over the stream gate: want %q, got %+v", want, msgs)
 	}
 }
 

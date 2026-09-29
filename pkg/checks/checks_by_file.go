@@ -73,14 +73,19 @@ func isFileNameTooLong(file structs.File) []structs.Message {
 // whole. 1MB chunks (increased for better performance).
 const streamChunkSize = 1024 * 1024
 
+// maxStreamFileSize bounds a streamed read whatever the content-scan gate allows.
+const maxStreamFileSize = 2 * 1024 * 1024 * 1024
+
+// errStreamTooLarge is streamChunks' refusal of a file past maxStreamFileSize:
+// a size verdict, acknowledged as oversize rather than as a failed read.
+var errStreamTooLarge = errors.New("file too large")
+
 // streamChunks reads a file too large to hold in one piece and hands each chunk
 // to scan together with its lowercase copy. Chunks overlap by 2KB so a keyword
 // spanning a boundary is still found. The file is read ONCE however many rules
 // scan it. ctx is observed between chunks: a fired ctx stops the read and the
 // chunks scanned so far stand.
 func streamChunks(ctx context.Context, filePath string, scan func(chunk, lowered []byte)) error {
-	const maxFileSize = 2 * 1024 * 1024 * 1024 // 2GB limit for streaming (increased)
-
 	file, err := os.Open(filePath)
 	if err != nil {
 		return err
@@ -92,8 +97,8 @@ func streamChunks(ctx context.Context, filePath string, scan func(chunk, lowered
 	if err != nil {
 		return err
 	}
-	if fileInfo.Size() > maxFileSize {
-		return fmt.Errorf("file too large: %d bytes (max %d)", fileInfo.Size(), maxFileSize)
+	if fileInfo.Size() > maxStreamFileSize {
+		return fmt.Errorf("%w: %d bytes (max %d)", errStreamTooLarge, fileInfo.Size(), maxStreamFileSize)
 	}
 
 	buffer := make([]byte, streamChunkSize)
@@ -617,7 +622,7 @@ func keywordsInFile(ctx context.Context, file structs.File, batch *Batch, rules 
 	if isText {
 		// Stream files larger than one chunk (reduced threshold for better performance)
 		if fileInfo.Size() > streamChunkSize {
-			return append(messages, streamKeywords(ctx, file, batch, rules)...)
+			return append(messages, streamKeywords(ctx, file, fileInfo.Size(), batch, rules)...)
 		}
 		// Use regular reading for smaller files
 		content, err := os.ReadFile(file.Path)
@@ -686,7 +691,7 @@ type streamUnit struct {
 // chunk, and every unit sees every chunk. Findings are deduplicated across
 // chunks, so a keyword on every line is still reported once. It walks the units
 // itself rather than through scanUnits, because the dedup happens per message.
-func streamKeywords(ctx context.Context, file structs.File, batch *Batch, rules []*BoundRule) []structs.Message {
+func streamKeywords(ctx context.Context, file structs.File, size int64, batch *Batch, rules []*BoundRule) []structs.Message {
 	var messages []structs.Message
 	var src structs.Source // the file boxed once, shared by every finding
 	seen := make(map[streamKey]struct{})
@@ -713,6 +718,13 @@ func streamKeywords(ctx context.Context, file structs.File, batch *Batch, rules 
 	})
 	if err != nil {
 		output.GlobalLogger.FileWarning(file.GetDisplayName(), "Error streaming file '%s': %v", file.Path, err)
+		if errors.Is(err, errStreamTooLarge) {
+			// As at the content-scan gate: an archive is left to the archive pass.
+			if file.IsArchive {
+				return messages
+			}
+			return append(messages, oversizeSkip(file, "file", size, maxStreamFileSize))
+		}
 		messages = append(messages, fileReadSkip(file, err)...)
 	}
 	return messages
