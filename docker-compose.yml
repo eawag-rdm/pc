@@ -32,7 +32,9 @@ services:
         PC_GID: "502"
     image: pc-server:latest
     restart: unless-stopped
-
+    networks:
+      - default        # keep! naming networks explicitly removes the
+      - eric-webnet    # implicit default one otherwise
     ports:
       # host:container - the CONTAINER port must equal the [server] listenAddress
       # port in pc.toml. Bind on host-localhost when nginx terminates in front of
@@ -87,6 +89,11 @@ services:
       options:
         max-size: "10m"
         max-file: "5"
+
+networks:
+   eric-webnet:
+     external: true
+     name: eric_webnet    # from step 1
 
 # Named volume backing the result cache mount above.
 volumes:
