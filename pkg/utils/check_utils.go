@@ -496,17 +496,22 @@ func archiveWalkSkipMessage(archiveFile structs.File, maxMembers int, maxTotalMe
 	}
 }
 
-// archiveReadSkipMessage acknowledges an archive whose file could not be read,
-// so its member names never read as checked and clean. The caller acks transient
-// read failures only; a format error stays the diagnostic it has always been.
-func archiveReadSkipMessage(archiveFile structs.File) structs.Message {
-	reason := "Skipped name checks of archive members: archive could not be read."
+// archiveReadSkipMessage acknowledges an archive whose member list could not be
+// read, whether opening it or listing it part-way failed, so its member names
+// never read as checked and clean. transient marks a read error a retry may
+// clear (uncached); any error a retry cannot clear is acknowledged as a corrupt
+// archive.
+func archiveReadSkipMessage(archiveFile structs.File, transient bool) structs.Message {
+	reason := "Skipped name checks of archive members: archive is corrupt or not a valid archive."
+	if transient {
+		reason = "Skipped name checks of archive members: archive could not be read."
+	}
 	return structs.Message{
 		Content:   reason,
 		Source:    archiveFile,
 		TestName:  "ArchiveFileList",
 		Skipped:   true,
-		Transient: true,
+		Transient: transient,
 		Reason:    reason,
 	}
 }
@@ -535,10 +540,7 @@ func archiveFileListChecks(ctx context.Context, sink *diagSink, cfg config.Confi
 	fileList, truncated, err := readers.ReadArchiveFileList(archiveFile, maxMembers, maxTotalMemory)
 	if err != nil {
 		sink.add(structs.DiagWarning, archiveFile.GetDisplayName(), "Error (archive filelist checks) reading archive file list of '%s' -> %v", archiveFile.Name, err)
-		if readers.IsTransientReadError(err) {
-			messages = append(messages, archiveReadSkipMessage(archiveFile))
-		}
-		return messages
+		return append(messages, archiveReadSkipMessage(archiveFile, readers.IsTransientReadError(err)))
 	}
 	if truncated {
 		// The list is partial by construction: run no checks on it.

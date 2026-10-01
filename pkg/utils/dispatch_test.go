@@ -485,17 +485,19 @@ func TestExecutedCheckMultisetUnchanged(t *testing.T) {
 // the dispatch that decides which of them a file meets: the file pass
 // acknowledges an over-cap plain file, the archive-member pass an over-cap
 // archive it may list cheaply, and dispatch itself the over-cap .tar.gz it
-// hands to neither archive pass - and no file is acknowledged twice. Only the
+// hands to neither archive pass - and no gate acknowledges a file twice. Only the
 // whole pipeline can pin it: the gates sit in three places, and which files
 // reach which is the dispatch's decision (IsArchive, and the listing cost of the
-// format), not the check's.
+// format), not the check's. A zip or tar that is no valid container also draws
+// the file-list pass's one corrupt-archive ack, cached.
 func TestOversizedFileAcknowledgedOnce(t *testing.T) {
 	dir := t.TempDir()
 	var files []structs.File
 	for _, name := range []string{"data.zip", "data.tar", "data.tar.gz", "data.gz", "data.txt"} {
 		path := filepath.Join(dir, name)
 		// Both gates read os.Stat before any reader opens the file, so the
-		// archives reach them without being valid containers.
+		// archives reach them without being valid containers. The file-list pass
+		// does open a zip or tar, so those two draw its corrupt-archive ack too.
 		if err := os.WriteFile(path, []byte("password"), 0o600); err != nil {
 			t.Fatalf("write fixture %q: %v", name, err)
 		}
@@ -517,8 +519,10 @@ func TestOversizedFileAcknowledgedOnce(t *testing.T) {
 	resetGlobalScanState()
 
 	// The unreadable archives draw unrelated findings and diagnostics; only the
-	// skip acknowledgements are this test's business - both wordings of them,
-	// the content gates' and dispatch's refusal of a tar.gz.
+	// skip acknowledgements are this test's business - all three wordings of
+	// them, the content gates', dispatch's refusal of a tar.gz and the file-list
+	// pass's corrupt archive.
+	const corruptListAck = "Skipped name checks of archive members: archive is corrupt or not a valid archive."
 	acknowledged := map[string][]string{}
 	for _, m := range messages {
 		if !strings.HasPrefix(m.Content, "Skipped ") {
@@ -528,26 +532,37 @@ func TestOversizedFileAcknowledgedOnce(t *testing.T) {
 		if !ok {
 			t.Fatalf("skip acknowledgement without a file source: %+v", m)
 		}
+		if m.Content == corruptListAck && (m.TestName != "ArchiveFileList" || m.Transient) {
+			t.Errorf("%s: a corrupt archive's name-list ack is a cached ArchiveFileList skip: %+v", src.Name, m)
+		}
 		acknowledged[src.Name] = append(acknowledged[src.Name], m.Content)
 	}
-	want := map[string]string{
-		"data.zip": "Skipped content scan of archive:",
-		"data.tar": "Skipped content scan of archive:",
+	want := map[string][]string{
+		"data.zip": {"Skipped content scan of archive:", corruptListAck},
+		"data.tar": {"Skipped content scan of archive:", corruptListAck},
 		// Listing a tar.gz costs a decompression, so over the cap dispatch refuses
 		// the archive outright: the one message it emits covers the member-name
 		// checks as well, and the content gate is never reached.
-		"data.tar.gz": "Skipped archive checks (member-name checks and content scan):",
-		"data.gz":     "Skipped content scan of archive:",
-		"data.txt":    "Skipped content scan of file:",
+		"data.tar.gz": {"Skipped archive checks (member-name checks and content scan):"},
+		"data.gz":     {"Skipped content scan of archive:"},
+		"data.txt":    {"Skipped content scan of file:"},
 	}
-	for name, prefix := range want {
+	for name, prefixes := range want {
 		got := acknowledged[name]
-		if len(got) != 1 {
-			t.Errorf("%s: %d skip acknowledgements, want exactly 1: %v", name, len(got), got)
+		if len(got) != len(prefixes) {
+			t.Errorf("%s: %d skip acknowledgements, want exactly %d: %v", name, len(got), len(prefixes), got)
 			continue
 		}
-		if !strings.HasPrefix(got[0], prefix) {
-			t.Errorf("%s: acknowledged as %q, want %q", name, got[0], prefix)
+		for _, prefix := range prefixes {
+			n := 0
+			for _, content := range got {
+				if strings.HasPrefix(content, prefix) {
+					n++
+				}
+			}
+			if n != 1 {
+				t.Errorf("%s: acknowledged as %q, want exactly one %q", name, got, prefix)
+			}
 		}
 	}
 }
@@ -1049,8 +1064,7 @@ func TestFusedWalkSecondMemberCheckListsSeparately(t *testing.T) {
 // got into - garbage where its gzip stream should be - leaves the collector
 // unclaimed, which says nothing about the archive's members. The listing attempt
 // the file-list pass would have made is still owed, and it fails on the same
-// bytes: a diagnostic, where an acknowledgement would claim a member list was
-// skipped by a walk that never happened.
+// bytes: a diagnostic.
 func TestFusedWalkUnopenedArchiveStillGetsListed(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "data.tar.gz")
 	if err := os.WriteFile(path, []byte("not a gzip stream at all"), 0o600); err != nil {
@@ -1068,9 +1082,6 @@ func TestFusedWalkUnopenedArchiveStillGetsListed(t *testing.T) {
 		src, ok := m.Source.(structs.File)
 		if !ok {
 			continue
-		}
-		if m.TestName == "ArchiveFileList" {
-			t.Errorf("no walk opened the archive, so no member list may be reported skipped: %q", m.Content)
 		}
 		if src.ArchiveName != "" {
 			t.Errorf("an unreadable archive has no members to report on: %+v", m)
@@ -1090,11 +1101,9 @@ func TestFusedWalkUnopenedArchiveStillGetsListed(t *testing.T) {
 // TestUnreadableArchiveAcknowledgedOncePerPass: an archive whose file cannot be
 // read is acknowledged once by the content scan and once by the name checks,
 // both uncached - through the plain zip passes and the fused tar.gz walk alike.
-// One the readers cannot parse keeps its diagnostic and gets no ack at all.
+// One the readers cannot parse - a zip, a tar.gz with a broken gzip header, a
+// 7z - is acknowledged the same way, cached and worded as corrupt.
 func TestUnreadableArchiveAcknowledgedOncePerPass(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("chmod 0 does not block root")
-	}
 	tests := []struct {
 		name     string
 		corrupt  bool // readable garbage instead of a locked fixture
@@ -1102,10 +1111,15 @@ func TestUnreadableArchiveAcknowledgedOncePerPass(t *testing.T) {
 	}{
 		{"test.zip", false, 1},
 		{"test.tar.gz", false, 1},
-		{"test.zip", true, 0},
+		{"test.zip", true, 1},
+		{"test.tar.gz", true, 1},
+		{"test.7z", true, 1},
 	}
 	for _, tt := range tests {
 		t.Run(fmt.Sprintf("%s corrupt=%v", tt.name, tt.corrupt), func(t *testing.T) {
+			if !tt.corrupt && os.Geteuid() == 0 {
+				t.Skip("chmod 0 does not block root")
+			}
 			path := filepath.Join(t.TempDir(), tt.name)
 			data := []byte("not an archive")
 			if !tt.corrupt {
@@ -1131,13 +1145,24 @@ func TestUnreadableArchiveAcknowledgedOncePerPass(t *testing.T) {
 			messages, _ := ApplyAllChecks(context.Background(), cfg, plan, []structs.File{archive})
 			resetGlobalScanState()
 
+			reason := "archive could not be read."
+			if tt.corrupt {
+				reason = "archive is corrupt or not a valid archive."
+			}
+			wantContent := map[string]string{
+				"IsFreeOfKeywords": "Skipped content scan of archive: " + reason,
+				"ArchiveFileList":  "Skipped name checks of archive members: " + reason,
+			}
 			acks := map[string]int{}
 			for _, m := range messages {
 				if !m.Skipped {
 					continue
 				}
-				if !m.Transient {
-					t.Errorf("a read failure must not be cached: %+v", m)
+				if m.Transient == tt.corrupt {
+					t.Errorf("Transient = %v, want %v (only a read failure stays uncached): %+v", m.Transient, !tt.corrupt, m)
+				}
+				if m.Content != wantContent[m.TestName] {
+					t.Errorf("%s ack = %q, want %q", m.TestName, m.Content, wantContent[m.TestName])
 				}
 				acks[m.TestName]++
 			}

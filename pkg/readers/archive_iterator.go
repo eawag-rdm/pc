@@ -260,13 +260,19 @@ func (u *UnpackedFileIterator) recordArchiveSkip(reason string, transient bool) 
 // archiveUnreadableReason acknowledges an archive whose file could not be read.
 const archiveUnreadableReason = "Skipped content scan of archive: archive could not be read."
 
-// recordUnreadableArchive acknowledges an archive whose file could not be read,
-// marked Transient so the result is not cached. An error a retry cannot change
-// (a format error) stays log-only.
+// archiveCorruptReason acknowledges an archive that failed with any error a retry cannot clear.
+const archiveCorruptReason = "Skipped content scan of archive: archive is corrupt or not a valid archive."
+
+// recordUnreadableArchive acknowledges an archive that could not be opened. A
+// read error a retry may clear is marked Transient so the result is not cached;
+// any error a retry cannot clear is acknowledged as a corrupt archive and
+// cached.
 func (u *UnpackedFileIterator) recordUnreadableArchive(err error) {
 	if IsTransientReadError(err) {
 		u.recordArchiveSkip(archiveUnreadableReason, true)
+		return
 	}
+	u.recordArchiveSkip(archiveCorruptReason, false)
 }
 
 // SkipMessages returns the skip acknowledgements collected so far for archive
@@ -370,6 +376,7 @@ func (u *UnpackedFileIterator) findFirstTarGz() bool {
 		gzipReader, err := gzip.NewReader(file)
 		if err != nil {
 			output.GlobalLogger.FileWarning(u.ArchiveName, "Error (archive content checks) creating gzip reader for '%s' -> %v", u.ArchiveName, err)
+			u.recordUnreadableArchive(err)
 			u.iterationEnded = true
 			return false
 		}
