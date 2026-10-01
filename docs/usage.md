@@ -171,6 +171,10 @@ scan is opt-in (see below).
 readme, and a second definition is refused. `ReadMeContainsTOC` takes no
 parameters of its own - it reads that rule's `readme_names`.
 
+`IsFileNameTooLong` takes one optional parameter, `maxLength`: the most bytes a
+file name's last path component may have (default 64); anything but a positive
+integer fails the load.
+
 ### Converting a pre-`[[rule]]` config
 
 `whitelist` → `include`, `blacklist` → `exclude`, and one `keywordArguments`

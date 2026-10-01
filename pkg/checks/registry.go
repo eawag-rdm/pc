@@ -516,7 +516,7 @@ func NewRegistry() Registry {
 		{Name: "IsFreeOfKeywords", Scopes: ScopesOf(ScopeFile, ScopeArchiveMember), Bind: bindKeywords, RunFile: runKeywords},
 		{Name: "IsValidName", Scopes: ScopesOf(ScopeFile, ScopeArchiveFileList), Bind: bindValidName, RunFile: runNameRules},
 		{Name: "HasFileNameSpecialChars", Scopes: ScopesOf(ScopeFile, ScopeArchiveFileList), Bind: bindNoParams(hasFileNameSpecialChars), RunFile: runNameRules},
-		{Name: "IsFileNameTooLong", Scopes: ScopesOf(ScopeFile, ScopeArchiveFileList), Bind: bindNoParams(isFileNameTooLong), RunFile: runNameRules},
+		{Name: "IsFileNameTooLong", Scopes: ScopesOf(ScopeFile, ScopeArchiveFileList), Bind: bindFileNameTooLong, RunFile: runNameRules},
 		{Name: "IsFreeOfSecrets", Scopes: ScopesOf(ScopeRepository), Bind: bindSecrets, RunRepository: runRepositoryRules},
 		{Name: "HasReadme", Scopes: ScopesOf(ScopeRepository), Bind: bindHasReadme, RunRepository: runRepositoryRules},
 		{Name: "ReadMeContainsTOC", Scopes: ScopesOf(ScopeRepository), Bind: bindReadMeContainsTOC, RunRepository: runRepositoryRules},

@@ -101,6 +101,30 @@ func TestCompileRejectsBadParamType(t *testing.T) {
 			}),
 			want: `check "HasOnlyASCII" takes no parameters`,
 		},
+		"maxLength is zero": {
+			config: anchoredConfig([]config.RuleSpec{
+				{Name: "IsFileNameTooLong", Check: "IsFileNameTooLong", Enabled: true, Params: []map[string]interface{}{{"maxLength": int64(0)}}},
+			}),
+			want: `"maxLength" has the wrong type or an invalid value (0)`,
+		},
+		"maxLength is a string": {
+			config: anchoredConfig([]config.RuleSpec{
+				{Name: "IsFileNameTooLong", Check: "IsFileNameTooLong", Enabled: true, Params: []map[string]interface{}{{"maxLength": "abc"}}},
+			}),
+			want: `"maxLength" has the wrong type or an invalid value ("abc")`,
+		},
+		"IsFileNameTooLong with two parameter sets": {
+			config: anchoredConfig([]config.RuleSpec{
+				{Name: "IsFileNameTooLong", Check: "IsFileNameTooLong", Enabled: true, Params: []map[string]interface{}{{"maxLength": int64(10)}, {"maxLength": int64(20)}}},
+			}),
+			want: `check "IsFileNameTooLong" takes one parameter set`,
+		},
+		"IsFileNameTooLong with an unknown key": {
+			config: anchoredConfig([]config.RuleSpec{
+				{Name: "IsFileNameTooLong", Check: "IsFileNameTooLong", Enabled: true, Params: []map[string]interface{}{{"maxlength": int64(64)}}},
+			}),
+			want: `unknown key "maxlength"`,
+		},
 	}
 	for name, test := range cases {
 		t.Run(name, func(t *testing.T) {

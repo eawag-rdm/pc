@@ -14,7 +14,7 @@ Checks are run by file / repository (data package):
   the bundled [betterleaks](https://github.com/betterleaks/betterleaks) scanner
 - IsValidName (nonsense files, e.g. `.Rhistory`)
 - HasFileNameSpecialChars (``~!?@#$%^&*`;,'"()<>[]{}``)
-- IsFileNameTooLong (>64 characters)
+- IsFileNameTooLong (>maxLength bytes, default 64)
 
 **By repository:**
 - HasReadme (a readme file exists in the repository)

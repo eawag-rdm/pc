@@ -174,9 +174,12 @@ name  = "no-special-chars"
 check = "HasFileNameSpecialChars"
 
 [[rule]]
-# File names longer than 64 characters
+# File names too long
 name  = "name-length"
 check = "IsFileNameTooLong"
+  [rule.params]
+  # max bytes of the last path component (default 64)
+  maxLength = 64
 
 [[rule]]
 # The repository readme must be present; which filenames count is the check's

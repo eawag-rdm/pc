@@ -548,3 +548,65 @@ func TestBindValidNameMultipleParamSets(t *testing.T) {
 		t.Errorf("each set must report its own verdict: %v", msgs)
 	}
 }
+
+// TestBindFileNameTooLongMaxLength pins the bound limit: a rule's maxLength is
+// what the scan compares against, and a rule without one takes 64.
+func TestBindFileNameTooLongMaxLength(t *testing.T) {
+	cases := []struct {
+		name   string
+		params []map[string]interface{}
+		file   string
+		want   int
+	}{
+		{"default at the limit", nil, strings.Repeat("a", 64), 0},
+		{"default over the limit", nil, strings.Repeat("a", 65), 1},
+		{"custom at the limit", []map[string]interface{}{{"maxLength": int64(10)}}, strings.Repeat("a", 10), 0},
+		{"custom over the limit", []map[string]interface{}{{"maxLength": int64(10)}}, strings.Repeat("a", 11), 1},
+	}
+	general := &config.GeneralConfig{}
+	def, _ := NewRegistry().Lookup("IsFileNameTooLong")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rule, err := def.Bind(config.RuleSpec{Name: "name-length", Check: "IsFileNameTooLong", Enabled: true, Params: tc.params}, general)
+			if err != nil {
+				t.Fatalf("bind: %v", err)
+			}
+			rules := []*BoundRule{rule}
+			msgs := def.RunFile(context.Background(), structs.File{Name: tc.file}, ScopeFile, mergedBatch(t, general, rules...), rules)
+			if len(msgs) != tc.want {
+				t.Errorf("%q: expected %d finding(s), got %v", tc.file, tc.want, msgs)
+			}
+		})
+	}
+}
+
+// TestBindFileNameTooLongDistinctLimits pins the unit key: two rules with
+// different limits stay two scans, so a name between the limits is reported
+// once and a name over both is reported by each rule.
+func TestBindFileNameTooLongDistinctLimits(t *testing.T) {
+	general := &config.GeneralConfig{}
+	def, _ := NewRegistry().Lookup("IsFileNameTooLong")
+	var rules []*BoundRule
+	for _, r := range []struct {
+		name  string
+		limit int64
+	}{{"name-length-10", 10}, {"name-length-20", 20}} {
+		rule, err := def.Bind(config.RuleSpec{
+			Name: r.name, Check: "IsFileNameTooLong", Enabled: true,
+			Params: []map[string]interface{}{{"maxLength": r.limit}},
+		}, general)
+		if err != nil {
+			t.Fatalf("bind: %v", err)
+		}
+		rules = append(rules, rule)
+	}
+	batch := mergedBatch(t, general, rules...)
+	for _, tc := range []struct {
+		length, want int
+	}{{15, 1}, {25, 2}} {
+		file := structs.File{Name: strings.Repeat("a", tc.length)}
+		if msgs := def.RunFile(context.Background(), file, ScopeFile, batch, rules); len(msgs) != tc.want {
+			t.Errorf("%d-byte name: expected %d finding(s), got %v", tc.length, tc.want, msgs)
+		}
+	}
+}

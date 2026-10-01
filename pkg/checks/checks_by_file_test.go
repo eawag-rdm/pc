@@ -231,7 +231,7 @@ func TestIsFileNameTooLong(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := isFileNameTooLong(tt.file)
+			result := isFileNameTooLong(tt.file, 64)
 			if len(result) != len(tt.expected) {
 				t.Fatalf("expected %v, got %v", tt.expected, result)
 			}

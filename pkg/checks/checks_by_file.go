@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"path"
@@ -61,11 +62,52 @@ func hasFileNameSpecialChars(file structs.File) []structs.Message {
 // name is whatever the depositor typed and is measured the same way. The
 // character checks deliberately read every component instead - an invalid
 // character is invalid wherever in the path it sits.
-func isFileNameTooLong(file structs.File) []structs.Message {
-	if len(file.Name[strings.LastIndexAny(file.Name, "/\\")+1:]) > 64 {
+func isFileNameTooLong(file structs.File, maxLength int) []structs.Message {
+	if len(file.Name[strings.LastIndexAny(file.Name, "/\\")+1:]) > maxLength {
 		return []structs.Message{{Content: "File name is too long.", Source: file}}
 	}
 	return []structs.Message{}
+}
+
+// defaultMaxFileNameLength is the name-length limit, in bytes, of a rule that
+// sets no maxLength.
+const defaultMaxFileNameLength = 64
+
+// bindFileNameTooLong binds the name-length rule: its limit, type-checked here
+// and closed over, so a scan compares and does nothing else. A rule carries the
+// limit as its ONE parameter set; a rule without one takes the default.
+func bindFileNameTooLong(spec config.RuleSpec, _ *config.GeneralConfig) (*BoundRule, error) {
+	sets, err := ruleSets(spec, "maxLength")
+	if err != nil {
+		return nil, err
+	}
+	if len(sets) > 1 {
+		return nil, fmt.Errorf("check %q takes one parameter set", spec.Check)
+	}
+	maxLength := defaultMaxFileNameLength
+	if len(sets) == 1 {
+		if v, present := sets[0]["maxLength"]; present {
+			n, isInt := v.(int64)
+			if !isInt || n <= 0 || n > math.MaxInt {
+				return nil, fmt.Errorf("%q has the wrong type or an invalid value (%#v)", "maxLength", v)
+			}
+			maxLength = int(n)
+		}
+	}
+	return &BoundRule{
+		Rule:  spec.Name,
+		Rules: []string{spec.Name},
+		units: []unit{{
+			scan: func(_ context.Context, file structs.File, _, _ [][]byte, _ reporting) []structs.Message {
+				return isFileNameTooLong(file, maxLength)
+			},
+			// Two rules with the same limit are one scan. The loader's
+			// sibling-params refusal compares params as written, so a rule
+			// without params and one with an explicit maxLength = 64 at the
+			// same scope both load and merge here.
+			key: unitKeyOf(maxLength),
+		}},
+	}, nil
 }
 
 // streamChunkSize is both the streamed read size and the streaming threshold:
