@@ -84,3 +84,11 @@ func (f File) GetDisplayName() string {
 	}
 	return f.Name
 }
+
+// QualifiedName returns the display name, prefixed with its archive for a member
+func (f File) QualifiedName() string {
+	if f.ArchiveName != "" {
+		return f.ArchiveName + " > " + f.GetDisplayName()
+	}
+	return f.GetDisplayName()
+}

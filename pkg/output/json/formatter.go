@@ -33,9 +33,12 @@ type ScannedFile struct {
 
 // SkippedFile represents a file that was skipped during scanning
 type SkippedFile struct {
+	// Filename is a display name ("archive > member" for a member), not an identity.
 	Filename string `json:"filename"`
 	Path     string `json:"path"`
 	Reason   string `json:"reason"`
+	// Checkname is the check that could not finish; empty when the producer named none.
+	Checkname string `json:"checkname"`
 }
 
 // SubjectDetails represents detailed issues for a specific subject
@@ -392,15 +395,13 @@ func (result *ScanResult) appendSkipped(msg structs.Message) {
 		reason = msg.Content
 	}
 
-	skipped := SkippedFile{Reason: reason}
-	if file, isFile := msg.Source.(structs.File); isFile {
-		displayName := file.GetDisplayName()
-		filename := displayName
-		if file.ArchiveName != "" {
-			filename = file.ArchiveName + " > " + displayName
-		}
-		skipped.Filename = filename
-		skipped.Path = file.Path
+	skipped := SkippedFile{Reason: reason, Checkname: msg.TestName}
+	switch source := msg.Source.(type) {
+	case structs.File:
+		skipped.Filename = source.QualifiedName()
+		skipped.Path = source.Path
+	case structs.Repository:
+		skipped.Filename = "repository"
 	}
 	result.Skipped = append(result.Skipped, skipped)
 }

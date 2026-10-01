@@ -282,6 +282,41 @@ func TestFormatResults_SkippedArchiveMemberFilenameIncludesArchive(t *testing.T)
 	}
 }
 
+func TestFormatResults_SkippedNamesItsCheck(t *testing.T) {
+	formatter := NewJSONFormatter()
+
+	file := structs.File{Name: "data.pdf", Path: "/path/to/data.pdf"}
+	messages := []structs.Message{
+		{Content: "too big", Source: file, TestName: "IsFreeOfKeywords", Skipped: true, Reason: "too big"},
+		{Content: "too big", Source: file, TestName: "IsFreeOfSecrets", Skipped: true, Reason: "too big"},
+		{Content: "no files", Source: structs.Repository{}, TestName: "HasReadme", Skipped: true, Reason: "no files"},
+	}
+
+	result, err := formatter.FormatResults("/loc", "LocalCollector", messages, 1, []string{}, nil)
+	if err != nil {
+		t.Fatalf("FormatResults failed: %v", err)
+	}
+
+	var scanResult ScanResult
+	if err := json.Unmarshal([]byte(result), &scanResult); err != nil {
+		t.Fatalf("Result is not valid JSON: %v", err)
+	}
+
+	want := []SkippedFile{
+		{Filename: "data.pdf", Path: "/path/to/data.pdf", Reason: "too big", Checkname: "IsFreeOfKeywords"},
+		{Filename: "data.pdf", Path: "/path/to/data.pdf", Reason: "too big", Checkname: "IsFreeOfSecrets"},
+		{Filename: "repository", Path: "", Reason: "no files", Checkname: "HasReadme"},
+	}
+	if len(scanResult.Skipped) != len(want) {
+		t.Fatalf("Expected %d skipped entries, got %+v", len(want), scanResult.Skipped)
+	}
+	for i := range want {
+		if scanResult.Skipped[i] != want[i] {
+			t.Errorf("skipped[%d] = %+v, want %+v", i, scanResult.Skipped[i], want[i])
+		}
+	}
+}
+
 func TestProcessMessages(t *testing.T) {
 	result := &ScanResult{}
 

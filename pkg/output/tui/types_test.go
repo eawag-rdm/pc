@@ -57,6 +57,32 @@ func TestScanResultDecodesRuleSectionFromFormatter(t *testing.T) {
 	}
 }
 
+// TestScanResultDecodesSkippedCheckFromFormatter pins the hand-mirrored
+// SkippedFile keys: a drifted tag would leave the TUI without the check name.
+func TestScanResultDecodesSkippedCheckFromFormatter(t *testing.T) {
+	reason := "Could not read file."
+	messages := []structs.Message{
+		{Content: reason, Source: structs.File{Name: "x.csv", Path: "/tmp/x.csv"}, TestName: "IsFreeOfKeywords", Skipped: true, Reason: reason},
+	}
+
+	encoded, err := jsonformatter.NewJSONFormatter().FormatResults("test/path", "LocalCollector", messages, 1, nil, nil)
+	if err != nil {
+		t.Fatalf("FormatResults failed: %v", err)
+	}
+
+	var decoded ScanResult
+	if err := json.Unmarshal([]byte(encoded), &decoded); err != nil {
+		t.Fatalf("Failed to unmarshal formatter output into tui.ScanResult: %v", err)
+	}
+
+	if len(decoded.Skipped) != 1 {
+		t.Fatalf("Expected 1 skipped entry, got %d, from:\n%s", len(decoded.Skipped), encoded)
+	}
+	if got := decoded.Skipped[0]; got.Checkname != "IsFreeOfKeywords" || got.Filename != "x.csv" {
+		t.Errorf("Skipped entry mismatch: got %+v, want x.csv skipped by IsFreeOfKeywords", got)
+	}
+}
+
 func TestScanResult_JSONSerialization(t *testing.T) {
 	// Test data
 	timestamp := time.Now().UTC().Format(time.RFC3339)

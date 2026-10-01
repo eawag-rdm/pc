@@ -79,9 +79,10 @@ type ScannedFile struct {
 }
 
 type SkippedFile struct {
-	Filename string `json:"filename"`
-	Path     string `json:"path"`
-	Reason   string `json:"reason"`
+	Filename  string `json:"filename"`
+	Path      string `json:"path"`
+	Reason    string `json:"reason"`
+	Checkname string `json:"checkname"`
 }
 
 type SubjectDetails struct {

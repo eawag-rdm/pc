@@ -966,6 +966,9 @@ const htmlTemplate = `<!DOCTYPE html>
                 scanData.skipped.forEach(file => {
                     html += '<div class="detail-item">';
                     html += '<div class="detail-header">' + escapeHtml(file.filename) + '</div>';
+                    if (file.checkname) {
+                        html += '<div class="detail-content"><strong>Check:</strong> ' + escapeHtml(file.checkname) + '</div>';
+                    }
                     if (file.path) {
                         html += '<div class="detail-path">' + escapeHtml(file.path) + '</div>';
                     }

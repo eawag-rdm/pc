@@ -644,6 +644,9 @@ Notes:
   scanned."* - the technical cause (full path, OS error) goes to the server log
   as a `scan_diagnostic` record keyed by `request_id`. CLI output is unaffected:
   its JSON/HTML/TUI keep full paths and the raw warnings.
+- **Each `skipped[]` entry carries `checkname`** - the check that could not
+  finish (empty when the producer named none); a repository-level skip has
+  `filename` `"repository"`.
 
 ### `[server]` configuration reference
 

@@ -191,12 +191,15 @@ func writeSkippedSection(output *strings.Builder, skippedFiles []structs.Message
 
 	output.WriteString(fmt.Sprintf("\n⏭️  Skipped files (%d):\n", len(skippedFiles)))
 	for _, msg := range skippedFiles {
-		name := "repository"
-		if source, ok := msg.Source.(structs.File); ok {
-			name = source.GetDisplayName()
-			if source.ArchiveName != "" {
-				name = source.ArchiveName + " > " + name
-			}
+		var name string
+		switch source := msg.Source.(type) {
+		case structs.File:
+			name = source.QualifiedName()
+		case structs.Repository:
+			name = "repository"
+		}
+		if msg.TestName != "" {
+			name += " [" + msg.TestName + "]"
 		}
 		reason := msg.Reason
 		if reason == "" {

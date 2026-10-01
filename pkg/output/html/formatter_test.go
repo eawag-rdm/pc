@@ -35,9 +35,10 @@ type TestCheckSummary struct {
 }
 
 type TestSkippedFile struct {
-	Filename string `json:"filename"`
-	Path     string `json:"path,omitempty"`
-	Reason   string `json:"reason"`
+	Filename  string `json:"filename"`
+	Path      string `json:"path,omitempty"`
+	Reason    string `json:"reason"`
+	Checkname string `json:"checkname"`
 }
 
 type TestSubjectDetails struct {
@@ -438,7 +439,7 @@ func TestGenerateReport_ContentValidation(t *testing.T) {
 			{Filename: "validation_test.go", Issues: []TestCheckSummary{}},
 		},
 		Skipped: []TestSkippedFile{
-			{Filename: "skipped.bin", Reason: "Binary file detected", Path: "/path/skipped.bin"},
+			{Filename: "skipped.bin", Reason: "Binary file detected", Path: "/path/skipped.bin", Checkname: "IsFreeOfKeywords"},
 		},
 		DetailsSubjectFocused: []TestSubjectDetails{},
 		DetailsCheckFocused:   []TestCheckDetails{},
@@ -490,6 +491,11 @@ func TestGenerateReport_ContentValidation(t *testing.T) {
 
 	if !strings.Contains(htmlContent, "skipped.bin") {
 		t.Error("Generated HTML does not contain skipped file data")
+	}
+
+	// Source-text pin on the template, not a render test.
+	if !strings.Contains(htmlContent, "escapeHtml(file.checkname)") {
+		t.Error("Skipped entries do not render their check")
 	}
 
 	if !strings.Contains(htmlContent, "Critical error occurred") {

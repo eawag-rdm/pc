@@ -825,6 +825,11 @@ func (a *App) getSkippedContent() string {
 	sb.WriteString(fmt.Sprintf("[yellow]Skipped Files (%d):[white]\n\n", len(a.data.Skipped)))
 	for i, file := range a.data.Skipped {
 		sb.WriteString(fmt.Sprintf("[cyan]%d.[white] %s\n", i+1, file.Filename))
+		if file.Checkname != "" {
+			sb.WriteString("   [dim]Check: ")
+			sb.WriteString(tview.Escape(file.Checkname))
+			sb.WriteString("[white]\n")
+		}
 		if file.Path != "" {
 			sb.WriteString("   [dim]Path: ")
 			sb.WriteString(file.Path)

@@ -299,6 +299,28 @@ func TestAppWithNilData(t *testing.T) {
 	t.Skip("Skipping nil data test - TUI requires valid data structure")
 }
 
+func TestGetSkippedContent_NamesCheck(t *testing.T) {
+	app := NewScanningApp()
+	app.data = &ScanResult{
+		Skipped: []SkippedFile{
+			{Filename: "data.pdf", Reason: "too big", Checkname: "IsFreeOfKeywords"},
+			{Filename: "data.pdf", Reason: "too big", Checkname: "IsFreeOfSecrets"},
+			{Filename: "other.pdf", Reason: "unnamed"},
+		},
+	}
+
+	content := app.getSkippedContent()
+	for _, want := range []string{
+		"1.[white] data.pdf\n   [dim]Check: IsFreeOfKeywords[white]\n",
+		"2.[white] data.pdf\n   [dim]Check: IsFreeOfSecrets[white]\n",
+		"3.[white] other.pdf\n   [dim]Reason: unnamed",
+	} {
+		if !strings.Contains(content, want) {
+			t.Errorf("Expected %q in skipped content, got: %s", want, content)
+		}
+	}
+}
+
 func TestAppDataCounting(t *testing.T) {
 	// Create test data with known counts
 	data := &ScanResult{

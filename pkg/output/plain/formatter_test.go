@@ -248,6 +248,36 @@ func TestPlainFormatter_FormatResults_SkipDoesNotInflateIssues(t *testing.T) {
 	}
 }
 
+// TestPlainFormatter_FormatResults_SkippedNamesItsCheck verifies that each skip
+// line names the check that skipped, so two checks skipping one file stay
+// distinguishable, and that a repository skip is labelled as such.
+func TestPlainFormatter_FormatResults_SkippedNamesItsCheck(t *testing.T) {
+	formatter := NewPlainFormatter()
+
+	file := structs.File{Name: "data.pdf", Path: "/path/data.pdf"}
+	messages := []structs.Message{
+		{Content: "too big", Source: file, TestName: "IsFreeOfKeywords", Skipped: true, Reason: "too big"},
+		{Content: "too big", Source: file, TestName: "IsFreeOfSecrets", Skipped: true, Reason: "too big"},
+		{Content: "no files", Source: structs.Repository{}, TestName: "HasReadme", Skipped: true, Reason: "no files"},
+		{Content: "unnamed", Source: file, Skipped: true, Reason: "unnamed"},
+		{Content: "too big", Source: structs.File{Name: "x.csv", ArchiveName: "a.zip"}, TestName: "IsFreeOfKeywords", Skipped: true, Reason: "too big"},
+	}
+
+	result := formatter.FormatResults("test/path", messages, 1, nil)
+
+	for _, line := range []string{
+		"  • data.pdf [IsFreeOfKeywords]: too big\n",
+		"  • data.pdf [IsFreeOfSecrets]: too big\n",
+		"  • repository [HasReadme]: no files\n",
+		"  • data.pdf: unnamed\n",
+		"  • a.zip > x.csv [IsFreeOfKeywords]: too big\n",
+	} {
+		if !strings.Contains(result, line) {
+			t.Errorf("Expected skip line %q, got: %s", line, result)
+		}
+	}
+}
+
 // TestPlainFormatter_FormatResults_Diagnostics verifies the trailing
 // diagnostics section: errors and warnings are rendered with their level and
 // optional subject, info is not, and no diagnostics means no section.
