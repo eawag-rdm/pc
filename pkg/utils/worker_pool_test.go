@@ -242,7 +242,8 @@ func TestWorkerPool_ChannelFullHandling(t *testing.T) {
 // contract behind the boot-time checks-config validation: even if a check
 // panics inside a worker-pool goroutine (where no request-level recover can
 // reach), the panic is converted into a logged failure - the pool keeps
-// working, the other checks' messages survive, and the process stays alive.
+// working, the other checks' messages survive, the panicking check is
+// acknowledged as skipped on that file, and the process stays alive.
 // Without safeRunCheck this test would crash the whole test binary.
 func TestWorkerPool_PanickingCheck_DoesNotKillProcess(t *testing.T) {
 	output.GlobalLogger.SetJSONMode(true)
@@ -266,9 +267,10 @@ func TestWorkerPool_PanickingCheck_DoesNotKillProcess(t *testing.T) {
 	}
 
 	result := <-pool.results()
-	if len(result.Messages) != 1 || result.Messages[0].Content != "healthy ran" {
-		t.Fatalf("expected only the healthy check's message, got %v", result.Messages)
+	if len(result.Messages) != 2 || result.Messages[1].Content != "healthy ran" {
+		t.Fatalf("expected the panicking check's skip and the healthy check's message, got %v", result.Messages)
 	}
+	assertPanicSkip(t, result.Messages[0], "panicking", file, checkPanicReason)
 
 	// The failure must be acknowledged as a short, path-free error diagnostic on
 	// the RUN's sink - not silently swallowed, and not written to the process

@@ -122,7 +122,7 @@ func (wp *workerPool) processWorkItem(work workItem) []structs.Message {
 	// Run all checks for this file sequentially in the same worker
 	// This avoids IO conflicts from multiple goroutines reading the same file
 	for _, entry := range work.Checks {
-		messages := safeRunCheck(wp.ctx, wp.sink, entry, work.File, work.Scope)
+		messages, _ := safeRunCheck(wp.ctx, wp.sink, entry, work.File, work.Scope)
 		if len(messages) > 0 {
 			// Add test name to each message
 			for i := range messages {
@@ -148,26 +148,44 @@ func logPanic(sink *diagSink, what, subject string, recovered interface{}) {
 // converts a panic into a logged failure instead of letting it propagate. A
 // panic in a pool goroutine is not covered by any request-level recover, so
 // without this a single buggy check (or unreadable/crafted archive) kills the
-// whole process.
-func safeRun(sink *diagSink, what, subject string, fn func() []structs.Message) (messages []structs.Message) {
+// whole process. On a panic fn's messages are discarded and panicked is set;
+// the caller acknowledges the checks that could not finish.
+func safeRun(sink *diagSink, what, subject string, fn func() []structs.Message) (messages []structs.Message, panicked bool) {
 	defer func() {
 		if r := recover(); r != nil {
 			logPanic(sink, what, subject, r)
-			messages = nil
+			messages, panicked = nil, true
 		}
 	}()
-	return fn()
+	return fn(), false
 }
 
-// safeRunCheck is safeRun specialized for one check over one file. Its panic
-// label is built inside the recover branch, not handed in: concatenating it up
-// front cost a string and an allocation for every check that did NOT panic -
-// which is every check, on every file.
-func safeRunCheck(ctx context.Context, sink *diagSink, entry checks.PlanEntry, file structs.File, scope checks.Scope) (messages []structs.Message) {
+const (
+	// checkPanicReason acknowledges a check that panicked on its subject.
+	checkPanicReason = "Skipped: the check failed with an internal error."
+	// archivePanicReason acknowledges a check that panicked on an archive's
+	// members, telling it apart from a panic on the archive itself.
+	archivePanicReason = "Skipped: the check failed with an internal error on the archive members."
+)
+
+// panicSkip acknowledges check name as skipped on source after a panic. A panic
+// is treated as a verdict, not a read failure, so the skip is not Transient and
+// is cached. Call it only from a panic branch.
+func panicSkip(source structs.Source, name, reason string) structs.Message {
+	return structs.Message{Content: reason, Source: source, TestName: name, Skipped: true, Reason: reason}
+}
+
+// safeRunCheck is safeRun specialized for one check over one file: a panic
+// yields one skip of the check for file as passed. Its panic label and skip are
+// built inside the recover branch, not handed in: building them up front costs a
+// string and an allocation for every check that did NOT panic - which is every
+// check, on every file.
+func safeRunCheck(ctx context.Context, sink *diagSink, entry checks.PlanEntry, file structs.File, scope checks.Scope) (messages []structs.Message, panicked bool) {
 	defer func() {
 		if r := recover(); r != nil {
 			logPanic(sink, "Check "+entry.Def.Name+" on file '"+file.Name+"'", file.GetDisplayName(), r)
-			messages = nil
+			messages = []structs.Message{panicSkip(file, entry.Def.Name, checkPanicReason)}
+			panicked = true
 		}
 	}()
 	if !entry.Def.Scopes.Has(scope) {
@@ -176,7 +194,7 @@ func safeRunCheck(ctx context.Context, sink *diagSink, entry checks.PlanEntry, f
 		// recover turns it into a logged internal error rather than bad results.
 		panic("check " + entry.Def.Name + " does not serve scope " + scope.String())
 	}
-	return entry.Def.RunFile(ctx, file, scope, entry.Batch, entry.Rules)
+	return entry.Def.RunFile(ctx, file, scope, entry.Batch, entry.Rules), false
 }
 
 // submit adds a work item to the processing queue (blocks until space is available)

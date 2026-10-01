@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"slices"
 	"sync"
 	"time"
 
@@ -324,7 +325,7 @@ func applyFileChecks(ctx context.Context, sink *diagSink, entries []checks.PlanE
 			return messages
 		}
 		for _, entry := range item.Checks {
-			ret := safeRunCheck(ctx, sink, entry, item.File, item.Scope)
+			ret, _ := safeRunCheck(ctx, sink, entry, item.File, item.Scope)
 			if ret != nil {
 				// Add test name to each message
 				for j := range ret {
@@ -459,9 +460,32 @@ func applyChecksFilteredByFileOnArchiveFileList(ctx context.Context, sink *diagS
 // this function runs in a bare worker goroutine where an unrecovered panic
 // would kill the process.
 func processArchiveFileList(ctx context.Context, sink *diagSink, cfg config.Config, entries []checks.PlanEntry, archiveFile structs.File) []structs.Message {
-	return safeRun(sink, "Processing archive '"+archiveFile.Name+"'", archiveFile.GetDisplayName(), func() []structs.Message {
+	messages, panicked := safeRun(sink, "Processing archive '"+archiveFile.Name+"'", archiveFile.GetDisplayName(), func() []structs.Message {
 		return archiveFileListChecks(ctx, sink, cfg, entries, archiveFile)
 	})
+	if panicked {
+		return archivePanicSkips(archiveFile, entries)
+	}
+	return messages
+}
+
+// archivePanicSkips returns one skip on archiveFile per distinct check across
+// entryLists. Handed a whole archive pass's entries it acknowledges every check
+// of the pass, including one whose rules would not have selected this archive:
+// a deliberate fail-safe over-report, since the guard cannot tell which checks
+// the panic cost.
+func archivePanicSkips(archiveFile structs.File, entryLists ...[]checks.PlanEntry) []structs.Message {
+	var skips []structs.Message
+	for _, entries := range entryLists {
+		for _, entry := range entries {
+			name := entry.Def.Name
+			if slices.ContainsFunc(skips, func(m structs.Message) bool { return m.TestName == name }) {
+				continue
+			}
+			skips = append(skips, panicSkip(archiveFile, name, archivePanicReason))
+		}
+	}
+	return skips
 }
 
 // archiveWalkLimits derives the file-list walk bounds from the single defaulting
@@ -564,17 +588,28 @@ func archiveFileListMemberChecks(ctx context.Context, sink *diagSink, entries []
 	walked := len(fileList) > 0
 	defer func() { sink.rules.fold(checks.ScopeArchiveFileList, marks, walked) }()
 
+	// A check that panics on one member likely panics on all of them: its
+	// member skips are folded into one per check on the archive.
+	var panicked []checks.PlanEntry
 	scratch := newMatchScratch(entries, marks)
 	for _, archivedFile := range fileList {
 		// Stop between archived files once the deadline fired / the caller
 		// cancelled.
 		if ctx.Err() != nil {
-			return messages
+			break
 		}
 		helpers.PDFTracker.AddFileIfPDF(archiveFile.Name+" -> ", archivedFile)
 
 		for _, entry := range scratch.match(entries, archivedFile) {
-			ret := safeRunCheck(ctx, sink, entry, archivedFile, checks.ScopeArchiveFileList)
+			ret, failed := safeRunCheck(ctx, sink, entry, archivedFile, checks.ScopeArchiveFileList)
+			if failed {
+				if !slices.ContainsFunc(panicked, func(p checks.PlanEntry) bool { return p.Def.Name == entry.Def.Name }) {
+					panicked = append(panicked, entry)
+				}
+				// Its member skip is dropped: the fold below emits one per
+				// check, on the archive.
+				continue
+			}
 			if ret != nil {
 				for j := range ret {
 					ret[j].TestName = entry.Def.Name
@@ -582,6 +617,9 @@ func archiveFileListMemberChecks(ctx context.Context, sink *diagSink, entries []
 				messages = append(messages, ret...)
 			}
 		}
+	}
+	if panicked != nil {
+		messages = append(messages, archivePanicSkips(archiveFile, panicked)...)
 	}
 	return messages
 }
@@ -683,7 +721,7 @@ func applyChecksFilteredByFileOnArchive(ctx context.Context, sink *diagSink, cfg
 			continue
 		}
 		for _, entry := range item.Checks {
-			ret := safeRunCheck(ctx, sink, entry, item.File, item.Scope)
+			ret, _ := safeRunCheck(ctx, sink, entry, item.File, item.Scope)
 			if ret != nil {
 				// Add test name to each message
 				for j := range ret {
@@ -712,9 +750,13 @@ func streamListWorkItem(sink *diagSink, cfg config.Config, listEntries, memberEn
 			// one guard for both scopes is the intent - a panic in either half
 			// discards this archive's findings as a unit rather than leaving
 			// half of them to stand for the archive.
-			return safeRun(sink, "Processing archive '"+archiveFile.Name+"'", archiveFile.GetDisplayName(), func() []structs.Message {
+			messages, panicked := safeRun(sink, "Processing archive '"+archiveFile.Name+"'", archiveFile.GetDisplayName(), func() []structs.Message {
 				return streamListArchiveChecks(ctx, sink, cfg, listEntries, memberEntries, archiveFile)
 			})
+			if panicked {
+				return archivePanicSkips(archiveFile, listEntries, memberEntries)
+			}
+			return messages
 		},
 	}
 }
@@ -758,7 +800,7 @@ func streamListArchiveChecks(ctx context.Context, sink *diagSink, cfg config.Con
 
 	var messages []structs.Message
 	for _, entry := range matched {
-		ret := safeRunCheck(ctx, sink, entry, handed, checks.ScopeArchiveMember)
+		ret, _ := safeRunCheck(ctx, sink, entry, handed, checks.ScopeArchiveMember)
 		if ret != nil {
 			for j := range ret {
 				ret[j].TestName = entry.Def.Name
@@ -828,9 +870,12 @@ func applyChecksFilteredByRepository(ctx context.Context, sink *diagSink, entrie
 			return messages
 		}
 		testName := entry.Def.Name
-		ret := safeRun(sink, "Check "+testName, "", func() []structs.Message {
+		ret, panicked := safeRun(sink, "Check "+testName, "", func() []structs.Message {
 			return entry.Def.RunRepository(ctx, repo, entry.Batch, entry.Rules)
 		})
+		if panicked {
+			ret = []structs.Message{panicSkip(structs.Repository{}, testName, checkPanicReason)}
+		}
 		if ret != nil {
 			// Add test name to each message
 			for i := range ret {
